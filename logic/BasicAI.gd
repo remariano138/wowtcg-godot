@@ -47,7 +47,7 @@ func run_turn(player: String) -> void:
 		attacked = false
 		var ally_row = sandbox.ally_row if player == "player_1" else sandbox.opp_ally_row
 		var ready_allies = ally_row.get_children().filter(
-			func(c): return c.has_method("exhaust") and not c.exhausted and not c.just_summoned)
+			func(c): return c.has_method("exhaust") and not c.exhausted and sandbox.can_propose_attacker(c))
 		if ready_allies.is_empty():
 			break
 		# Find all valid targets

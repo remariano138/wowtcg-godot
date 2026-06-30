@@ -223,7 +223,19 @@ func _is_valid_target(card: Control, attacker_owner: String) -> bool:
 	var opp = "player_2" if attacker_owner == "player_1" else "player_1"
 	var opp_row = opp_ally_row if opp == "player_2" else ally_row
 	var opp_hero = _p2_hero if opp == "player_2" else _p1_hero
-	return card.get_parent() == opp_row or card == opp_hero
+	if card.get_parent() != opp_row and card != opp_hero:
+		return false
+	return can_propose_defender(card)
+
+# ── Rule-enforcement hooks ──────────────────────────────────────────────────────
+# Sandbox imposes no rules beyond mechanical state (a card must be a board ally
+# and not currently exhausted to be proposed as an attacker). DuelTable overrides
+# these to add real legality (summoning sickness w/ Ferocity, Elusive, etc.).
+func can_propose_attacker(_card: Control) -> bool:
+	return true
+
+func can_propose_defender(_card: Control) -> bool:
+	return true
 
 const DMG_ICONS = {
 	"Arcane": "res://assets/dmg_icons/arcane.png",
@@ -955,6 +967,13 @@ func _on_context_menu_id_pressed(id: int) -> void:
 func _player_name(owner: String) -> String:
 	return "Player 1" if owner == "player_1" else "Player 2"
 
+func _current_turn_player() -> String:
+	if game_manager.turn_state == GameManager.TurnState.P1:
+		return "player_1"
+	elif game_manager.turn_state == GameManager.TurnState.P2:
+		return "player_2"
+	return ""
+
 # ── Turn logic ────────────────────────────────────────────────────────────────
 
 func _update_turn_ui() -> void:
@@ -1254,5 +1273,5 @@ func _on_card_clicked(card: Control) -> void:
 	# Normal mode
 	if game_manager.hand.has(card):
 		_play_card(card)
-	elif _is_board_ally(card) and not card.exhausted and not card.just_summoned:
+	elif _is_board_ally(card) and not card.exhausted and can_propose_attacker(card):
 		_enter_targeting_mode(card)

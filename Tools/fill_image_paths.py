@@ -28,6 +28,7 @@ with open(MASTER_CSV, encoding="utf-8") as f:
 # Manual aliases: TTS mod misspellings -> correct card name key
 ALIASES = {
     "nerra_lifeboon": "nerra_lifeboom",
+    "valthak_spiritdrinker": "valthak_spiritdinker",
 }
 for correct, tts in ALIASES.items():
     if tts in master:

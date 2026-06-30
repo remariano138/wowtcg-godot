@@ -28,9 +28,10 @@ var card_type: String = ""
 var alignment: String = ""
 var tags: String = ""
 var dmg_type: String = ""
-var card_text: String = ""
+var power_text: String = ""
 var card_class: String = ""
 var card_subtype: String = ""
+var keywords: Array = []
 var card_owner: String = "player_1"
 var face_down: bool = false
 var exhausted: bool = false
@@ -57,9 +58,12 @@ func setup(p_card_id: String, database: Node) -> void:
 	alignment = data.get("alignment", "")
 	tags = data.get("tags", "")
 	dmg_type = data.get("dmg_type", "")
-	card_text    = data.get("card_text", "")
+	power_text   = data.get("power_text", "")
 	card_class   = data.get("class", "")
 	card_subtype = data.get("subtype", "")
+	var keywords_str = data.get("keywords", "")
+	keywords = keywords_str.split(",").map(func(k): return k.strip_edges().to_lower()) \
+		if keywords_str != "" else []
 
 	name_label.text = card_name
 	cost_label.text = str(cost) if cost >= 0 else ""
@@ -96,6 +100,9 @@ func set_face_down(value: bool) -> void:
 			color_rect.visible = true
 			name_label.visible = true
 			cost_label.visible = true
+
+func has_keyword(keyword: String) -> bool:
+	return keyword.to_lower() in keywords
 
 func take_damage(amount: int) -> void:
 	current_health = max(current_health - amount, 0)

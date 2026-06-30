@@ -1,0 +1,118 @@
+WowTCG_digital — Sandbox vs Duel Table
+========================================
+
+This is a quick reference for testers/contributors on what the two playable
+table scenes are for, and what behavior to expect (and not be surprised by)
+in each.
+
+
+SANDBOX TABLE (scenes/boards/SandboxTable.tscn)
+------------------------------------------------
+Purpose: a free-play board for manual testing, demoing layout/animations, and
+exercising every individual game action without any legality restrictions
+getting in the way.
+
+Philosophy: "anyone can do anything." Sandbox does NOT enforce WoW TCG rules
+about what you're ALLOWED to do. It only handles the AUTOMATIC, UNCONDITIONAL
+consequences of an action once you've done it.
+
+What Sandbox WILL do automatically (mechanics, not rules):
+  - Exhaust resources when you play a card (exhausts whatever's ready, up to
+    the card's cost — it will not stop you from playing a card you can't
+    afford; it just exhausts as many ready resources as exist).
+  - Send a card to the graveyard the moment its HP reaches 0.
+  - Reset an ally's HP to its printed value when it leaves play to hand or
+    graveyard (current_health and max_health both reset — see
+    Card.reset_to_printed_hp()).
+  - Flag newly-played allies as "summoning sick" (Zzz icon) and clear that
+    flag at the start of their controller's next turn.
+  - Resolve combat (wiggle animation, damage numbers, simultaneous damage to
+    both attacker and defender) once you've clicked an attacker then a
+    defender.
+  - Trigger uniqueness-violation resolution (e.g. too many Pets in play) and
+    let you choose which card dies, the same way it works in the real rules
+    (the violating card enters play FIRST, then you're asked to fix the
+    violation — it's not blocked from being played).
+
+What Sandbox WILL NOT stop you from doing (no legality enforcement):
+  - Playing any card from your hand regardless of whether you can afford it.
+  - Playing cards out of turn, or playing the opponent's hand cards from your
+    side (right-click context menu intentionally allows manipulating either
+    player's cards/zones for setup and testing purposes).
+  - Attacking with a summoning-sick ally (sandbox lets you attack with
+    anything that isn't currently exhausted).
+  - Attacking an Elusive ally — sandbox doesn't know or care about Elusive.
+  - Ending a turn at any point regardless of game state.
+
+In short: if you're testing "does the visual/mechanical plumbing work"
+(animations, zone transitions, HP bar, log entries, AI script, deck builder,
+etc.), use Sandbox. If you're testing "is this a legal play," use Duel Table.
+
+
+DUEL TABLE (scenes/boards/DuelTable.tscn)
+------------------------------------------
+Purpose: the actual rule-enforcing table. Same board, same zones, same visuals
+as Sandbox (DuelTable extends SandboxTable and inherits its scene), but it
+overrides a small set of "can I do this?" hook functions to add real
+legality checks on top of Sandbox's mechanics.
+
+Currently enforced on Duel Table:
+  - Ferocity: an ally with the Ferocity keyword can be proposed as an
+    attacker even while summoning sick. Allies without Ferocity cannot
+    attack the turn they enter play.
+      (Per the rules, Ferocity only affects attacking — it does NOT let an
+      ally use its activated powers early. We don't have activated powers
+      implemented yet, so that distinction isn't visible yet, but the
+      Ferocity check here is scoped to attacking specifically, on purpose.)
+  - Elusive: an ally or hero with the Elusive keyword can never be proposed
+    as a defender — it's simply not a valid combat target, on either table,
+    for anyone.
+
+NOT yet enforced on Duel Table (still behaves like Sandbox for now):
+  - Resource cost gating. Playing a card still just exhausts whatever
+    resources are available without blocking the play if you can't afford
+    it. This is a known gap — cost legality is planned to move from Sandbox
+    behavior into a DuelTable-only check (can_play_card), but hasn't been
+    done yet.
+  - Turn ownership (you can currently play/attack with either player's cards
+    regardless of whose turn it is — same as Sandbox).
+  - Protector. This keyword needs a real multi-step combat structure
+    (propose attacker -> propose defender -> protect point -> resolve) that
+    doesn't exist yet — Protector allies currently behave like vanilla
+    allies on both tables.
+  - Any bespoke card-text "power" (the unique effect text printed on a
+    specific card, as opposed to a universal keyword). Those will need a
+    separate per-card effect system once a handful of example cards are
+    fully data-verified.
+
+
+HOW THE OVERRIDE PATTERN WORKS (for contributors)
+----------------------------------------------------
+SandboxTable.gd defines a small number of virtual "can I do this?" hook
+methods that default to permissive (always legal):
+
+    func can_propose_attacker(card) -> bool   # default: true
+    func can_propose_defender(card) -> bool   # default: true
+
+DuelTable.gd (scenes/boards/DuelTable.gd) extends SandboxTable and overrides
+just these hooks to add real keyword checks, without touching or duplicating
+any of Sandbox's mechanical code (combat resolution, exhausting resources,
+HP/graveyard handling, etc. all stay defined once, in SandboxTable).
+
+DuelTable.tscn is a Godot *inherited* scene — it instances SandboxTable.tscn
+wholesale and only swaps the attached script, so the two tables share one
+visual/board definition. Any layout change to SandboxTable.tscn automatically
+applies to DuelTable too.
+
+As more rules get implemented (cost gating, turn ownership, Protector's
+combat-step rework, per-card powers), they should be added the same way:
+a new "can_x()" hook in SandboxTable.gd (default permissive), overridden in
+DuelTable.gd with the actual rule.
+
+
+SWITCHING BETWEEN THEM
+------------------------
+project.godot's run/main_scene currently points at SandboxTable.tscn.
+To playtest Duel Table instead, change run/main_scene to
+res://scenes/boards/DuelTable.tscn (Project Settings > Application > Run, or
+edit project.godot directly), then run the project again.

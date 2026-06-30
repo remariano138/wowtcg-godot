@@ -14,7 +14,7 @@ OUTPUT     = ROOT / "data" / "cards.csv"
 FIELDNAMES = [
     "expansion", "collector_number", "name", "cost", "type",
     "alignment", "tags", "atk", "dmg_type", "health",
-    "rarity", "card_text", "image_path"
+    "rarity", "power_text", "image_path"
 ]
 
 def parse_ally_subtype(subtype: str):
@@ -52,7 +52,7 @@ with open(INPUT_PATH, encoding="utf-8") as f:
             "dmg_type":         dmg_type,
             "health":           health,
             "rarity":           raw["rarity"].strip(),
-            "card_text":        "",
+            "power_text":       "",
             "image_path":       "",
         })
 

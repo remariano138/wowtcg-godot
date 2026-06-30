@@ -1,0 +1,241 @@
+id,name,faction,type,subtype,cost,rarity,artist,edition
+1,Boris Brightbeard,Alliance,Hero,Dwarf Priest,,Uncommon,Stuart Immonen,azeroth
+2,Dizdemona,Alliance,Hero,Gnome Warlock,,Uncommon,Gabe from Penny Arcade,azeroth
+3,Elendril,Alliance,Hero,Night Elf Hunter,,Uncommon,Todd McFarlane,azeroth
+4,Graccus,Alliance,Hero,Human Paladin,,Uncommon,Doug Alexander,azeroth
+5,Litori Frostburn,Alliance,Hero,Human Mage,,Uncommon,Rebecca Guay,azeroth
+6,Moonshadow,Alliance,Hero,Night Elf Druid,,Uncommon,RK Post,azeroth
+7,Timmo Shadestep,Alliance,Hero,Gnome Rogue,,Uncommon,Glenn Rane,azeroth
+8,Warrax,Alliance,Hero,Dwarf Warrior,,Uncommon,Dave Dorman,azeroth
+9,Gorebelly,Horde,Hero,Orc Warrior,,Uncommon,Arthur Suydam,azeroth
+10,Grennan Stormspeaker,Horde,Hero,Tauren Shaman,,Uncommon,Samwise,azeroth
+11,Kayleitha,Horde,Hero,Undead Rogue,,Uncommon,Justin Thavirat,azeroth
+12,Omedus the Punisher,Horde,Hero,Undead Priest,,Uncommon,Jeff Miracola,azeroth
+13,Radak Doombringer,Horde,Hero,Orc Warlock,,Uncommon,Greg Staples,azeroth
+14,Sen'zir Beastwalker,Horde,Hero,Troll Hunter,,Uncommon,Dan Brereton,azeroth
+15,Ta'zo,Horde,Hero,Troll Mage,,Uncommon,Ariel Olivetti,azeroth
+16,Thangal,Horde,Hero,Tauren Druid,,Uncommon,Greg Hildebrandt,azeroth
+17,Bash,,Ability,Feral,2,Uncommon,Mauro Cascioli,azeroth
+18,Bear Form,,Ability,Feral,1,Uncommon,James Brady,azeroth
+19,Circle of Life,,Ability,Restoration,8,Rare,John Tyskiewicz,azeroth
+20,Entangling Roots,,Ability,Balance,2,Common,Mauro Cascioli,azeroth
+21,Feral Rage,,Ability,Feral,5,Rare,Cyril Van Der Haegen,azeroth
+22,Healing Touch,,Ability,Restoration,3,Uncommon,Cyril Van Der Haegen,azeroth
+23,Innervate,,Ability,Restoration,4,Rare,Doug Alexander,azeroth
+24,Mark of the Wild,,Ability,Restoration,2,Common,Brad Vancata,azeroth
+25,Maul,,Ability,Feral,2,Uncommon,Jose Pardo,azeroth
+26,Natural Defenses,,Ability,Feral,1,Rare,Jason Engle,azeroth
+27,Natural Selection,,Ability,Restoration,3,Common,Carl Frank,azeroth
+28,Nature's Swiftness,,Ability,Restoration Talent,3,Rare,Cyril Van Der Haegen,azeroth
+29,Predatory Strikes,,Ability,Feral Talent,1,Rare,Doug Alexander,azeroth
+30,Primal Mending,,Ability,Restoration,1,Uncommon,Tom McWeeney,azeroth
+31,Starfire,,Ability,Balance,6,Rare,Dany Orizio,azeroth
+32,Aimed Shot,,Ability,Marksmanship Talent,1+X,Rare,Mauro Cascioli,azeroth
+33,Arcane Shot,,Ability,Marksmanship,2,Common,John Shroades,azeroth
+34,Aspect of the Hawk,,Ability,Beast Mastery,3,Rare,Phroilan Gardner,azeroth
+35,Bestial Wrath,,Ability,Beast Mastery Talent,1,Rare,John Dickerson,azeroth
+36,Bloodclaw,,Ally,Raptor (3/1 Melee),1,Common,Dan Brereton,azeroth
+37,Eagle Eye,,Ability,Beast Mastery,2,Uncommon,Tom McWeeney,azeroth
+38,Fury,,Ally,Cat (5/3 Melee),5,Rare,Todd McFarlane,azeroth
+39,Marked for Death,,Ability,Marksmanship,2,Uncommon,John Dickerson,azeroth
+40,Master of the Hunt,,Ability,Beast Mastery,3,Rare,Brad Williams,azeroth
+41,Multi-Shot,,Ability,Marksmanship,5,Rare,Alex Horley Orlandelli,azeroth
+42,Old Bones,,Ally,Bear (4/4 Melee),4,Uncommon,Marc Fishman,azeroth
+43,Rapid Fire,,Ability,Marksmanship,2,Rare,Alex Horley Orlandelli,azeroth
+44,Ravenous Bite,,Ability,Beast Mastery,2,Common,Marc Fishman,azeroth
+45,Rayder,,Ally,Wolf (2/2 Melee),2,Uncommon,Jason Felix,azeroth
+46,Track Humanoids,,Ability,Survival,2,Uncommon,Mauro Cascioli,azeroth
+47,Arcane Intellect,,Ability,Arcane,2,Uncommon,Dave Berggren,azeroth
+48,Blink,,Ability,Arcane,2,Common,Stabbity,azeroth
+49,Brain Freeze,,Ability,Frost,3,Rare,Rebecca Guay,azeroth
+50,Cold Snap,,Ability,Frost Talent,2+X,Rare,Jason Engle,azeroth
+51,Counterspell,,Ability,Arcane,2,Rare,Mauro Cascioli,azeroth
+52,Fire Blast,,Ability,Fire,1,Common,Dave Berggren,azeroth
+53,Fireball,,Ability,Fire,4,Uncommon,Vance Kovacs,azeroth
+54,Flamestrike,,Ability,Fire,7,Rare,Romain DeSanti,azeroth
+55,Frost Nova,,Ability,Frost,4,Rare,Stabbity,azeroth
+56,Frostbolt,,Ability,Frost,3,Uncommon,Steve Ellis,azeroth
+57,Mana Agate,,Ability,Arcane,2,Uncommon,Khang Le,azeroth
+58,Polymorph,,Ability,Arcane,2,Common,Vance Kovacs,azeroth
+59,Pyroblast,,Ability,Fire Talent,8,Rare,Vance Kovacs,azeroth
+60,Winter's Grasp,,Ability,Frost,3,Uncommon,Boris Vallejo,azeroth
+61,World in Flames,,Ability,Fire,8,Rare,Carl Frank,azeroth
+62,Blessing of Might,,Ability,Retribution Blessing,2,Uncommon,Ladronn,azeroth
+63,Blessing of Protection,,Ability,Protection Blessing,2,Uncommon,Clint Langley,azeroth
+64,Blessing of Wisdom,,Ability,Holy Blessing,5,Rare,Dave Allsop,azeroth
+65,Cleanse,,Ability,Holy,1,Uncommon,Tristan Schane,azeroth
+66,Devotion Aura,,Ability,Protection,5,Rare,Paul Jeacock,azeroth
+67,Divine Shield,,Ability,Holy,3,Rare,Matt Dixon,azeroth
+68,Hammer of Justice,,Ability,Protection,2,Common,Thor Badendyck,azeroth
+69,Holy Light,,Ability,Holy,3,Common,Julie Bell,azeroth
+70,Holy Shield,,Ability,Protection Talent,2,Rare,Ted Park,azeroth
+71,Retribution Aura,,Ability,Retribution,5,Rare,Glenn Rane,azeroth
+72,Sacred Duty,,Ability,Protection,3,Common,Joe Jusko,azeroth
+73,Seal of Light,,Ability,Holy,3,Uncommon,Ted Park,azeroth
+74,Seal of Wisdom,,Ability,Holy,3,Rare,Matt Dixon,azeroth
+75,Touched by Light,,Ability,Holy,1,Uncommon,Cos Koniotis,azeroth
+76,Chastise,,Ability,Holy,2,Uncommon,Steve Ellis,azeroth
+77,Dispel Magic,,Ability,Discipline,1,Uncommon,Rebecca Guay,azeroth
+78,Flash Heal,,Ability,Holy,1,Common,Val Mayerik,azeroth
+79,Heal,,Ability,Holy,2,Uncommon,Dave Allsop,azeroth
+80,Mind Blast,,Ability,Shadow,5,Rare,Jeremy McHugh,azeroth
+81,Mind Control,,Ability,Shadow,2+X,Rare,Michael Sutfin,azeroth
+82,Mind Spike,,Ability,Shadow,2,Common,Boros-Szikszai,azeroth
+83,Power Word: Fortitude,,Ability,Discipline,3,Common,Brad Vancata,azeroth
+84,Prayer of Healing,,Ability,Holy,3,Uncommon,Miguel Coimbra,azeroth
+85,Psychic Scream,,Ability,Shadow,6,Rare,Mauro Cascioli,azeroth
+86,Resurrection,,Ability,Holy,4,Rare,Miguel Coimbra,azeroth
+87,Shadow Word: Pain,,Ability,Shadow,3,Uncommon,Michael Golden,azeroth
+88,Shadowform,,Ability,Shadow Talent,3,Rare,Alex Horley Orlandelli,azeroth
+89,Smite,,Ability,Holy,5,Rare,Clint Langley,azeroth
+90,Spiritual Healing,,Ability,Holy Talent,2,Rare,Dan Scott,azeroth
+91,Backstab,,Ability,Combat Combo,3,Rare,Michael Sutfin,azeroth
+92,Cold Blood,,Ability,Assassination Talent,1,Rare,Ariel Olivetti,azeroth
+93,Coup de Grace,,Ability,Assassination,2,Common,Steve Ellis,azeroth
+94,Crippling Poison,,Ability,Poison,1,Uncommon,Mark Romanowski,azeroth
+95,Deadly Poison,,Ability,Poison,1,Uncommon,Trevor Jacobs,azeroth
+96,Dismantle,,Ability,Combat,2,Uncommon,Ariel Olivetti,azeroth
+97,Eviscerate,,Ability,Assassination Finishing Move,2,Rare,Ariel Olivetti,azeroth
+98,Expose Armor,,Ability,Assassination Finishing Move,2,Rare,Mark Zug,azeroth
+99,Gouge,,Ability,Combat Combo,1,Common,Carl Frank,azeroth
+100,Lobotomize,,Ability,Combat,5,Rare,Glenn Rane,azeroth
+101,Premeditation,,Ability,Subtlety Talent,4,Rare,Justin Thavirat,azeroth
+102,Sinister Strike,,Ability,Combat Combo,2,Common,Frank Cho,azeroth
+103,Stealth,,Ability,Subtlety,1,Uncommon,Dan Andreasen,azeroth
+104,Veil of Night,,Ability,Subtlety,3,Rare,Dave Allsop,azeroth
+105,Waylay,,Ability,Assassination Combo,2,Uncommon,Trevor Jacobs,azeroth
+106,Chain Lightning,,Ability,Elemental,5,Rare,Ariel Olivetti,azeroth
+107,Earthbind Totem,,Ability,Elemental (1 HP),2,Uncommon,Ariel Olivetti,azeroth
+108,Elemental Focus,,Ability,Elemental Talent,2,Rare,Torstein Nordstrand,azeroth
+109,Frost Shock,,Ability,Elemental,2,Common,Phroilan Gardner,azeroth
+110,Ghost Wolf,,Ability,Enhancement,2,Uncommon,Dave Allsop,azeroth
+111,Healing Stream Totem,,Ability,Restoration (1 HP),1,Uncommon,Dave Allsop,azeroth
+112,Healing Wave,,Ability,Restoration,3,Common,James Brady,azeroth
+113,Lightning Bolt,,Ability,Elemental,3,Common,Brad Vancata,azeroth
+114,Purge,,Ability,Elemental,1,Uncommon,Dave Allsop,azeroth
+115,Rockbiter Weapon,,Ability,Enhancement,2,Rare,Clint Langley,azeroth
+116,Searing Totem,,Ability,Elemental (1 HP),2,Uncommon,Durwin Talon,azeroth
+117,Totemic Call,,Ability,Elemental,4,Rare,Peter Lee,azeroth
+118,Windfury Totem,,Ability,Enhancement,4,Rare,Dave Allsop,azeroth
+119,Windfury Weapon,,Ability,Enhancement,2,Rare,Ariel Olivetti,azeroth
+120,Corruption,,Ability,Affliction,2,Uncommon,Clint Langley,azeroth
+121,Curse of Agony,,Ability,Affliction Curse,5,Rare,Mauro Cascioli,azeroth
+122,Dark Pact,,Ability,Affliction Talent,2,Rare,Jeremy McHugh,azeroth
+123,Fear,,Ability,Affliction,1,Common,Mauro Cascioli,azeroth
+124,Forbidden Knowledge,,Ability,Demonology,8,Rare,Greg Staples,azeroth
+125,Grimdron,,Ally,Imp Demon (0/1 Fire),1,Uncommon,Jason Felix,azeroth
+126,Helwen,,Ally,Succubus Demon (2/2 Shadow),4,Rare,Dave Kendall,azeroth
+127,Infernal,,Ally,Infernal Demon (6/6 Fire),6,Rare,Boros-Szikszai,azeroth
+128,Life Tap,,Ability,Affliction,2,Uncommon,Luca Zontini,azeroth
+129,Rain of Fire,,Ability,Destruction,4,Rare,Mark Poole,azeroth
+130,Sarmoth,,Ally,Voidwalker Demon (1/5 Shadow),3,Common,Ken Steacy,azeroth
+131,Sever the Cord,,Ability,Demonology,2,Common,Joe Jusko,azeroth
+132,Shadow Bolt,,Ability,Destruction,3,Uncommon,Mauro Cascioli,azeroth
+133,Soul Link,,Ability,Demonology Talent,4,Rare,Jeremy McHugh,azeroth
+134,Steal Essence,,Ability,Affliction,2,Uncommon,Dave Kendall,azeroth
+135,Battle Shout,,Ability,Fury Shout,3,Common,Mauro Cascioli,azeroth
+136,Berserker Stance,,Ability,Fury,3,Rare,James Zhang,azeroth
+137,Charge,,Ability,Arms,1,Uncommon,Alex Horley Orlandelli,azeroth
+138,Cleave,,Ability,Arms,4,Rare,Phroilan Gardner,azeroth
+139,Defensive Stance,,Ability,Protection,3,Rare,Dave Kendall,azeroth
+140,Demoralizing Shout,,Ability,Fury Shout,3,Uncommon,Tristan Elwell,azeroth
+141,Execute,,Ability,Fury,1,Common,Dany Orizio,azeroth
+142,Heroic Strike,,Ability,Arms,1,Uncommon,John Tyskiewicz,azeroth
+143,Last Stand,,Ability,Protection Talent,1,Rare,John Tyskiewicz,azeroth
+144,Mocking Blow,,Ability,Arms,1,Rare,Dave Kendall,azeroth
+145,Mortal Strike,,Ability,Arms Talent,2,Rare,Alex Garner,azeroth
+146,Rend,,Ability,Arms,1,Common,Joe Jusko,azeroth
+147,Shield Bash,,Ability,Fury,3,Rare,Jeremy Mohler,azeroth
+148,Stalwart Protector,,Ability,Protection,1,Uncommon,Ralph Horsley,azeroth
+149,Sunder Armor,,Ability,Protection,1,Uncommon,Samwise,azeroth
+150,Face Smash,Alliance,Ability,,4,Common,Dany Orizio,azeroth
+151,From the Shadows,Alliance,Ability,,5,Rare,Clint Langley,azeroth
+152,Sneak,Alliance,Ability,,1,Common,Glenn Rane,azeroth
+153,Into the Fray,Horde,Ability,,1,Common,Luca Zontini,azeroth
+154,Lust for Battle,Horde,Ability,,4,Rare,Brandon Kitkouski,azeroth
+155,Skewer,Horde,Ability,,4,Common,Tyler Walpole,azeroth
+156,Burn Away,,Ability,,3,Common,Larry Elmore,azeroth
+157,Call the Spirit,,Ability,,2,Common,Jim Nelson,azeroth
+158,Caught Off-Guard,,Ability,,1,Common,Mauro Cascioli,azeroth
+159,Exhaustion,,Ability,,2,Common,Drew Tucker,azeroth
+160,Fall Back,,Ability,,2,Common,Mauro Cascioli,azeroth
+161,Guard Duty,,Ability,,2,Common,Ariel Olivetti,azeroth
+162,Interest You in a Pint?,,Ability,,3,Common,Darrell Sweet,azeroth
+163,Lie in Wait,,Ability,,1,Common,Tristan Elwell,azeroth
+164,On Your Feet,,Ability,,3,Common,Arthur Suydam,azeroth
+165,Quick Strike,,Ability,,3,Common,Durwin Talon,azeroth
+166,Rally the Troops,,Ability,,3,Common,Ladronn,azeroth
+167,Rise to the Challenge,,Ability,,15,Epic,Phill Gonzales,azeroth
+168,Shattering Blow,,Ability,,4,Common,Miguel Coimbra,azeroth
+169,Spirit Healer,,Ability,,8,Epic,Mark Gibbons,azeroth
+170,Sudden Reversal,,Ability,,1,Common,Alex Garner,azeroth
+171,Vanquish,,Ability,,4,Common,Jeremy Mohler,azeroth
+172,Withdraw,,Ability,,3,Common,Phil Parks,azeroth
+173,Acolyte Demia,Alliance,Ally,Human Warlock (3/6 Shadow),6,Uncommon,Mark Gibbons,azeroth
+174,Adept Breton,Alliance,Ally,Human Mage (1/1 Arcane),2,Uncommon,Alex Garner,azeroth
+175,Anika Berlyn,Alliance,Ally,Human Paladin (5/6 Melee),6,Common,Julie Bell,azeroth
+176,Apprentice Teep,Alliance,Ally,Gnome Mage (2/1 Frost),1,Common,Miguel Coimbra,azeroth
+177,Augustus Corpsemonger,Alliance,Ally,Human Warlock (3/4 Shadow),5,Rare,Miguel Coimbra,azeroth
+178,Bizzik Sparkcog,Alliance,Ally,Gnome Warlock (2/4 Fire),4,Uncommon,Greg Spalenka,azeroth
+179,Braxiss the Sleeper,Alliance,Ally,Night Elf Druid (6/4 Melee),6,Uncommon,Malcolm Davis,azeroth
+180,Crazy Igvand,Alliance,Ally,Dwarf Warrior (0/6 Melee),2,Common,Dany Orizio,azeroth
+181,Donna Calister,Alliance,Ally,Human Warrior (1/7 Melee),5,Uncommon,Daniel Dos Santos,azeroth
+182,Dorric the Martyr,Alliance,Ally,Dwarf Paladin (1/2 Holy),1,Common,Scott Hampton,azeroth
+183,Freya Lightsworn,Alliance,Ally,Dwarf Priest (2/2 Holy),2,Common,Twee Qim,azeroth
+184,Galahandra Keeper of the Silent Grove,Alliance,Ally,Night Elf Druid (0/1 Nature),2,Common,Miguel Coimbra,azeroth
+185,Galway Steamwhistle,Alliance,Ally,Gnome Warrior (1/1 Melee),1,Uncommon,Francis Tsai,azeroth
+186,Grint Sundershot,Alliance,Ally,Dwarf Hunter (3/2 Ranged),3,Common,Clint Langley,azeroth
+187,Hannah the Unstoppable,Alliance,Ally,Human Rogue (3/3 Melee),5,Common,Alex Garner,azeroth
+188,Ironforge Guards,Alliance,Ally,Dwarf Warrior (1/1 Melee),2,Common,Nelson DeCastro,azeroth
+189,Kailis Truearc,Alliance,Ally,Night Elf Hunter (1/1 Ranged),1,Rare,Doug Alexander,azeroth
+190,Kena Shadowbrand,Alliance,Ally,Gnome Warlock (1/3 Shadow),3,Common,Clint Langley,azeroth
+191,King Magni Bronzebeard,Alliance,Ally,Dwarf Warrior (6/8 Melee),9,Epic,Andrew Robinson,azeroth
+192,Kor Cindervein,Alliance,Ally,Dwarf Paladin (3/3 Melee),3,Common,Daren Bader,azeroth
+193,Kryton Barleybeard,Alliance,Ally,Dwarf Priest (2/1 Holy),1,Uncommon,Darrell Sweet,azeroth
+194,Lady Courtney Noel,Alliance,Ally,Human Priest (1/4 Holy),3,Common,Malcolm Davis,azeroth
+195,Lady Jaina Proudmoore,Alliance,Ally,Human Mage (7/4 Frost),8,Epic,Carl Frank,azeroth
+196,Lafiel,Alliance,Ally,Night Elf Priest (4/5 Shadow),6,Common,Francis Tsai,azeroth
+197,Latro Abiectus,Alliance,Ally,Night Elf Rogue (3/2 Melee),2,Common,Clint Langley,azeroth
+198,Leeroy Jenkins,Alliance,Ally,Human Paladin (6/1 Melee),4,Epic,Gabe from Penny Arcade,azeroth
+199,Lhurg Venomblade,Alliance,Ally,Dwarf Rogue (2/2 Melee),4,Rare,Joe Jusko,azeroth
+200,Liba Wobblebonk,Alliance,Ally,Gnome Mage (3/4 Arcane),5,Common,Malcolm Davis,azeroth
+201,Lord Grayson Shadowbreaker,Alliance,Ally,Human Paladin (4/7 Holy),7,Epic,Nick Percival,azeroth
+202,Lorekeeper Darian,Alliance,Ally,Human Mage (2/6 Arcane),6,Rare,Matt Dixon,azeroth
+203,Lt. Commander Dudefella,Alliance,Ally,Human Mage (1/3 Frost),3,Rare,Gabe from Penny Arcade,azeroth
+204,Maxum Ironbrew,Alliance,Ally,Dwarf Paladin (2/4 Melee),4,Common,Brandon Kitkouski,azeroth
+205,Medoc Spiritwarden,Alliance,Ally,Dwarf Priest (1/5 Holy),5,Uncommon,Eric Browning,azeroth
+206,Melgwy Pingzot,Alliance,Ally,Gnome Mage (1/3 Fire),2,Uncommon,Ron Spears,azeroth
+207,Mezzik Darkspark,Alliance,Ally,Gnome Warlock (1/1 Shadow),1,Uncommon,Chris Appel,azeroth
+208,Milo the Unmerciful,Alliance,Ally,Night Elf Warrior (3/2 Melee),2,Common,Greg Spalenka,azeroth
+209,Moira Darkheart,Alliance,Ally,Night Elf Rogue (3/4 Melee),4,Common,Joe Jusko,azeroth
+210,Nerra Lifeboon,Alliance,Ally,Night Elf Druid (4/4 Melee),5,Common,Malcolm Davis,azeroth
+211,Nightbloom,Alliance,Ally,Night Elf Druid (1/1 Nature),2,Rare,Durwin Talon,azeroth
+212,Parvink,Alliance,Ally,Gnome Warrior (2/2 Melee),3,Common,Samwise,azeroth
+213,Randipan,Alliance,Ally,Gnome Rogue (2/2 Melee),3,Uncommon,Eric Bowman,azeroth
+214,Ryn Dreamstrider,Alliance,Ally,Night Elf Druid (2/2 Nature),4,Common,James Zhang,azeroth
+215,Sentry Gwynn,Alliance,Ally,Night Elf Warrior (3/4 Melee),5,Rare,Adrian Smith,azeroth
+216,Seva Shadowdancer,Alliance,Ally,Night Elf Priest (2/1 Holy),3,Rare,Clint Langley,azeroth
+217,Sha'lin Nightwind,Alliance,Ally,Night Elf Druid (4/1 Melee),3,Common,Ralph Horsley,azeroth
+218,Stylean Silversteel,Alliance,Ally,Human Priest (4/5 Holy),6,Common,Anthony S. Waters,azeroth
+219,Tracker Gallen,Alliance,Ally,Night Elf Hunter (0/2 Ranged),2,Common,Franz Vohwinkel,azeroth
+220,Treesong,Alliance,Ally,Night Elf Druid (4/4 Melee),5,Uncommon,Dave Johnson,azeroth
+221,Tristan Rapidstrike,Alliance,Ally,Night Elf Warrior (3/3 Melee),4,Common,Alex Horley Orlandelli,azeroth
+222,Warden Tonarin,Alliance,Ally,Night Elf Warrior (1/1 Melee),1,Common,Jim Pavelec,azeroth
+223,Wilba,Alliance,Ally,Dwarf Hunter (2/4 Ranged),4,Rare,Greg Spalenka,azeroth
+224,Wyneth Harridan,Alliance,Ally,Human Paladin (2/4 Holy),4,Rare,Gabe from Penny Arcade,azeroth
+225,Arnold Flem,Horde,Ally,Undead Mage (4/2 Fire),4,Uncommon,Tom Baxa,azeroth
+226,Bala Silentblade,Horde,Ally,Orc Rogue (1/4 Melee),3,Common,Clint Langley,azeroth
+227,Barak the Shamed,Horde,Ally,Orc Warrior (5/5 Melee),3,Rare,Clint Langley,azeroth
+228,Benethor Draigo,Horde,Ally,Undead Mage (4/2 Fire),3,Common,Alex Horley Orlandelli,azeroth
+229,Besh'iah,Horde,Ally,Troll Priest (4/4 Shadow),6,Common,Clint Langley,azeroth
+230,Blood Guard Mal'wani,Horde,Ally,Troll Rogue (1/5 Melee),4,Common,Tom Baxa,azeroth
+231,Brigg,Horde,Ally,Orc Warrior (1/2 Melee),1,Common,Milivoj Ceran,azeroth
+232,Confessor Mildred,Horde,Ally,Undead Priest (2/2 Shadow),2,Common,Miguel Coimbra,azeroth
+233,Dark Cleric Jocasta,Horde,Ally,Undead Priest (3/5 Holy),6,Uncommon,Mark Evans,azeroth
+234,Deacon Johanna,Horde,Ally,Undead Priest (2/2 Holy),2,Uncommon,Boros-Szikszai,azeroth
+235,Elder Moorf,Horde,Ally,Tauren Druid (1/1 Nature),1,Uncommon,Mark Gibbons,azeroth
+236,Fa'tafi,Horde,Ally,Troll Warrior (3/6 Melee),6,Common,Trevor Cook,azeroth
+237,Fianna Spellbinder,Horde,Ally,Blood Elf Mage (3/2 Frost),3,Epic,Andrew Robinson,azeroth
+238,Gartok Skullsplitter,Horde,Ally,Orc Warrior (2/1 Melee),1,Common,Arthur Suydam,azeroth
+239,Gellrin of the Gallows,Horde,Ally,Undead Warlock (3/2 Shadow),2,Rare,Chris Appel,azeroth
+240,Guardian Steelhorn,Horde,Ally,,,,, ,azeroth

@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://ckcd6r38hjpc0"
+
+[deps]
+
+files=["res://Tools/raw_import.name.translation", "res://Tools/raw_import.faction.translation", "res://Tools/raw_import.type.translation", "res://Tools/raw_import.subtype.translation", "res://Tools/raw_import.cost.translation", "res://Tools/raw_import.rarity.translation", "res://Tools/raw_import.artist.translation", "res://Tools/raw_import.edition.translation"]
+
+source_file="res://Tools/raw_import.csv"
+dest_files=["res://Tools/raw_import.name.translation", "res://Tools/raw_import.faction.translation", "res://Tools/raw_import.type.translation", "res://Tools/raw_import.subtype.translation", "res://Tools/raw_import.cost.translation", "res://Tools/raw_import.rarity.translation", "res://Tools/raw_import.artist.translation", "res://Tools/raw_import.edition.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

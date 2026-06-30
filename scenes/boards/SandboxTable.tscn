@@ -1,0 +1,594 @@
+[gd_scene format=3 uid="uid://d03c15rr8y5wd"]
+
+[ext_resource type="Script" uid="uid://bbhg3t422dphh" path="res://scenes/boards/SandboxTable.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://byi4du6lmdbdh" path="res://logic/GameManager.gd" id="2_gm"]
+[ext_resource type="Script" uid="uid://6yegnax4oqhn" path="res://logic/CardDatabase.gd" id="3_db"]
+[ext_resource type="PackedScene" uid="uid://gamelog001" path="res://scenes/ui/GameLog.tscn" id="4_log"]
+[ext_resource type="Script" uid="uid://ddga41ogdspry" path="res://logic/DeckManager.gd" id="5_dm"]
+[ext_resource type="PackedScene" uid="uid://endgame001" path="res://scenes/ui/EndGameDialog.tscn" id="6_eg"]
+[ext_resource type="PackedScene" uid="uid://setup001" path="res://scenes/ui/SetupPanel.tscn" id="7_sp"]
+
+[node name="SandboxTable" type="Control" unique_id=241714593]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="Background" type="ColorRect" parent="." unique_id=121981715]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.08, 0.22, 0.08, 1)
+
+[node name="GameManager" type="Node" parent="." unique_id=2107966493]
+script = ExtResource("2_gm")
+
+[node name="CardDatabase" type="Node" parent="GameManager" unique_id=688905738]
+script = ExtResource("3_db")
+
+[node name="DeckManager" type="Node" parent="GameManager" unique_id=2138310433]
+script = ExtResource("5_dm")
+
+[node name="CameraContainer" type="Control" parent="." unique_id=1293958841]
+anchors_preset = 0
+
+[node name="Board" type="VBoxContainer" parent="CameraContainer" unique_id=1910348437]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+
+[node name="OpponentHand" type="Control" parent="CameraContainer/Board" unique_id=970213747]
+custom_minimum_size = Vector2(0, 170)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/OpponentHand" unique_id=601200709]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.04, 0.04, 0.1, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/OpponentHand" unique_id=1493511199]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 160.0
+offset_bottom = 22.0
+text = "Opponent Hand"
+
+[node name="OpponentHandContainer" type="HBoxContainer" parent="CameraContainer/Board/OpponentHand" unique_id=1515419473]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="OpponentArea" type="HBoxContainer" parent="CameraContainer/Board" unique_id=203095072]
+custom_minimum_size = Vector2(0, 390)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="OpponentRightColumn" type="Control" parent="CameraContainer/Board/OpponentArea" unique_id=1234624626]
+custom_minimum_size = Vector2(180, 0)
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="OpponentDeckSlot" type="ColorRect" parent="CameraContainer/Board/OpponentArea/OpponentRightColumn" unique_id=724307619]
+layout_mode = 0
+color = Color(0.05, 0.05, 0.05, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/OpponentArea/OpponentRightColumn/OpponentDeckSlot" unique_id=2058949987]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 11
+text = "Deck"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="OpponentGraveyardSlot" type="ColorRect" parent="CameraContainer/Board/OpponentArea/OpponentRightColumn" unique_id=341556228]
+layout_mode = 0
+color = Color(0.05, 0.05, 0.05, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/OpponentArea/OpponentRightColumn/OpponentGraveyardSlot" unique_id=1260426723]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 11
+text = "Graveyard"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="OpponentHeroSlot" type="ColorRect" parent="CameraContainer/Board/OpponentArea/OpponentRightColumn" unique_id=1898904472]
+layout_mode = 0
+color = Color(0, 0, 0, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/OpponentArea/OpponentRightColumn/OpponentHeroSlot" unique_id=112685123]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 11
+text = "Opponent Hero"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="OpponentZones" type="VBoxContainer" parent="CameraContainer/Board/OpponentArea" unique_id=1068935781]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="OpponentResourceRow" type="Control" parent="CameraContainer/Board/OpponentArea/OpponentZones" unique_id=1695105758]
+custom_minimum_size = Vector2(0, 130)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentResourceRow" unique_id=1585284498]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.03, 0.03, 0.1, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentResourceRow" unique_id=1133122424]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 180.0
+offset_bottom = 22.0
+text = "Opponent Resources"
+
+[node name="Cards" type="HBoxContainer" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentResourceRow" unique_id=40572767]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="OpponentHeroEquipRow" type="Control" parent="CameraContainer/Board/OpponentArea/OpponentZones" unique_id=436182524]
+custom_minimum_size = Vector2(0, 130)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentHeroEquipRow" unique_id=168334061]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.04, 0.04, 0.12, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentHeroEquipRow" unique_id=270608910]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 220.0
+offset_bottom = 22.0
+text = "Opponent Hero Equipment"
+
+[node name="Cards" type="HBoxContainer" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentHeroEquipRow" unique_id=57408445]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="OpponentAllyRow" type="Control" parent="CameraContainer/Board/OpponentArea/OpponentZones" unique_id=2051398699]
+custom_minimum_size = Vector2(0, 130)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentAllyRow" unique_id=359583528]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.05, 0.05, 0.14, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentAllyRow" unique_id=1527719944]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 180.0
+offset_bottom = 22.0
+text = "Opponent Ally Zone"
+
+[node name="Cards" type="HBoxContainer" parent="CameraContainer/Board/OpponentArea/OpponentZones/OpponentAllyRow" unique_id=1797735542]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="ChainArea" type="ColorRect" parent="CameraContainer/Board" unique_id=1666606687]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 2
+color = Color(0.18, 0.18, 0.18, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/ChainArea" unique_id=934161332]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="PlayerArea" type="HBoxContainer" parent="CameraContainer/Board" unique_id=1851778875]
+custom_minimum_size = Vector2(0, 390)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="PlayZones" type="VBoxContainer" parent="CameraContainer/Board/PlayerArea" unique_id=1035919927]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="AllyRow" type="Control" parent="CameraContainer/Board/PlayerArea/PlayZones" unique_id=1930331689]
+custom_minimum_size = Vector2(0, 130)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/PlayerArea/PlayZones/AllyRow" unique_id=1761573070]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.05, 0.18, 0.05, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/PlayerArea/PlayZones/AllyRow" unique_id=464647628]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 120.0
+offset_bottom = 22.0
+text = "Ally Zone"
+
+[node name="Cards" type="HBoxContainer" parent="CameraContainer/Board/PlayerArea/PlayZones/AllyRow" unique_id=1089108369]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="HeroEquipRow" type="Control" parent="CameraContainer/Board/PlayerArea/PlayZones" unique_id=593835359]
+custom_minimum_size = Vector2(0, 130)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/PlayerArea/PlayZones/HeroEquipRow" unique_id=1764004868]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.04, 0.15, 0.04, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/PlayerArea/PlayZones/HeroEquipRow" unique_id=467451289]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 160.0
+offset_bottom = 22.0
+text = "Hero Equipment"
+
+[node name="Cards" type="HBoxContainer" parent="CameraContainer/Board/PlayerArea/PlayZones/HeroEquipRow" unique_id=1676978088]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="ResourceRow" type="Control" parent="CameraContainer/Board/PlayerArea/PlayZones" unique_id=2141248622]
+custom_minimum_size = Vector2(0, 130)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/PlayerArea/PlayZones/ResourceRow" unique_id=1844010389]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.03, 0.12, 0.03, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/PlayerArea/PlayZones/ResourceRow" unique_id=1390401899]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 120.0
+offset_bottom = 22.0
+text = "Resources"
+
+[node name="Cards" type="HBoxContainer" parent="CameraContainer/Board/PlayerArea/PlayZones/ResourceRow" unique_id=631225797]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="RightColumn" type="Control" parent="CameraContainer/Board/PlayerArea" unique_id=875824901]
+custom_minimum_size = Vector2(180, 0)
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="HeroSlot" type="ColorRect" parent="CameraContainer/Board/PlayerArea/RightColumn" unique_id=758149161]
+layout_mode = 0
+color = Color(0, 0, 0, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/PlayerArea/RightColumn/HeroSlot" unique_id=731144501]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 11
+text = "Hero"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="DeckSlot" type="ColorRect" parent="CameraContainer/Board/PlayerArea/RightColumn" unique_id=1473010212]
+layout_mode = 0
+color = Color(0.05, 0.05, 0.05, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/PlayerArea/RightColumn/DeckSlot" unique_id=1158855373]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 11
+text = "Deck"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="GraveyardSlot" type="ColorRect" parent="CameraContainer/Board/PlayerArea/RightColumn" unique_id=539838727]
+layout_mode = 0
+color = Color(0.05, 0.05, 0.05, 1)
+
+[node name="Label" type="Label" parent="CameraContainer/Board/PlayerArea/RightColumn/GraveyardSlot" unique_id=1513070199]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 11
+text = "Graveyard"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="HandArea" type="Control" parent="CameraContainer/Board" unique_id=73393701]
+custom_minimum_size = Vector2(0, 170)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BG" type="ColorRect" parent="CameraContainer/Board/HandArea" unique_id=404519936]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.06, 0.16, 0.06, 1)
+
+[node name="ZoneLabel" type="Label" parent="CameraContainer/Board/HandArea" unique_id=374686601]
+layout_mode = 1
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 80.0
+offset_bottom = 22.0
+text = "Hand"
+
+[node name="HandContainer" type="HBoxContainer" parent="CameraContainer/Board/HandArea" unique_id=1284942597]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+alignment = 1
+
+[node name="GameLog" parent="." unique_id=1097323491 instance=ExtResource("4_log")]
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_right = 0.0
+offset_top = -290.0
+offset_right = 390.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="SetupPanel" parent="." unique_id=2077309205 instance=ExtResource("7_sp")]
+z_index = 150
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="EndGameDialog" parent="." unique_id=984212667 instance=ExtResource("6_eg")]
+z_index = 200
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MulliganPanelP1" type="Panel" parent="." unique_id=169910346]
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -220.0
+offset_top = -290.0
+offset_bottom = -105.0
+
+[node name="VBox" type="VBoxContainer" parent="MulliganPanelP1" unique_id=509328799]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 6
+
+[node name="OrderLabel" type="Label" parent="MulliganPanelP1/VBox" unique_id=256237421]
+layout_mode = 2
+text = "You go First"
+horizontal_alignment = 1
+
+[node name="MulliganBtn" type="Button" parent="MulliganPanelP1/VBox" unique_id=1343791576]
+layout_mode = 2
+text = "Mulligan"
+
+[node name="ReadyBtn" type="Button" parent="MulliganPanelP1/VBox" unique_id=612383834]
+layout_mode = 2
+text = "Ready"
+
+[node name="MulliganPanelP2" type="Panel" parent="." unique_id=1258880463]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -220.0
+offset_top = 15.0
+offset_bottom = 185.0
+
+[node name="VBox" type="VBoxContainer" parent="MulliganPanelP2" unique_id=1709298796]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 6
+
+[node name="OrderLabel" type="Label" parent="MulliganPanelP2/VBox" unique_id=593159586]
+layout_mode = 2
+text = "You go Second"
+horizontal_alignment = 1
+
+[node name="MulliganBtn" type="Button" parent="MulliganPanelP2/VBox" unique_id=1606100144]
+layout_mode = 2
+text = "Mulligan"
+
+[node name="ReadyBtn" type="Button" parent="MulliganPanelP2/VBox" unique_id=740143843]
+layout_mode = 2
+text = "Ready"
+
+[node name="TurnPanel" type="Panel" parent="." unique_id=56917309]
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -220.0
+offset_top = -90.0
+
+[node name="TurnLabel" type="Label" parent="TurnPanel" unique_id=758945637]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 212.0
+offset_bottom = 36.0
+theme_override_font_sizes/font_size = 14
+text = "Beginning"
+horizontal_alignment = 1
+
+[node name="EndTurnButton" type="Button" parent="TurnPanel" unique_id=2123443547]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 44.0
+offset_right = 212.0
+offset_bottom = 80.0
+text = "Start Game"
+
+[node name="CardInspector" type="TextureRect" parent="." unique_id=1943468274]
+visible = false
+z_index = 100
+custom_minimum_size = Vector2(400, 560)
+layout_mode = 0
+offset_right = 400.0
+offset_bottom = 560.0
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5

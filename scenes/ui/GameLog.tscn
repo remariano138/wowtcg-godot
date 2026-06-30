@@ -1,0 +1,45 @@
+[gd_scene format=3 uid="uid://gamelog001"]
+
+[ext_resource type="Script" path="res://scenes/ui/GameLog.gd" id="1_log"]
+
+[node name="GameLog" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_log")
+
+[node name="Panel" type="Panel" parent="."]
+layout_mode = 0
+offset_right = 380.0
+offset_bottom = 240.0
+visible = false
+
+[node name="Header" type="Label" parent="Panel"]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 6.0
+offset_right = 372.0
+offset_bottom = 26.0
+text = "Game Log"
+theme_override_font_sizes/font_size = 13
+
+[node name="Scroll" type="ScrollContainer" parent="Panel"]
+layout_mode = 0
+offset_left = 4.0
+offset_top = 28.0
+offset_right = 376.0
+offset_bottom = 236.0
+
+[node name="Entries" type="VBoxContainer" parent="Panel/Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ToggleButton" type="Button" parent="."]
+layout_mode = 0
+offset_top = 248.0
+offset_right = 380.0
+offset_bottom = 272.0
+text = "Log ▼"
+
+[connection signal="pressed" from="ToggleButton" to="." method="_on_toggle_pressed"]

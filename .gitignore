@@ -1,0 +1,12 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Sliced card art (3.5GB+, regenerate via tools/slice_cards.py) — keep out of git
+assets/cards/
+
+# Claude Code session-local settings
+.claude/settings.local.json
+
+# Godot CSV-as-translation importer artifacts (regenerable, noisy)
+*.translation

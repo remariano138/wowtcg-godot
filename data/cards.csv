@@ -1,0 +1,241 @@
+expansion,collector_number,name,cost,type,alignment,class,subtype,tags,atk,dmg_type,health,rarity,card_text,image_path
+azeroth,001,Boris Brightbeard,,Hero,Alliance,Priest,,Dwarf Priest,,,26,Uncommon,,assets\cards\boris_brightbeard.png
+azeroth,002,Dizdemona,,Hero,Alliance,Warlock,,Gnome Warlock,,,28,Uncommon,,assets\cards\dizdemona.png
+azeroth,003,Elendril,,Hero,Alliance,Hunter,,Night Elf Hunter,,,28,Uncommon,,assets\cards\elendril.png
+azeroth,004,Graccus,,Hero,Alliance,Paladin,,Human Paladin,,,29,Uncommon,,assets\cards\graccus.png
+azeroth,005,Litori Frostburn,,Hero,Alliance,Mage,,Human Mage,,,25,Uncommon,,assets\cards\litori_frostburn.png
+azeroth,006,Moonshadow,,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,assets\cards\moonshadow.png
+azeroth,007,Timmo Shadestep,,Hero,Alliance,Rogue,,Gnome Rogue,,,27,Uncommon,,assets\cards\timmo_shadestep.png
+azeroth,008,Warrax,,Hero,Alliance,Warrior,,Dwarf Warrior,,,30,Uncommon,,assets\cards\warrax.png
+azeroth,009,Gorebelly,,Hero,Horde,Warrior,,Orc Warrior,,,30,Uncommon,,assets\cards\gorebelly.png
+azeroth,010,Grennan Stormspeaker,,Hero,Horde,Shaman,,Tauren Shaman,,,29,Uncommon,,assets\cards\grennan_stormspeaker.png
+azeroth,011,Kayleitha,,Hero,Horde,Rogue,,Undead Rogue,,,27,Uncommon,,assets\cards\kayleitha.png
+azeroth,012,Omedus the Punisher,,Hero,Horde,Priest,,Undead Priest,,,26,Uncommon,,assets\cards\omedus_the_punisher.png
+azeroth,013,Radak Doombringer,,Hero,Horde,Warlock,,Orc Warlock,,,28,Uncommon,,assets\cards\radak_doombringer.png
+azeroth,014,Sen'zir Beastwalker,,Hero,Horde,Hunter,,Troll Hunter,,,28,Uncommon,,assets\cards\senzir_beastwalker.png
+azeroth,015,Ta'zo,,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,assets\cards\tazo.png
+azeroth,016,Thangal,,Hero,Horde,Druid,,Tauren Druid,,,28,Uncommon,,assets\cards\thangal.png
+azeroth,017,Bash,2,Ability,,Druid,,Feral,,,,Uncommon,,assets\cards\bash.png
+azeroth,018,Bear Form,1,Ability,,Druid,,Feral,,,,Uncommon,,assets\cards\bear_form.png
+azeroth,019,Circle of Life,8,Ability,,Druid,,Restoration,,,,Rare,,assets\cards\circle_of_life.png
+azeroth,020,Entangling Roots,2,Ability,,Druid,,Balance,,,,Common,,assets\cards\entangling_roots.png
+azeroth,021,Feral Rage,5,Ability,,Druid,,Feral,,,,Rare,,assets\cards\feral_rage.png
+azeroth,022,Healing Touch,3,Ability,,Druid,,Restoration,,,,Uncommon,,assets\cards\healing_touch.png
+azeroth,023,Innervate,4,Ability,,Druid,,Restoration,,,,Rare,,assets\cards\innervate.png
+azeroth,024,Mark of the Wild,2,Ability,,Druid,,Restoration,,,,Common,,assets\cards\mark_of_the_wild.png
+azeroth,025,Maul,2,Ability,,Druid,,Feral,,,,Uncommon,,assets\cards\maul.png
+azeroth,026,Natural Defenses,1,Ability,,Druid,,Feral,,,,Rare,,assets\cards\natural_defenses.png
+azeroth,027,Natural Selection,3,Ability,,Druid,,Restoration,,,,Common,,assets\cards\natural_selection.png
+azeroth,028,Nature's Swiftness,3,Ability,,Druid,,Restoration Talent,,,,Rare,,assets\cards\natures_swiftness.png
+azeroth,029,Predatory Strikes,1,Ability,,Druid,,Feral Talent,,,,Rare,,assets\cards\predatory_strikes.png
+azeroth,030,Primal Mending,1,Ability,,Druid,,Restoration,,,,Uncommon,,assets\cards\primal_mending.png
+azeroth,031,Starfire,6,Ability,,Druid,,Balance,,,,Rare,,assets\cards\starfire.png
+azeroth,032,Aimed Shot,1+X,Ability,,Hunter,,Marksmanship Talent,,,,Rare,,assets\cards\aimed_shot.png
+azeroth,033,Arcane Shot,2,Ability,,Hunter,,Marksmanship,,,,Common,,assets\cards\arcane_shot.png
+azeroth,034,Aspect of the Hawk,3,Ability,,Hunter,,Beast Mastery,,,,Rare,,assets\cards\aspect_of_the_hawk.png
+azeroth,035,Bestial Wrath,1,Ability,,Hunter,,Beast Mastery Talent,,,,Rare,,assets\cards\bestial_wrath.png
+azeroth,036,Bloodclaw,1,Ally,,Hunter,Pet,Raptor,3,Melee,1,Common,,assets\cards\bloodclaw.png
+azeroth,037,Eagle Eye,2,Ability,,Hunter,,Beast Mastery,,,,Uncommon,,assets\cards\eagle_eye.png
+azeroth,038,Fury,5,Ally,,Hunter,Pet,Cat,5,Melee,3,Rare,,assets\cards\fury.png
+azeroth,039,Marked for Death,2,Ability,,Hunter,,Marksmanship,,,,Uncommon,,assets\cards\marked_for_death.png
+azeroth,040,Master of the Hunt,3,Ability,,Hunter,,Beast Mastery,,,,Rare,,assets\cards\master_of_the_hunt.png
+azeroth,041,Multi-Shot,5,Ability,,Hunter,,Marksmanship,,,,Rare,,assets\cards\multi_shot.png
+azeroth,042,Old Bones,4,Ally,,Hunter,Pet,Bear,4,Melee,4,Uncommon,,assets\cards\old_bones.png
+azeroth,043,Rapid Fire,2,Ability,,Hunter,,Marksmanship,,,,Rare,,assets\cards\rapid_fire.png
+azeroth,044,Ravenous Bite,2,Ability,,Hunter,,Beast Mastery,,,,Common,,assets\cards\ravenous_bite.png
+azeroth,045,Rayder,2,Ally,,Hunter,Pet,Wolf,2,Melee,2,Uncommon,,assets\cards\rayder.png
+azeroth,046,Track Humanoids,2,Ability,,Hunter,,Survival,,,,Uncommon,,assets\cards\track_humanoids.png
+azeroth,047,Arcane Intellect,2,Ability,,Mage,,Arcane,,,,Uncommon,,assets\cards\arcane_intellect.png
+azeroth,048,Blink,2,Ability,,Mage,,Arcane,,,,Common,,assets\cards\blink.png
+azeroth,049,Brain Freeze,3,Ability,,Mage,,Frost,,,,Rare,,assets\cards\brain_freeze.png
+azeroth,050,Cold Snap,2+X,Ability,,Mage,,Frost Talent,,,,Rare,,assets\cards\cold_snap.png
+azeroth,051,Counterspell,2,Ability,,Mage,,Arcane,,,,Rare,,assets\cards\counterspell.png
+azeroth,052,Fire Blast,1,Ability,,Mage,,Fire,,,,Common,,assets\cards\fire_blast.png
+azeroth,053,Fireball,4,Ability,,Mage,,Fire,,,,Uncommon,,assets\cards\fireball.png
+azeroth,054,Flamestrike,7,Ability,,Mage,,Fire,,,,Rare,,assets\cards\flamestrike.png
+azeroth,055,Frost Nova,4,Ability,,Mage,,Frost,,,,Rare,,assets\cards\frost_nova.png
+azeroth,056,Frostbolt,3,Ability,,Mage,,Frost,,,,Uncommon,,assets\cards\frostbolt.png
+azeroth,057,Mana Agate,2,Ability,,Mage,,Arcane,,,,Uncommon,,assets\cards\mana_agate.png
+azeroth,058,Polymorph,2,Ability,,Mage,,Arcane,,,,Common,,assets\cards\polymorph.png
+azeroth,059,Pyroblast,8,Ability,,Mage,,Fire Talent,,,,Rare,,assets\cards\pyroblast.png
+azeroth,060,Winter's Grasp,3,Ability,,Mage,,Frost,,,,Uncommon,,assets\cards\winters_grasp.png
+azeroth,061,World in Flames,8,Ability,,Mage,,Fire,,,,Rare,,assets\cards\world_in_flames.png
+azeroth,062,Blessing of Might,2,Ability,,Paladin,,Retribution Blessing,,,,Uncommon,,assets\cards\blessing_of_might.png
+azeroth,063,Blessing of Protection,2,Ability,,Paladin,,Protection Blessing,,,,Uncommon,,assets\cards\blessing_of_protection.png
+azeroth,064,Blessing of Wisdom,5,Ability,,Paladin,,Holy Blessing,,,,Rare,,assets\cards\blessing_of_wisdom.png
+azeroth,065,Cleanse,1,Ability,,Paladin,,Holy,,,,Uncommon,,assets\cards\cleanse.png
+azeroth,066,Devotion Aura,5,Ability,,Paladin,,Protection,,,,Rare,,assets\cards\devotion_aura.png
+azeroth,067,Divine Shield,3,Ability,,Paladin,,Holy,,,,Rare,,assets\cards\divine_shield.png
+azeroth,068,Hammer of Justice,2,Ability,,Paladin,,Protection,,,,Common,,assets\cards\hammer_of_justice.png
+azeroth,069,Holy Light,3,Ability,,Paladin,,Holy,,,,Common,,assets\cards\holy_light.png
+azeroth,070,Holy Shield,2,Ability,,Paladin,,Protection Talent,,,,Rare,,assets\cards\holy_shield.png
+azeroth,071,Retribution Aura,5,Ability,,Paladin,,Retribution,,,,Rare,,assets\cards\retribution_aura.png
+azeroth,072,Sacred Duty,3,Ability,,Paladin,,Protection,,,,Common,,assets\cards\sacred_duty.png
+azeroth,073,Seal of Light,3,Ability,,Paladin,,Holy,,,,Uncommon,,assets\cards\seal_of_light.png
+azeroth,074,Seal of Wisdom,3,Ability,,Paladin,,Holy,,,,Rare,,assets\cards\seal_of_wisdom.png
+azeroth,075,Touched by Light,1,Ability,,Paladin,,Holy,,,,Uncommon,,assets\cards\touched_by_light.png
+azeroth,076,Chastise,2,Ability,,Priest,,Holy,,,,Uncommon,,assets\cards\chastise.png
+azeroth,077,Dispel Magic,1,Ability,,Priest,,Discipline,,,,Uncommon,,assets\cards\dispel_magic.png
+azeroth,078,Flash Heal,1,Ability,,Priest,,Holy,,,,Common,,assets\cards\flash_heal.png
+azeroth,079,Heal,2,Ability,,Priest,,Holy,,,,Uncommon,,assets\cards\heal.png
+azeroth,080,Mind Blast,5,Ability,,Priest,,Shadow,,,,Rare,,assets\cards\mind_blast.png
+azeroth,081,Mind Control,2+X,Ability,,Priest,,Shadow,,,,Rare,,assets\cards\mind_control.png
+azeroth,082,Mind Spike,2,Ability,,Priest,,Shadow,,,,Common,,assets\cards\mind_spike.png
+azeroth,083,Power Word: Fortitude,3,Ability,,Priest,,Discipline,,,,Common,,assets\cards\power_word_fortitude.png
+azeroth,084,Prayer of Healing,3,Ability,,Priest,,Holy,,,,Uncommon,,assets\cards\prayer_of_healing.png
+azeroth,085,Psychic Scream,6,Ability,,Priest,,Shadow,,,,Rare,,assets\cards\psychic_scream.png
+azeroth,086,Resurrection,4,Ability,,Priest,,Holy,,,,Rare,,assets\cards\resurrection.png
+azeroth,087,Shadow Word: Pain,3,Ability,,Priest,,Shadow,,,,Uncommon,,assets\cards\shadow_word_pain.png
+azeroth,088,Shadowform,3,Ability,,Priest,,Shadow Talent,,,,Rare,,assets\cards\shadowform.png
+azeroth,089,Smite,5,Ability,,Priest,,Holy,,,,Rare,,assets\cards\smite.png
+azeroth,090,Spiritual Healing,2,Ability,,Priest,,Holy Talent,,,,Rare,,assets\cards\spiritual_healing.png
+azeroth,091,Backstab,3,Ability,,Rogue,,Combat Combo,,,,Rare,,assets\cards\backstab.png
+azeroth,092,Cold Blood,1,Ability,,Rogue,,Assassination Talent,,,,Rare,,assets\cards\cold_blood.png
+azeroth,093,Coup de Grace,2,Ability,,Rogue,,Assassination,,,,Common,,assets\cards\coup_de_grace.png
+azeroth,094,Crippling Poison,1,Ability,,Rogue,,Poison,,,,Uncommon,,assets\cards\crippling_poison.png
+azeroth,095,Deadly Poison,1,Ability,,Rogue,,Poison,,,,Uncommon,,assets\cards\deadly_poison.png
+azeroth,096,Dismantle,2,Ability,,Rogue,,Combat,,,,Uncommon,,assets\cards\dismantle.png
+azeroth,097,Eviscerate,2,Ability,,Rogue,,Assassination Finishing Move,,,,Rare,,assets\cards\eviscerate.png
+azeroth,098,Expose Armor,2,Ability,,Rogue,,Assassination Finishing Move,,,,Rare,,assets\cards\expose_armor.png
+azeroth,099,Gouge,1,Ability,,Rogue,,Combat Combo,,,,Common,,assets\cards\gouge.png
+azeroth,100,Lobotomize,5,Ability,,Rogue,,Combat,,,,Rare,,assets\cards\lobotomize.png
+azeroth,101,Premeditation,4,Ability,,Rogue,,Subtlety Talent,,,,Rare,,assets\cards\premeditation.png
+azeroth,102,Sinister Strike,2,Ability,,Rogue,,Combat Combo,,,,Common,,assets\cards\sinister_strike.png
+azeroth,103,Stealth,1,Ability,,Rogue,,Subtlety,,,,Uncommon,,assets\cards\stealth.png
+azeroth,104,Veil of Night,3,Ability,,Rogue,,Subtlety,,,,Rare,,assets\cards\veil_of_night.png
+azeroth,105,Waylay,2,Ability,,Rogue,,Assassination Combo,,,,Uncommon,,assets\cards\waylay.png
+azeroth,106,Chain Lightning,5,Ability,,Shaman,,Elemental,,,,Rare,,assets\cards\chain_lightning.png
+azeroth,107,Earthbind Totem,2,Ability,,Shaman,,Elemental (1 HP),,,,Uncommon,,assets\cards\earthbind_totem.png
+azeroth,108,Elemental Focus,2,Ability,,Shaman,,Elemental Talent,,,,Rare,,assets\cards\elemental_focus.png
+azeroth,109,Frost Shock,2,Ability,,Shaman,,Elemental,,,,Common,,assets\cards\frost_shock.png
+azeroth,110,Ghost Wolf,2,Ability,,Shaman,,Enhancement,,,,Uncommon,,assets\cards\ghost_wolf.png
+azeroth,111,Healing Stream Totem,1,Ability,,Shaman,,Restoration (1 HP),,,,Uncommon,,assets\cards\healing_stream_totem.png
+azeroth,112,Healing Wave,3,Ability,,Shaman,,Restoration,,,,Common,,assets\cards\healing_wave.png
+azeroth,113,Lightning Bolt,3,Ability,,Shaman,,Elemental,,,,Common,,assets\cards\lightning_bolt.png
+azeroth,114,Purge,1,Ability,,Shaman,,Elemental,,,,Uncommon,,assets\cards\purge.png
+azeroth,115,Rockbiter Weapon,2,Ability,,Shaman,,Enhancement,,,,Rare,,assets\cards\rockbiter_weapon.png
+azeroth,116,Searing Totem,2,Ability,,Shaman,,Elemental (1 HP),,,,Uncommon,,assets\cards\searing_totem.png
+azeroth,117,Totemic Call,4,Ability,,Shaman,,Elemental,,,,Rare,,assets\cards\totemic_call.png
+azeroth,118,Windfury Totem,4,Ability,,Shaman,,Enhancement,,,,Rare,,assets\cards\windfury_totem.png
+azeroth,119,Windfury Weapon,2,Ability,,Shaman,,Enhancement,,,,Rare,,assets\cards\windfury_weapon.png
+azeroth,120,Corruption,2,Ability,,Warlock,,Affliction,,,,Uncommon,,assets\cards\corruption.png
+azeroth,121,Curse of Agony,5,Ability,,Warlock,,Affliction Curse,,,,Rare,,assets\cards\curse_of_agony.png
+azeroth,122,Dark Pact,2,Ability,,Warlock,,Affliction Talent,,,,Rare,,assets\cards\dark_pact.png
+azeroth,123,Fear,1,Ability,,Warlock,,Affliction,,,,Common,,assets\cards\fear.png
+azeroth,124,Forbidden Knowledge,8,Ability,,Warlock,,Demonology,,,,Rare,,assets\cards\forbidden_knowledge.png
+azeroth,125,Grimdron,1,Ally,,Warlock,Pet,Imp Demon,0,Fire,1,Uncommon,,assets\cards\grimdron.png
+azeroth,126,Helwen,4,Ally,,Warlock,Pet,Succubus Demon,2,Shadow,2,Rare,,assets\cards\helwen.png
+azeroth,127,Infernal,6,Ally,,Warlock,Pet,Infernal Demon,6,Fire,6,Rare,,assets\cards\infernal.png
+azeroth,128,Life Tap,2,Ability,,Warlock,,Affliction,,,,Uncommon,,assets\cards\life_tap.png
+azeroth,129,Rain of Fire,4,Ability,,Warlock,,Destruction,,,,Rare,,assets\cards\rain_of_fire.png
+azeroth,130,Sarmoth,3,Ally,,Warlock,Pet,Voidwalker Demon,1,Shadow,5,Common,,assets\cards\sarmoth.png
+azeroth,131,Sever the Cord,2,Ability,,Warlock,,Demonology,,,,Common,,assets\cards\sever_the_cord.png
+azeroth,132,Shadow Bolt,3,Ability,,Warlock,,Destruction,,,,Uncommon,,assets\cards\shadow_bolt.png
+azeroth,133,Soul Link,4,Ability,,Warlock,,Demonology Talent,,,,Rare,,assets\cards\soul_link.png
+azeroth,134,Steal Essence,2,Ability,,Warlock,,Affliction,,,,Uncommon,,assets\cards\steal_essence.png
+azeroth,135,Battle Shout,3,Ability,,Warrior,,Fury Shout,,,,Common,,assets\cards\battle_shout.png
+azeroth,136,Berserker Stance,3,Ability,,Warrior,,Fury,,,,Rare,,assets\cards\berserker_stance.png
+azeroth,137,Charge,1,Ability,,Warrior,,Arms,,,,Uncommon,,assets\cards\charge.png
+azeroth,138,Cleave,4,Ability,,Warrior,,Arms,,,,Rare,,assets\cards\cleave.png
+azeroth,139,Defensive Stance,3,Ability,,Warrior,,Protection,,,,Rare,,assets\cards\defensive_stance.png
+azeroth,140,Demoralizing Shout,3,Ability,,Warrior,,Fury Shout,,,,Uncommon,,assets\cards\demoralizing_shout.png
+azeroth,141,Execute,1,Ability,,Warrior,,Fury,,,,Common,,assets\cards\execute.png
+azeroth,142,Heroic Strike,1,Ability,,Warrior,,Arms,,,,Uncommon,,assets\cards\heroic_strike.png
+azeroth,143,Last Stand,1,Ability,,Warrior,,Protection Talent,,,,Rare,,assets\cards\last_stand.png
+azeroth,144,Mocking Blow,1,Ability,,Warrior,,Arms,,,,Rare,,assets\cards\mocking_blow.png
+azeroth,145,Mortal Strike,2,Ability,,Warrior,,Arms Talent,,,,Rare,,assets\cards\mortal_strike.png
+azeroth,146,Rend,1,Ability,,Warrior,,Arms,,,,Common,,assets\cards\rend.png
+azeroth,147,Shield Bash,3,Ability,,Warrior,,Fury,,,,Rare,,assets\cards\shield_bash.png
+azeroth,148,Stalwart Protector,1,Ability,,Warrior,,Protection,,,,Uncommon,,assets\cards\stalwart_protector.png
+azeroth,149,Sunder Armor,1,Ability,,Warrior,,Protection,,,,Uncommon,,assets\cards\sunder_armor.png
+azeroth,150,Face Smash,4,Ability,Alliance,,,,,,,Common,,assets\cards\face_smash.png
+azeroth,151,From the Shadows,5,Ability,Alliance,,,,,,,Rare,,assets\cards\from_the_shadows.png
+azeroth,152,Sneak,1,Ability,Alliance,,,,,,,Common,,assets\cards\sneak.png
+azeroth,153,Into the Fray,1,Ability,Horde,,,,,,,Common,,assets\cards\into_the_fray.png
+azeroth,154,Lust for Battle,4,Ability,Horde,,,,,,,Rare,,assets\cards\lust_for_battle.png
+azeroth,155,Skewer,4,Ability,Horde,,,,,,,Common,,assets\cards\skewer.png
+azeroth,156,Burn Away,3,Ability,,,,,,,,Common,,assets\cards\burn_away.png
+azeroth,157,Call the Spirit,2,Ability,,,,,,,,Common,,assets\cards\call_the_spirit.png
+azeroth,158,Caught Off-Guard,1,Ability,,,,,,,,Common,,assets\cards\caught_off_guard.png
+azeroth,159,Exhaustion,2,Ability,,,,,,,,Common,,assets\cards\exhaustion.png
+azeroth,160,Fall Back,2,Ability,,,,,,,,Common,,assets\cards\fall_back.png
+azeroth,161,Guard Duty,2,Ability,,,,,,,,Common,,assets\cards\guard_duty.png
+azeroth,162,Interest You in a Pint?,3,Ability,,,,,,,,Common,,assets\cards\interest_you_in_a_pint.png
+azeroth,163,Lie in Wait,1,Ability,,,,,,,,Common,,assets\cards\lie_in_wait.png
+azeroth,164,On Your Feet,3,Ability,,,,,,,,Common,,assets\cards\on_your_feet.png
+azeroth,165,Quick Strike,3,Ability,,,,,,,,Common,,assets\cards\quick_strike.png
+azeroth,166,Rally the Troops,3,Ability,,,,,,,,Common,,assets\cards\rally_the_troops.png
+azeroth,167,Rise to the Challenge,15,Ability,,,,,,,,Epic,,assets\cards\rise_to_the_challenge.png
+azeroth,168,Shattering Blow,4,Ability,,,,,,,,Common,,assets\cards\shattering_blow.png
+azeroth,169,Spirit Healer,8,Ability,,,,,,,,Epic,,assets\cards\spirit_healer.png
+azeroth,170,Sudden Reversal,1,Ability,,,,,,,,Common,,assets\cards\sudden_reversal.png
+azeroth,171,Vanquish,4,Ability,,,,,,,,Common,,assets\cards\vanquish.png
+azeroth,172,Withdraw,3,Ability,,,,,,,,Common,,assets\cards\withdraw.png
+azeroth,173,Acolyte Demia,6,Ally,Alliance,Warlock,,Human Warlock,3,Shadow,6,Uncommon,,assets\cards\acolyte_demia.png
+azeroth,174,Adept Breton,2,Ally,Alliance,Mage,,Human Mage,1,Arcane,1,Uncommon,,assets\cards\adept_breton.png
+azeroth,175,Anika Berlyn,6,Ally,Alliance,Paladin,,Human Paladin,5,Melee,6,Common,,assets\cards\anika_berlyn.png
+azeroth,176,Apprentice Teep,1,Ally,Alliance,Mage,,Gnome Mage,2,Frost,1,Common,,assets\cards\apprentice_teep.png
+azeroth,177,Augustus Corpsemonger,5,Ally,Alliance,Warlock,,Human Warlock,3,Shadow,4,Rare,,assets\cards\augustus_corpsemonger.png
+azeroth,178,Bizzik Sparkcog,4,Ally,Alliance,Warlock,,Gnome Warlock,2,Fire,4,Uncommon,,assets\cards\bizzik_sparkcog.png
+azeroth,179,Braxiss the Sleeper,6,Ally,Alliance,Druid,,Night Elf Druid,6,Melee,4,Uncommon,,assets\cards\braxiss_the_sleeper.png
+azeroth,180,Crazy Igvand,2,Ally,Alliance,Warrior,,Dwarf Warrior,0,Melee,6,Common,,assets\cards\crazy_igvand.png
+azeroth,181,Donna Calister,5,Ally,Alliance,Warrior,,Human Warrior,1,Melee,7,Uncommon,,assets\cards\donna_calister.png
+azeroth,182,Dorric the Martyr,1,Ally,Alliance,Paladin,,Dwarf Paladin,1,Holy,2,Common,,assets\cards\dorric_the_martyr.png
+azeroth,183,Freya Lightsworn,2,Ally,Alliance,Priest,,Dwarf Priest,2,Holy,2,Common,,assets\cards\freya_lightsworn.png
+azeroth,184,Galahandra Keeper of the Silent Grove,2,Ally,Alliance,Druid,,Night Elf Druid,0,Nature,1,Common,,assets\cards\galahandra_keeper_of_the_silent_grove.png
+azeroth,185,Galway Steamwhistle,1,Ally,Alliance,Warrior,,Gnome Warrior,1,Melee,1,Uncommon,,assets\cards\galway_steamwhistle.png
+azeroth,186,Grint Sundershot,3,Ally,Alliance,Hunter,,Dwarf Hunter,3,Ranged,2,Common,,assets\cards\grint_sundershot.png
+azeroth,187,Hannah the Unstoppable,5,Ally,Alliance,Rogue,,Human Rogue,3,Melee,3,Common,,assets\cards\hannah_the_unstoppable.png
+azeroth,188,Ironforge Guards,2,Ally,Alliance,Warrior,,Dwarf Warrior,1,Melee,1,Common,,assets\cards\ironforge_guards.png
+azeroth,189,Kailis Truearc,1,Ally,Alliance,Hunter,,Night Elf Hunter,1,Ranged,1,Rare,,assets\cards\kailis_truearc.png
+azeroth,190,Kena Shadowbrand,3,Ally,Alliance,Warlock,,Gnome Warlock,1,Shadow,3,Common,,assets\cards\kena_shadowbrand.png
+azeroth,191,King Magni Bronzebeard,9,Ally,Alliance,Warrior,,Dwarf Warrior,6,Melee,8,Epic,,assets\cards\king_magni_bronzebeard.png
+azeroth,192,Kor Cindervein,3,Ally,Alliance,Paladin,,Dwarf Paladin,3,Melee,3,Common,,assets\cards\kor_cindervein.png
+azeroth,193,Kryton Barleybeard,1,Ally,Alliance,Priest,,Dwarf Priest,2,Holy,1,Uncommon,,assets\cards\kryton_barleybeard.png
+azeroth,194,Lady Courtney Noel,3,Ally,Alliance,Priest,,Human Priest,1,Holy,4,Common,,assets\cards\lady_courtney_noel.png
+azeroth,195,Lady Jaina Proudmoore,8,Ally,Alliance,Mage,,Human Mage,7,Frost,4,Epic,,assets\cards\lady_jaina_proudmoore.png
+azeroth,196,Lafiel,6,Ally,Alliance,Priest,,Night Elf Priest,4,Shadow,5,Common,,assets\cards\lafiel.png
+azeroth,197,Latro Abiectus,2,Ally,Alliance,Rogue,,Night Elf Rogue,3,Melee,2,Common,,assets\cards\latro_abiectus.png
+azeroth,198,Leeroy Jenkins,4,Ally,Alliance,Paladin,,Human Paladin,6,Melee,1,Epic,,assets\cards\leeroy_jenkins.png
+azeroth,199,Lhurg Venomblade,4,Ally,Alliance,Rogue,,Dwarf Rogue,2,Melee,2,Rare,,assets\cards\lhurg_venomblade.png
+azeroth,200,Liba Wobblebonk,5,Ally,Alliance,Mage,,Gnome Mage,3,Arcane,4,Common,,assets\cards\liba_wobblebonk.png
+azeroth,201,Lord Grayson Shadowbreaker,7,Ally,Alliance,Paladin,,Human Paladin,4,Holy,7,Epic,,assets\cards\lord_grayson_shadowbreaker.png
+azeroth,202,Lorekeeper Darian,6,Ally,Alliance,Mage,,Human Mage,2,Arcane,6,Rare,,assets\cards\lorekeeper_darian.png
+azeroth,203,Lt. Commander Dudefella,3,Ally,Alliance,Mage,,Human Mage,1,Frost,3,Rare,,assets\cards\lt_commander_dudefella.png
+azeroth,204,Maxum Ironbrew,4,Ally,Alliance,Paladin,,Dwarf Paladin,2,Melee,4,Common,,assets\cards\maxum_ironbrew.png
+azeroth,205,Medoc Spiritwarden,5,Ally,Alliance,Priest,,Dwarf Priest,1,Holy,5,Uncommon,,assets\cards\medoc_spiritwarden.png
+azeroth,206,Melgwy Pingzot,2,Ally,Alliance,Mage,,Gnome Mage,1,Fire,3,Uncommon,,assets\cards\melgwy_pingzot.png
+azeroth,207,Mezzik Darkspark,1,Ally,Alliance,Warlock,,Gnome Warlock,1,Shadow,1,Uncommon,,assets\cards\mezzik_darkspark.png
+azeroth,208,Milo the Unmerciful,2,Ally,Alliance,Warrior,,Night Elf Warrior,3,Melee,2,Common,,assets\cards\milo_the_unmerciful.png
+azeroth,209,Moira Darkheart,4,Ally,Alliance,Rogue,,Night Elf Rogue,3,Melee,4,Common,,assets\cards\moira_darkheart.png
+azeroth,210,Nerra Lifeboon,5,Ally,Alliance,Druid,,Night Elf Druid,4,Melee,4,Common,,assets\cards\nerra_lifeboom.png
+azeroth,211,Nightbloom,2,Ally,Alliance,Druid,,Night Elf Druid,1,Nature,1,Rare,,assets\cards\nightbloom.png
+azeroth,212,Parvink,3,Ally,Alliance,Warrior,,Gnome Warrior,2,Melee,2,Common,,assets\cards\parvink.png
+azeroth,213,Randipan,3,Ally,Alliance,Rogue,,Gnome Rogue,2,Melee,2,Uncommon,,assets\cards\randipan.png
+azeroth,214,Ryn Dreamstrider,4,Ally,Alliance,Druid,,Night Elf Druid,2,Nature,2,Common,,assets\cards\ryn_dreamstrider.png
+azeroth,215,Sentry Gwynn,5,Ally,Alliance,Warrior,,Night Elf Warrior,3,Melee,4,Rare,,assets\cards\sentry_gwynn.png
+azeroth,216,Seva Shadowdancer,3,Ally,Alliance,Priest,,Night Elf Priest,2,Holy,1,Rare,,assets\cards\seva_shadowdancer.png
+azeroth,217,Sha'lin Nightwind,3,Ally,Alliance,Druid,,Night Elf Druid,4,Melee,1,Common,,assets\cards\shalin_nightwind.png
+azeroth,218,Stylean Silversteel,6,Ally,Alliance,Priest,,Human Priest,4,Holy,5,Common,,assets\cards\stylean_silversteel.png
+azeroth,219,Tracker Gallen,2,Ally,Alliance,Hunter,,Night Elf Hunter,0,Ranged,2,Common,,assets\cards\tracker_gallen.png
+azeroth,220,Treesong,5,Ally,Alliance,Druid,,Night Elf Druid,4,Melee,4,Uncommon,,assets\cards\treesong.png
+azeroth,221,Tristan Rapidstrike,4,Ally,Alliance,Warrior,,Night Elf Warrior,3,Melee,3,Common,,assets\cards\tristan_rapidstrike.png
+azeroth,222,Warden Tonarin,1,Ally,Alliance,Warrior,,Night Elf Warrior,1,Melee,1,Common,,assets\cards\warden_tonarin.png
+azeroth,223,Wilba,4,Ally,Alliance,Hunter,,Dwarf Hunter,2,Ranged,4,Rare,,assets\cards\wilba.png
+azeroth,224,Wyneth Harridan,4,Ally,Alliance,Paladin,,Human Paladin,2,Holy,4,Rare,,assets\cards\wyneth_harridan.png
+azeroth,225,Arnold Flem,4,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Uncommon,,assets\cards\arnold_flem.png
+azeroth,226,Bala Silentblade,3,Ally,Horde,Rogue,,Orc Rogue,1,Melee,4,Common,,assets\cards\bala_silentblade.png
+azeroth,227,Barak the Shamed,3,Ally,Horde,Warrior,,Orc Warrior,5,Melee,5,Rare,,assets\cards\barak_the_shamed.png
+azeroth,228,Benethor Draigo,3,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Common,,assets\cards\benethor_draigo.png
+azeroth,229,Besh'iah,6,Ally,Horde,Priest,,Troll Priest,4,Shadow,4,Common,,assets\cards\beshiah.png
+azeroth,230,Blood Guard Mal'wani,4,Ally,Horde,Rogue,,Troll Rogue,1,Melee,5,Common,,assets\cards\blood_guard_malwani.png
+azeroth,231,Brigg,1,Ally,Horde,Warrior,,Orc Warrior,1,Melee,2,Common,,assets\cards\brigg.png
+azeroth,232,Confessor Mildred,2,Ally,Horde,Priest,,Undead Priest,2,Shadow,2,Common,,assets\cards\confessor_mildred.png
+azeroth,233,Dark Cleric Jocasta,6,Ally,Horde,Priest,,Undead Priest,3,Holy,5,Uncommon,,assets\cards\dark_cleric_jocasta.png
+azeroth,234,Deacon Johanna,2,Ally,Horde,Priest,,Undead Priest,2,Holy,2,Uncommon,,assets\cards\deacon_johanna.png
+azeroth,235,Elder Moorf,1,Ally,Horde,Druid,,Tauren Druid,1,Nature,1,Uncommon,,assets\cards\elder_moorf.png
+azeroth,236,Fa'tafi,6,Ally,Horde,Warrior,,Troll Warrior,3,Melee,6,Common,,assets\cards\fatafi.png
+azeroth,237,Fianna Spellbinder,3,Ally,Horde,Mage,,Blood Elf Mage,3,Frost,2,Epic,,assets\cards\fianna_spellbinder.png
+azeroth,238,Gartok Skullsplitter,1,Ally,Horde,Warrior,,Orc Warrior,2,Melee,1,Common,,assets\cards\gartok_skullsplitter.png
+azeroth,239,Gellrin of the Gallows,2,Ally,Horde,Warlock,,Undead Warlock,3,Shadow,2,Rare,,assets\cards\gellrin_of_the_gallows.png
+azeroth,240,Guardian Steelhorn,,Ally,Horde,Warrior,,Tauren Warrior,3,Melee,3,Common,,assets\cards\guardian_steelhorn.png

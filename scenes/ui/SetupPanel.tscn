@@ -1,0 +1,85 @@
+[gd_scene format=3 uid="uid://setup001"]
+
+[ext_resource type="Script" path="res://scenes/ui/SetupPanel.gd" id="1_sp"]
+
+[node name="SetupPanel" type="Control"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_sp")
+
+[node name="Overlay" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0, 0, 0, 0.75)
+
+[node name="Panel" type="Panel" parent="Overlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -220.0
+offset_top = -140.0
+offset_right = 220.0
+offset_bottom = 140.0
+
+[node name="VBox" type="VBoxContainer" parent="Overlay/Panel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = 16.0
+offset_right = -20.0
+offset_bottom = -16.0
+theme_override_constants/separation = 14
+
+[node name="Title" type="Label" parent="Overlay/Panel/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Game Setup"
+horizontal_alignment = 1
+
+[node name="Separator" type="HSeparator" parent="Overlay/Panel/VBox"]
+layout_mode = 2
+
+[node name="P1Row" type="HBoxContainer" parent="Overlay/Panel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="P1Label" type="Label" parent="Overlay/Panel/VBox/P1Row"]
+layout_mode = 2
+custom_minimum_size = Vector2(100, 0)
+text = "Player 1"
+vertical_alignment = 1
+
+[node name="P1Option" type="OptionButton" parent="Overlay/Panel/VBox/P1Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="P2Row" type="HBoxContainer" parent="Overlay/Panel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="P2Label" type="Label" parent="Overlay/Panel/VBox/P2Row"]
+layout_mode = 2
+custom_minimum_size = Vector2(100, 0)
+text = "Player 2"
+vertical_alignment = 1
+
+[node name="P2Option" type="OptionButton" parent="Overlay/Panel/VBox/P2Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Separator2" type="HSeparator" parent="Overlay/Panel/VBox"]
+layout_mode = 2
+
+[node name="ConfirmBtn" type="Button" parent="Overlay/Panel/VBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 42)
+text = "Start Game"

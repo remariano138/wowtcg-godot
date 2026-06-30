@@ -79,6 +79,16 @@ var _p1_counter_label: Label
 var _p2_counter_slot: ColorRect
 var _p2_counter_label: Label
 
+# Hero HP bars
+const HP_BAR_WIDTH = 28.0
+const HP_BAR_GAP   = 6.0
+var _p1_hp_bg:    ColorRect
+var _p1_hp_fill:  ColorRect
+var _p1_hp_label: Label
+var _p2_hp_bg:    ColorRect
+var _p2_hp_fill:  ColorRect
+var _p2_hp_label: Label
+
 # Context menu
 var context_menu: PopupMenu
 var _context_card: Control = null
@@ -86,6 +96,7 @@ var _deck_menu_owner: String = ""
 var _warn_dialog: AcceptDialog
 var _x_dialog: ConfirmationDialog
 var _x_pending_card: Control = null
+var _game_over: bool = false
 
 # ── Camera ────────────────────────────────────────────────────────────────────
 func _make_counter_slot(parent: Control) -> ColorRect:
@@ -104,6 +115,68 @@ func _make_counter_slot(parent: Control) -> ColorRect:
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	slot.add_child(label)
 	return slot
+
+func _ensure_hero_hp_bar(card_owner: String) -> void:
+	var has_bar = _p1_hp_bg if card_owner == "player_1" else _p2_hp_bg
+	if has_bar:
+		return
+	var parent = right_column if card_owner == "player_1" else opp_right_column
+	var bg = ColorRect.new()
+	bg.layout_mode = 0
+	bg.color = Color(0.5, 0.08, 0.08, 1)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(bg)
+	var fill = ColorRect.new()
+	fill.layout_mode = 0
+	fill.color = Color(0.15, 0.75, 0.15, 1)
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.add_child(fill)
+	var label = Label.new()
+	label.layout_mode = 1
+	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 14)
+	label.add_theme_constant_override("outline_size", 2)
+	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.add_child(label)
+	if card_owner == "player_1":
+		_p1_hp_bg = bg
+		_p1_hp_fill = fill
+		_p1_hp_label = label
+	else:
+		_p2_hp_bg = bg
+		_p2_hp_fill = fill
+		_p2_hp_label = label
+
+func _position_hero_hp_bar(card_owner: String, hero_rect: ColorRect) -> void:
+	_ensure_hero_hp_bar(card_owner)
+	var bg = _p1_hp_bg if card_owner == "player_1" else _p2_hp_bg
+	bg.position = Vector2(hero_rect.position.x + hero_rect.size.x + HP_BAR_GAP, hero_rect.position.y)
+	bg.size     = Vector2(HP_BAR_WIDTH, hero_rect.size.y)
+	_update_hero_hp_bar(card_owner)
+
+func _update_hero_hp_bar(card_owner: String) -> void:
+	var hero = _p1_hero if card_owner == "player_1" else _p2_hero
+	var bg    = _p1_hp_bg    if card_owner == "player_1" else _p2_hp_bg
+	var fill  = _p1_hp_fill  if card_owner == "player_1" else _p2_hp_fill
+	var label = _p1_hp_label if card_owner == "player_1" else _p2_hp_label
+	if not bg:
+		return
+	if not is_instance_valid(hero):
+		fill.size = Vector2.ZERO
+		label.text = ""
+		return
+	var ratio = clamp(float(hero.current_health) / float(max(hero.max_health, 1)), 0.0, 1.0)
+	var fill_h = bg.size.y * ratio
+	fill.size     = Vector2(bg.size.x, fill_h)
+	fill.position = Vector2(0, bg.size.y - fill_h)
+	label.text = str(hero.current_health)
+
+func _on_card_health_changed(card: Control) -> void:
+	if card.card_type == "Hero":
+		_update_hero_hp_bar(card.card_owner)
 
 func _count_ready_resources(row: HBoxContainer) -> int:
 	var count = 0
@@ -322,7 +395,7 @@ func _position_slots() -> void:
 	var res_slot_w  = res_card.x
 	var res_slot_h  = res_card.y
 
-	var col_w = max(hero_slot_w, res_slot_w * 2.0 + 8.0)
+	var col_w = max(hero_slot_w + HP_BAR_GAP + HP_BAR_WIDTH, res_slot_w * 2.0 + 8.0)
 	right_column.custom_minimum_size.x     = col_w
 	opp_right_column.custom_minimum_size.x = col_w
 
@@ -346,6 +419,9 @@ func _position_slots() -> void:
 	opp_grav_slot.size     = Vector2(res_slot_w,       res_slot_h)
 	opp_hero_slot.position = Vector2(0,                opp_hero_row_y + (hero_h - hero_slot_h) / 2.0)
 	opp_hero_slot.size     = Vector2(hero_slot_w,      hero_slot_h)
+
+	_position_hero_hp_bar("player_1", hero_slot)
+	_position_hero_hp_bar("player_2", opp_hero_slot)
 
 	_pile_slots = [grav_slot, deck_slot, opp_grav_slot, opp_deck_slot]
 
@@ -511,10 +587,12 @@ func _place_hero(card_owner: String, hero_id: String = "") -> void:
 	card.card_hovered.connect(_on_card_hovered)
 	card.card_unhovered.connect(_on_card_unhovered)
 	card.card_died.connect(_on_card_died)
+	card.health_changed.connect(_on_card_health_changed)
 	if card_owner == "player_1":
 		_p1_hero = card
 	else:
 		_p2_hero = card
+	_update_hero_hp_bar(card_owner)
 
 func _spawn_card(card_id: String, db: Node, card_owner: String,
 		container: Control, zone_area: Control) -> Control:
@@ -542,6 +620,7 @@ func _on_card_died(card: Control) -> void:
 # ── End game ──────────────────────────────────────────────────────────────────
 
 func _end_game(winner: String) -> void:
+	_game_over = true
 	if winner == "player_1":
 		game_manager.player1_wins += 1
 	else:
@@ -569,6 +648,8 @@ func _clear_all_cards() -> void:
 	if is_instance_valid(_p2_hero): _p2_hero.queue_free()
 	_p1_hero = null
 	_p2_hero = null
+	_update_hero_hp_bar("player_1")
+	_update_hero_hp_bar("player_2")
 	game_manager.hand.clear()
 	game_manager.board.clear()
 
@@ -595,6 +676,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			_exit_targeting_mode()
 
 func _input(event: InputEvent) -> void:
+	# Ctrl+Space ends the current human turn (TTS-style shortcut)
+	if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE and event.ctrl_pressed:
+		if end_turn_btn.visible and not end_turn_btn.disabled:
+			var current_is_ai = game_manager.player1_is_ai if game_manager.turn_state == GameManager.TurnState.P1 \
+				else game_manager.player2_is_ai
+			if not current_is_ai:
+				_on_end_turn_pressed()
+				get_viewport().set_input_as_handled()
+		return
+
 	# Violation mode: number keys select candidate
 	if _violation_cards.size() > 0 and event is InputEventKey and event.pressed:
 		var idx = event.keycode - KEY_1
@@ -646,18 +737,34 @@ func _show_inspector(card: Control) -> void:
 	)
 	card_inspector.visible = true
 
+func _race_of(card: Control) -> String:
+	# tags holds "Race Class" (e.g. "Human Mage") or just "Race" for class-less beasts
+	if card.card_class != "" and card.tags.ends_with(card.card_class):
+		return card.tags.substr(0, card.tags.length() - card.card_class.length()).strip_edges()
+	return card.tags.strip_edges()
+
 func _show_hp_tooltip(card: Control) -> void:
 	if card.card_type not in ["Ally", "Hero"]:
 		return
 	var full_hp = card.current_health >= card.max_health
 	var hp_color = "white" if full_hp else "#ff3333"
-	_hp_label.text = "[center][color=%s]%d[/color] / %d[/center]" % [hp_color, card.current_health, card.max_health]
+
+	var keywords: Array = []
+	var race = _race_of(card)
+	if race != "":
+		keywords.append(race)
+	if card.card_class != "":
+		keywords.append(card.card_class)
+	var keywords_text = ", ".join(keywords) if not keywords.is_empty() else "-"
+
+	_hp_label.text = "[center]Atk: %d\nHP: [color=%s]%d[/color] / %d\n%s[/center]" % \
+		[card.atk, hp_color, card.current_health, card.max_health, keywords_text]
 	var mouse = get_global_mouse_position()
-	_hp_tooltip.size = Vector2(90, 36)
+	_hp_tooltip.size = Vector2(220, 90)
 	var vp = get_viewport_rect().size
 	_hp_tooltip.position = Vector2(
-		clamp(mouse.x - 45, 0, vp.x - 90),
-		clamp(mouse.y - 48, 0, vp.y - 36))
+		clamp(mouse.x - 110, 0, vp.x - 220),
+		clamp(mouse.y - 100, 0, vp.y - 90))
 	_hp_tooltip.visible = true
 
 func _on_card_hovered(card: Control) -> void:
@@ -679,6 +786,14 @@ func _on_card_unhovered() -> void:
 func move_card(card: Control, target: Control) -> void:
 	var is_hand = target in [hand_container, opp_hand_container]
 	var is_pile = target in _pile_slots
+	var is_graveyard = target in [grav_slot, opp_grav_slot]
+
+	# Allies reset to their printed HP when leaving play to hand/graveyard (clears any
+	# in-play max_health buffs/debuffs too). Does NOT apply to a future "removed from
+	# game" zone, where allies should keep their current HP — add that zone to a
+	# separate check, not to this one, if/when it's implemented.
+	if card.card_type == "Ally" and (is_hand or is_graveyard):
+		card.reset_to_printed_hp()
 
 	game_manager.hand.erase(card)
 	game_manager.board.erase(card)
@@ -824,7 +939,7 @@ func _on_context_menu_id_pressed(id: int) -> void:
 		MenuAction.RANDOMIZE_HERO:
 			_randomize_deck_for_player(_context_card.card_owner)
 		MenuAction.RESET_HERO_HEALTH:
-			_context_card.current_health = _context_card.max_health
+			_context_card.reset_to_printed_hp()
 		MenuAction.SEND_GRAVEYARD:
 			_context_card.ready_card()
 			move_card(_context_card, _grav_for(o))
@@ -906,6 +1021,7 @@ func _on_setup_confirmed(p1_is_ai: bool, p2_is_ai: bool) -> void:
 	_init_game()
 
 func _init_game() -> void:
+	_game_over = false
 	_clear_all_cards()
 	_randomize_deck_for_player("player_1")
 	_randomize_deck_for_player("player_2")
@@ -951,6 +1067,8 @@ func _randomize_first_player() -> void:
 		"You go Second" if p1_goes_first else "You go First"
 
 func _start_turn(player: String) -> void:
+	if _game_over:
+		return
 	# Start Phase 1: ready all of this player's in-play cards + clear summoning sickness
 	for card in game_manager.board:
 		if card.card_owner == player:

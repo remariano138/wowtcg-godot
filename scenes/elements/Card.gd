@@ -5,6 +5,7 @@ signal card_right_clicked(card: Control)
 signal card_hovered(card: Control)
 signal card_unhovered
 signal card_died(card: Control)
+signal health_changed(card: Control)
 
 var CARD_BACK: Texture2D = null
 
@@ -22,6 +23,7 @@ var chosen_x: int = 0    # value chosen by player at play time
 var atk: int = 0
 var current_health: int = 0
 var max_health: int = 0
+var printed_health: int = 0  # health as printed on the card; effects may change max_health but not this
 var card_type: String = ""
 var alignment: String = ""
 var tags: String = ""
@@ -49,6 +51,7 @@ func setup(p_card_id: String, database: Node) -> void:
 		cost = int(cost_str) if cost_str != "" else -1
 	atk = int(data["atk"]) if data.get("atk", "") != "" else 0
 	max_health = int(data["health"]) if data.get("health", "") != "" else 0
+	printed_health = max_health
 	current_health = max_health
 	card_type = data.get("type", "")
 	alignment = data.get("alignment", "")
@@ -95,10 +98,15 @@ func set_face_down(value: bool) -> void:
 			cost_label.visible = true
 
 func take_damage(amount: int) -> void:
-	current_health -= amount
-	if current_health <= 0:
-		current_health = 0
+	current_health = max(current_health - amount, 0)
+	health_changed.emit(self)
+	if current_health == 0:
 		card_died.emit(self)
+
+func reset_to_printed_hp() -> void:
+	max_health = printed_health
+	current_health = printed_health
+	health_changed.emit(self)
 
 func set_just_summoned(value: bool) -> void:
 	just_summoned = value

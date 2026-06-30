@@ -28,7 +28,9 @@ func add_entry(text: String, category: String = "default") -> void:
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	entries.add_child(lbl)
 	while entries.get_child_count() > MAX_ENTRIES:
-		entries.get_child(0).queue_free()
+		var oldest = entries.get_child(0)
+		entries.remove_child(oldest)
+		oldest.queue_free()
 	await get_tree().process_frame
 	scroll.scroll_vertical = int(scroll.get_v_scroll_bar().max_value)
 

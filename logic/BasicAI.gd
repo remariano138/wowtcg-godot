@@ -11,6 +11,7 @@ func run_turn(player: String) -> void:
 
 	# ── 1. Place one random hand card as a face-down resource ────────────────
 	await tree.create_timer(ACTION_DELAY).timeout
+	if sandbox._game_over: return
 	var hand = sandbox.game_manager.hand.filter(func(c): return c.card_owner == player)
 	if not hand.is_empty():
 		hand.shuffle()
@@ -19,6 +20,7 @@ func run_turn(player: String) -> void:
 		var res_row = sandbox.resource_row if player == "player_1" else sandbox.opp_resource_row
 		sandbox.move_card(res_card, res_row)
 		await tree.create_timer(ACTION_DELAY).timeout
+		if sandbox._game_over: return
 
 	# ── 2. Play most expensive affordable ally ────────────────────────────────
 	var played = true
@@ -34,6 +36,7 @@ func run_turn(player: String) -> void:
 		for card in hand:
 			if card.cost >= 0 and card.cost <= available:
 				await tree.create_timer(ACTION_DELAY).timeout
+				if sandbox._game_over: return
 				sandbox._play_card(card)
 				played = true
 				break  # re-evaluate hand after each play
@@ -60,9 +63,12 @@ func run_turn(player: String) -> void:
 		var attacker = ready_allies[0]
 		var defender = targets[0]
 		await tree.create_timer(ACTION_DELAY).timeout
+		if sandbox._game_over: return
 		await sandbox._resolve_combat(attacker, defender)
+		if sandbox._game_over: return
 		attacked = true
 
 	# ── 4. End turn ────────────────────────────────────────────────────────────
 	await tree.create_timer(ACTION_DELAY).timeout
+	if sandbox._game_over: return
 	sandbox._on_end_turn_pressed()

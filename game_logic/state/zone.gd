@@ -41,6 +41,9 @@ static func create_standard_zones() -> Dictionary:
 			var zid: String = pid + "_" + ztype
 			zones[zid] = Zone.make(zid, ztype, pid)
 	zones["attached"] = Zone.make("attached", "attached", "shared")
+	# Rule 415.6a / 415.9: chain is a shared zone where cards sit while proposed.
+	# Rule 409.1: playing a card moves it from its zone into the chain.
+	zones["chain"]    = Zone.make("chain",    "chain",    "shared")
 	return zones
 
 

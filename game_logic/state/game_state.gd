@@ -193,7 +193,7 @@ func to_dict() -> Dictionary:
 		"turn_player":       turn_player,
 		"phase":             phase,
 		"priority_player":   priority_player,
-		"pending_actions":   [],   # PendingAction serialization added in Phase 4
+		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
 
@@ -210,4 +210,13 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.phase              = d.get("phase", "setup")
 	gs.priority_player    = d.get("priority_player", "")
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
+	for a in d.get("pending_actions", []):
+		gs.pending_actions.append(PendingAction.from_dict(a))
 	return gs
+
+
+func _serialize_pending_actions() -> Array:
+	var result: Array = []
+	for a in pending_actions:
+		result.append((a as PendingAction).to_dict())
+	return result

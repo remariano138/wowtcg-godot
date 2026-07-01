@@ -13,6 +13,7 @@ var cost_base: int = 0         # fixed part of cost (e.g. 1 in "1+X", 0 in pure 
 var printed_atk: int = 0
 var printed_health: int = 0
 var card_type: String = ""     # "Ally", "Hero", "Ability", "Equipment", "Quest", etc.
+var is_instant: bool = false   # true when type line begins with "Instant"
 var alignment: String = ""     # "Alliance", "Horde", or "" for neutral
 var tags: String = ""
 var dmg_type: String = ""      # "Melee", "Ranged", "Frost", "Fire", etc.
@@ -29,7 +30,13 @@ static func from_csv_row(id: String, row: Dictionary) -> CardDef:
 	var d := CardDef.new()
 	d.card_def_id = id
 	d.card_name   = row.get("name", "")
-	d.card_type   = row.get("type", "")
+	var raw_type: String = row.get("type", "")
+	if raw_type.begins_with("Instant "):
+		d.is_instant = true
+		d.card_type  = raw_type.trim_prefix("Instant ").strip_edges()
+	else:
+		d.is_instant = false
+		d.card_type  = raw_type
 	d.alignment   = row.get("alignment", "")
 	d.tags        = row.get("tags", "")
 	d.dmg_type    = row.get("dmg_type", "")

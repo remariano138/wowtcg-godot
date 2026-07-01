@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://c2ek43r15dpld"]
+
+[ext_resource type="Script" uid="uid://bsuwwe0qtua2" path="res://game_logic/tests/test_stack.gd" id="1_jayfp"]
+
+[node name="Node2D" type="Node2D" unique_id=2103905537]
+script = ExtResource("1_jayfp")

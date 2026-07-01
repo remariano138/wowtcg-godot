@@ -1,6 +1,6 @@
 extends Node2D
 
-# Phase 5 — Human input path wired to StackResolver.
+# Phase 5+6 — Human input + FullRandomAI wired to StackResolver.
 #
 # HOW TO RUN:
 #   Scene > New Scene > Node2D root > attach this script > Play Scene.
@@ -28,6 +28,7 @@ var _state: GameState
 var _db: _MockDB
 var _renderer: BoardRenderer
 var _router: InputRouter
+var _ai: FullRandomAI
 var _ai_timer: Timer
 var _status: Label
 var _priority_label: Label
@@ -50,7 +51,7 @@ func _build_scene() -> void:
 	add_child(bg)
 
 	# Title
-	_add_label("Phase 5 — Human Input via InputRouter + StackResolver",
+	_add_label("Phase 5+6 — Human Input + FullRandomAI via InputRouter + StackResolver",
 		Vector2(20, 14), 20, Color(0.85, 0.85, 0.85))
 	_add_label("Click a green card to play it.  Spacebar = pass priority.",
 		Vector2(20, 40), 13, Color(0.55, 0.55, 0.55))
@@ -162,6 +163,7 @@ func _setup_game_state() -> void:
 	_add_hand_card("p2_inst_a", "ambush",       "p2", Vector2(860, 100))
 
 	_router.setup(_state, _db, "p1")
+	_ai = FullRandomAI.new()
 
 
 func _add_hand_card(inst_id: String, def_id: String, owner: String,
@@ -273,28 +275,18 @@ func _do_ai_turn() -> void:
 	if _state.priority_player != "p2":
 		return
 
-	# If the chain is non-empty and P2 has an instant in hand, play it.
-	if not _state.pending_actions.is_empty():
-		for card in _state.cards_in_zone("p2_hand"):
-			var def: CardDef = _db.get_def(card.card_def_id)
-			if def and def.is_instant:
-				var action := PendingAction.make("play_instant", "p2",
-						{"card_id": card.instance_id})
-				if StackResolver.can_submit(_state, action, _db):
-					var play_events := StackResolver.submit_action(_state, action, _db)
-					EventBus.emit_events(play_events)
-					_update_priority_label()
-					_router.refresh_highlights()
-					_update_pass_btn()
-					_update_cancel_btn()
-					_schedule_next_turn()
-					return
-
-	# Otherwise pass.
-	var events := StackResolver.pass_priority(_state, _db)
+	var action := _ai.decide_action(_state, _db, "p2")
+	var events: Array[GameEvent]
+	if action != null:
+		events = StackResolver.submit_action(_state, action, _db)
+	else:
+		events = StackResolver.pass_priority(_state, _db)
 	EventBus.emit_events(events)
 	_update_priority_label()
 	_router.refresh_highlights()
+	_update_pass_btn()
+	_update_cancel_btn()
+	_schedule_next_turn()
 
 
 # ── Event reactions ────────────────────────────────────────────────────────────

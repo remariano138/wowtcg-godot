@@ -67,15 +67,20 @@ Currently enforced on Duel Table:
   - Elusive: an ally or hero with the Elusive keyword can never be proposed
     as a defender — it's simply not a valid combat target, on either table,
     for anyone.
+  - Resource cost gating: playing a card on Duel Table is blocked (with a
+    popup) if its controller can't afford it. For X-cost cards, you must be
+    able to afford at least the fixed/minimum part of the cost before you're
+    even prompted to choose X.
+  - Turn ownership: you can only play cards from, or propose attackers
+    belonging to, whoever's turn it currently is. Played/attempted actions
+    for the other player are blocked outright (with a popup for the "play a
+    card" case; attacking with the wrong player's ally just silently does
+    nothing, same UX as the existing exhausted/summoning-sick checks).
+    Note this also blocks ALL play/attack actions during the Beginning phase
+    (mulligan/ready-up), since there's no "current turn player" yet — that's
+    intentional, not a bug.
 
 NOT yet enforced on Duel Table (still behaves like Sandbox for now):
-  - Resource cost gating. Playing a card still just exhausts whatever
-    resources are available without blocking the play if you can't afford
-    it. This is a known gap — cost legality is planned to move from Sandbox
-    behavior into a DuelTable-only check (can_play_card), but hasn't been
-    done yet.
-  - Turn ownership (you can currently play/attack with either player's cards
-    regardless of whose turn it is — same as Sandbox).
   - Protector. This keyword needs a real multi-step combat structure
     (propose attacker -> propose defender -> protect point -> resolve) that
     doesn't exist yet — Protector allies currently behave like vanilla
@@ -93,21 +98,26 @@ methods that default to permissive (always legal):
 
     func can_propose_attacker(card) -> bool   # default: true
     func can_propose_defender(card) -> bool   # default: true
+    func can_play_card(card)        -> bool   # default: true
 
 DuelTable.gd (scenes/boards/DuelTable.gd) extends SandboxTable and overrides
-just these hooks to add real keyword checks, without touching or duplicating
-any of Sandbox's mechanical code (combat resolution, exhausting resources,
-HP/graveyard handling, etc. all stay defined once, in SandboxTable).
+just these hooks to add real keyword/cost/turn checks, without touching or
+duplicating any of Sandbox's mechanical code (combat resolution, exhausting
+resources, HP/graveyard handling, etc. all stay defined once, in
+SandboxTable). Sandbox's _do_play_card() still mechanically exhausts
+whatever resources are ready (up to the card's cost) regardless of whether
+that's enough — it's can_play_card() that decides whether the play is
+*allowed* to happen at all, and only DuelTable's override actually says no.
 
 DuelTable.tscn is a Godot *inherited* scene — it instances SandboxTable.tscn
 wholesale and only swaps the attached script, so the two tables share one
 visual/board definition. Any layout change to SandboxTable.tscn automatically
 applies to DuelTable too.
 
-As more rules get implemented (cost gating, turn ownership, Protector's
-combat-step rework, per-card powers), they should be added the same way:
-a new "can_x()" hook in SandboxTable.gd (default permissive), overridden in
-DuelTable.gd with the actual rule.
+As more rules get implemented (Protector's combat-step rework, per-card
+powers, etc.), they should be added the same way: a new "can_x()" hook in
+SandboxTable.gd (default permissive), overridden in DuelTable.gd with the
+actual rule.
 
 
 SWITCHING BETWEEN THEM

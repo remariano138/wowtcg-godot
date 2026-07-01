@@ -5,6 +5,12 @@ Current logic (Azeroth set only):
   - Allies in the class range whose tags contain no known race word → subtype = "Pet"
   - All other cards → blank for now
 
+NOTE: subtype is also used to manually flag "Instant" allies (allies that can be
+played at instant speed, e.g. Tristan Rapidstrike) and instant abilities — this
+script never overwrites a non-blank subtype, so those manual values are safe.
+The deck maker / other code does substring checks (e.g. "Pet" in subtype), so if
+a card is ever both (unlikely for Instant allies), join values with ", ".
+
 WARNING: This heuristic relies on two assumptions that may not hold for future expansions:
   1. Class-specific allies (pets, demons) are grouped in the same collector ranges as abilities.
      Future expansions may not follow this structure.

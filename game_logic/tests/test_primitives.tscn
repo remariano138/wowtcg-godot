@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://bcti0bdy46i0n"]
+
+[ext_resource type="Script" uid="uid://c5obgqqd0rwxw" path="res://game_logic/tests/test_primitives.gd" id="1_p0cak"]
+
+[node name="Node" type="Node" unique_id=1549033847]
+script = ExtResource("1_p0cak")

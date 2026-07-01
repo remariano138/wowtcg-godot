@@ -33,18 +33,53 @@ func list_user_decks() -> Array:
 func list_builtin_decks() -> Array:
 	return _list_decks(BUILTIN_PATH)
 
+func _is_fully_implemented(card: Dictionary) -> bool:
+	return card.get("data_status", "") == "verified" and card.get("engine_status", "") == ""
+
+func _find_card_id_by_name(db: Node, name: String) -> String:
+	for id in db._db.keys():
+		if db._db[id].get("name", "") == name:
+			return id
+	return ""
+
+# Adds up to `count` copies of `card_id` to `deck`, capped at 4 total copies and
+# at `remaining` slots. Merges into an existing entry for the same id rather
+# than appending a duplicate dict. Returns how many copies were actually added
+# (0 if card_id is blank/unknown, already at the 4-copy cap, or no room left).
+func _add_card_copies(deck: Deck, copies: Dictionary, card_id: String, count: int, remaining: int) -> int:
+	if card_id == "":
+		return 0
+	var already = copies.get(card_id, 0)
+	var actual = min(count, 4 - already, remaining)
+	if actual <= 0:
+		return 0
+	for entry in deck.cards:
+		if entry["id"] == card_id:
+			entry["count"] += actual
+			copies[card_id] = already + actual
+			return actual
+	deck.cards.append({"id": card_id, "count": actual})
+	copies[card_id] = already + actual
+	return actual
+
 func random_deck_maker(db: Node) -> Deck:
-	# 1. Pick a random hero
-	var hero_ids = db._db.keys().filter(func(id): return db._db[id]["type"] == "Hero")
+	# 1. Pick a random hero — restricted to fully implemented heroes, since an
+	# unimplemented hero's power would just be unusable dead text on the card.
+	var hero_ids = db._db.keys().filter(func(id):
+		var card = db._db[id]
+		return card["type"] == "Hero" and _is_fully_implemented(card))
 	var hero_id    = hero_ids[randi() % hero_ids.size()]
 	var hero_data  = db._db[hero_id]
 	var hero_alignment = hero_data.get("alignment", "")
 	var hero_class     = hero_data.get("class", "")
 	var opposite       = "Horde" if hero_alignment == "Alliance" else "Alliance"
 
-	# 2. Build legal card pool — allies only for now (abilities have no effect yet)
+	# 2. Build legal card pool — allies only for now (abilities have no effect yet),
+	# restricted to fully implemented cards (data_status=verified, engine_status empty).
 	var legal = db._db.keys().filter(func(id):
 		var card = db._db[id]
+		if not _is_fully_implemented(card):
+			return false
 		# Only allies (abilities commented out until card effects are implemented)
 		if card["type"] != "Ally":
 			return false
@@ -66,10 +101,52 @@ func random_deck_maker(db: Node) -> Deck:
 		# 	return card_class == "" or card_class == hero_class
 	)
 
-	# 3. Build deck: guarantee 12 of each 1/2/3-cost tier, fill rest randomly
+	# 3. Build deck: guaranteed defensive core first, then guarantee 12 of each
+	# 1/2/3-cost tier, then fill the rest randomly
 	var deck = Deck.new()
 	deck.hero_id   = hero_id
 	deck.deck_name = "Random — " + hero_data.get("name", "Unknown")
+
+	var copies: Dictionary = {}  # card_id -> copies already in deck
+	var total: int = 0
+
+	# Phase 3: hero-specific synergy picks tied to the exact hero.
+	match hero_data.get("name", ""):
+		"Boris Brightbeard":
+			total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Crazy Igvand"), 2, 60 - total)
+		"Omedus the Punisher":
+			total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Mias the Putrid"), 4, 60 - total)
+		"Ta'zo":
+			total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Vesh'ral"), 2, 60 - total)
+
+	# Phase 4: faction-defining identity core (specific named cards).
+	if hero_alignment == "Alliance":
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Parvink"), 4, 60 - total)
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Nerra Lifeboon"), 2, 60 - total)
+	elif hero_alignment == "Horde":
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Guardian Steelhorn"), 1, 60 - total)
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Ka'tali Stonetusk"), 2, 60 - total)
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Kulan Earthguard"), 1, 60 - total)
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Zorm Stonefury"), 2, 60 - total)
+
+	# Phase 5: class-specific defensive Pet.
+	if hero_class == "Warlock":
+		total += _add_card_copies(deck, copies, _find_card_id_by_name(db, "Sarmoth"), 2, 60 - total)
+
+	# Phase 6: generic Protector fill — adds 4 more Protector copies from whatever
+	# remains in the legal pool after all specific phases, spreading randomly across
+	# cards still under the 4-copy cap. Runs last among the guaranteed phases so it
+	# never pre-empts a specific named pick.
+	var protector_pool: Array = legal.filter(func(id): return "protector" in db._db[id].get("keywords", "").to_lower())
+	var more_protectors_needed = 4
+	while more_protectors_needed > 0 and total < 60:
+		var available = protector_pool.filter(func(id): return copies.get(id, 0) < 4)
+		if available.is_empty():
+			break
+		var pick = available[randi() % available.size()]
+		var added = _add_card_copies(deck, copies, pick, 1, 60 - total)
+		total += added
+		more_protectors_needed -= added
 
 	# Group legal allies by cost
 	var by_cost: Dictionary = {}
@@ -78,9 +155,6 @@ func random_deck_maker(db: Node) -> Deck:
 		if not by_cost.has(c):
 			by_cost[c] = []
 		by_cost[c].append(id)
-
-	var copies: Dictionary = {}  # card_id -> copies already in deck
-	var total: int = 0
 
 	# Phase 1: guarantee at least 12 cards per cheap tier (max 4 copies each)
 	for tier in ["1", "2", "3"]:

@@ -6,6 +6,7 @@ extends Node2D
 # BoardRenderer owns all CardNodes and bridges their signals to InputRouter.
 
 signal card_clicked(instance_id: String)
+signal card_right_clicked(instance_id: String)
 
 const W := 80.0
 const H := 110.0
@@ -62,12 +63,16 @@ func set_highlighted(highlighted: bool) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not (event is InputEventMouseButton):
+	if not (event is InputEventMouseButton) or not (event as InputEventMouseButton).pressed:
 		return
 	var mb := event as InputEventMouseButton
-	if not (mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT):
-		return
 	var local := to_local(get_viewport().get_mouse_position())
-	if abs(local.x) <= W * 0.5 and abs(local.y) <= H * 0.5:
-		card_clicked.emit(instance_id)
-		get_viewport().set_input_as_handled()
+	if abs(local.x) > W * 0.5 or abs(local.y) > H * 0.5:
+		return
+	match mb.button_index:
+		MOUSE_BUTTON_LEFT:
+			card_clicked.emit(instance_id)
+			get_viewport().set_input_as_handled()
+		MOUSE_BUTTON_RIGHT:
+			card_right_clicked.emit(instance_id)
+			get_viewport().set_input_as_handled()

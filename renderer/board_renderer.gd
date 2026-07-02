@@ -24,20 +24,36 @@ var _input_router: InputRouter = null
 var _status_label: Label = null
 
 # Zones where cards are fanned out horizontally. All others stack at the anchor.
-const SPREAD_ZONES  := ["chain", "p1_hand", "p2_hand",
-						"p1_ally_row", "p2_ally_row",
-						"p1_hero_row", "p2_hero_row"]
-const SPREAD_GAP    := 90.0   # pixels between card centres
+const SPREAD_ZONES := ["chain",
+	"p1_hand", "p2_hand",
+	"p1_ally_row", "p2_ally_row",
+	"p1_hero_row", "p2_hero_row",
+	"p1_resource_row", "p2_resource_row"]
+
+# In-play zones need wider spacing so exhausted (rotated 90°) cards don't overlap.
+# A card is W=80 H=110; when exhausted its footprint is 110px wide, so 130px gives ~10px margin.
+# Hand/chain cards are never rotated, so 92px (6px margin at W=80) is fine there.
+const PLAY_SPREAD_GAP := 130.0
+const HAND_SPREAD_GAP :=  92.0
+
+const PLAY_ZONES := ["p1_ally_row", "p2_ally_row",
+	"p1_hero_row", "p2_hero_row",
+	"p1_resource_row", "p2_resource_row"]
 
 
 func _ready() -> void:
 	EventBus.game_event.connect(_on_game_event)
 
 
+signal card_right_clicked(instance_id: String)
+
+
 func register_card(instance_id: String, node: Node2D) -> void:
 	card_nodes[instance_id] = node
 	if node.has_signal("card_clicked"):
 		node.card_clicked.connect(_on_card_clicked)
+	if node.has_signal("card_right_clicked"):
+		node.card_right_clicked.connect(_on_card_right_clicked)
 
 
 func register_zone(zone_id: String, anchor: Node2D) -> void:
@@ -105,20 +121,24 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	if not card_node:
 		return
 
-	# Update renderer zone tracking.
 	_remove_from_zone(card_id, from_zone)
 	_add_to_zone(card_id, to_zone)
 
-	# Animate card to its new spread position.
-	var target := _card_position_in_zone(card_id, to_zone)
-	var tween := create_tween()
-	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(card_node, "global_position", target, 0.3)
-
-	# Close the gap left behind in the source zone (non-blocking).
+	# Re-centre source zone (closes the gap).
 	_relayout_zone(from_zone)
 
-	await tween.finished
+	if to_zone in SPREAD_ZONES:
+		# Re-centring the destination handles the arriving card's tween too.
+		_relayout_zone(to_zone)
+	else:
+		# Non-spread zone (graveyard, deck …): tween the card to the anchor directly.
+		var anchor := zone_anchors.get(to_zone) as Node2D
+		if anchor:
+			var tween := create_tween()
+			tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+			tween.tween_property(card_node, "global_position", anchor.global_position, 0.3)
+
+	await get_tree().create_timer(0.3).timeout
 
 
 func _animate_exhaust(card_id: String) -> void:
@@ -142,6 +162,8 @@ func _animate_ready(card_id: String) -> void:
 # ── Zone layout helpers ────────────────────────────────────────────────────────
 
 func _add_to_zone(card_id: String, zone_id: String) -> void:
+	if not card_nodes.has(card_id):
+		return   # no visual node — don't track in zone layout
 	if not _zone_cards.has(zone_id):
 		_zone_cards[zone_id] = []
 	var zc: Array = _zone_cards[zone_id]
@@ -154,6 +176,10 @@ func _remove_from_zone(card_id: String, zone_id: String) -> void:
 		(_zone_cards[zone_id] as Array).erase(card_id)
 
 
+func _spread_gap(zone_id: String) -> float:
+	return PLAY_SPREAD_GAP if zone_id in PLAY_ZONES else HAND_SPREAD_GAP
+
+
 func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if not anchor:
@@ -161,32 +187,39 @@ func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
 	if not (zone_id in SPREAD_ZONES):
 		return anchor.global_position
 
-	var zc: Array = _zone_cards.get(zone_id, [])
+	var gap: float = _spread_gap(zone_id)
+	var zc: Array  = _zone_cards.get(zone_id, [])
 	var count := zc.size()
 	var idx   := zc.find(card_id)
 	if idx < 0 or count <= 1:
 		return anchor.global_position
 
-	var total := SPREAD_GAP * (count - 1)
-	return anchor.global_position + Vector2(-total * 0.5 + idx * SPREAD_GAP, 0.0)
+	var total := gap * (count - 1)
+	return anchor.global_position + Vector2(-total * 0.5 + idx * gap, 0.0)
 
 
-# Smoothly slide cards already in a zone to close any gap after a card leaves.
+# Smoothly slide all cards in a zone to their centred positions.
+# Public so the scene can call it for initial placement before events start.
+func relayout_zone(zone_id: String) -> void:
+	_relayout_zone(zone_id)
+
+
 func _relayout_zone(zone_id: String) -> void:
 	if not (zone_id in SPREAD_ZONES):
 		return
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if not anchor:
 		return
-	var zc: Array = _zone_cards.get(zone_id, [])
+	var gap: float = _spread_gap(zone_id)
+	var zc: Array  = _zone_cards.get(zone_id, [])
 	var count := zc.size()
 	for i in count:
 		var cid: String = zc[i]
 		var node := card_nodes.get(cid) as Node2D
 		if not node:
 			continue
-		var total  := SPREAD_GAP * (count - 1)
-		var target := anchor.global_position + Vector2(-total * 0.5 + i * SPREAD_GAP, 0.0)
+		var total  := gap * (count - 1)
+		var target := anchor.global_position + Vector2(-total * 0.5 + i * gap, 0.0)
 		var tween  := create_tween()
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 		tween.tween_property(node, "global_position", target, 0.2)
@@ -197,6 +230,10 @@ func _relayout_zone(zone_id: String) -> void:
 func _on_card_clicked(instance_id: String) -> void:
 	if _input_router:
 		_input_router.handle_card_click(instance_id)
+
+
+func _on_card_right_clicked(instance_id: String) -> void:
+	card_right_clicked.emit(instance_id)
 
 
 func _on_highlights_updated(playable_ids: Array) -> void:

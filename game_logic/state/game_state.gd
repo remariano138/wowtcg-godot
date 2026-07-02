@@ -17,10 +17,10 @@ var cards: Dictionary = {}     # instance_id (String) -> CardInstance
 # ── Turn / phase state ─────────────────────────────────────────────────────────
 # Phases follow the WoW TCG turn structure:
 #   "setup"     — pre-game (deck reveal, hero selection, opening hand)
-#   "begin"     — beginning phase (ready step, draw step)
-#   "action"    — main action phase (play cards, activate powers)
-#   "combat"    — combat phase (declare attackers, defenders, resolve)
-#   "wrapup"    — wrap-up phase (discard to hand limit, end-of-turn effects)
+#   "ready"     — ready step: ready all cards, instants-only priority window
+#   "draw"      — draw step: draw one card, instants-only priority window
+#   "action"    — action phase: full priority window (allies, instants, resources, combat)
+#   "end"       — end phase: instants-only priority window, then wrap-up (no window)
 var turn_number: int = 0
 var turn_player: String = ""       # player_id of who has the active turn
 var phase: String = "setup"

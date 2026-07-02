@@ -15,6 +15,14 @@ var hero_instance_id: String = ""
 # Reset to false at the start of this player's turn.
 var resource_placed_this_turn: bool = false
 
+# Tracks whether this player's hero has already used their power this turn.
+# In the physical game the hero card flips face-down; we track it here instead
+# since we don't have hero back-art.  Reset at the start of this player's turn.
+var has_used_hero_power: bool = false
+
+# Rule 415.4b: default is 7; some card effects raise or lower it.
+var max_hand_size: int = 7
+
 
 static func make(p_player_id: String) -> PlayerState:
 	var ps := PlayerState.new()
@@ -27,6 +35,8 @@ func to_dict() -> Dictionary:
 		"player_id":                player_id,
 		"hero_instance_id":         hero_instance_id,
 		"resource_placed_this_turn": resource_placed_this_turn,
+		"has_used_hero_power":      has_used_hero_power,
+		"max_hand_size":            max_hand_size,
 	}
 
 static func from_dict(d: Dictionary) -> PlayerState:
@@ -34,4 +44,6 @@ static func from_dict(d: Dictionary) -> PlayerState:
 	ps.player_id                = d["player_id"]
 	ps.hero_instance_id         = d.get("hero_instance_id", "")
 	ps.resource_placed_this_turn = d.get("resource_placed_this_turn", false)
+	ps.has_used_hero_power      = d.get("has_used_hero_power", false)
+	ps.max_hand_size            = d.get("max_hand_size", 7)
 	return ps

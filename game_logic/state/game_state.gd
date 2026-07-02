@@ -43,6 +43,15 @@ var in_protect_point: bool  = false # true while waiting for protect decision
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending
 var pending_discard_count:  int    = 0   # how many cards still to discard
+# Non-empty while an enters-play targeted effect is waiting for the controller to choose a target.
+# Keys: card_id (String), effect (String), dmg_type (String), amount (int).
+var pending_enter_play_effect: Dictionary = {}
+
+# ── Mulligan state (cleared once both players have committed) ──────────────────
+# player_id -> true once the player has made their mulligan decision.
+var mulligan_decided: Dictionary = {}
+# player_id -> true if the player chose to mulligan (shuffle+redraw).
+var mulligan_wants:   Dictionary = {}
 
 
 # ── Factory ────────────────────────────────────────────────────────────────────

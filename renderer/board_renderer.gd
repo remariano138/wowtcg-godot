@@ -32,6 +32,13 @@ var _perspective_player: String = ""
 var _inspector: TextureRect = null        # large card image overlay
 var _hovered_card_id: String = ""         # instance_id of card under cursor
 
+# ── Targeting overlay ──────────────────────────────────────────────────────────
+var _targeting_line:      Line2D  = null
+var _targeting_cursor:    Node2D  = null   # icon + amount label that follows the mouse
+var _targeting_active:    bool    = false
+var _targeting_source_id: String  = ""
+var _highlighted_ids:     Array   = []     # current green-highlighted card ids
+
 # ── Hero HP bars ────────────────────────────────────────────────────────────────
 # One bar per player, built lazily on first hp_changed for a hero zone card.
 # Dictionary: player_id -> {bg, fill, label} Nodes
@@ -64,6 +71,61 @@ const PLAY_ZONES := ["p1_ally_row", "p2_ally_row",
 func _ready() -> void:
 	EventBus.game_event.connect(_on_game_event)
 	_build_inspector()
+	_build_targeting_line()
+
+
+func _build_targeting_line() -> void:
+	_targeting_line = Line2D.new()
+	_targeting_line.width         = 2.5
+	_targeting_line.default_color = _LINE_COLOR_DEFAULT
+	_targeting_line.z_index       = 60
+	_targeting_line.visible       = false
+	_targeting_line.add_point(Vector2.ZERO)   # index 0: source card
+	_targeting_line.add_point(Vector2.ZERO)   # index 1: cursor
+	add_child(_targeting_line)
+
+	# Cursor overlay: icon sprite + damage amount label, hidden until targeting starts.
+	_targeting_cursor = Node2D.new()
+	_targeting_cursor.z_index = 70
+	_targeting_cursor.visible = false
+
+	var icon := Sprite2D.new()
+	icon.name  = "Icon"
+	icon.scale = Vector2(0.55, 0.55)
+	_targeting_cursor.add_child(icon)
+
+	var lbl := Label.new()
+	lbl.name = "Amount"
+	lbl.add_theme_font_size_override("font_size", 18)
+	lbl.add_theme_color_override("font_color", Color.WHITE)
+	lbl.add_theme_constant_override("outline_size", 3)
+	lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.size         = Vector2(48, 24)
+	lbl.position     = Vector2(-24, 14)   # just below the icon centre
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_targeting_cursor.add_child(lbl)
+
+	add_child(_targeting_cursor)
+
+
+const _LINE_COLOR_DEFAULT := Color(1.0, 0.85, 0.2, 0.85)   # golden
+const _LINE_COLOR_VALID   := Color(0.2, 1.0, 0.3, 0.9)     # green — matches card highlight
+
+func _process(_delta: float) -> void:
+	if not _targeting_active:
+		return
+	var mouse := get_viewport().get_mouse_position()
+	if _targeting_line:
+		_targeting_line.set_point_position(1, mouse)
+		var cn := card_nodes.get(_targeting_source_id) as Node2D
+		if cn:
+			_targeting_line.set_point_position(0, cn.global_position)
+		# Turn green when hovering a legal target, golden otherwise.
+		var over_valid := _hovered_card_id != "" and _hovered_card_id in _highlighted_ids
+		_targeting_line.default_color = _LINE_COLOR_VALID if over_valid else _LINE_COLOR_DEFAULT
+	if _targeting_cursor:
+		_targeting_cursor.global_position = mouse
 
 
 func _build_inspector() -> void:
@@ -108,6 +170,7 @@ func _try_show_inspector() -> void:
 
 
 signal card_right_clicked(instance_id: String)
+signal card_clicked(instance_id: String)
 
 
 func has_card_node(instance_id: String) -> bool:
@@ -153,6 +216,9 @@ func place_card_in_zone(instance_id: String, zone_id: String) -> void:
 func set_input_router(router: InputRouter) -> void:
 	_input_router = router
 	router.highlights_updated.connect(_on_highlights_updated)
+	router.conditional_highlights_updated.connect(_on_conditional_highlights_updated)
+	router.targeting_started.connect(_on_targeting_started)
+	router.targeting_cancelled.connect(_on_targeting_cancelled)
 
 
 func set_status_label(label: Label) -> void:
@@ -191,6 +257,10 @@ func _on_game_event(event: GameEvent) -> void:
 			if to_z.ends_with("_deck"):
 				_deck_counts[to_z] = _deck_counts.get(to_z, 0) + 1
 				_refresh_deck_label(to_z)
+			if to_z.ends_with("_graveyard"):
+				var cn := card_nodes.get(event.payload["card"]) as CardNode
+				if cn and cn.has_method("update_damage"):
+					cn.update_damage(0)
 		"card_exhausted":
 			_animate_exhaust(event.payload["card"])
 		"card_readied":
@@ -228,6 +298,12 @@ func _on_game_event(event: GameEvent) -> void:
 			var cn := card_nodes.get(event.payload.get("quest_id", "")) as CardNode
 			if cn:
 				cn.show_card_back()
+			_set_status("Quest completed by %s — reward applied!" % event.payload.get("player", "?"))
+		"hero_power_used":
+			var cn := card_nodes.get(event.payload.get("hero_id", "")) as CardNode
+			if cn and cn.has_method("set_power_used"):
+				cn.set_power_used(true)
+			_set_status("%s used their hero power!" % event.payload.get("player", "?"))
 		"action_proposed":
 			if event.payload.get("action_type") == "place_resource" \
 					and not event.payload.get("face_up", true):
@@ -248,12 +324,13 @@ func _on_game_event(event: GameEvent) -> void:
 			_set_status("Action fizzled: %s" % event.payload.get("reason", "?"))
 		"action_retracted":
 			_set_status("Retracted: %s" % event.payload.get("action_type", "?"))
-		"quest_completed":
-			_set_status("Quest completed by %s — reward applied!" % event.payload.get("player", "?"))
 		"discard_choice_opened":
 			_set_status("Discard %d card(s) from hand  [click a card]" % event.payload.get("count", 1))
 		"combat_started":
 			_set_status("⚔ Combat begins!")
+			await _animate_attack(
+				event.payload.get("attacker_id", ""),
+				event.payload.get("defender_id", ""))
 		"protect_point_opened":
 			_set_status("⚔ Protect point — defending player may exhaust a Protector  [or skip]")
 		"protect_chosen":
@@ -266,6 +343,10 @@ func _on_game_event(event: GameEvent) -> void:
 			var a_dmg: int = event.payload.get("attacker_damage", 0)
 			var d_dmg: int = event.payload.get("defender_damage", 0)
 			_set_status("⚔ Combat resolved  (dealt %d / received %d)" % [a_dmg, d_dmg])
+		"phase_changed":
+			pass   # no visual action needed on phase transitions
+		"deck_shuffled":
+			pass  # no visual needed; card_moved events handle the hand refill
 		"game_over":
 			_set_status("★ GAME OVER  —  %s wins!" % event.payload.get("winner", "?"))
 
@@ -323,6 +404,22 @@ func _animate_ready(card_id: String) -> void:
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 	tween.tween_property(card_node, "rotation_degrees", 0.0, 0.2)
+
+
+func _animate_attack(attacker_id: String, defender_id: String) -> void:
+	var atk_node := card_nodes.get(attacker_id) as Node2D
+	var def_node := card_nodes.get(defender_id) as Node2D
+	if not atk_node or not def_node:
+		return
+	var start     := atk_node.global_position
+	var direction := (def_node.global_position - start).normalized()
+	var distance  := atk_node.global_position.distance_to(def_node.global_position)
+	var punch     := start + direction * distance * 0.5
+	var tween := create_tween()
+	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+	tween.tween_property(atk_node, "global_position", punch, 0.12)
+	tween.tween_property(atk_node, "global_position", start, 0.10)
+	await tween.finished
 
 
 # ── Zone layout helpers ────────────────────────────────────────────────────────
@@ -394,8 +491,19 @@ func _relayout_zone(zone_id: String) -> void:
 # ── Input bridge ───────────────────────────────────────────────────────────────
 
 func _on_card_clicked(instance_id: String) -> void:
+	card_clicked.emit(instance_id)
 	if _input_router:
 		_input_router.handle_card_click(instance_id)
+
+
+func highlight_cards(ids: Array) -> void:
+	_on_highlights_updated(ids)
+
+
+func set_card_outline(id: String, highlighted: bool, color: Color = Color(0.2, 1.0, 0.3)) -> void:
+	var cn := card_nodes.get(id) as CardNode
+	if cn and cn.has_method("set_highlighted"):
+		cn.set_highlighted(highlighted, color)
 
 
 func _on_card_right_clicked(instance_id: String) -> void:
@@ -415,10 +523,69 @@ func _on_card_unhovered(instance_id: String) -> void:
 
 
 func _on_highlights_updated(playable_ids: Array) -> void:
+	_highlighted_ids = playable_ids
 	for inst_id in card_nodes:
 		var node := card_nodes[inst_id] as Node2D
 		if node and node.has_method("set_highlighted"):
 			node.set_highlighted(inst_id in playable_ids)
+
+
+func _on_conditional_highlights_updated(orange_ids: Array) -> void:
+	for inst_id in orange_ids:
+		var cn := card_nodes.get(inst_id) as CardNode
+		if cn:
+			cn.set_highlighted(true, Color(0.95, 0.55, 0.05))
+
+
+func _on_targeting_started(source_id: String, dmg_type: String, dmg_amount: int) -> void:
+	_targeting_active    = true
+	_targeting_source_id = source_id
+	if _targeting_line:
+		var cn := card_nodes.get(source_id) as Node2D
+		var src := cn.global_position if cn else get_viewport().get_mouse_position()
+		_targeting_line.set_point_position(0, src)
+		_targeting_line.set_point_position(1, get_viewport().get_mouse_position())
+		_targeting_line.visible = true
+	_update_targeting_cursor(dmg_type, dmg_amount)
+	Input.set_default_cursor_shape(Input.CURSOR_CROSS)
+
+
+func _on_targeting_cancelled() -> void:
+	_targeting_active    = false
+	_targeting_source_id = ""
+	if _targeting_line:
+		_targeting_line.visible = false
+	if _targeting_cursor:
+		_targeting_cursor.visible = false
+	Input.set_default_cursor_shape(Input.CURSOR_ARROW)
+
+
+# Build the cursor overlay: damage-type icon (if any) with the amount below it.
+func _update_targeting_cursor(dmg_type: String, dmg_amount: int) -> void:
+	if not _targeting_cursor:
+		return
+	var icon := _targeting_cursor.get_node("Icon") as Sprite2D
+	var lbl  := _targeting_cursor.get_node("Amount") as Label
+
+	if dmg_type != "":
+		var path := "res://assets/dmg_icons/%s.png" % dmg_type.to_lower()
+		var tex: Texture2D = load(path)
+		if icon:
+			icon.texture = tex   # null is fine — just hides the sprite
+			icon.visible = tex != null
+	else:
+		if icon:
+			icon.visible = false
+
+	if lbl:
+		if dmg_amount > 0:
+			lbl.text    = str(dmg_amount)
+			lbl.visible = true
+		else:
+			lbl.visible = false
+
+	_targeting_cursor.global_position = get_viewport().get_mouse_position()
+	_targeting_cursor.visible         = true
 
 
 func _set_status(text: String) -> void:
@@ -436,6 +603,14 @@ func _hero_player_for(card_id: String) -> String:
 		if card_id in zc:
 			return pid
 	return ""
+
+
+func _clear_hero_power_badge(player_id: String) -> void:
+	var zone_id: String = player_id + "_hero_row"
+	for cid in _zone_cards.get(zone_id, []):
+		var cn := card_nodes.get(cid) as CardNode
+		if cn and cn.has_method("set_power_used"):
+			cn.set_power_used(false)
 
 
 func _ensure_hero_bar(player_id: String) -> void:
@@ -533,21 +708,36 @@ func _refresh_deck_label(zone_id: String) -> void:
 # ── Damage popup ───────────────────────────────────────────────────────────────
 
 func _show_damage_number(card_id: String, amount: int) -> void:
-	var card_node := card_nodes.get(card_id) as Node2D
-	if not card_node:
-		return
+	var origin: Vector2
+	# Heroes: anchor to the centre of the HP bar so the number is clearly visible.
+	var hero_player := _hero_player_for(card_id)
+	if hero_player != "":
+		var bar: Dictionary = _hero_bars.get(hero_player, {})
+		var bg := bar.get("bg") as ColorRect
+		if bg:
+			origin = bg.global_position + Vector2(bg.size.x * 0.5, 0)
+		else:
+			var cn := card_nodes.get(card_id) as Node2D
+			if not cn:
+				return
+			origin = cn.global_position + Vector2(-20, -30)
+	else:
+		var cn := card_nodes.get(card_id) as Node2D
+		if not cn:
+			return
+		origin = cn.global_position + Vector2(10, -30)
+
 	var label := Label.new()
 	label.text     = "-%d" % amount
-	label.z_index  = 10
+	label.z_index  = 20
 	label.add_theme_font_size_override("font_size", 32)
 	label.add_theme_color_override("font_color", Color(1.0, 0.2, 0.2))
 	label.add_theme_constant_override("outline_size", 2)
 	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	label.global_position = card_node.global_position + Vector2(10, -30)
+	label.global_position = origin
 	get_tree().root.add_child(label)
 	var tween := create_tween()
-	tween.tween_property(label, "global_position",
-		label.global_position + Vector2(0, -60), 0.9)
+	tween.tween_property(label, "global_position", origin + Vector2(0, -60), 0.9)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.9)
 	await tween.finished
 	label.queue_free()

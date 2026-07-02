@@ -47,14 +47,28 @@ static func submit_action(state: GameState, action: PendingAction,
 			if ps:
 				ps.resource_placed_this_turn = true
 		"use_quest":
-			# Exhaust the quest (activation cost) + pay any extra resource cost.
+			# Pay the quest's resource cost from the player's resource row.
+			# The quest itself does NOT exhaust — it flips face-down on resolution.
 			var quest_id: String = action.params.get("quest_id", "")
-			if quest_id != "":
-				events.append_array(GameLogic.exhaust_card(state, quest_id))
-				if db:
-					var def := db.get_def((state.get_card(quest_id) as CardInstance).card_def_id) as CardDef
+			if quest_id != "" and db:
+				var q_card := state.get_card(quest_id)
+				if q_card:
+					var def := db.get_def(q_card.card_def_id) as CardDef
 					if def:
-						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0)))
+						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0) as int))
+		"activate_power":
+			# Pay the hero power's resource cost; mark power as used.
+			var hero_id: String = action.params.get("hero_id", "")
+			if hero_id != "" and db:
+				var h_card := state.get_card(hero_id)
+				if h_card:
+					var def := db.get_def(h_card.card_def_id) as CardDef
+					if def and def.cost > 0:
+						events.append_array(_pay_resources(state, action.source_player, def.cost))
+			var ps := state.players.get(action.source_player) as PlayerState
+			if ps:
+				ps.has_used_hero_power = true
+			events.append(GameEvent.hero_power_used(action.source_player, hero_id))
 
 	state.pending_actions.push_back(action)
 	state.consecutive_passes = 0
@@ -79,6 +93,11 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# All players passed in succession.
 	if state.consecutive_passes >= 2:
 		if state.pending_actions.is_empty():
+			# Safety: can't close the window while an enters-play effect needs a target.
+			if not state.pending_enter_play_effect.is_empty():
+				state.consecutive_passes = 0
+				state.priority_player    = state.turn_player
+				return []   # stall — scene must handle enter_play_target_required
 			# Rule 410.4b: chain empty → window closes, phase advances.
 			state.consecutive_passes = 0
 			state.priority_player    = state.turn_player
@@ -112,6 +131,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	if action.source_player != state.priority_player:
 		return false
 
+	# Pending enters-play target choice blocks everything except resolving it.
+	if not state.pending_enter_play_effect.is_empty() \
+			and action.action_type != "choose_enter_play_target":
+		return false
+
 	match action.action_type:
 		"play_ally":
 			return _can_play_non_instant(state, action, db)
@@ -123,6 +147,10 @@ static func can_submit(state: GameState, action: PendingAction,
 			return _can_propose_combat(state, action, db)
 		"use_quest":
 			return _can_use_quest(state, action, db)
+		"activate_power":
+			return _can_activate_power(state, action, db)
+		"choose_enter_play_target":
+			return _can_choose_enter_play_target(state, action, db)
 
 	return false   # unknown action type
 
@@ -205,7 +233,7 @@ static func _resolve(state: GameState, action: PendingAction,
 		db = null) -> Array[GameEvent]:
 	match action.action_type:
 		"play_ally":
-			return _resolve_play_ally(state, action)
+			return _resolve_play_ally(state, action, db)
 		"play_instant":
 			return _resolve_play_instant(state, action)
 		"place_resource":
@@ -214,6 +242,10 @@ static func _resolve(state: GameState, action: PendingAction,
 			return _resolve_propose_combat(state, action, db)
 		"use_quest":
 			return _resolve_use_quest(state, action, db)
+		"activate_power":
+			return _resolve_activate_power(state, action, db)
+		"choose_enter_play_target":
+			return _resolve_choose_enter_play_target(state, action, db)
 
 	# Unknown action type — should not happen if can_submit gate is correct.
 	return [GameEvent.make("action_fizzled", {
@@ -223,7 +255,7 @@ static func _resolve(state: GameState, action: PendingAction,
 
 
 static func _resolve_play_ally(state: GameState,
-		action: PendingAction) -> Array[GameEvent]:
+		action: PendingAction, db = null) -> Array[GameEvent]:
 	var card_id: String = action.params.get("card_id", "")
 	var card := state.get_card(card_id)
 
@@ -247,6 +279,33 @@ static func _resolve_play_ally(state: GameState,
 	var target_zone_id: String = card.controller + "_ally_row"
 	events.append_array(GameLogic.move_card(state, card_id, target_zone_id))
 	card.just_summoned = true
+
+	# Check for on_enter triggered effects.
+	if db:
+		var def := db.get_def(card.card_def_id) as CardDef
+		if def and def.effects != "":
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				if parts.is_empty() or parts[0].strip_edges() != "on_enter":
+					continue
+				var effect_key := parts[1].strip_edges() if parts.size() > 1 else ""
+				match effect_key:
+					"draw":
+						var n := int(parts[2]) if parts.size() > 2 else 1
+						for _i in n:
+							events.append_array(_draw_one(state, card.controller))
+					"deal_damage_to_target":
+						var amount := int(parts[2]) if parts.size() > 2 else 0
+						var dmg_type := parts[3].to_lower().strip_edges() if parts.size() > 3 else ""
+						state.pending_enter_play_effect = {
+							"card_id": card_id,
+							"effect": "deal_damage_to_target:%d:%s" % [amount, dmg_type],
+							"dmg_type": dmg_type,
+							"amount": amount,
+						}
+						events.append(GameEvent.enter_play_target_required(
+							card_id, dmg_type, amount))
+
 	return events
 
 
@@ -352,10 +411,13 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 static func get_legal_attackers(state: GameState, player_id: String, db) -> Array[String]:
 	var result: Array[String] = []
 	# Hero (rule 301.3: no summoning sickness; still must be ready per 601.2a).
+	# Also require ATK > 0 — a 0 ATK hero with no weapon deals no damage and
+	# exhausts for nothing; treat as not a legal attacker (practical gate, not
+	# an explicit rule, but avoids pointless/confusing highlights and AI plays).
 	var ps := state.players.get(player_id) as PlayerState
 	if ps and ps.hero_instance_id != "":
 		var hero := state.get_card(ps.hero_instance_id)
-		if hero and not hero.is_exhausted:
+		if hero and not hero.is_exhausted and state.get_atk(hero.instance_id, db) > 0:
 			result.append(hero.instance_id)
 	# Allies (rule 302.2: just_summoned unless Ferocity).
 	for card in state.cards_in_zone(player_id + "_ally_row"):
@@ -503,29 +565,12 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	var def_dmg := state.get_atk(defender_id, db)   # to attacker (0 for heroes, per 205.1)
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
-	# Apply damage directly without the auto-destroy in deal_damage, so both
-	# packets resolve before we check fatalities (true simultaneity).
-	if atk_dmg > 0:
-		var old_hp: int = state.get_current_hp(defender_id, db)
-		var actual: int = min(atk_dmg, old_hp)
-		if actual > 0:
-			defender.damage_taken += actual
-			var new_hp: int = state.get_current_hp(defender_id, db)
-			events.append(GameEvent.damage_dealt(attacker_id, defender_id, actual))
-			events.append(GameEvent.hp_changed(defender_id, old_hp, new_hp,
-				state.get_max_hp(defender_id, db)))
+	# Apply both damage packets first (deal_damage no longer auto-destroys),
+	# then check fatalities on both after — true simultaneity.
+	events.append_array(GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db))
+	events.append_array(GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db))
 
-	if def_dmg > 0:
-		var old_hp: int = state.get_current_hp(attacker_id, db)
-		var actual: int = min(def_dmg, old_hp)
-		if actual > 0:
-			attacker.damage_taken += actual
-			var new_hp: int = state.get_current_hp(attacker_id, db)
-			events.append(GameEvent.damage_dealt(defender_id, attacker_id, actual))
-			events.append(GameEvent.hp_changed(attacker_id, old_hp, new_hp,
-				state.get_max_hp(attacker_id, db)))
-
-	# PPP: after both packets resolve, check for fatal damage on both.
+	# PPP: state-based destruction check after both packets have landed.
 	for cid in [defender_id, attacker_id]:
 		var card := state.get_card(cid)
 		if not card or not state.is_in_play(cid):
@@ -534,12 +579,10 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 			continue
 		var zone := state.zones.get(card.zone_id) as Zone
 		if zone and zone.zone_type == "hero_row":
-			# Hero death → game over; do NOT move to graveyard.
 			events.append(GameEvent.game_over(
 				_other_player(state, card.controller), card.controller))
 		else:
-			events.append(GameEvent.card_destroyed(cid, ""))
-			events.append_array(GameLogic.move_card(state, cid, card.owner + "_graveyard"))
+			events.append_array(GameLogic.check_destroyed(state, cid, attacker_id, db))
 
 	return events
 
@@ -559,7 +602,7 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	var zone := state.zones.get(card.zone_id) as Zone
 	if not zone or zone.zone_type != "resource_row":
 		return false
-	if card.face_down or card.is_exhausted:
+	if card.face_down:
 		return false
 	if not db:
 		return true
@@ -567,7 +610,7 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	if not def or def.card_type != "Quest":
 		return false
 	# Check additional resource cost (e.g. "Pay 1" on A Donation of Wool).
-	var resource_cost := max(def.cost, 0)
+	var resource_cost: int = max(def.cost, 0)
 	if resource_cost > state.get_available_resources(action.source_player):
 		return false
 	return true
@@ -723,6 +766,131 @@ static func retract_last(state: GameState, player_id: String,
 		"action_type": top.action_type,
 		"player":      player_id,
 	}))
+	return events
+
+
+# ── Hero power ─────────────────────────────────────────────────────────────────
+
+static func _can_activate_power(state: GameState, action: PendingAction,
+		db = null) -> bool:
+	# Hero powers with "use only on your turn": action phase, turn player, chain empty.
+	if state.phase != "action":
+		return false
+	if state.turn_player != action.source_player:
+		return false
+	if not state.pending_actions.is_empty():
+		return false
+	var ps := state.players.get(action.source_player) as PlayerState
+	if not ps or ps.has_used_hero_power:
+		return false
+	# Hero must be alive (in hero_row).
+	var hero_id: String = action.params.get("hero_id", "")
+	var hero := state.get_card(hero_id)
+	if not hero or not state.is_in_play(hero_id):
+		return false
+	if not db:
+		return true
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def or def.card_type != "Hero":
+		return false
+	# Must be able to afford the cost.
+	var cost: int = max(def.cost, 0)
+	if cost > state.get_available_resources(action.source_player):
+		return false
+	# If this power targets something, the target must be valid.
+	var target_id: String = action.params.get("target_id", "")
+	if target_id != "" and not state.is_in_play(target_id):
+		return false
+	return true
+
+
+static func _resolve_activate_power(state: GameState, action: PendingAction,
+		db = null) -> Array[GameEvent]:
+	var hero_id:   String = action.params.get("hero_id",   "")
+	var target_id: String = action.params.get("target_id", "")
+	var hero := state.get_card(hero_id)
+	if not hero or not db:
+		return []
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def:
+		return []
+
+	var events: Array[GameEvent] = []
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.is_empty() or parts[0] == "":
+			continue
+		match parts[0].strip_edges():
+			"deal_damage_to_target":
+				# Format: deal_damage_to_target:AMOUNT:DMG_TYPE
+				if target_id == "":
+					continue
+				var amount := int(parts[1]) if parts.size() > 1 else 0
+				events.append_array(GameLogic.deal_damage(
+					state, hero_id, target_id, amount, db))
+				# Destruction check immediately (not simultaneous — it's a spell).
+				var t_card := state.get_card(target_id)
+				if t_card and state.get_current_hp(target_id, db) <= 0:
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if t_zone and t_zone.zone_type == "hero_row":
+						events.append(GameEvent.game_over(
+							_other_player(state, t_card.controller), t_card.controller))
+					else:
+						events.append_array(
+							GameLogic.check_destroyed(state, target_id, hero_id, db))
+			"shuffle_hand_draw":
+				events.append_array(
+					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))
+	return events
+
+
+# ── Enters-play targeted effect ────────────────────────────────────────────────
+
+static func _can_choose_enter_play_target(state: GameState, action: PendingAction,
+		_db = null) -> bool:
+	if state.pending_enter_play_effect.is_empty():
+		return false
+	var source_id: String = action.params.get("source_card_id", "")
+	if source_id != state.pending_enter_play_effect.get("card_id", ""):
+		return false
+	var source_card := state.get_card(source_id)
+	if not source_card or source_card.controller != action.source_player:
+		return false
+	# Only one choose_enter_play_target can be on the chain at a time.
+	for a in state.pending_actions:
+		if (a as PendingAction).action_type == "choose_enter_play_target":
+			return false
+	var target_id: String = action.params.get("target_id", "")
+	if target_id == "" or not state.is_in_play(target_id):
+		return false
+	return true
+
+
+static func _resolve_choose_enter_play_target(state: GameState, action: PendingAction,
+		db = null) -> Array[GameEvent]:
+	var source_id: String = action.params.get("source_card_id", "")
+	var target_id: String = action.params.get("target_id", "")
+	var effect_dict: Dictionary = state.pending_enter_play_effect
+	state.pending_enter_play_effect = {}
+
+	var events: Array[GameEvent] = []
+	var effect_str: String = effect_dict.get("effect", "")
+	var parts := effect_str.split(":")
+	if parts.is_empty():
+		return events
+	match parts[0]:
+		"deal_damage_to_target":
+			var amount := int(parts[1]) if parts.size() > 1 else 0
+			events.append_array(GameLogic.deal_damage(state, source_id, target_id, amount, db))
+			var t_card := state.get_card(target_id)
+			if t_card and state.get_current_hp(target_id, db) <= 0:
+				var t_zone := state.zones.get(t_card.zone_id) as Zone
+				if t_zone and t_zone.zone_type == "hero_row":
+					events.append(GameEvent.game_over(
+						_other_player(state, t_card.controller), t_card.controller))
+				else:
+					events.append_array(
+						GameLogic.check_destroyed(state, target_id, source_id, db))
 	return events
 
 

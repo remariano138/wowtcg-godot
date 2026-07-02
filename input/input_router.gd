@@ -14,7 +14,10 @@ extends Node
 # Both human and AI call the same StackResolver entry points (spec §7.1).
 
 signal highlights_updated(playable_ids: Array)
-signal targeting_started(attacker_id: String)
+signal conditional_highlights_updated(orange_ids: Array)
+# dmg_type: "fire", "melee", etc.  "" = unspecified (show crosshair)
+# dmg_amount: damage shown on the cursor overlay; 0 = don't show
+signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 signal targeting_cancelled()
 signal discard_mode_started(count: int)
 signal discard_mode_ended()
@@ -24,8 +27,10 @@ var db
 var local_player: String
 
 # ── Targeting state ────────────────────────────────────────────────────────────
-var _targeting_attacker: String = ""   # "" = not in targeting mode
-var _in_discard_mode: bool = false     # true while player must choose cards to discard
+var _targeting_source:      String = ""   # instance_id of attacker / hero; "" = not targeting
+var _targeting_action_type: String = ""   # "propose_combat" or "activate_power"
+var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for crosshair)
+var _in_discard_mode: bool = false        # true while player must choose cards to discard
 
 
 func setup(p_state: GameState, p_db, p_player: String) -> void:
@@ -43,7 +48,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		pass_priority_action()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_cancel"): # Escape
-		if _targeting_attacker != "":
+		if _targeting_source != "":
 			cancel_targeting()
 		else:
 			retract_last_action()
@@ -60,8 +65,8 @@ func handle_card_click(instance_id: String) -> void:
 		_handle_discard_click(instance_id)
 		return
 
-	# ── Targeting mode: click selects the defender ────────────────────────────
-	if _targeting_attacker != "":
+	# ── Targeting mode: click selects the target ─────────────────────────────
+	if _targeting_source != "":
 		_handle_targeting_click(instance_id)
 		return
 
@@ -71,10 +76,10 @@ func handle_card_click(instance_id: String) -> void:
 	if not card or card.controller != local_player:
 		return
 
-	# ── In-play ally left-click → enter attack targeting ──────────────────────
+	# ── In-play ally / hero left-click → enter attack targeting ───────────────
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
-		if zone and zone.zone_type == "ally_row":
+		if zone and zone.zone_type in ["ally_row", "hero_row"]:
 			var legal := StackResolver.get_legal_attackers(state, local_player, db)
 			if instance_id in legal:
 				start_attack_targeting(instance_id)
@@ -121,41 +126,108 @@ func _handle_discard_click(instance_id: String) -> void:
 	refresh_highlights()
 
 
-# ── Attack targeting ────────────────────────────────────────────────────────────
+# ── Targeting ──────────────────────────────────────────────────────────────────
 
-# Enter targeting mode with the chosen attacker.
-func start_attack_targeting(attacker_id: String) -> void:
-	_targeting_attacker = attacker_id
+# General entry point.  action_type is "propose_combat" or "activate_power".
+# dmg_type is the icon key ("fire", "melee", …) or "" for a crosshair cursor.
+func start_targeting(source_id: String, action_type: String,
+		dmg_type: String, dmg_amount: int = 0) -> void:
+	_targeting_source      = source_id
+	_targeting_action_type = action_type
+	_targeting_dmg_type    = dmg_type
 	refresh_highlights()
-	targeting_started.emit(attacker_id)
+	targeting_started.emit(source_id, dmg_type, dmg_amount)
+
+
+# Convenience wrapper: look up the attacker's dmg_type / ATK and enter combat targeting.
+func start_attack_targeting(attacker_id: String) -> void:
+	var dmg_type   := ""   # default → crosshair; set only when card has an explicit dmg_type
+	var dmg_amount := 0
+	if db:
+		var card := state.get_card(attacker_id)
+		if card:
+			var def := db.get_def(card.card_def_id) as CardDef
+			if def and def.dmg_type != "":
+				dmg_type = def.dmg_type.to_lower()
+	if state:
+		dmg_amount = state.get_atk(attacker_id, db)
+	start_targeting(attacker_id, "propose_combat", dmg_type, dmg_amount)
+
+
+# Convenience wrapper for enters-play targeted effects (e.g. Taz'dingo).
+func start_enter_play_targeting(card_id: String, dmg_type: String, dmg_amount: int) -> void:
+	start_targeting(card_id, "choose_enter_play_target", dmg_type, dmg_amount)
 
 
 # Abort targeting — called by Escape key or scene logic.
 func cancel_targeting() -> void:
-	_targeting_attacker = ""
+	_targeting_source      = ""
+	_targeting_action_type = ""
+	_targeting_dmg_type    = ""
 	refresh_highlights()
 	targeting_cancelled.emit()
 
 
 func _handle_targeting_click(instance_id: String) -> void:
-	# Clicking on a legal defender submits the combat proposal.
-	var legal := StackResolver.get_legal_defenders(state, _targeting_attacker, db)
+	match _targeting_action_type:
+		"propose_combat":            _handle_combat_targeting_click(instance_id)
+		"activate_power":            _handle_power_targeting_click(instance_id)
+		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
+
+
+func _handle_combat_targeting_click(instance_id: String) -> void:
+	var legal := StackResolver.get_legal_defenders(state, _targeting_source, db)
 	if instance_id in legal:
 		var action := PendingAction.make("propose_combat", local_player, {
-			"attacker_id": _targeting_attacker,
-			"defender_id": instance_id,
+			"attacker_id": _targeting_source, "defender_id": instance_id,
 		})
-		_targeting_attacker = ""   # clear BEFORE emitting so highlights reset cleanly
+		_targeting_source = ""
 		targeting_cancelled.emit()
 		var events := StackResolver.submit_action(state, action, db)
 		if events.is_empty():
 			return
 		EventBus.emit_events(events)
+		var pass_events := StackResolver.pass_priority(state, db)
+		EventBus.emit_events(pass_events)
 		refresh_highlights()
-	elif instance_id == _targeting_attacker:
-		# Clicking the attacker again cancels targeting.
+	elif instance_id == _targeting_source:
 		cancel_targeting()
-	# Clicking anything else is ignored (no highlight = not a legal target).
+
+
+func _handle_enter_play_targeting_click(instance_id: String) -> void:
+	var action := PendingAction.make("choose_enter_play_target", local_player, {
+		"source_card_id": _targeting_source, "target_id": instance_id,
+	})
+	if StackResolver.can_submit(state, action, db):
+		_targeting_source = ""
+		targeting_cancelled.emit()
+		var events := StackResolver.submit_action(state, action, db)
+		if events.is_empty():
+			return
+		EventBus.emit_events(events)
+		var pass_events := StackResolver.pass_priority(state, db)
+		EventBus.emit_events(pass_events)
+		refresh_highlights()
+	elif instance_id == _targeting_source:
+		cancel_targeting()
+
+
+func _handle_power_targeting_click(instance_id: String) -> void:
+	var action := PendingAction.make("activate_power", local_player, {
+		"hero_id": _targeting_source, "target_id": instance_id,
+	})
+	if StackResolver.can_submit(state, action, db):
+		_targeting_source = ""
+		targeting_cancelled.emit()
+		var events := StackResolver.submit_action(state, action, db)
+		if events.is_empty():
+			return
+		EventBus.emit_events(events)
+		var pass_events := StackResolver.pass_priority(state, db)
+		EventBus.emit_events(pass_events)
+		refresh_highlights()
+	elif instance_id == _targeting_source:
+		cancel_targeting()
 
 
 # Called by spacebar handler and also exposed so the scene can wire a button.
@@ -193,9 +265,16 @@ func get_playable_card_ids() -> Array:
 	if state.priority_player != local_player:
 		return []
 
-	# Targeting mode: highlight legal defenders for the chosen attacker.
-	if _targeting_attacker != "":
-		return StackResolver.get_legal_defenders(state, _targeting_attacker, db)
+	# Targeting mode: highlight valid targets.
+	if _targeting_source != "":
+		match _targeting_action_type:
+			"propose_combat":
+				return StackResolver.get_legal_defenders(state, _targeting_source, db)
+			"activate_power":
+				return _get_hero_power_targets(_targeting_source)
+			"choose_enter_play_target":
+				return _get_enter_play_targets(_targeting_source)
+		return []
 
 	var result: Array = []
 	# Hand card plays.
@@ -211,11 +290,31 @@ func get_playable_card_ids() -> Array:
 	if state.phase == "action" and state.turn_player == local_player \
 			and state.pending_actions.is_empty():
 		result.append_array(StackResolver.get_legal_attackers(state, local_player, db))
+	# Face-up quests in resource row whose cost is currently payable (simple quests).
+	for card in state.cards_in_zone(local_player + "_resource_row"):
+		if card.face_down:
+			continue
+		var def: CardDef = db.get_def(card.card_def_id) if db else null
+		if not def or def.card_type != "Quest":
+			continue
+		var action := PendingAction.make("use_quest", local_player,
+				{"quest_id": card.instance_id})
+		if StackResolver.can_submit(state, action, db):
+			result.append(card.instance_id)
 	return result
+
+
+# Returns instance_ids of face-up quests whose non-cost trigger condition is
+# currently met (e.g. "killed 3 allies this game"). These light up orange —
+# distinct from simple cost-only quests that go green via get_playable_card_ids.
+# Returns [] until conditional quests are added to the card pool.
+func get_conditional_quest_ids() -> Array:
+	return []
 
 
 func refresh_highlights() -> void:
 	highlights_updated.emit(get_playable_card_ids())
+	conditional_highlights_updated.emit(get_conditional_quest_ids())
 
 
 # True if the local player has at least one legal action available right now.
@@ -258,20 +357,39 @@ func get_context_actions(instance_id: String) -> Array:
 				return [{"label": "Complete Quest — %s" % def.card_name,
 					"action": a, "enabled": StackResolver.can_submit(state, a, db)}]
 
-	# ── In-play characters: Attack option ─────────────────────────────────────
+	# ── In-play characters: Attack + (heroes) Hero Power ─────────────────────
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
 		if zone and zone.zone_type in ["ally_row", "hero_row"]:
+			var result: Array = []
+
 			var legal_attackers := StackResolver.get_legal_attackers(state, local_player, db)
 			var can_attack := state.priority_player == local_player \
 				and instance_id in legal_attackers \
 				and state.phase == "action" \
 				and state.turn_player == local_player \
 				and state.pending_actions.is_empty()
-			# "Attack" opens targeting mode — special action type handled by handle_context_action.
-			var attack_action := PendingAction.make("begin_attack_targeting",
-				local_player, {"attacker_id": instance_id})
-			return [{"label": "Attack", "action": attack_action, "enabled": can_attack}]
+			result.append({"label": "Attack",
+				"action": PendingAction.make("begin_attack_targeting",
+					local_player, {"attacker_id": instance_id}),
+				"enabled": can_attack})
+
+			# Hero power entry (heroes only, controlled by local player).
+			if zone.zone_type == "hero_row" and card.controller == local_player:
+				var ps := state.players.get(local_player) as PlayerState
+				if ps and ps.hero_instance_id == instance_id:
+					var power_check := PendingAction.make("activate_power", local_player,
+						{"hero_id": instance_id, "target_id": ""})
+					var can_power := StackResolver.can_submit(state, power_check, db)
+					var power_atype := "begin_power_targeting" \
+						if _hero_power_needs_target(instance_id) \
+						else "use_hero_power_direct"
+					result.append({"label": "Use Hero Power",
+						"action": PendingAction.make(power_atype, local_player,
+							{"hero_id": instance_id}),
+						"enabled": can_power})
+
+			return result
 
 	# ── Hand cards ─────────────────────────────────────────────────────────────
 	var result: Array = []
@@ -300,11 +418,31 @@ func get_context_actions(instance_id: String) -> Array:
 func handle_context_action(action: PendingAction) -> void:
 	if not state:
 		return
-	# Special: "begin_attack_targeting" opens targeting mode, not the chain.
-	if action.action_type == "begin_attack_targeting":
-		if state.priority_player == local_player:
-			start_attack_targeting(action.params.get("attacker_id", ""))
-		return
+	match action.action_type:
+		"begin_attack_targeting":
+			if state.priority_player == local_player:
+				start_attack_targeting(action.params.get("attacker_id", ""))
+			return
+		"begin_power_targeting":
+			if state.priority_player == local_player:
+				var hero_id: String = action.params.get("hero_id", "")
+				start_targeting(hero_id, "activate_power",
+					_hero_power_dmg_type(hero_id), _hero_power_dmg_amount(hero_id))
+			return
+		"use_hero_power_direct":
+			if state.priority_player != local_player:
+				return
+			var hero_id: String = action.params.get("hero_id", "")
+			var act := PendingAction.make("activate_power", local_player,
+				{"hero_id": hero_id, "target_id": ""})
+			var events := StackResolver.submit_action(state, act, db)
+			if events.is_empty():
+				return
+			EventBus.emit_events(events)
+			var pass_events := StackResolver.pass_priority(state, db)
+			EventBus.emit_events(pass_events)
+			refresh_highlights()
+			return
 	if state.priority_player != local_player:
 		return
 	var events := StackResolver.submit_action(state, action, db)
@@ -315,6 +453,82 @@ func handle_context_action(action: PendingAction) -> void:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+# Returns all in-play cards that are valid targets for the given hero's power.
+func _get_hero_power_targets(hero_id: String) -> Array:
+	var result: Array = []
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var act := PendingAction.make("activate_power", local_player,
+				{"hero_id": hero_id, "target_id": ps.hero_instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(ps.hero_instance_id)
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var act := PendingAction.make("activate_power", local_player,
+				{"hero_id": hero_id, "target_id": card.instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(card.instance_id)
+	return result
+
+
+# Returns all in-play cards that are valid targets for an enters-play effect.
+func _get_enter_play_targets(source_card_id: String) -> Array:
+	var result: Array = []
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var act := PendingAction.make("choose_enter_play_target", local_player,
+				{"source_card_id": source_card_id, "target_id": ps.hero_instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(ps.hero_instance_id)
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var act := PendingAction.make("choose_enter_play_target", local_player,
+				{"source_card_id": source_card_id, "target_id": card.instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(card.instance_id)
+	return result
+
+
+func _hero_power_needs_target(hero_id: String) -> bool:
+	if not db: return false
+	var hero := state.get_card(hero_id)
+	if not hero: return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges().begins_with("deal_damage_to_target"):
+			return true
+	return false
+
+
+func _hero_power_dmg_type(hero_id: String) -> String:
+	if not db: return ""
+	var hero := state.get_card(hero_id)
+	if not hero: return ""
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "deal_damage_to_target" and parts.size() > 2:
+			return parts[2].to_lower()
+	return ""
+
+
+func _hero_power_dmg_amount(hero_id: String) -> int:
+	if not db: return 0
+	var hero := state.get_card(hero_id)
+	if not hero: return 0
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "deal_damage_to_target" and parts.size() > 1:
+			return int(parts[1])
+	return 0
+
 
 func _action_type_for(instance_id: String) -> String:
 	var card := state.get_card(instance_id)

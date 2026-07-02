@@ -23,6 +23,7 @@ var _is_face_down: bool = false
 var _base_color: Color = Color(0.25, 0.45, 0.75)
 var _mouse_inside: bool = false
 var _damage_badge: Label = null
+var _power_used_badge: Label = null
 var _outline: ColorRect = null
 
 
@@ -87,19 +88,34 @@ static func create(inst_id: String, card_name: String,
 	stats_lbl.position = Vector2(-18, H * 0.5 - 26)
 	node.add_child(stats_lbl)
 
-	# Damage badge — shown bottom-right when damage_taken > 0.
+	# Damage badge — centered on card, shown when damage_taken > 0.
 	var badge := Label.new()
-	badge.add_theme_font_size_override("font_size", 12)
-	badge.add_theme_color_override("font_color", Color(1.0, 0.25, 0.25))
-	badge.add_theme_constant_override("outline_size", 2)
-	badge.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
-	badge.position = Vector2(W * 0.5 - 28, H * 0.5 - 18)
-	badge.size     = Vector2(28, 16)
-	badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	badge.add_theme_font_size_override("font_size", 48)
+	badge.add_theme_color_override("font_color", Color(1.0, 0.15, 0.15))
+	badge.add_theme_constant_override("outline_size", 6)
+	badge.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	badge.size     = Vector2(W, 60)
+	badge.position = Vector2(-W * 0.5, -30)
+	badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	badge.visible  = false
 	node.add_child(badge)
 	node._damage_badge = badge
+
+	# "USED" badge — shown on hero cards after they activate their power.
+	var used_lbl := Label.new()
+	used_lbl.text = "USED"
+	used_lbl.add_theme_font_size_override("font_size", 20)
+	used_lbl.add_theme_color_override("font_color", Color(1.0, 0.8, 0.0))
+	used_lbl.add_theme_constant_override("outline_size", 4)
+	used_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	used_lbl.size     = Vector2(W, 30)
+	used_lbl.position = Vector2(-W * 0.5, H * 0.5 - 34)
+	used_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	used_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	used_lbl.visible  = false
+	node.add_child(used_lbl)
+	node._power_used_badge = used_lbl
 
 	# Try to load the real card image.
 	if image_path != "" and image_path != "No match":
@@ -151,8 +167,14 @@ func reveal(duration: float = 1.5) -> void:
 		show_card_back()
 
 
-func set_highlighted(highlighted: bool) -> void:
+func set_power_used(used: bool) -> void:
+	if _power_used_badge:
+		_power_used_badge.visible = used
+
+
+func set_highlighted(highlighted: bool, color: Color = Color(0.2, 1.0, 0.3)) -> void:
 	if _outline:
+		_outline.color   = color
 		_outline.visible = highlighted
 
 

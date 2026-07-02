@@ -96,5 +96,24 @@ static func combat_concluded(attacker_id: String, defender_id: String,
 static func game_over(winner: String, loser: String) -> GameEvent:
 	return make("game_over", {"winner": winner, "loser": loser, "reason": "hero_defeated"})
 
-static func discard_choice_opened(player_id: String, count: int) -> GameEvent:
-	return make("discard_choice_opened", {"player": player_id, "count": count})
+static func discard_choice_opened(player_id: String, count: int, reason: String = "card_effect") -> GameEvent:
+	return make("discard_choice_opened", {"player": player_id, "count": count, "reason": reason})
+
+static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
+	return make("hero_power_used", {"player": player_id, "hero_id": hero_id})
+
+static func mulligan_phase_started(first_player: String, player_order: Array) -> GameEvent:
+	return make("mulligan_phase_started", {
+		"first_player": first_player, "player_order": player_order,
+	})
+
+static func mulligan_committed(player_id: String, wants_mulligan: bool) -> GameEvent:
+	return make("mulligan_committed", {"player": player_id, "mulligan": wants_mulligan})
+
+static func mulligan_phase_ended() -> GameEvent:
+	return make("mulligan_phase_ended", {})
+
+static func enter_play_target_required(card_id: String, dmg_type: String, amount: int) -> GameEvent:
+	return make("enter_play_target_required", {
+		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,
+	})

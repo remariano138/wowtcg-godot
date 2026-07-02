@@ -4,7 +4,7 @@ azeroth,2,Dizdemona,3,Hero,Alliance,Warlock,,Gnome Warlock,,,28,Uncommon,,"Flip 
 azeroth,3,Elendril,1,Hero,Alliance,Hunter,,Night Elf Hunter,,,28,Uncommon,,,unchecked,,,assets\cards\elendril.png
 azeroth,4,Graccus,3,Hero,Alliance,Paladin,,Human Paladin,,,29,Uncommon,,,unchecked,,,assets\cards\graccus.png
 azeroth,5,Litori Frostburn,2,Hero,Alliance,Mage,,Human Mage,,,25,Uncommon,,,unchecked,,,assets\cards\litori_frostburn.png
-azeroth,6,Moonshadow,3,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,"Flip Moonshadow and pay 3: Shuffle your hand into your deck, then draw that many cards.",verified,implemented,,assets\cards\moonshadow.png
+azeroth,6,Moonshadow,3,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,"Flip Moonshadow and pay 3: Shuffle your hand into your deck, then draw that many cards.",verified,implemented,shuffle_hand_draw,assets\cards\moonshadow.png
 azeroth,7,Timmo Shadestep,5,Hero,Alliance,Rogue,,Gnome Rogue,,,27,Uncommon,,Flip Timmo Shadestep and pay 5: Destroy target exhausted ally. Use only on your turn.,verified,,,assets\cards\timmo_shadestep.png
 azeroth,8,Warrax,1,Hero,Alliance,Warrior,,Dwarf Warrior,,,30,Uncommon,,,unchecked,,,assets\cards\warrax.png
 azeroth,9,Gorebelly,1,Hero,Horde,Warrior,,Orc Warrior,,,30,Uncommon,,,unchecked,,,assets\cards\gorebelly.png
@@ -13,7 +13,7 @@ azeroth,11,Kayleitha,2,Hero,Horde,Rogue,,Undead Rogue,,,27,Uncommon,,,unchecked,
 azeroth,12,Omedus the Punisher,3,Hero,Horde,Priest,,Undead Priest,,,26,Uncommon,,Flip Omedus the Punisher and pay 3: Omedus the Punisher deals shadow damage to target hero equal to 7 minus the number of cards in its controller's hand.,verified,,,assets\cards\omedus_the_punisher.png
 azeroth,13,Radak Doombringer,,Hero,Horde,Warlock,,Orc Warlock,,,28,Uncommon,,"Flip Radak Doombringer, destroy one of your Pets with cost X: Radak Doombringer deals X shadow damage to target hero or ally. Use only on your turn.",verified,,,assets\cards\radak_doombringer.png
 azeroth,14,Sen'zir Beastwalker,3,Hero,Horde,Hunter,,Troll Hunter,,,28,Uncommon,,,unchecked,,,assets\cards\senzir_beastwalker.png
-azeroth,15,Ta'zo,3,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,Flip Ta'zo and pay 3: Ta'zo deals 3 fire damage to target hero or ally. Use only on your turn.,verified,implemented,,assets\cards\tazo.png
+azeroth,15,Ta'zo,3,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,Flip Ta'zo and pay 3: Ta'zo deals 3 fire damage to target hero or ally. Use only on your turn.,verified,implemented,deal_damage_to_target:3:fire,assets\cards\tazo.png
 azeroth,16,Thangal,3,Hero,Horde,Druid,,Tauren Druid,,,28,Uncommon,,,unchecked,,,assets\cards\thangal.png
 azeroth,17,Bash,2,Ability,,Druid,,Feral,,,,Uncommon,,,unchecked,,,assets\cards\bash.png
 azeroth,18,Bear Form,1,Ability,,Druid,,Feral,,,,Uncommon,,,unchecked,,,assets\cards\bear_form.png
@@ -210,7 +210,7 @@ azeroth,208,Milo the Unmerciful,2,Ally,Alliance,Warrior,,Night Elf Warrior,3,Mel
 azeroth,209,Moira Darkheart,4,Ally,Alliance,Rogue,,Night Elf Rogue,3,Melee,4,Common,,,unchecked,,,assets\cards\moira_darkheart.png
 azeroth,210,Nerra Lifeboon,5,Ally,Alliance,Druid,,Night Elf Druid,4,Melee,4,Common,,Other allies in your party have +1 health.,verified,,,assets\cards\nerra_lifeboom.png
 azeroth,211,Nightbloom,2,Ally,Alliance,Druid,,Night Elf Druid,1,Nature,1,Rare,,Activation: You may put a card from your hand into your resource row face down and exhausted.,verified,,,assets\cards\nightbloom.png
-azeroth,212,Parvink,3,Ally,Alliance,Warrior,,Gnome Warrior,2,Melee,2,Common,protector,"When Parvink enters play, draw a card.",verified,,,assets\cards\parvink.png
+azeroth,212,Parvink,3,Ally,Alliance,Warrior,,Gnome Warrior,2,Melee,2,Common,protector,"When Parvink enters play, draw a card.",verified,implemented,on_enter:draw:1,assets\cards\parvink.png
 azeroth,213,Randipan,3,Ally,Alliance,Rogue,,Gnome Rogue,2,Melee,2,Uncommon,,"When Randipan deals combat damage to a defending hero, draw a card.",verified,,,assets\cards\randipan.png
 azeroth,214,Ryn Dreamstrider,4,Ally,Alliance,Druid,,Night Elf Druid,2,Nature,2,Common,,,unchecked,,,assets\cards\ryn_dreamstrider.png
 azeroth,215,Sentry Gwynn,5,Ally,Alliance,Warrior,,Night Elf Warrior,3,Melee,4,Rare,,Your hero has Elusive.,verified,,,assets\cards\sentry_gwynn.png
@@ -258,7 +258,7 @@ azeroth,256,Pugg,1,Ally,Horde,Warrior,,Orc Warrior,2,Melee,2,Uncommon,,Other all
 azeroth,257,Rak Skyfury,1,Ally,Horde,Shaman,,Orc Shaman,1,Melee,1,Uncommon,,,unchecked,,,assets\cards\rak_skyfury.png
 azeroth,258,Samuel Grey,3,Ally,Horde,Rogue,,Undead Rogue,2,Melee,2,Uncommon,,"When Samuel Grey deals combat damage to a defending hero, that hero's controller discards a card.",verified,,,assets\cards\samuel_grey.png
 azeroth,259,"Skorn, Mistress of Shadow",5,Ally,Horde,Warlock,,Orc Warlock,3,Shadow,2,Rare,,"When an ally is dealt damage, Skorn deals that amount of shadow damage to target hero in that ally's party.",verified,,,assets\cards\skorn_mistress_of_shadow.png
-azeroth,260,Taz'dingo,3,Ally,Horde,Hunter,,Troll Hunter,2,Ranged,2,Common,,"When Taz'dingo enters play, he deals 1 ranged damage to target hero or ally.",verified,,,assets\cards\tazdingo.png
+azeroth,260,Taz'dingo,3,Ally,Horde,Hunter,,Troll Hunter,2,Ranged,2,Common,,"When Taz'dingo enters play, he deals 1 ranged damage to target hero or ally.",verified,implemented,on_enter:deal_damage_to_target:1:ranged,assets\cards\tazdingo.png
 azeroth,261,Tewa Wildmane,6,Ally,Horde,Druid,,Tauren Druid,0,Nature,0,Rare,,,unchecked,,,assets\cards\tewa_wildmane.png
 azeroth,262,Vaerik Proudhoof,4,Ally,Horde,Warrior,,Tauren Warrior,5,Melee,3,Common,,,verified,implemented,,assets\cards\vaerik_proudhoof.png
 azeroth,263,Valthak Spiritdrinker,4,Ally,Horde,Warlock,,Undead Warlock,3,Shadow,4,Rare,,,unchecked,,,assets\cards\valthak_spiritdinker.png
@@ -279,5 +279,5 @@ azeroth,277,Chromie,6,Ally,,,,Dragonkin,2,Melee,4,Epic,,,unchecked,,,assets\card
 azeroth,278,Landro Longshot,2,Ally,,,,Goblin Gambler,1,Melee,3,Rare,,,,,,assets\cards\landro_longshot.png
 azeroth,279,Saltwater Snapjaw,3,Ally,,,,Turtle,2,Melee,3,Rare,,,,,,assets\cards\saltwater_snapjaw.png
 azeroth,280,Thunderhead Hippogryph,4,Ally,,,,Hippogryph,3,Melee,3,Rare,,,,,,assets\cards\thunderhead_hippogryph.png
-azeroth,281,Your Fortune Awaits You,0,Quest,,,,,,,,Common,,Pay 0 to complete this quest. Reward: Draw a card.,verified,implemented,draw:1,assets\cards\your_fortune_awaits_you.png
+azeroth,281,Your Fortune Awaits You,3,Quest,,,,,,,,Common,,Pay 3 to complete this quest. Reward: Draw a card.,verified,implemented,draw:1,assets\cards\your_fortune_awaits_you.png
 azeroth,351,A Donation of Wool,1,Quest,,,,,,,,Common,,Pay 1 to complete this quest. Reward: Draw a card then discard a card.,verified,implemented,draw:1|discard_from_hand:1,assets\cards\a_donation_of_wool.png

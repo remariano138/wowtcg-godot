@@ -82,9 +82,10 @@ static func move_card_silent(state: GameState, card_id: String, to_zone_id: Stri
 
 
 # ── deal_damage ────────────────────────────────────────────────────────────────
-# Apply damage to a card. If damage meets or exceeds current HP, the card is
-# destroyed (moved to its owner's graveyard). Returns all events including
-# any destruction.
+# Apply damage to an in-play card and emit the relevant events.
+# Does NOT destroy the card — call check_destroyed afterwards when ready.
+# This keeps damage and destruction as separate steps, which is required for
+# simultaneous combat (both hits land before either fatality is checked).
 static func deal_damage(state: GameState, source_id: String, target_id: String,
 		amount: int, db) -> Array[GameEvent]:
 	if amount <= 0:
@@ -108,11 +109,30 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 	events.append(GameEvent.damage_dealt(source_id, target_id, actual))
 	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))
 
-	if new_hp <= 0:
-		events.append(GameEvent.card_destroyed(target_id, source_id))
-		var graveyard_id := target.owner + "_graveyard"
-		events.append_array(move_card(state, target_id, graveyard_id))
+	return events
 
+
+# ── check_destroyed ────────────────────────────────────────────────────────────
+# State-based check: if the card is in play with HP <= 0, destroy it.
+# Heroes are a special case — their death triggers game_over and they do NOT
+# move to the graveyard (the stack resolver handles game_over separately).
+# Returns [] if the card is alive or not in play.
+static func check_destroyed(state: GameState, card_id: String,
+		source_id: String = "", db = null) -> Array[GameEvent]:
+	var card := state.get_card(card_id)
+	if not card or not state.is_in_play(card_id):
+		return []
+	if state.get_current_hp(card_id, db) > 0:
+		return []
+	var zone := state.zones.get(card.zone_id) as Zone
+	if zone and zone.zone_type == "hero_row":
+		# Hero death is handled at the resolver level (game_over event).
+		# check_destroyed must not move the hero — return empty and let the
+		# resolver emit game_over directly.
+		return []
+	var events: Array[GameEvent] = []
+	events.append(GameEvent.card_destroyed(card_id, source_id))
+	events.append_array(move_card(state, card_id, card.owner + "_graveyard"))
 	return events
 
 
@@ -171,6 +191,30 @@ static func destroy_card(state: GameState, card_id: String,
 	var events: Array[GameEvent] = []
 	events.append(GameEvent.card_destroyed(card_id, source_id))
 	events.append_array(move_card(state, card_id, card.owner + "_graveyard"))
+	return events
+
+
+# ── shuffle_hand_into_deck_and_draw ───────────────────────────────────────────
+# Moonshadow-style effect: put all hand cards back into the deck face-down,
+# shuffle, then draw the same number.  Net hand size stays the same unless the
+# deck runs out.
+static func shuffle_hand_into_deck_and_draw(state: GameState,
+		player_id: String) -> Array[GameEvent]:
+	var hand := state.cards_in_zone(player_id + "_hand").duplicate()
+	var draw_count := hand.size()
+	var events: Array[GameEvent] = []
+	# Return hand cards to the deck with events so the renderer clears them.
+	for card in hand:
+		events.append_array(move_card(state, card.instance_id, player_id + "_deck"))
+	# Shuffle the deck in-place.
+	state.zones[player_id + "_deck"].card_ids.shuffle()
+	events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
+	# Draw the same number of cards.
+	for _i in range(draw_count):
+		var deck := state.zones.get(player_id + "_deck") as Zone
+		if not deck or deck.card_ids.is_empty():
+			break
+		events.append_array(move_card(state, deck.card_ids[0], player_id + "_hand"))
 	return events
 
 

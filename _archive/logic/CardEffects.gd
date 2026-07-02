@@ -1,4 +1,3 @@
-class_name CardEffects
 extends RefCounted
 
 # Bespoke per-card power implementations, keyed by card_id ("expansion-collector_number",

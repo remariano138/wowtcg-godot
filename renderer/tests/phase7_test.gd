@@ -21,6 +21,7 @@ const AI_THINK_TIME := 0.5
 
 var _state:  GameState
 var _db:     CardDatabase
+var _gm:     GameManager
 var _renderer: BoardRenderer
 var _router: InputRouter
 var _ai:     FullRandomAI
@@ -44,26 +45,27 @@ func _ready() -> void:
 # ── Scene construction ─────────────────────────────────────────────────────────
 
 func _build_scene() -> void:
-	# Scene is 1600×1050: board occupies y=0..895, UI strip y=900..1050.
+	# Scene is 1600×1050: board occupies y=0..850, UI strip y=900..1050.
 	var bg := ColorRect.new()
 	bg.color = Color(0.10, 0.13, 0.16)
 	bg.size  = Vector2(1600, 1050)
 	add_child(bg)
 
 	# ── Board zone labels (left gutter x=20) ──────────────────────────────────────
-	# Zones are centred at x=700. Labels sit ~13px above each anchor.
 	_add_label("P2 hand",         Vector2(20,  52), 11, Color(0.5, 0.35, 0.35))
-	_add_label("P2 resource row", Vector2(20, 177), 11, Color(0.5, 0.5,  0.35))
-	_add_label("P2 ally row",     Vector2(20, 307), 11, Color(0.45, 0.45, 0.6))
-	_add_label("P1 ally row",     Vector2(20, 557), 11, Color(0.45, 0.6,  0.45))
-	_add_label("P1 resource row", Vector2(20, 682), 11, Color(0.45, 0.55, 0.35))
+	_add_label("P2 resource row", Vector2(20, 182), 11, Color(0.5, 0.5,  0.35))
+	_add_label("P2 ally row",     Vector2(20, 312), 11, Color(0.45, 0.45, 0.6))
+	_add_label("P1 ally row",     Vector2(20, 572), 11, Color(0.45, 0.6,  0.45))
+	_add_label("P1 resource row", Vector2(20, 702), 11, Color(0.45, 0.55, 0.35))
 	_add_label("Your hand (P1)",  Vector2(20, 832), 11, Color(0.45, 0.6,  0.45))
 
-	# ── Deck + graveyard labels (right side, same y as their player's hand) ────────
-	_add_label("P2 graveyard", Vector2(1130,  52), 11, Color(0.5, 0.4, 0.4))
-	_add_label("P2 deck",      Vector2(1280,  52), 11, Color(0.4, 0.4, 0.5))
-	_add_label("P1 graveyard", Vector2(1130, 832), 11, Color(0.4, 0.5, 0.4))
-	_add_label("P1 deck",      Vector2(1280, 832), 11, Color(0.4, 0.4, 0.5))
+	# ── Right column labels (graveyard x=1130, deck/hero x=1280) ─────────────────
+	_add_label("P2 grave",  Vector2(1130,  52), 11, Color(0.5, 0.4, 0.4))
+	_add_label("P2 deck",   Vector2(1280,  52), 11, Color(0.4, 0.4, 0.5))
+	_add_label("P2 hero",   Vector2(1280, 182), 11, Color(0.5, 0.4, 0.5))
+	_add_label("P1 grave",  Vector2(1130, 832), 11, Color(0.4, 0.5, 0.4))
+	_add_label("P1 hero",   Vector2(1280, 702), 11, Color(0.4, 0.5, 0.45))
+	_add_label("P1 deck",   Vector2(1280, 832), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
 	_status = _add_label("", Vector2(20, 972), 13, Color(0.5, 0.8, 0.5))
@@ -72,7 +74,10 @@ func _build_scene() -> void:
 	_renderer = BoardRenderer.new()
 	add_child(_renderer)
 
-	# Zone anchors — 130px between each centre; p1_hand at y=845 (bottom edge 900).
+	# Zone anchors.
+	# Board rows (centre x=700): p2_hand → p2_resource → p2_ally → chain → p1_ally → p1_resource → p1_hand
+	# Right column (x=1350): p2_deck at top, p2_hero just below; p1_deck at bottom, p1_hero just above.
+	# Graveyard at x=1200, same y as the player's hand.
 	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(700,  65)))
 	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(700, 195)))
 	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(700, 325)))
@@ -82,14 +87,24 @@ func _build_scene() -> void:
 	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(700, 845)))
 	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2(1200,  65)))
 	_renderer.register_zone("p2_deck",         _make_anchor(Vector2(1350,  65)))
+	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1350, 195)))
 	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1200, 845)))
 	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1350, 845)))
+	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1350, 715)))
 
 	_renderer.set_status_label(_status)
+
+	# ── Deck slot card-back sprites ────────────────────────────────────────────────
+	_add_deck_back_sprite(Vector2(1350,  65))  # p2 deck
+	_add_deck_back_sprite(Vector2(1350, 845))  # p1 deck
 
 	_router = InputRouter.new()
 	add_child(_router)
 	_renderer.set_input_router(_router)
+	_router.targeting_started.connect(_on_targeting_started)
+	_router.targeting_cancelled.connect(_on_targeting_cancelled)
+	_router.discard_mode_started.connect(_on_discard_mode_started)
+	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 
 	# ── UI strip (y=900..1050) ─────────────────────────────────────────────────────
 	# Left: phase / priority / status  |  Centre: Cancel + Pass  |  Right: hints
@@ -139,6 +154,20 @@ func _build_scene() -> void:
 	EventBus.game_event.connect(_on_game_event)
 
 
+func _add_deck_back_sprite(pos: Vector2) -> void:
+	var back: Texture2D = load(CardNode.CARD_BACK_PATH)
+	if not back:
+		return
+	var tex := TextureRect.new()
+	tex.texture      = back
+	tex.stretch_mode = TextureRect.STRETCH_SCALE
+	tex.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
+	tex.size         = Vector2(CardNode.W, CardNode.H)
+	tex.position     = pos - Vector2(CardNode.W * 0.5, CardNode.H * 0.5)
+	tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(tex)
+
+
 func _make_anchor(pos: Vector2) -> Node2D:
 	var a := Node2D.new()
 	a.global_position = pos
@@ -159,73 +188,129 @@ func _add_label(text: String, pos: Vector2, size: int, color: Color) -> Label:
 # ── Game state setup ───────────────────────────────────────────────────────────
 
 func _setup_game_state() -> void:
-	_state = GameState.create_new(["p1", "p2"])
-
 	# Real database — only engine_status=implemented cards are loaded.
 	_db = CardDatabase.new()
 	_db.load_csv("res://data/cards.csv")
 
 	# Mock-only cards (no CSV row yet): instants and quest placeholder.
-	_db.add_def(_make_mock_def("mock_quick_shot", "Quick Shot",  0, 0, true,  "Ability"))
-	_db.add_def(_make_mock_def("mock_dark_bolt",  "Dark Bolt",   0, 0, true,  "Ability"))
-	_db.add_def(_make_mock_def("mock_quest",      "Forest Camp", 0, 0, false, "Quest"))
+	_db.add_def(_make_mock_def("mock_quick_shot", "Quick Shot", 0, 0, true, "Ability"))
+	_db.add_def(_make_mock_def("mock_dark_bolt",  "Dark Bolt",  0, 0, true, "Ability"))
 
-	# P1 hand: 2× Kor Cindervein (Alliance, 3/3) + 1 instant + 2 quests
-	_add_hand_card("p1_ally_a",  "azeroth_192",    "p1", Vector2(700, 845))
-	_add_hand_card("p1_ally_b",  "azeroth_192",    "p1", Vector2(700, 845))
-	_add_hand_card("p1_inst_a",  "mock_quick_shot","p1", Vector2(700, 845))
-	_add_hand_card("p1_quest_a", "mock_quest",     "p1", Vector2(700, 845))
-	_add_hand_card("p1_quest_b", "mock_quest",     "p1", Vector2(700, 845))
+	# ── P1 deck (Alliance) ────────────────────────────────────────────────────────
+	# 4× Your Fortune Awaits You (Quest, draw 1 on completion)
+	# 4× Crazy Igvand (Protector, 0/6)
+	# 4× Warden Tonarin (Elusive + Protector, 1/1)
+	# 4× Apprentice Teep (Elusive, 2/1)
+	# 4× Latro Abiectus (Elusive, 3/2)
+	# 2× Braxiss the Sleeper (Elusive, 6/4)
+	# 1× Quick Shot (instant placeholder)
+	# Filler: azeroth_192 (Kor Cindervein — solid ally for testing)
+	var p1_cards: Array[String] = [
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",   # Your Fortune Awaits You
+		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",   # Crazy Igvand
+		"azeroth_222", "azeroth_222", "azeroth_222", "azeroth_222",   # Warden Tonarin
+		"azeroth_176", "azeroth_176", "azeroth_176", "azeroth_176",   # Apprentice Teep
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",   # Latro Abiectus
+		"azeroth_179", "azeroth_179",                                  # Braxiss the Sleeper
+		"mock_quick_shot",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",
+		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",
+	]
+	while p1_cards.size() < 60:
+		p1_cards.append("azeroth_192")
+	var deck_p1 := Deck.make("azeroth_6", p1_cards)
 
-	# P2 hand: 1× Vaerik Proudhoof (Horde, 5/3) + 1 instant
-	_add_hand_card("p2_ally_a", "azeroth_262",   "p2", Vector2(700, 65))
-	_add_hand_card("p2_inst_a", "mock_dark_bolt","p2", Vector2(700, 65))
+	# ── P2 deck (Horde) ───────────────────────────────────────────────────────────
+	# 4× Your Fortune Awaits You (neutral quest, both sides can run it)
+	# 4× Fa'tafi (Protector, 3/6, heals 1 each turn)
+	# 4× Ka'tali Stonetusk (Protector, 1/2, heals 1 on your turn)
+	# 4× Kagra of the Crossroads (Ferocity, 1/2)
+	# 4× Vesh'ral (Ferocity, 3/1)
+	# 2× Moko Hunts-at-Dawn (Ferocity, 5/4)
+	# 1× Dark Bolt (instant placeholder)
+	# Filler: azeroth_262 (Vaerik Proudhoof)
+	var p2_cards: Array[String] = [
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",   # Your Fortune Awaits You
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",   # Fa'tafi
+		"azeroth_248", "azeroth_248", "azeroth_248", "azeroth_248",   # Ka'tali Stonetusk
+		"azeroth_246", "azeroth_246", "azeroth_246", "azeroth_246",   # Kagra of the Crossroads
+		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",   # Vesh'ral
+		"azeroth_252", "azeroth_252",                                  # Moko Hunts-at-Dawn
+		"mock_dark_bolt",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",
+		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",
+	]
+	while p2_cards.size() < 60:
+		p2_cards.append("azeroth_262")
+	var deck_p2 := Deck.make("azeroth_15", p2_cards)
 
-	# Decks: real cards where implemented, mocks otherwise
-	_add_deck_card("p1_deck_1", "azeroth_192",    "p1")
-	_add_deck_card("p1_deck_2", "azeroth_192",    "p1")
-	_add_deck_card("p1_deck_3", "mock_quick_shot","p1")
-	_add_deck_card("p2_deck_1", "azeroth_262",    "p2")
-	_add_deck_card("p2_deck_2", "azeroth_262",    "p2")
-	_add_deck_card("p2_deck_3", "mock_dark_bolt", "p2")
+	# GameManager builds the full state: creates zones, places heroes, shuffles
+	# decks, draws 7-card starting hands.
+	_gm = GameManager.new()
+	_gm.setup(_db)
+	_gm.add_player("p1", GameManager.HUMAN, deck_p1)
+	_gm.add_player("p2", GameManager.AI,    deck_p2)
+	_state = _gm.build_state()
+
+	# Seed deck counts before any card_moved events fire.
+	for pid in ["p1", "p2"]:
+		var dz: String = pid + "_deck"
+		var dzone := _state.zones.get(dz) as Zone
+		if dzone:
+			_renderer.init_deck_count(dz, dzone.card_ids.size())
+
+	# Spawn CardNodes for heroes and starting hands.
+	_spawn_zone_nodes("p1_hero_row", Vector2(1350, 715), Color(0.25, 0.45, 0.75))
+	_spawn_zone_nodes("p2_hero_row", Vector2(1350, 195), Color(0.5, 0.25, 0.25))
+	_spawn_zone_nodes("p1_hand",     Vector2(700,  845), Color(0.25, 0.45, 0.75))
+	_spawn_zone_nodes("p2_hand",     Vector2(700,   65), Color(0.5, 0.25, 0.25))
+
+	# Init hero HP bars at full health.
+	for pid in ["p1", "p2"]:
+		var ps := _state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var max_hp := _state.get_max_hp(ps.hero_instance_id, _db)
+			_renderer.init_hero_bar(pid, ps.hero_instance_id, max_hp)
 
 	# Spread starting hand cards before the first event fires.
 	_renderer.relayout_zone("p1_hand")
 	_renderer.relayout_zone("p2_hand")
 
-
 	_router.setup(_state, _db, "p1")
 	_ai = FullRandomAI.new()
 
-	# Start the game — fires phase_changed (ready) which sets up the first window
+	# Start the game — fires phase_changed (ready) which sets up the first window.
 	var events := TurnManager.start_game(_state, "p1", _db)
 	EventBus.emit_events(events)
 	_refresh_ui()
 	_schedule_next_turn()
 
 
-func _add_hand_card(inst_id: String, def_id: String, owner: String,
-		screen_pos: Vector2) -> void:
-	var def: CardDef = _db.get_def(def_id)
+# Spawn CardNode visuals for every card currently in a zone.
+# Cards drawn later will be spawned by _on_game_event("card_moved").
+func _spawn_zone_nodes(zone_id: String, spawn_pos: Vector2, color: Color) -> void:
+	var zone := _state.zones.get(zone_id) as Zone
+	if not zone:
+		return
+	for inst_id in zone.card_ids:
+		_spawn_card_node(inst_id, spawn_pos, color)
+
+
+func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void:
+	if _renderer.has_card_node(inst_id):
+		return
+	var card := _state.get_card(inst_id)
+	if not card:
+		return
+	var def := _db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return
 	var stats := "%d/%d" % [def.printed_atk, def.printed_health]
-	var color  := Color(0.25, 0.45, 0.75) if owner == "p1" else Color(0.5, 0.25, 0.25)
-
-	var card := CardInstance.create(inst_id, def_id, owner, owner + "_hand")
-	_state.cards[inst_id] = card
-	_state.zones[owner + "_hand"].card_ids.append(inst_id)
-
-	var node := CardNode.create(inst_id, def.card_name, stats, color)
-	node.global_position = screen_pos
+	var node  := CardNode.create(inst_id, def.card_name, stats, color, def.image_path)
+	node.global_position = spawn_pos
 	add_child(node)
 	_renderer.register_card(inst_id, node)
-	_renderer.place_card_in_zone(inst_id, owner + "_hand")
-
-
-func _add_deck_card(inst_id: String, def_id: String, owner: String) -> void:
-	var card := CardInstance.create(inst_id, def_id, owner, owner + "_deck")
-	_state.cards[inst_id] = card
-	_state.zones[owner + "_deck"].card_ids.append(inst_id)
-	# No visual node — renderer skips these until Phase 7c introduces card drawing visuals
+	_renderer.place_card_in_zone(inst_id, card.zone_id)
 
 
 # ── UI refresh ─────────────────────────────────────────────────────────────────
@@ -263,7 +348,7 @@ func _update_cancel_btn() -> void:
 
 func _update_pass_btn() -> void:
 	var my_turn    := _state.priority_player == "p1"
-	var has_plays  := not _router.get_playable_card_ids().is_empty()
+	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
 	var in_action  := _state.phase == "action"
 
@@ -385,6 +470,19 @@ func _on_game_event(event: GameEvent) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		"card_moved":
+			# A card drawn from deck needs a fresh CardNode spawned at the hand anchor.
+			var to_zone: String = event.payload.get("to", "")
+			var moved_id: String = event.payload.get("card", "")
+			if to_zone.ends_with("_hand") and not _renderer.has_card_node(moved_id):
+				var card := _state.get_card(moved_id)
+				if card:
+					var is_p1 := card.owner == "p1"
+					var spawn_pos := Vector2(700, 845) if is_p1 else Vector2(700, 65)
+					var color := Color(0.25, 0.45, 0.75) if is_p1 else Color(0.5, 0.25, 0.25)
+					_spawn_card_node(moved_id, spawn_pos, color)
+					# Renderer's _animate_move already ran before this node existed,
+					# so trigger the layout manually now that the node is registered.
+					_renderer.relayout_zone(to_zone)
 			_refresh_ui()
 			if event.payload.get("from", "") == "chain":
 				_schedule_next_turn()
@@ -399,6 +497,12 @@ func _on_game_event(event: GameEvent) -> void:
 			call_deferred("_on_window_closed")
 		"deck_empty":
 			_set_status("Deck empty for %s" % event.payload.get("player", "?"))
+		"protect_point_opened":
+			_handle_protect_point(event.payload)
+		"discard_choice_opened":
+			_handle_discard_choice(event.payload)
+		"game_over":
+			_handle_game_over(event.payload)
 
 
 func _on_window_closed() -> void:
@@ -429,6 +533,107 @@ func _on_context_menu_id_pressed(id: int) -> void:
 	var entry: Dictionary = _context_actions[id]
 	_router.handle_context_action(entry["action"])
 	_refresh_ui()
+
+
+# ── Targeting ──────────────────────────────────────────────────────────────────
+
+func _on_discard_mode_started(count: int) -> void:
+	_set_status("Choose %d card(s) to discard — click a green hand card" % count)
+	_refresh_ui()
+
+
+func _on_discard_mode_ended() -> void:
+	_set_status("")
+	_refresh_ui()
+
+
+func _handle_discard_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var count: int = payload.get("count", 1)
+	if player == "p2":
+		# AI: discard random hand card(s) immediately.
+		for _i in count:
+			var hand := _state.cards_in_zone("p2_hand")
+			if hand.is_empty():
+				break
+			var pick: CardInstance = hand[randi() % hand.size()]
+			var events := StackResolver.choose_discard(_state, pick.instance_id, _db)
+			EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human (p1): enter discard mode — green highlights + click to resolve.
+		_router.start_discard_mode(count)
+
+
+func _on_targeting_started(attacker_id: String) -> void:
+	var def: CardDef = _db.get_def((_state.get_card(attacker_id) as CardInstance).card_def_id)
+	var name_str := def.card_name if def else attacker_id
+	_set_status("⚔ %s attacking — select a target  [Esc to cancel]" % name_str)
+	_refresh_ui()
+
+
+func _on_targeting_cancelled() -> void:
+	_set_status("")
+	_refresh_ui()
+
+
+# ── Protect point ──────────────────────────────────────────────────────────────
+
+func _handle_protect_point(payload: Dictionary) -> void:
+	var defender_id: String    = payload.get("defender_id", "")
+	var protectors: Array      = payload.get("legal_protectors", [])
+	var defender := _state.get_card(defender_id)
+	if not defender:
+		return
+	var defending_player := defender.controller
+
+	if defending_player == "p2":
+		# AI decides immediately.
+		var protector_id := _ai.choose_protector(_state, _db, "p2")
+		var events := StackResolver.choose_protector(_state, protector_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human player (p1): show a popup listing legal protectors + Skip.
+		_show_protect_popup(protectors)
+
+
+func _show_protect_popup(protectors: Array) -> void:
+	var popup := PopupMenu.new()
+	for i in protectors.size():
+		var cid: String = protectors[i]
+		var card := _state.get_card(cid)
+		var label := cid
+		if card and _db:
+			var def: CardDef = _db.get_def(card.card_def_id)
+			if def:
+				label = def.card_name
+		popup.add_item("Protect with: %s" % label, i)
+	popup.add_separator()
+	popup.add_item("Skip — do not protect", protectors.size())
+	popup.id_pressed.connect(func(id: int) -> void:
+		popup.queue_free()
+		var protector_id := protectors[id] if id < protectors.size() else ""
+		var events := StackResolver.choose_protector(_state, protector_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn())
+	add_child(popup)
+	popup.popup_centered()
+
+
+# ── Game over ──────────────────────────────────────────────────────────────────
+
+func _handle_game_over(payload: Dictionary) -> void:
+	var winner: String = payload.get("winner", "?")
+	var dialog := AcceptDialog.new()
+	dialog.title = "Game Over"
+	dialog.dialog_text = "★ %s wins!" % winner.to_upper()
+	dialog.confirmed.connect(func() -> void: dialog.queue_free())
+	add_child(dialog)
+	dialog.popup_centered()
 
 
 func _schedule_next_turn() -> void:

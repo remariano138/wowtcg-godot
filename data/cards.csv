@@ -4,7 +4,7 @@ azeroth,2,Dizdemona,3,Hero,Alliance,Warlock,,Gnome Warlock,,,28,Uncommon,,"Flip 
 azeroth,3,Elendril,1,Hero,Alliance,Hunter,,Night Elf Hunter,,,28,Uncommon,,,unchecked,,,assets\cards\elendril.png
 azeroth,4,Graccus,3,Hero,Alliance,Paladin,,Human Paladin,,,29,Uncommon,,,unchecked,,,assets\cards\graccus.png
 azeroth,5,Litori Frostburn,2,Hero,Alliance,Mage,,Human Mage,,,25,Uncommon,,,unchecked,,,assets\cards\litori_frostburn.png
-azeroth,6,Moonshadow,3,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,"Flip Moonshadow and pay 3: Shuffle your hand into your deck, then draw that many cards.",verified,,,assets\cards\moonshadow.png
+azeroth,6,Moonshadow,3,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,"Flip Moonshadow and pay 3: Shuffle your hand into your deck, then draw that many cards.",verified,implemented,,assets\cards\moonshadow.png
 azeroth,7,Timmo Shadestep,5,Hero,Alliance,Rogue,,Gnome Rogue,,,27,Uncommon,,Flip Timmo Shadestep and pay 5: Destroy target exhausted ally. Use only on your turn.,verified,,,assets\cards\timmo_shadestep.png
 azeroth,8,Warrax,1,Hero,Alliance,Warrior,,Dwarf Warrior,,,30,Uncommon,,,unchecked,,,assets\cards\warrax.png
 azeroth,9,Gorebelly,1,Hero,Horde,Warrior,,Orc Warrior,,,30,Uncommon,,,unchecked,,,assets\cards\gorebelly.png
@@ -13,7 +13,7 @@ azeroth,11,Kayleitha,2,Hero,Horde,Rogue,,Undead Rogue,,,27,Uncommon,,,unchecked,
 azeroth,12,Omedus the Punisher,3,Hero,Horde,Priest,,Undead Priest,,,26,Uncommon,,Flip Omedus the Punisher and pay 3: Omedus the Punisher deals shadow damage to target hero equal to 7 minus the number of cards in its controller's hand.,verified,,,assets\cards\omedus_the_punisher.png
 azeroth,13,Radak Doombringer,,Hero,Horde,Warlock,,Orc Warlock,,,28,Uncommon,,"Flip Radak Doombringer, destroy one of your Pets with cost X: Radak Doombringer deals X shadow damage to target hero or ally. Use only on your turn.",verified,,,assets\cards\radak_doombringer.png
 azeroth,14,Sen'zir Beastwalker,3,Hero,Horde,Hunter,,Troll Hunter,,,28,Uncommon,,,unchecked,,,assets\cards\senzir_beastwalker.png
-azeroth,15,Ta'zo,3,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,Flip Ta'zo and pay 3: Ta'zo deals 3 fire damage to target hero or ally. Use only on your turn.,verified,,,assets\cards\tazo.png
+azeroth,15,Ta'zo,3,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,Flip Ta'zo and pay 3: Ta'zo deals 3 fire damage to target hero or ally. Use only on your turn.,verified,implemented,,assets\cards\tazo.png
 azeroth,16,Thangal,3,Hero,Horde,Druid,,Tauren Druid,,,28,Uncommon,,,unchecked,,,assets\cards\thangal.png
 azeroth,17,Bash,2,Ability,,Druid,,Feral,,,,Uncommon,,,unchecked,,,assets\cards\bash.png
 azeroth,18,Bear Form,1,Ability,,Druid,,Feral,,,,Uncommon,,,unchecked,,,assets\cards\bear_form.png
@@ -169,16 +169,16 @@ azeroth,167,Rise to the Challenge,15,Ability,,,,,,,,Epic,,,unchecked,,,assets\ca
 azeroth,168,Shattering Blow,4,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\shattering_blow.png
 azeroth,169,Spirit Healer,8,Ability,,,,,,,,Epic,,,unchecked,,,assets\cards\spirit_healer.png
 azeroth,170,Sudden Reversal,1,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\sudden_reversal.png
-azeroth,171,Vanquish,4,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\vanquish.png
+azeroth,171,Vanquish,4,Ability,,,,,,,,Common,,Destroy target ally.,verified,,,assets\cards\vanquish.png
 azeroth,172,Withdraw,3,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\withdraw.png
 azeroth,173,Acolyte Demia,6,Ally,Alliance,Warlock,,Human Warlock,3,Shadow,6,Uncommon,,"Activate, 1, put 1 damage on Acolyte Demia: Demia deals 1 shadow damage to target hero or ally. Use only on your turn.",verified,,,assets\cards\acolyte_demia.png
 azeroth,174,Adept Breton,2,Ally,Alliance,Mage,,Human Mage,1,Arcane,1,Uncommon,,"Activate, exhaust, 3: Adept Breton deals 1 arcane damage to each opposing hero and ally.",verified,,,assets\cards\adept_breton.png
-azeroth,175,Anika Berlyn,6,Ally,Alliance,Paladin,,Human Paladin,5,Melee,6,Common,,,verified,,,assets\cards\anika_berlyn.png
-azeroth,176,Apprentice Teep,1,Ally,Alliance,Mage,,Gnome Mage,2,Frost,1,Common,elusive,,verified,,,assets\cards\apprentice_teep.png
+azeroth,175,Anika Berlyn,6,Ally,Alliance,Paladin,,Human Paladin,5,Melee,6,Common,,,verified,implemented,,assets\cards\anika_berlyn.png
+azeroth,176,Apprentice Teep,1,Ally,Alliance,Mage,,Gnome Mage,2,Frost,1,Common,elusive,,verified,implemented,,assets\cards\apprentice_teep.png
 azeroth,177,Augustus Corpsemonger,5,Ally,Alliance,Warlock,,Human Warlock,3,Shadow,4,Rare,,,unchecked,,,assets\cards\augustus_corpsemonger.png
 azeroth,178,Bizzik Sparkcog,4,Ally,Alliance,Warlock,,Gnome Warlock,2,Fire,4,Uncommon,,Destroy an ally in your party: draw a card.,verified,,,assets\cards\bizzik_sparkcog.png
-azeroth,179,Braxiss the Sleeper,6,Ally,Alliance,Druid,,Night Elf Druid,6,Melee,4,Uncommon,elusive,,verified,,,assets\cards\braxiss_the_sleeper.png
-azeroth,180,Crazy Igvand,2,Ally,Alliance,Warrior,,Dwarf Warrior,0,Melee,6,Common,protector,,verified,,,assets\cards\crazy_igvand.png
+azeroth,179,Braxiss the Sleeper,6,Ally,Alliance,Druid,,Night Elf Druid,6,Melee,4,Uncommon,elusive,,verified,implemented,,assets\cards\braxiss_the_sleeper.png
+azeroth,180,Crazy Igvand,2,Ally,Alliance,Warrior,,Dwarf Warrior,0,Melee,6,Common,protector,,verified,implemented,,assets\cards\crazy_igvand.png
 azeroth,181,Donna Calister,5,Ally,Alliance,Warrior,,Human Warrior,1,Melee,7,Uncommon,protector,,unchecked,,,assets\cards\donna_calister.png
 azeroth,182,Dorric the Martyr,1,Ally,Alliance,Paladin,,Dwarf Paladin,1,Holy,2,Common,,,unchecked,,,assets\cards\dorric_the_martyr.png
 azeroth,183,Freya Lightsworn,2,Ally,Alliance,Priest,,Dwarf Priest,2,Holy,2,Common,,Activation: Freya Lightsworn heals 3 damage from target hero or ally.,verified,,,assets\cards\freya_lightsworn.png
@@ -195,7 +195,7 @@ azeroth,193,Kryton Barleybeard,1,Ally,Alliance,Priest,,Dwarf Priest,2,Holy,1,Unc
 azeroth,194,Lady Courtney Noel,3,Ally,Alliance,Priest,,Human Priest,1,Holy,4,Common,,"Activate, exhaust: Lady Courtney Noel heals 1 damage from each hero and ally in your party.",verified,,,assets\cards\lady_courtney_noel.png
 azeroth,195,Lady Jaina Proudmoore,8,Ally,Alliance,Mage,,Human Mage,7,Frost,4,Epic,,,unchecked,,,assets\cards\lady_jaina_proudmoore.png
 azeroth,196,Lafiel,6,Ally,Alliance,Priest,,Night Elf Priest,4,Shadow,5,Common,,,unchecked,,,assets\cards\lafiel.png
-azeroth,197,Latro Abiectus,2,Ally,Alliance,Rogue,,Night Elf Rogue,3,Melee,2,Common,elusive,,verified,,,assets\cards\latro_abiectus.png
+azeroth,197,Latro Abiectus,2,Ally,Alliance,Rogue,,Night Elf Rogue,3,Melee,2,Common,elusive,,verified,implemented,,assets\cards\latro_abiectus.png
 azeroth,198,Leeroy Jenkins,4,Ally,Alliance,Paladin,,Human Paladin,6,Melee,1,Epic,,,unchecked,,,assets\cards\leeroy_jenkins.png
 azeroth,199,Lhurg Venomblade,4,Ally,Alliance,Rogue,,Dwarf Rogue,2,Melee,2,Rare,,"Activate, exhaust: Destroy target exhausted ally.",verified,,,assets\cards\lhurg_venomblade.png
 azeroth,200,Liba Wobblebonk,5,Ally,Alliance,Mage,,Gnome Mage,3,Arcane,4,Common,,"When Liba Wobblebonk enters play, draw a card.",verified,,,assets\cards\liba_wobblebonk.png
@@ -220,13 +220,13 @@ azeroth,218,Stylean Silversteel,6,Ally,Alliance,Priest,,Human Priest,4,Holy,5,Co
 azeroth,219,Tracker Gallen,2,Ally,Alliance,Hunter,,Night Elf Hunter,0,Ranged,2,Common,,Tracker Gallen has +1 ATK for each ally in your party.,verified,,,assets\cards\tracker_gallen.png
 azeroth,220,Treesong,5,Ally,Alliance,Druid,,Night Elf Druid,4,Melee,4,Uncommon,,,unchecked,,,assets\cards\treesong.png
 azeroth,221,Tristan Rapidstrike,4,Ally,Alliance,Warrior,Instant,Night Elf Warrior,3,Melee,3,Common,protector,,verified,,,assets\cards\tristan_rapidstrike.png
-azeroth,222,Warden Tonarin,1,Ally,Alliance,Warrior,,Night Elf Warrior,1,Melee,1,Common,"elusive, protector",,verified,,,assets\cards\warden_tonarin.png
+azeroth,222,Warden Tonarin,1,Ally,Alliance,Warrior,,Night Elf Warrior,1,Melee,1,Common,"elusive, protector",,verified,implemented,,assets\cards\warden_tonarin.png
 azeroth,223,Wilba,4,Ally,Alliance,Hunter,,Dwarf Hunter,2,Ranged,4,Rare,,,unchecked,,,assets\cards\wilba.png
 azeroth,224,Wyneth Harridan,4,Ally,Alliance,Paladin,,Human Paladin,2,Holy,4,Rare,,,unchecked,,,assets\cards\wyneth_harridan.png
 azeroth,225,Arnold Flem,4,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Uncommon,,"When Arnold Flem is destroyed, he deals 1 fire damage to each opposing hero and ally.",verified,,,assets\cards\arnold_flem.png
 azeroth,226,Bala Silentblade,3,Ally,Horde,Rogue,,Orc Rogue,1,Melee,4,Common,,Bala Silentblade has +3 ATK while attacking an exhausted hero or ally.,verified,,,assets\cards\bala_silentblade.png
 azeroth,227,Barak the Shamed,3,Ally,Horde,Warrior,,Orc Warrior,5,Melee,5,Rare,,,unchecked,,,assets\cards\barak_the_shamed.png
-azeroth,228,Benethor Draigo,3,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Common,,,verified,,,assets\cards\benethor_draigo.png
+azeroth,228,Benethor Draigo,3,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Common,,,verified,implemented,,assets\cards\benethor_draigo.png
 azeroth,229,Besh'iah,6,Ally,Horde,Priest,,Troll Priest,4,Shadow,4,Common,,,unchecked,,,assets\cards\beshiah.png
 azeroth,230,Blood Guard Mal'wani,4,Ally,Horde,Rogue,,Troll Rogue,1,Melee,5,Common,,Blood Guard Mal'wani has +1 ATK for each damage on him.,verified,,,assets\cards\blood_guard_malwani.png
 azeroth,231,Brigg,1,Ally,Horde,Warrior,,Orc Warrior,1,Melee,2,Common,,,unchecked,,,assets\cards\brigg.png
@@ -234,7 +234,7 @@ azeroth,232,Confessor Mildred,2,Ally,Horde,Priest,,Undead Priest,2,Shadow,2,Comm
 azeroth,233,Dark Cleric Jocasta,6,Ally,Horde,Priest,,Undead Priest,3,Holy,5,Uncommon,,,unchecked,,,assets\cards\dark_cleric_jocasta.png
 azeroth,234,Deacon Johanna,2,Ally,Horde,Priest,,Undead Priest,2,Holy,2,Uncommon,,"Activate, 2: Deacon Johanna heals 2 damage from target hero or ally. Use only once per turn.",verified,,,assets\cards\deacon_johanna.png
 azeroth,235,Elder Moorf,1,Ally,Horde,Druid,,Tauren Druid,1,Nature,1,Uncommon,,,unchecked,,,assets\cards\elder_moorf.png
-azeroth,236,Fa'tafi,6,Ally,Horde,Warrior,,Troll Warrior,3,Melee,6,Common,protector,"At the start of each turn, Fa'tafi heals 1 damage from herself.",verified,,,assets\cards\fatafi.png
+azeroth,236,Fa'tafi,6,Ally,Horde,Warrior,,Troll Warrior,3,Melee,6,Common,protector,"At the start of each turn, Fa'tafi heals 1 damage from herself.",verified,implemented,heal_at_each_turn_start:1,assets\cards\fatafi.png
 azeroth,237,Fianna Spellbinder,3,Ally,Horde,Mage,,Blood Elf Mage,3,Frost,2,Epic,,,unchecked,,,assets\cards\fianna_spellbinder.png
 azeroth,238,Gartok Skullsplitter,1,Ally,Horde,Warrior,,Orc Warrior,2,Melee,1,Common,,,unchecked,,,assets\cards\gartok_skullsplitter.png
 azeroth,239,Gellrin of the Gallows,2,Ally,Horde,Warlock,,Undead Warlock,3,Shadow,2,Rare,,,unchecked,,,assets\cards\gellrin_of_the_gallows.png
@@ -244,13 +244,13 @@ azeroth,242,Hierophant Caydiem,4,Ally,Horde,Druid,,Tauren Druid,2,Nature,4,Uncom
 azeroth,243,Hur Shieldsmasher,3,Ally,Horde,Warrior,,Orc Warrior,2,Melee,2,Common,,,unchecked,,,assets\cards\hur_shieldsmasher.png
 azeroth,244,Jin'lak Nightfang,2,Ally,Horde,Rogue,,Troll Rogue,3,Melee,1,Common,,,unchecked,,,assets\cards\jinlak_nightfang.png
 azeroth,245,Kaal Soulreaper,7,Ally,Horde,Warlock,,Orc Warlock,5,Shadow,6,Epic,,,unchecked,,,assets\cards\kaal_soulreaper.png
-azeroth,246,Kagra of the Crossroads,1,Ally,Horde,Hunter,,Orc Hunter,1,Ranged,2,Common,ferocity,,verified,,,assets\cards\kagra_of_the_crossroads.png
+azeroth,246,Kagra of the Crossroads,1,Ally,Horde,Hunter,,Orc Hunter,1,Ranged,2,Common,ferocity,,verified,implemented,,assets\cards\kagra_of_the_crossroads.png
 azeroth,247,Karkas Deathhowl,4,Ally,Horde,Warlock,,Orc Warlock,2,Shadow,3,Common,,"When Karkas Deathhowl enters play, you may put target ally into its owner's hand.",verified,,,assets\cards\karkas_deathhowl.png
-azeroth,248,Ka'tali Stonetusk,1,Ally,Horde,Shaman,,Troll Shaman,1,Nature,2,Common,protector,"At the start of your turn, Ka'tali Stonetusk heals 1 damage from herself.",verified,,,assets\cards\katali_stonetusk.png
+azeroth,248,Ka'tali Stonetusk,1,Ally,Horde,Shaman,,Troll Shaman,1,Nature,2,Common,protector,"At the start of your turn, Ka'tali Stonetusk heals 1 damage from herself.",verified,implemented,heal_at_turn_start:1,assets\cards\katali_stonetusk.png
 azeroth,249,Kulan Earthguard,5,Ally,Horde,Shaman,,Tauren Shaman,3,Melee,5,Common,protector,"At the end of your turn, ready Kulan Earthguard.",verified,,,assets\cards\kulan_earthguard.png
 azeroth,250,Masten Everspirit,5,Ally,Horde,Shaman,,Tauren Shaman,4,Nature,2,Rare,,,unchecked,,,assets\cards\masten_everspirit.png
 azeroth,251,Mias the Putrid,2,Ally,Horde,Warlock,,Undead Warlock,1,Shadow,1,Common,,"When Mias the Putrid enters play, target player discards a card.",verified,,,assets\cards\mias_the_putrid.png
-azeroth,252,Moko Hunts-at-Dawn,6,Ally,Horde,Hunter,,Tauren Hunter,5,Ranged,4,Uncommon,ferocity,,verified,,,assets\cards\moko_hunts_at_dawn.png
+azeroth,252,Moko Hunts-at-Dawn,6,Ally,Horde,Hunter,,Tauren Hunter,5,Ranged,4,Uncommon,ferocity,,verified,implemented,,assets\cards\moko_hunts_at_dawn.png
 azeroth,253,Ophelia Barrows,4,Ally,Horde,Warrior,,Undead Warrior,1,Melee,5,Common,,,unchecked,,,assets\cards\ophelia_barrows.png
 azeroth,254,Orgrimmar Grunts,2,Ally,Horde,Warrior,,Orc Warrior,1,Melee,1,Common,,,unchecked,,,assets\cards\orgrimmar_grunts.png
 azeroth,255,Panax the Unstable,5,Ally,Horde,Mage,,Undead Mage,3,Arcane,5,Rare,,,unchecked,,,assets\cards\panax_the_unstable.png
@@ -262,7 +262,7 @@ azeroth,260,Taz'dingo,3,Ally,Horde,Hunter,,Troll Hunter,2,Ranged,2,Common,,"When
 azeroth,261,Tewa Wildmane,6,Ally,Horde,Druid,,Tauren Druid,0,Nature,0,Rare,,,unchecked,,,assets\cards\tewa_wildmane.png
 azeroth,262,Vaerik Proudhoof,4,Ally,Horde,Warrior,,Tauren Warrior,5,Melee,3,Common,,,verified,implemented,,assets\cards\vaerik_proudhoof.png
 azeroth,263,Valthak Spiritdrinker,4,Ally,Horde,Warlock,,Undead Warlock,3,Shadow,4,Rare,,,unchecked,,,assets\cards\valthak_spiritdinker.png
-azeroth,264,Vesh'ral,3,Ally,Horde,Mage,,Troll Mage,3,Fire,1,Common,ferocity,,verified,,,assets\cards\veshral.png
+azeroth,264,Vesh'ral,3,Ally,Horde,Mage,,Troll Mage,3,Fire,1,Common,ferocity,,verified,implemented,,assets\cards\veshral.png
 azeroth,265,Vexra Darkfall,5,Ally,Horde,Mage,,Undead Mage,5,Arcane,2,Uncommon,,"When Vexra Darkfall is destroyed, she deals 1 arcane damage to target hero for each card in that hero's controller's hand.",verified,,,assets\cards\vexra_darkfall.png
 azeroth,266,Voss Treebender,1,Ally,Horde,Druid,,Tauren Druid,2,Nature,1,Common,,,unchecked,,,assets\cards\voss_treebender.png
 azeroth,267,Warchief Thrall,9,Ally,Horde,Shaman,,Orc Shaman,7,Melee,8,Epic,,,unchecked,,,assets\cards\warchief_thrall.png
@@ -279,3 +279,5 @@ azeroth,277,Chromie,6,Ally,,,,Dragonkin,2,Melee,4,Epic,,,unchecked,,,assets\card
 azeroth,278,Landro Longshot,2,Ally,,,,Goblin Gambler,1,Melee,3,Rare,,,,,,assets\cards\landro_longshot.png
 azeroth,279,Saltwater Snapjaw,3,Ally,,,,Turtle,2,Melee,3,Rare,,,,,,assets\cards\saltwater_snapjaw.png
 azeroth,280,Thunderhead Hippogryph,4,Ally,,,,Hippogryph,3,Melee,3,Rare,,,,,,assets\cards\thunderhead_hippogryph.png
+azeroth,281,Your Fortune Awaits You,0,Quest,,,,,,,,Common,,Pay 0 to complete this quest. Reward: Draw a card.,verified,implemented,draw:1,assets\cards\your_fortune_awaits_you.png
+azeroth,351,A Donation of Wool,1,Quest,,,,,,,,Common,,Pay 1 to complete this quest. Reward: Draw a card then discard a card.,verified,implemented,draw:1|discard_from_hand:1,assets\cards\a_donation_of_wool.png

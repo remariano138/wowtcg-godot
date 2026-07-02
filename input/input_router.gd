@@ -14,10 +14,18 @@ extends Node
 # Both human and AI call the same StackResolver entry points (spec §7.1).
 
 signal highlights_updated(playable_ids: Array)
+signal targeting_started(attacker_id: String)
+signal targeting_cancelled()
+signal discard_mode_started(count: int)
+signal discard_mode_ended()
 
 var state: GameState
 var db
 var local_player: String
+
+# ── Targeting state ────────────────────────────────────────────────────────────
+var _targeting_attacker: String = ""   # "" = not in targeting mode
+var _in_discard_mode: bool = false     # true while player must choose cards to discard
 
 
 func setup(p_state: GameState, p_db, p_player: String) -> void:
@@ -35,18 +43,44 @@ func _unhandled_input(event: InputEvent) -> void:
 		pass_priority_action()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_cancel"): # Escape
-		retract_last_action()
+		if _targeting_attacker != "":
+			cancel_targeting()
+		else:
+			retract_last_action()
 		get_viewport().set_input_as_handled()
 
 
 # Called by BoardRenderer when a card visual is clicked.
 func handle_card_click(instance_id: String) -> void:
-	if not state or state.priority_player != local_player:
+	if not state:
+		return
+
+	# ── Discard mode: click discards the chosen hand card ─────────────────────
+	if _in_discard_mode:
+		_handle_discard_click(instance_id)
+		return
+
+	# ── Targeting mode: click selects the defender ────────────────────────────
+	if _targeting_attacker != "":
+		_handle_targeting_click(instance_id)
+		return
+
+	if state.priority_player != local_player:
 		return
 	var card := state.get_card(instance_id)
 	if not card or card.controller != local_player:
 		return
 
+	# ── In-play ally left-click → enter attack targeting ──────────────────────
+	if state.is_in_play(instance_id):
+		var zone := state.zones.get(card.zone_id) as Zone
+		if zone and zone.zone_type == "ally_row":
+			var legal := StackResolver.get_legal_attackers(state, local_player, db)
+			if instance_id in legal:
+				start_attack_targeting(instance_id)
+			return
+
+	# ── Hand card left-click → play / place ───────────────────────────────────
 	var action_type := _action_type_for(instance_id)
 	if action_type == "":
 		return
@@ -54,9 +88,74 @@ func handle_card_click(instance_id: String) -> void:
 			_params_for(instance_id, action_type))
 	var events := StackResolver.submit_action(state, action, db)
 	if events.is_empty():
-		return   # rejected by validator
+		return
 	EventBus.emit_events(events)
+	var pass_events := StackResolver.pass_priority(state, db)
+	EventBus.emit_events(pass_events)
 	refresh_highlights()
+
+
+# ── Discard mode ───────────────────────────────────────────────────────────────
+
+func start_discard_mode(count: int) -> void:
+	_in_discard_mode = true
+	refresh_highlights()
+	discard_mode_started.emit(count)
+
+
+func _handle_discard_click(instance_id: String) -> void:
+	var card := state.get_card(instance_id)
+	if not card or card.controller != local_player:
+		return
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand":
+		return
+	var events := StackResolver.choose_discard(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	# Stay in discard mode if more cards still need to be discarded.
+	if state.pending_discard_count <= 0:
+		_in_discard_mode = false
+		discard_mode_ended.emit()
+	refresh_highlights()
+
+
+# ── Attack targeting ────────────────────────────────────────────────────────────
+
+# Enter targeting mode with the chosen attacker.
+func start_attack_targeting(attacker_id: String) -> void:
+	_targeting_attacker = attacker_id
+	refresh_highlights()
+	targeting_started.emit(attacker_id)
+
+
+# Abort targeting — called by Escape key or scene logic.
+func cancel_targeting() -> void:
+	_targeting_attacker = ""
+	refresh_highlights()
+	targeting_cancelled.emit()
+
+
+func _handle_targeting_click(instance_id: String) -> void:
+	# Clicking on a legal defender submits the combat proposal.
+	var legal := StackResolver.get_legal_defenders(state, _targeting_attacker, db)
+	if instance_id in legal:
+		var action := PendingAction.make("propose_combat", local_player, {
+			"attacker_id": _targeting_attacker,
+			"defender_id": instance_id,
+		})
+		_targeting_attacker = ""   # clear BEFORE emitting so highlights reset cleanly
+		targeting_cancelled.emit()
+		var events := StackResolver.submit_action(state, action, db)
+		if events.is_empty():
+			return
+		EventBus.emit_events(events)
+		refresh_highlights()
+	elif instance_id == _targeting_attacker:
+		# Clicking the attacker again cancels targeting.
+		cancel_targeting()
+	# Clicking anything else is ignored (no highlight = not a legal target).
 
 
 # Called by spacebar handler and also exposed so the scene can wire a button.
@@ -81,9 +180,25 @@ func pass_priority_action() -> void:
 # rules logic in the UI (spec §7.2).
 
 func get_playable_card_ids() -> Array:
-	if not state or state.priority_player != local_player:
+	if not state:
 		return []
+
+	# Discard mode: all local hand cards are valid discard choices.
+	if _in_discard_mode and state.pending_discard_player == local_player:
+		var result: Array = []
+		for card in state.cards_in_zone(local_player + "_hand"):
+			result.append(card.instance_id)
+		return result
+
+	if state.priority_player != local_player:
+		return []
+
+	# Targeting mode: highlight legal defenders for the chosen attacker.
+	if _targeting_attacker != "":
+		return StackResolver.get_legal_defenders(state, _targeting_attacker, db)
+
 	var result: Array = []
+	# Hand card plays.
 	for card in state.cards_in_zone(local_player + "_hand"):
 		var atype := _action_type_for(card.instance_id)
 		if atype == "":
@@ -92,6 +207,10 @@ func get_playable_card_ids() -> Array:
 				_params_for(card.instance_id, atype))
 		if StackResolver.can_submit(state, action, db):
 			result.append(card.instance_id)
+	# Legal attackers (in action phase with empty chain).
+	if state.phase == "action" and state.turn_player == local_player \
+			and state.pending_actions.is_empty():
+		result.append_array(StackResolver.get_legal_attackers(state, local_player, db))
 	return result
 
 
@@ -99,8 +218,26 @@ func refresh_highlights() -> void:
 	highlights_updated.emit(get_playable_card_ids())
 
 
+# True if the local player has at least one legal action available right now.
+# Broader than get_playable_card_ids: also counts face-down resource placement,
+# which is only reachable via the context menu (not left-click).
+func has_any_legal_play() -> bool:
+	if not state or state.priority_player != local_player:
+		return false
+	if not get_playable_card_ids().is_empty():
+		return true
+	# Check face-down resource placement (context-menu only).
+	var fd_action_template := PendingAction.make("place_resource", local_player,
+		{"card_id": "", "face_up": false})
+	for card in state.cards_in_zone(local_player + "_hand"):
+		fd_action_template.params["card_id"] = card.instance_id
+		if StackResolver.can_submit(state, fd_action_template, db):
+			return true
+	return false
+
+
 # Returns Array of {label: String, action: PendingAction, enabled: bool}
-# for all possible actions on a card in the local player's hand.
+# Works for both hand cards and in-play characters.
 func get_context_actions(instance_id: String) -> Array:
 	if not state or not db:
 		return []
@@ -111,34 +248,64 @@ func get_context_actions(instance_id: String) -> Array:
 	if not def:
 		return []
 
+	# ── Face-up quests in resource row: Complete option ───────────────────────
+	if state.is_in_play(instance_id):
+		var zone := state.zones.get(card.zone_id) as Zone
+		if zone and zone.zone_type == "resource_row" and not card.face_down:
+			if def.card_type == "Quest":
+				var a := PendingAction.make("use_quest", local_player,
+					{"quest_id": instance_id})
+				return [{"label": "Complete Quest — %s" % def.card_name,
+					"action": a, "enabled": StackResolver.can_submit(state, a, db)}]
+
+	# ── In-play characters: Attack option ─────────────────────────────────────
+	if state.is_in_play(instance_id):
+		var zone := state.zones.get(card.zone_id) as Zone
+		if zone and zone.zone_type in ["ally_row", "hero_row"]:
+			var legal_attackers := StackResolver.get_legal_attackers(state, local_player, db)
+			var can_attack := state.priority_player == local_player \
+				and instance_id in legal_attackers \
+				and state.phase == "action" \
+				and state.turn_player == local_player \
+				and state.pending_actions.is_empty()
+			# "Attack" opens targeting mode — special action type handled by handle_context_action.
+			var attack_action := PendingAction.make("begin_attack_targeting",
+				local_player, {"attacker_id": instance_id})
+			return [{"label": "Attack", "action": attack_action, "enabled": can_attack}]
+
+	# ── Hand cards ─────────────────────────────────────────────────────────────
 	var result: Array = []
 	var is_resource_type := def.card_type in ["Quest", "Location"]
 
-	# Play action — not available for Quest/Location (rule 306.1)
 	if not is_resource_type:
 		var play_type := "play_instant" if def.is_instant else "play_ally"
 		var a := PendingAction.make(play_type, local_player, {"card_id": instance_id})
 		result.append({"label": "Play %s" % def.card_name,
 			"action": a, "enabled": StackResolver.can_submit(state, a, db)})
 
-	# Place face-up — Quest/Location only
 	if is_resource_type:
 		var a := PendingAction.make("place_resource", local_player,
 			{"card_id": instance_id, "face_up": true})
 		result.append({"label": "Place face-up as resource",
 			"action": a, "enabled": StackResolver.can_submit(state, a, db)})
 
-	# Place face-down — any card
-	var a := PendingAction.make("place_resource", local_player,
+	var fd := PendingAction.make("place_resource", local_player,
 		{"card_id": instance_id, "face_up": false})
 	result.append({"label": "Place face-down as resource",
-		"action": a, "enabled": StackResolver.can_submit(state, a, db)})
+		"action": fd, "enabled": StackResolver.can_submit(state, fd, db)})
 
 	return result
 
 
 func handle_context_action(action: PendingAction) -> void:
-	if not state or state.priority_player != local_player:
+	if not state:
+		return
+	# Special: "begin_attack_targeting" opens targeting mode, not the chain.
+	if action.action_type == "begin_attack_targeting":
+		if state.priority_player == local_player:
+			start_attack_targeting(action.params.get("attacker_id", ""))
+		return
+	if state.priority_player != local_player:
 		return
 	var events := StackResolver.submit_action(state, action, db)
 	if events.is_empty():

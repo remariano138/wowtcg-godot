@@ -66,6 +66,21 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 	return events
 
 
+# Silent variant for setup time (starting hand, hero placement). Same zone
+# bookkeeping as move_card but emits no events — callers handle UI separately.
+static func move_card_silent(state: GameState, card_id: String, to_zone_id: String) -> void:
+	var card := state.get_card(card_id)
+	if not card:
+		return
+	var from_zone := state.zones.get(card.zone_id) as Zone
+	if from_zone:
+		from_zone.card_ids.erase(card_id)
+	var to_zone := state.zones.get(to_zone_id) as Zone
+	if to_zone:
+		to_zone.card_ids.append(card_id)
+	card.zone_id = to_zone_id
+
+
 # ── deal_damage ────────────────────────────────────────────────────────────────
 # Apply damage to a card. If damage meets or exceeds current HP, the card is
 # destroyed (moved to its owner's graveyard). Returns all events including
@@ -88,9 +103,10 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		return []
 	target.damage_taken += actual
 	var new_hp := state.get_current_hp(target_id, db)
+	var max_hp := state.get_max_hp(target_id, db)
 
 	events.append(GameEvent.damage_dealt(source_id, target_id, actual))
-	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp))
+	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))
 
 	if new_hp <= 0:
 		events.append(GameEvent.card_destroyed(target_id, source_id))
@@ -118,7 +134,7 @@ static func heal(state: GameState, target_id: String, amount: int, db) -> Array[
 	var new_hp := state.get_current_hp(target_id, db)
 
 	if new_hp != old_hp:
-		events.append(GameEvent.hp_changed(target_id, old_hp, new_hp))
+		events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, state.get_max_hp(target_id, db)))
 
 	return events
 

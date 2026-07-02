@@ -1,4 +1,3 @@
-class_name SandboxTable
 extends Control
 
 const CARD_SCENE  = preload("res://scenes/elements/Card.tscn")

@@ -48,8 +48,8 @@ static func card_exhausted(card_id: String) -> GameEvent:
 static func card_readied(card_id: String) -> GameEvent:
 	return make("card_readied", {"card": card_id})
 
-static func hp_changed(card_id: String, old_hp: int, new_hp: int) -> GameEvent:
-	return make("hp_changed", {"card": card_id, "old_hp": old_hp, "new_hp": new_hp})
+static func hp_changed(card_id: String, old_hp: int, new_hp: int, max_hp: int) -> GameEvent:
+	return make("hp_changed", {"card": card_id, "old_hp": old_hp, "new_hp": new_hp, "max_hp": max_hp})
 
 static func buff_added(card_id: String, buff_id: String) -> GameEvent:
 	return make("buff_added", {"card": card_id, "buff_id": buff_id})
@@ -66,3 +66,35 @@ static func phase_changed(old_phase: String, new_phase: String, turn_player: Str
 
 static func turn_changed(turn_number: int, turn_player: String) -> GameEvent:
 	return make("turn_changed", {"turn": turn_number, "player": turn_player})
+
+static func combat_started(attacker_id: String, defender_id: String) -> GameEvent:
+	return make("combat_started", {"attacker_id": attacker_id, "defender_id": defender_id})
+
+static func protect_point_opened(attacker_id: String, defender_id: String,
+		legal_protectors: Array) -> GameEvent:
+	return make("protect_point_opened", {
+		"attacker_id":      attacker_id,
+		"defender_id":      defender_id,
+		"legal_protectors": legal_protectors,
+	})
+
+static func protect_chosen(protector_id: String, defending_player: String) -> GameEvent:
+	return make("protect_chosen", {
+		"protector_id":     protector_id,
+		"defending_player": defending_player,
+	})
+
+static func combat_concluded(attacker_id: String, defender_id: String,
+		attacker_damage: int, defender_damage: int) -> GameEvent:
+	return make("combat_concluded", {
+		"attacker_id":     attacker_id,
+		"defender_id":     defender_id,
+		"attacker_damage": attacker_damage,
+		"defender_damage": defender_damage,
+	})
+
+static func game_over(winner: String, loser: String) -> GameEvent:
+	return make("game_over", {"winner": winner, "loser": loser, "reason": "hero_defeated"})
+
+static func discard_choice_opened(player_id: String, count: int) -> GameEvent:
+	return make("discard_choice_opened", {"player": player_id, "count": count})

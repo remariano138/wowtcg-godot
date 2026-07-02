@@ -1,4 +1,3 @@
-class_name AIAdvisor
 extends RefCounted
 
 # Shared power-advisory utilities for all AI implementations.

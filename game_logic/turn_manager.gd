@@ -20,6 +20,7 @@ static func start_game(state: GameState, first_player: String,
 		db = null) -> Array[GameEvent]:
 	state.turn_number  = 1
 	state.turn_player  = first_player
+	state.first_player = first_player
 	return _enter_ready(state, db)
 
 
@@ -50,6 +51,14 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	for card in state.cards_in_zone(state.turn_player + "_resource_row"):
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
 
+	# Triggered effects: "at the start of each turn" (all players' in-play chars).
+	for pid in state.players:
+		for card in state.cards_in_play(pid):
+			events.append_array(_apply_start_of_turn_effects(state, card, pid, db, true))
+	# Triggered effects: "at the start of your turn" (only the turn player's chars).
+	for card in state.cards_in_play(state.turn_player):
+		events.append_array(_apply_start_of_turn_effects(state, card, state.turn_player, db, false))
+
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "ready", "turn_player": state.turn_player,
 		"turn_number": state.turn_number,
@@ -61,7 +70,10 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 static func _enter_draw(state: GameState, db) -> Array[GameEvent]:
 	state.phase = "draw"
 	var events: Array[GameEvent] = []
-	events.append_array(_draw_one(state, state.turn_player))
+	# Rule 501.2b: first player skips the draw step on the very first turn.
+	var is_first_turn_first_player: bool = (state.turn_number == 1 and state.turn_player == state.first_player)
+	if not is_first_turn_first_player:
+		events.append_array(_draw_one(state, state.turn_player))
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "draw", "turn_player": state.turn_player,
 		"turn_number": state.turn_number,
@@ -106,6 +118,27 @@ static func _next_turn(state: GameState, db) -> Array[GameEvent]:
 static func _open_window(state: GameState) -> void:
 	state.priority_player    = state.turn_player
 	state.consecutive_passes = 0
+
+
+# Parse the effects string and fire any start-of-turn triggers.
+# each_turn=true  → only fire "heal_at_each_turn_start" entries (any player's turn)
+# each_turn=false → only fire "heal_at_turn_start" entries (controller's turn only)
+static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
+		_player_id: String, db, each_turn: bool) -> Array[GameEvent]:
+	if not db:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return []
+	var events: Array[GameEvent] = []
+	var trigger_key := "heal_at_each_turn_start" if each_turn else "heal_at_turn_start"
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() < 2 or parts[0].strip_edges() != trigger_key:
+			continue
+		var amount := int(parts[1])
+		events.append_array(GameLogic.heal(state, card.instance_id, amount, db))
+	return events
 
 
 static func _draw_one(state: GameState, player_id: String) -> Array[GameEvent]:

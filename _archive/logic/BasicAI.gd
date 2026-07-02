@@ -1,4 +1,3 @@
-class_name BasicAI
 extends RefCounted
 
 # Reference to SandboxTable — set before calling run_turn()

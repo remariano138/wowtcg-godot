@@ -1,4 +1,3 @@
-class_name GameManager
 extends Node
 
 enum TurnState { BEGINNING, P1, P2 }

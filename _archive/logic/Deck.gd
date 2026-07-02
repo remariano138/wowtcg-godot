@@ -1,4 +1,3 @@
-class_name Deck
 
 var deck_name: String = ""
 var hero_id: String = ""

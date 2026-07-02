@@ -23,6 +23,7 @@ var cards: Dictionary = {}     # instance_id (String) -> CardInstance
 #   "end"       — end phase: instants-only priority window, then wrap-up (no window)
 var turn_number: int = 0
 var turn_player: String = ""       # player_id of who has the active turn
+var first_player: String = ""      # player_id who goes first (set once at game start)
 var phase: String = "setup"
 var priority_player: String = ""   # player_id who currently holds priority
 
@@ -33,6 +34,15 @@ var priority_player: String = ""   # player_id who currently holds priority
 # class exists; typed enforcement added when PendingAction is implemented.
 var pending_actions: Array = []
 var consecutive_passes: int = 0
+
+# ── Active combat state (cleared after each combat concludes) ──────────────────
+var combat_attacker: String = ""   # instance_id of attacker; "" = no combat
+var combat_defender: String = ""   # instance_id of proposed/actual defender
+var in_protect_point: bool  = false # true while waiting for protect decision
+
+# ── Pending interactive choices (cleared once resolved) ────────────────────────
+var pending_discard_player: String = ""  # player who must discard; "" = none pending
+var pending_discard_count:  int    = 0   # how many cards still to discard
 
 
 # ── Factory ────────────────────────────────────────────────────────────────────

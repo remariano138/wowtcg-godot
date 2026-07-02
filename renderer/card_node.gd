@@ -7,35 +7,69 @@ extends Node2D
 
 signal card_clicked(instance_id: String)
 signal card_right_clicked(instance_id: String)
+signal card_hovered(instance_id: String)
+signal card_unhovered(instance_id: String)
 
 const W := 80.0
 const H := 110.0
 
+const CARD_BACK_PATH := "res://assets/card_backs/wowTCGdefaultback.jpg"
+
 var instance_id: String = ""
 var _bg: ColorRect
+var _tex_rect: TextureRect   # shown when a real image is loaded
+var _front_texture: Texture2D = null
+var _is_face_down: bool = false
+var _base_color: Color = Color(0.25, 0.45, 0.75)
+var _mouse_inside: bool = false
+var _damage_badge: Label = null
+var _outline: ColorRect = null
 
 
 static func create(inst_id: String, card_name: String,
-		stats: String, color: Color = Color(0.25, 0.45, 0.75)) -> CardNode:
+		stats: String, color: Color = Color(0.25, 0.45, 0.75),
+		image_path: String = "") -> CardNode:
 	var node := CardNode.new()
 	node.instance_id = inst_id
 
-	# Background
+	# Outline — drawn first (behind everything), only visible when highlighted.
+	const OUTLINE := 3.0
+	var outline := ColorRect.new()
+	outline.color    = Color(0.2, 1.0, 0.3)
+	outline.size     = Vector2(W + OUTLINE * 2, H + OUTLINE * 2)
+	outline.position = Vector2(-W * 0.5 - OUTLINE, -H * 0.5 - OUTLINE)
+	outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	outline.visible  = false
+	node.add_child(outline)
+	node._outline = outline
+
+	# TextureRect — shown when a real card image or the card back is loaded.
+	var tex := TextureRect.new()
+	tex.size             = Vector2(W, H)
+	tex.position         = Vector2(-W * 0.5, -H * 0.5)
+	tex.stretch_mode     = TextureRect.STRETCH_SCALE
+	tex.expand_mode      = TextureRect.EXPAND_IGNORE_SIZE
+	tex.visible          = false
+	node.add_child(tex)
+	node._tex_rect = tex
+
+	# Background (fallback when no image).
 	var bg := ColorRect.new()
 	bg.size     = Vector2(W, H)
 	bg.position = Vector2(-W * 0.5, -H * 0.5)
 	bg.color    = color
 	node.add_child(bg)
 	node._bg = bg
+	node._base_color = color
 
-	# Border inset
+	# Border inset (fallback).
 	var border := ColorRect.new()
 	border.size     = Vector2(W - 4, H - 4)
 	border.position = Vector2(-W * 0.5 + 2, -H * 0.5 + 2)
 	border.color    = color.darkened(0.3)
 	node.add_child(border)
 
-	# Card name
+	# Card name (fallback).
 	var name_lbl := Label.new()
 	name_lbl.text = card_name
 	name_lbl.add_theme_font_size_override("font_size", 9)
@@ -45,7 +79,7 @@ static func create(inst_id: String, card_name: String,
 	name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	node.add_child(name_lbl)
 
-	# ATK / HP stats
+	# ATK / HP stats (fallback).
 	var stats_lbl := Label.new()
 	stats_lbl.text = stats
 	stats_lbl.add_theme_font_size_override("font_size", 13)
@@ -53,22 +87,109 @@ static func create(inst_id: String, card_name: String,
 	stats_lbl.position = Vector2(-18, H * 0.5 - 26)
 	node.add_child(stats_lbl)
 
+	# Damage badge — shown bottom-right when damage_taken > 0.
+	var badge := Label.new()
+	badge.add_theme_font_size_override("font_size", 12)
+	badge.add_theme_color_override("font_color", Color(1.0, 0.25, 0.25))
+	badge.add_theme_constant_override("outline_size", 2)
+	badge.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	badge.position = Vector2(W * 0.5 - 28, H * 0.5 - 18)
+	badge.size     = Vector2(28, 16)
+	badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	badge.visible  = false
+	node.add_child(badge)
+	node._damage_badge = badge
+
+	# Try to load the real card image.
+	if image_path != "" and image_path != "No match":
+		var res_path := "res://" + image_path.replace("\\", "/")
+		var texture: Texture2D = load(res_path)
+		if texture:
+			node._front_texture = texture
+			node._show_texture(texture)
+
 	return node
 
 
-func set_highlighted(highlighted: bool) -> void:
-	if not _bg:
+# Show the card back (face-down resources, hidden hand cards, deck piles).
+# Call whenever damage_taken changes. Pass 0 to hide the badge.
+func update_damage(damage_taken: int) -> void:
+	if not _damage_badge:
 		return
-	_bg.color = Color(0.25, 0.60, 0.15) if highlighted else Color(0.25, 0.45, 0.75)
+	if damage_taken <= 0:
+		_damage_badge.visible = false
+	else:
+		_damage_badge.text    = "-%d" % damage_taken
+		_damage_badge.visible = true
+
+
+func show_card_back() -> void:
+	_is_face_down = true
+	var back: Texture2D = load(CARD_BACK_PATH)
+	if back:
+		_show_texture(back)
+	else:
+		_show_fallback()
+
+
+func show_card_front() -> void:
+	_is_face_down = false
+	if _front_texture:
+		_show_texture(_front_texture)
+	else:
+		_show_fallback()
+
+
+# Briefly show the card's front face, then restore the previous face state.
+# Used for "reveal" effects (discard reveal, top-of-deck reveal, etc.).
+func reveal(duration: float = 1.5) -> void:
+	var was_face_down := _is_face_down
+	show_card_front()
+	await get_tree().create_timer(duration).timeout
+	if was_face_down:
+		show_card_back()
+
+
+func set_highlighted(highlighted: bool) -> void:
+	if _outline:
+		_outline.visible = highlighted
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+func _show_texture(texture: Texture2D) -> void:
+	_tex_rect.texture = texture
+	_tex_rect.visible = true
+	# Hide all sibling nodes except the tex_rect itself.
+	for child in get_children():
+		if child != _tex_rect:
+			child.visible = false
+
+
+func _show_fallback() -> void:
+	_tex_rect.visible = false
+	for child in get_children():
+		child.visible = true
 
 
 func _input(event: InputEvent) -> void:
+	var local: Vector2 = to_local(get_viewport().get_mouse_position())
+	var inside: bool   = abs(local.x) <= W * 0.5 and abs(local.y) <= H * 0.5
+
+	# Hover tracking — emit once on enter/leave.
+	if inside != _mouse_inside:
+		_mouse_inside = inside
+		if inside:
+			card_hovered.emit(instance_id)
+		else:
+			card_unhovered.emit(instance_id)
+
 	if not (event is InputEventMouseButton) or not (event as InputEventMouseButton).pressed:
 		return
-	var mb := event as InputEventMouseButton
-	var local := to_local(get_viewport().get_mouse_position())
-	if abs(local.x) > W * 0.5 or abs(local.y) > H * 0.5:
+	if not inside:
 		return
+	var mb := event as InputEventMouseButton
 	match mb.button_index:
 		MOUSE_BUTTON_LEFT:
 			card_clicked.emit(instance_id)

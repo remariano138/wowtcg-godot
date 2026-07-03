@@ -99,6 +99,9 @@ static func game_over(winner: String, loser: String) -> GameEvent:
 static func discard_choice_opened(player_id: String, count: int, reason: String = "card_effect") -> GameEvent:
 	return make("discard_choice_opened", {"player": player_id, "count": count, "reason": reason})
 
+static func pet_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
+	return make("pet_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
+
 static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
 	return make("hero_power_used", {"player": player_id, "hero_id": hero_id})
 
@@ -115,6 +118,16 @@ static func mulligan_shuffle_done() -> GameEvent:
 
 static func mulligan_phase_ended() -> GameEvent:
 	return make("mulligan_phase_ended", {})
+
+static func attack_window_opened(attacker_id: String, defender_id: String) -> GameEvent:
+	return make("attack_window_opened", {
+		"attacker_id": attacker_id, "defender_id": defender_id,
+	})
+
+static func defend_window_opened(attacker_id: String, defender_id: String) -> GameEvent:
+	return make("defend_window_opened", {
+		"attacker_id": attacker_id, "defender_id": defender_id,
+	})
 
 static func enter_play_target_required(card_id: String, dmg_type: String, amount: int) -> GameEvent:
 	return make("enter_play_target_required", {

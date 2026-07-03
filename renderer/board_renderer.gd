@@ -592,12 +592,12 @@ func _on_card_unhovered(instance_id: String) -> void:
 		_inspector.visible = false
 
 
-func _on_highlights_updated(playable_ids: Array) -> void:
+func _on_highlights_updated(playable_ids: Array, color: Color = Color(0.2, 1.0, 0.3)) -> void:
 	_highlighted_ids = playable_ids
 	for inst_id in card_nodes:
 		var node := card_nodes[inst_id] as Node2D
 		if node and node.has_method("set_highlighted"):
-			node.set_highlighted(inst_id in playable_ids)
+			node.set_highlighted(inst_id in playable_ids, color)
 
 
 func _on_conditional_highlights_updated(orange_ids: Array) -> void:

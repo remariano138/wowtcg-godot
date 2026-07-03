@@ -178,14 +178,14 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		if ap.is_empty():
 			continue
 		if ap.get("targets", "") in ["hero_or_ally"]:
-			# Targeted: try all in-play cards, pick the one with most damage taken.
+			# Targeted: only consider enemy characters (never self-target friendlies).
+			var opp := "p2" if player_id == "p1" else "p1"
 			var candidates: Array[String] = []
-			for pid in state.players:
-				for ally in state.cards_in_zone(pid + "_ally_row"):
-					candidates.append(ally.instance_id)
-				var ps2 := state.players.get(pid) as PlayerState
-				if ps2 and ps2.hero_instance_id != "":
-					candidates.append(ps2.hero_instance_id)
+			for ally in state.cards_in_zone(opp + "_ally_row"):
+				candidates.append(ally.instance_id)
+			var ps_opp := state.players.get(opp) as PlayerState
+			if ps_opp and ps_opp.hero_instance_id != "":
+				candidates.append(ps_opp.hero_instance_id)
 			candidates.sort_custom(func(a: String, b: String) -> bool:
 				var ca := state.get_card(a)
 				var cb := state.get_card(b)
@@ -224,7 +224,7 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 		elif _hero_power_is(state, db, hero_id, "deal_7_minus_hand_to_hero"):
 			var opp_id2 := _other_player_id(state, player_id)
 			var opp_hand := state.cards_in_zone(opp_id2 + "_hand").size()
-			var dmg2 := max(7 - opp_hand, 0)
+			var dmg2: int = max(7 - opp_hand, 0)
 			if dmg2 > 0:
 				var opp_ps2 := state.players.get(opp_id2) as PlayerState
 				if opp_ps2 and opp_ps2.hero_instance_id != "":
@@ -300,12 +300,12 @@ func _x_damage_ally_actions(state: GameState, db, player_id: String,
 		return []
 	# Sort by: lethal first (highest cost wins ties), then most damage dealt.
 	candidates.sort_custom(func(a: String, b: String) -> bool:
-		var hp_a := state.get_current_hp(a, db)
-		var hp_b := state.get_current_hp(b, db)
-		var x_a := min(hp_a, max_x)
-		var x_b := min(hp_b, max_x)
-		var lethal_a := x_a >= hp_a
-		var lethal_b := x_b >= hp_b
+		var hp_a: int = state.get_current_hp(a, db)
+		var hp_b: int = state.get_current_hp(b, db)
+		var x_a: int = min(hp_a, max_x)
+		var x_b: int = min(hp_b, max_x)
+		var lethal_a: bool = x_a >= hp_a
+		var lethal_b: bool = x_b >= hp_b
 		if lethal_a != lethal_b:
 			return lethal_a
 		# Both lethal or both non-lethal: prefer highest cost, then protector.
@@ -322,7 +322,7 @@ func _x_damage_ally_actions(state: GameState, db, player_id: String,
 	for target_id in candidates:
 		var target_hp := state.get_current_hp(target_id, db)
 		# Use the minimum X that kills, or max affordable if non-lethal.
-		var x_value := min(target_hp, max_x)
+		var x_value: int = min(target_hp, max_x)
 		if x_value < 1:
 			continue
 		var act := PendingAction.make("activate_power", player_id,
@@ -528,24 +528,24 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 	var spell_card := state.get_card(card_id)
 	var spell_def  := db.get_def(spell_card.card_def_id) as CardDef if spell_card else null
 
-	for pid in state.players:
-		for ally in state.cards_in_zone(pid + "_ally_row"):
+	var opp := "p2" if player_id == "p1" else "p1"
+	for ally in state.cards_in_zone(opp + "_ally_row"):
+		var act := PendingAction.make("play_instant", player_id,
+			{"card_id": card_id, "target_id": ally.instance_id})
+		if not StackResolver.can_submit(state, act, db):
+			continue
+		if spell_def and _effect_is_destroy_ally(spell_def) \
+				and not _destroy_is_worth_it(state, db, player_id, ally.instance_id, spell_def.cost):
+			continue
+		result.append(act)
+	# Heroes are valid targets only if the spell allows it (destroy_target:ally excludes them).
+	if spell_def and not _effect_is_destroy_ally(spell_def):
+		var ps_opp := state.players.get(opp) as PlayerState
+		if ps_opp and ps_opp.hero_instance_id != "":
 			var act := PendingAction.make("play_instant", player_id,
-				{"card_id": card_id, "target_id": ally.instance_id})
-			if not StackResolver.can_submit(state, act, db):
-				continue
-			if spell_def and _effect_is_destroy_ally(spell_def) \
-					and not _destroy_is_worth_it(state, db, player_id, ally.instance_id, spell_def.cost):
-				continue
-			result.append(act)
-		# Heroes are valid targets only if the spell allows it (destroy_target:ally excludes them).
-		if spell_def and not _effect_is_destroy_ally(spell_def):
-			var ps := state.players.get(pid) as PlayerState
-			if ps and ps.hero_instance_id != "":
-				var act := PendingAction.make("play_instant", player_id,
-					{"card_id": card_id, "target_id": ps.hero_instance_id})
-				if StackResolver.can_submit(state, act, db):
-					result.append(act)
+				{"card_id": card_id, "target_id": ps_opp.hero_instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(act)
 	return result
 
 

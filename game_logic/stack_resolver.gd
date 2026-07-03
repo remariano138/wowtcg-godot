@@ -108,9 +108,18 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 				state.consecutive_passes = 0
 				state.priority_player    = state.turn_player
 				return []   # stall — scene must handle enter_play_target_required
-			# Rule 410.4b: chain empty → window closes, phase advances.
+			# Rule 602.1/602.3: combat window transitions take priority over phase advance.
 			state.consecutive_passes = 0
 			state.priority_player    = state.turn_player
+			if state.combat_attack_window:
+				state.combat_attack_window = false
+				events.append_array(_close_attack_window(state, db))
+				return events
+			if state.combat_defend_window:
+				state.combat_defend_window = false
+				events.append_array(_do_combat_conclusion(state, db))
+				return events
+			# Rule 410.4b: chain empty → window closes, phase advances.
 			events.append(GameEvent.make("priority_window_closed", {
 				"phase": state.phase,
 			}))
@@ -144,6 +153,10 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Pending enters-play target choice blocks everything except resolving it.
 	if not state.pending_enter_play_effect.is_empty() \
 			and action.action_type != "choose_enter_play_target":
+		return false
+
+	# Pet uniqueness violation blocks everything until resolved via choose_pet_sacrifice().
+	if state.pending_pet_sacrifice_player != "":
 		return false
 
 	match action.action_type:
@@ -409,6 +422,9 @@ static func _resolve_play_ally(state: GameState,
 						events.append(GameEvent.enter_play_target_required(
 							card_id, dmg_type, amount))
 
+	# Check pet uniqueness (414.3b) — must happen after the card is in play.
+	events.append_array(_check_pet_uniqueness(state, card_id, db))
+
 	return events
 
 
@@ -510,10 +526,12 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 
 static func _can_use_ally_power(state: GameState, action: PendingAction,
 		db = null) -> bool:
-	# Only on action phase, priority player's turn, empty chain.
+	# Requires priority, action phase, empty chain.
+	# No "turn_player" restriction — ally powers without "use only on your turn" work on
+	# either player's turn (e.g. Grimdron blocking in an opponent's attack/defend window).
 	if state.priority_player != action.source_player:
 		return false
-	if state.phase != "action" or state.turn_player != action.source_player:
+	if state.phase != "action":
 		return false
 	if not state.pending_actions.is_empty():
 		return false
@@ -590,6 +608,19 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 							_other_player(state, t_card.controller), t_card.controller))
 					else:
 						events.append_array(_check_destroyed_trigger(state, t_id, card_id, db))
+		"deal_damage_to_target":
+			var amount: int = int(ap.get("amount", 0))
+			var target_id: String = action.params.get("target_id", "")
+			if target_id != "" and state.is_in_play(target_id):
+				events.append_array(GameLogic.deal_damage(state, card_id, target_id, amount, db))
+				var t_card := state.get_card(target_id)
+				if t_card and state.get_current_hp(target_id, db) <= 0:
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if t_zone and t_zone.zone_type == "hero_row":
+						events.append(GameEvent.game_over(
+							_other_player(state, t_card.controller), t_card.controller))
+					else:
+						events.append_array(_check_destroyed_trigger(state, target_id, card_id, db))
 		"heal_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
@@ -682,6 +713,15 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 		var hero := state.get_card(ps.hero_instance_id)
 		if hero and not _has_keyword(hero, "elusive", db):
 			result.append(hero.instance_id)
+	# sarmoth_taunt: if a taunt card is among the legal defenders, restrict to taunt cards only.
+	if db:
+		var taunt_ids: Array[String] = []
+		for id in result:
+			var c := state.get_card(id)
+			if c and _has_effect_flag(db.get_def(c.card_def_id) as CardDef, "sarmoth_taunt"):
+				taunt_ids.append(id)
+		if not taunt_ids.is_empty():
+			return taunt_ids
 	return result
 
 
@@ -705,6 +745,15 @@ static func get_legal_protectors(state: GameState, attacker_id: String,
 	return result
 
 
+static func _has_effect_flag(def: CardDef, flag: String) -> bool:
+	if not def:
+		return false
+	for segment in def.effects.split("|"):
+		if segment.strip_edges() == flag:
+			return true
+	return false
+
+
 static func _has_keyword(card: CardInstance, keyword: String, db) -> bool:
 	if keyword in card.granted_keywords:
 		return true
@@ -713,6 +762,39 @@ static func _has_keyword(card: CardInstance, keyword: String, db) -> bool:
 		if def and keyword in def.keywords:
 			return true
 	return false
+
+
+# ── Combat window helpers ──────────────────────────────────────────────────────
+
+# Called when the Attack Window closes (both players passed, chain empty).
+# Runs the protect point or opens the Defend Window.
+static func _close_attack_window(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	# Rule 602.2: if either combatant left play during the window, go to conclusion.
+	if not state.is_in_play(state.combat_attacker) \
+			or not state.is_in_play(state.combat_defender):
+		events.append_array(_do_combat_conclusion(state, db))
+		return events
+	# Protect point — still not using the chain (rule 602.2).
+	var protectors := get_legal_protectors(state, state.combat_attacker, state.combat_defender, db)
+	if not protectors.is_empty():
+		state.in_protect_point = true
+		events.append(GameEvent.protect_point_opened(
+			state.combat_attacker, state.combat_defender, protectors))
+	else:
+		events.append_array(_open_defend_window(state))
+	return events
+
+
+# Opens the Defend Window (rule 602.3): the proposed defender becomes the defender
+# and both players get another priority window before damage.
+static func _open_defend_window(state: GameState) -> Array[GameEvent]:
+	# If either combatant left play, skip straight to conclusion.
+	if not state.is_in_play(state.combat_attacker) \
+			or not state.is_in_play(state.combat_defender):
+		return _do_combat_conclusion(state, null)
+	state.combat_defend_window = true
+	return [GameEvent.defend_window_opened(state.combat_attacker, state.combat_defender)]
 
 
 # ── Combat — resolution ────────────────────────────────────────────────────────
@@ -735,22 +817,14 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 			"action_type": "propose_combat", "reason": "illegal_at_resolution",
 		})]
 
-	# Rule 602.1: combat step starts — attacker exhausts now.
+	# Rule 602.1: combat step starts — attacker exhausts now, then Attack Window opens.
 	var events: Array[GameEvent] = []
 	state.combat_attacker = attacker_id
 	state.combat_defender = defender_id
 	events.append_array(GameLogic.exhaust_card(state, attacker_id))
 	events.append(GameEvent.combat_started(attacker_id, defender_id))
-
-	# Rule 602.2: protect point — any ready Protector controlled by defending player
-	# may be exhausted to intercept. The defending player chooses, or skips.
-	var protectors := get_legal_protectors(state, attacker_id, defender_id, db)
-	if protectors.is_empty():
-		# No protectors available: proceed directly to conclusion.
-		events.append_array(_do_combat_conclusion(state, db))
-	else:
-		state.in_protect_point = true
-		events.append(GameEvent.protect_point_opened(attacker_id, defender_id, protectors))
+	state.combat_attack_window = true
+	events.append(GameEvent.attack_window_opened(attacker_id, defender_id))
 	return events
 
 
@@ -775,7 +849,8 @@ static func choose_protector(state: GameState, protector_id: String,
 	else:
 		events.append(GameEvent.protect_chosen("", defending_player))
 
-	events.append_array(_do_combat_conclusion(state, db))
+	# Rule 602.3: protect point concludes, now open the Defend Window.
+	events.append_array(_open_defend_window(state))
 	return events
 
 
@@ -933,6 +1008,21 @@ static func choose_discard(state: GameState, card_id: String,
 	return events
 
 
+static func choose_pet_sacrifice(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_pet_sacrifice_player == "":
+		return []
+	if card_id not in state.pending_pet_sacrifice_ids:
+		return []
+	var card := state.get_card(card_id)
+	if not card or card.controller != state.pending_pet_sacrifice_player:
+		return []
+	return _resolve_choose_pet_sacrifice(state,
+		PendingAction.make("choose_pet_sacrifice", state.pending_pet_sacrifice_player,
+			{"card_id": card_id}),
+		db)
+
+
 static func _draw_one(state: GameState, player_id: String) -> Array[GameEvent]:
 	var deck := state.zones.get(player_id + "_deck") as Zone
 	if not deck or deck.card_ids.is_empty():
@@ -1073,25 +1163,46 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 				return false
 	# deal_7_minus_hand_to_hero: target must be a hero (in hero_row).
 	if _power_effect_is(def, "deal_7_minus_hand_to_hero"):
-		var t_card2 := state.get_card(target_id)
-		if not t_card2:
-			return false
-		var t_zone2 := state.zones.get(t_card2.zone_id) as Zone
-		if not t_zone2 or t_zone2.zone_type != "hero_row":
-			return false
+		if target_id == "":
+			# Pre-targeting probe: pass if there's at least one enemy hero alive.
+			var opp2 := "p2" if action.source_player == "p1" else "p1"
+			var ps2 := state.players.get(opp2) as PlayerState
+			if not ps2 or ps2.hero_instance_id == "" or not state.is_in_play(ps2.hero_instance_id):
+				return false
+		else:
+			var t_card2 := state.get_card(target_id)
+			if not t_card2:
+				return false
+			var t_zone2 := state.zones.get(t_card2.zone_id) as Zone
+			if not t_zone2 or t_zone2.zone_type != "hero_row":
+				return false
 	# deal_x_damage_to_ally: target must be an ally, x_value >= 1, hero must survive the self-damage.
 	if _power_effect_is(def, "deal_x_damage_to_ally"):
-		var t_card := state.get_card(target_id)
-		if not t_card:
-			return false
-		var t_zone := state.zones.get(t_card.zone_id) as Zone
-		if not t_zone or t_zone.zone_type != "ally_row":
-			return false
-		var x_value: int = action.params.get("x_value", 0)
-		if x_value < 1:
-			return false
-		if x_value >= state.get_current_hp(hero_id, db):
-			return false
+		if target_id == "":
+			# Pre-targeting probe (context menu): check hero can survive x=1 and a valid target exists.
+			if state.get_current_hp(hero_id, db) <= 1:
+				return false
+			var opp := "p2" if action.source_player == "p1" else "p1"
+			var has_target := false
+			for tc: CardInstance in state.cards_in_play(opp):
+				var tz := state.zones.get(tc.zone_id) as Zone
+				if tz and tz.zone_type == "ally_row":
+					has_target = true
+					break
+			if not has_target:
+				return false
+		else:
+			var t_card := state.get_card(target_id)
+			if not t_card:
+				return false
+			var t_zone := state.zones.get(t_card.zone_id) as Zone
+			if not t_zone or t_zone.zone_type != "ally_row":
+				return false
+			var x_value: int = action.params.get("x_value", 0)
+			if x_value < 1:
+				return false
+			if x_value >= state.get_current_hp(hero_id, db):
+				return false
 	return true
 
 
@@ -1142,7 +1253,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				if target_id != "" and state.is_in_play(target_id):
 					var t_card := state.get_card(target_id)
 					var hand_size := state.cards_in_zone(t_card.controller + "_hand").size()
-					var amount2 := max(7 - hand_size, 0)
+					var amount2: int = max(7 - hand_size, 0)
 					if amount2 > 0:
 						events.append_array(GameLogic.deal_damage(
 							state, hero_id, target_id, amount2, db))
@@ -1311,4 +1422,67 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 	var events := GameLogic.destroy_card(state, card_id, source_id)
 	if not events.is_empty():
 		events.append_array(_fire_on_destroyed(state, card_id, db))
+	return events
+
+
+# ── Pet uniqueness (rule 414.3b) ──────────────────────────────────────────────
+
+static func _check_pet_uniqueness(state: GameState, card_id: String, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var card := state.get_card(card_id)
+	if not card:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.card_subtype != "Pet":
+		return []
+	# Gather all pets in controller's ally_row (only ally_row counts — 414.1).
+	var pet_ids: Array[String] = []
+	for c in state.cards_in_zone(card.controller + "_ally_row"):
+		var d := db.get_def(c.card_def_id) as CardDef
+		if d and d.card_subtype == "Pet":
+			pet_ids.append(c.instance_id)
+	var ps := state.players.get(card.controller) as PlayerState
+	var capacity: int = ps.pet_capacity if ps else 1
+	if pet_ids.size() <= capacity:
+		return []
+	# Violation: player must sacrifice until at most pet_capacity pets remain.
+	state.pending_pet_sacrifice_player = card.controller
+	state.pending_pet_sacrifice_ids.assign(pet_ids)
+	var typed_ids: Array[String] = []
+	typed_ids.assign(pet_ids)
+	return [GameEvent.pet_sacrifice_required(card.controller, typed_ids)]
+
+
+static func _can_choose_pet_sacrifice(state: GameState, action: PendingAction) -> bool:
+	if state.pending_pet_sacrifice_player == "":
+		return false
+	if action.source_player != state.pending_pet_sacrifice_player:
+		return false
+	var chosen: String = action.params.get("card_id", "")
+	return chosen in state.pending_pet_sacrifice_ids
+
+
+static func _resolve_choose_pet_sacrifice(state: GameState, action: PendingAction,
+		db) -> Array[GameEvent]:
+	var chosen: String = action.params.get("card_id", "")
+	var events: Array[GameEvent] = []
+	events.append_array(_destroy_card_trigger(state, chosen, chosen, db))
+	state.pending_pet_sacrifice_ids.erase(chosen)
+	# Re-check: still a violation if more pets remain than capacity allows.
+	var ps2 := state.players.get(state.pending_pet_sacrifice_player) as PlayerState
+	var capacity2: int = ps2.pet_capacity if ps2 else 1
+	var surviving_pets: Array[String] = []
+	for cid in state.pending_pet_sacrifice_ids:
+		if state.is_in_play(cid):
+			surviving_pets.append(cid)
+	if surviving_pets.size() <= capacity2:
+		state.pending_pet_sacrifice_player = ""
+		state.pending_pet_sacrifice_ids.clear()
+	else:
+		state.pending_pet_sacrifice_ids.assign(surviving_pets)
+		var typed_ids: Array[String] = []
+		typed_ids.assign(surviving_pets)
+		events.append(GameEvent.pet_sacrifice_required(
+			state.pending_pet_sacrifice_player, typed_ids))
 	return events

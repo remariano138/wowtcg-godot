@@ -39,6 +39,9 @@ var consecutive_passes: int = 0
 var combat_attacker: String = ""   # instance_id of attacker; "" = no combat
 var combat_defender: String = ""   # instance_id of proposed/actual defender
 var in_protect_point: bool  = false # true while waiting for protect decision
+# Rule 602.1 / 602.3: priority windows within a combat step.
+var combat_attack_window: bool  = false  # true during the Attack Window
+var combat_defend_window: bool  = false  # true during the Defend Window
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending
@@ -46,6 +49,9 @@ var pending_discard_count:  int    = 0   # how many cards still to discard
 # Non-empty while an enters-play targeted effect is waiting for the controller to choose a target.
 # Keys: card_id (String), effect (String), dmg_type (String), amount (int).
 var pending_enter_play_effect: Dictionary = {}
+# Pet uniqueness: player must sacrifice pets until at most 1 remains in play.
+var pending_pet_sacrifice_player: String = ""
+var pending_pet_sacrifice_ids: Array[String] = []  # instance_ids of ALL pets currently in play for that player
 
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.

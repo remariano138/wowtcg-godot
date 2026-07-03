@@ -45,21 +45,21 @@ static func commit_mulligan(state: GameState, player_id: String,
 
 	# Execute all mulligans in two phases separated by mulligan_shuffle_done.
 	# Phase 1: return cards and shuffle decks.
-	var mulligan_draw_counts: Dictionary = {}
+	var mulligan_pids: Array = []
 	for pid in state.players:
 		if state.mulligan_wants.get(pid, false):
 			var hand := state.cards_in_zone(pid + "_hand").duplicate()
-			mulligan_draw_counts[pid] = hand.size()
 			for card in hand:
 				events.append_array(GameLogic.move_card(state, card.instance_id, pid + "_deck"))
 			var deck := state.zones.get(pid + "_deck") as Zone
 			if deck:
 				deck.card_ids.shuffle()
+			mulligan_pids.append(pid)
 	# Marker: renderer uses this to pause before the draw phase fires.
 	events.append(GameEvent.mulligan_shuffle_done())
-	# Phase 2: draw new hands.
-	for pid in mulligan_draw_counts:
-		for _i in mulligan_draw_counts[pid]:
+	# Phase 2: always redraw exactly STARTING_HAND_SIZE cards (rule 103.4).
+	for pid in mulligan_pids:
+		for _i in GameManager.STARTING_HAND_SIZE:
 			events.append_array(_draw_one(state, pid))
 
 	events.append(GameEvent.mulligan_phase_ended())

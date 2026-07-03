@@ -128,7 +128,7 @@ func _build_scene() -> void:
 	_add_label("P1 deck",   Vector2(1280, 832), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
-	_status = _add_label("", Vector2(20, 1037), 13, Color(0.5, 0.8, 0.5))
+	_status = _add_label("", Vector2(20, 1025), 18, Color(0.5, 0.8, 0.5))
 
 	# Renderer
 	_renderer = BoardRenderer.new()
@@ -165,6 +165,7 @@ func _build_scene() -> void:
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
+	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_build_x_dialog()
 
@@ -292,7 +293,8 @@ func _build_scene() -> void:
 	_end_turn_dialog.confirmed.connect(_on_end_turn_confirmed)
 	add_child(_end_turn_dialog)
 
-	EventBus.game_event.connect(_on_game_event)
+	if not EventBus.game_event.is_connected(_on_game_event):
+		EventBus.game_event.connect(_on_game_event)
 
 
 # ── Menu ───────────────────────────────────────────────────────────────────────
@@ -503,6 +505,40 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_179", "azeroth_179",
 	]
 
+	# ── Dizdemona deck (60 cards) — alliance base + 2× Grimdron (Warlock pet) ──
+	# Same as alliance_cards except: 2 Grimdron replace 2 Crazy Igvand (filler trimmed 8→6).
+	var dizdemona_cards: Array[String] = [
+		# 12× Your Fortune Awaits You
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		# 2× Apprentice Teep  (1-cost protector)
+		"azeroth_176", "azeroth_176",
+		# 2× Warden Tonarin   (1-cost protector)
+		"azeroth_222", "azeroth_222",
+		# 2× Parvink          (3-cost alignment staple)
+		"azeroth_212", "azeroth_212",
+		# 2× Adept Breton     (activated-power AoE)
+		"azeroth_174", "azeroth_174",
+		# 2× Vanquish
+		"azeroth_171", "azeroth_171",
+		# 2× Freya Lightsworn (activated heal)
+		"azeroth_183", "azeroth_183",
+		# 2× Grimdron (Warlock pet), 2× Sarmoth (Warlock pet)
+		"azeroth_125", "azeroth_125",
+		"azeroth_130", "azeroth_130",
+		# Filler — Crazy Igvand trimmed 8→4 to make room for pets
+		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×4
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×6
+		"azeroth_175", "azeroth_175",
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×6
+		"azeroth_179", "azeroth_179",
+	]
+
 	# ── Omedus deck (60 cards) — horde base with Mias replacing half of Fa'tafi ──
 	# Core (26): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish · 4 Mias
 	# Filler (34): same 5 allies but Fa'tafi trimmed 8→4 to make room
@@ -540,7 +576,7 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		DECK_HORDE_GRENNAN:       return Deck.make("azeroth_10", horde_cards)
 		DECK_HORDE_OMEDUS:        return Deck.make("azeroth_12", omedus_cards)
 		DECK_ALLIANCE_TIMMO:      return Deck.make("azeroth_7", alliance_cards)
-		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", alliance_cards)
+		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", dizdemona_cards)
 		_:                        return Deck.make("azeroth_6", alliance_cards)  # DECK_ALLIANCE_MOONSHADOW
 
 
@@ -876,14 +912,26 @@ func _log_event(event: GameEvent) -> void:
 				_log_entry("[color=%s]%s plays [b]%s[/b][/color]" % [col, _log_player(owner), _log_card(cid)])
 		"resource_placed":
 			var p:  String = _log_player(event.payload.get("player", ""))
-			var cid: String = event.payload.get("card_id", "")
 			var face_up: bool = event.payload.get("face_up", false)
-			var face := "face-up" if face_up else "face-down"
-			_log_entry("[color=#888]%s places %s %s[/color]" % [p, _log_card(cid), face])
+			if face_up:
+				var cid: String = event.payload.get("card_id", "")
+				_log_entry("[color=#888]%s places %s face-up[/color]" % [p, _log_card(cid)])
+			else:
+				_log_entry("[color=#888]%s places a card face-down[/color]" % p)
 		"combat_started":
 			var att: String = _log_card(event.payload.get("attacker_id", ""))
 			var def: String = _log_card(event.payload.get("defender_id", ""))
 			_log_entry("[color=#fc8][b]%s ⚔ %s[/b][/color]" % [att, def])
+		"attack_window_opened":
+			_set_status("⚔ Attack window — you may respond before protect  [Space to pass]")
+			_refresh_ui()
+			_schedule_next_turn()
+			_maybe_turbo_pass()
+		"defend_window_opened":
+			_set_status("⚔ Defend window — you may respond before damage  [Space to pass]")
+			_refresh_ui()
+			_schedule_next_turn()
+			_maybe_turbo_pass()
 		"damage_dealt":
 			var src:    String = _log_card(event.payload.get("source", ""))
 			var tgt:    String = _log_card(event.payload.get("target", ""))
@@ -997,12 +1045,15 @@ func _on_game_event(event: GameEvent) -> void:
 		"combat_concluded":
 			if _in_protect_mode:
 				_resolve_protection("")   # safety: clean up any orphaned protect UI
+			_set_status("")
 			_refresh_ui()
 			_schedule_next_turn()
 		"protect_point_opened":
 			_handle_protect_point(event.payload)
 		"discard_choice_opened":
 			_handle_discard_choice(event.payload)
+		"pet_sacrifice_required":
+			_handle_pet_sacrifice(event.payload)
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)
 		"mulligan_phase_started":
@@ -1115,7 +1166,7 @@ func _on_context_menu_id_pressed(id: int) -> void:
 # ── Targeting ──────────────────────────────────────────────────────────────────
 
 func _on_discard_mode_started(count: int) -> void:
-	_set_status("Choose %d card(s) to discard — click a green hand card" % count)
+	_set_status("Choose %d card(s) to discard — click a highlighted hand card" % count)
 	_refresh_ui()
 
 
@@ -1125,9 +1176,20 @@ func _on_discard_mode_ended() -> void:
 	if _discard_reason == "wrap_up":
 		_discard_reason = "card_effect"
 		call_deferred("_on_window_closed")
+	else:
+		_schedule_next_turn()
+		_maybe_turbo_pass()
 
 
 var _discard_reason: String = "card_effect"
+
+
+func _on_pet_sacrifice_mode_ended() -> void:
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
+
 
 func _handle_discard_choice(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
@@ -1167,12 +1229,56 @@ func _pick_ai_discard(player_id: String) -> CardInstance:
 		else:
 			non_resource.append(card)
 	if not non_resource.is_empty():
-		non_resource.sort_custom(func(a: CardInstance, b: CardInstance) -> bool:
+		non_resource.sort_custom(func(a, b) -> bool:
 			var da: CardDef = _db.get_def(a.card_def_id) if _db else null
 			var db_: CardDef = _db.get_def(b.card_def_id) if _db else null
 			return (da.cost if da else 0) < (db_.cost if db_ else 0))
 		return non_resource[0]
 	return resource_only[randi() % resource_only.size()]
+
+
+func _handle_pet_sacrifice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var candidates: Array = payload.get("candidates", [])
+	var player_type := _p1_type if player == "p1" else _p2_type
+	if player_type != "human":
+		# AI: pick which pet to sacrifice (keep the best one, remove the rest).
+		var keep_id := _pick_ai_pet_keep(player, candidates)
+		for cid: String in candidates:
+			if cid == keep_id:
+				continue
+			var events := StackResolver.choose_pet_sacrifice(_state, cid, _db)
+			if not events.is_empty():
+				EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: highlight all candidate pets; click one to sacrifice it.
+		_router.start_pet_sacrifice_mode(candidates)
+		_set_status("Pet limit exceeded — click a highlighted pet to sacrifice it")
+		_refresh_ui()
+
+
+# Returns the instance_id the AI wants to KEEP (the others get sacrificed).
+# Strategy: keep highest-cost pet; tie-break by highest current HP; then random.
+func _pick_ai_pet_keep(player_id: String, candidates: Array) -> String:
+	if candidates.is_empty():
+		return ""
+	var best: String = candidates[0]
+	var best_cost := -1
+	var best_hp := -1
+	for cid: String in candidates:
+		var card := _state.get_card(cid)
+		if not card:
+			continue
+		var def: CardDef = _db.get_def(card.card_def_id) if _db else null
+		var cost: int = def.cost if def else 0
+		var hp: int = _state.get_current_hp(cid, _db)
+		if cost > best_cost or (cost == best_cost and hp > best_hp):
+			best_cost = cost
+			best_hp = hp
+			best = cid
+	return best
 
 
 func _handle_enter_play_target(payload: Dictionary) -> void:
@@ -1185,21 +1291,20 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 	var ctrl := card.controller
 	var ctrl_type := _p1_type if ctrl == "p1" else _p2_type
 	if ctrl_type != "human":
-		# AI picks a random valid target immediately.
+		# AI picks a random valid target — opponents only, never self-harm.
+		var opp := "p2" if ctrl == "p1" else "p1"
 		var targets: Array = []
-		for pid in _state.players:
-			var ps := _state.players.get(pid) as PlayerState
-			if ps and ps.hero_instance_id != "":
-				var act := PendingAction.make("choose_enter_play_target", ctrl,
-					{"source_card_id": card_id, "target_id": ps.hero_instance_id})
-				if StackResolver.can_submit(_state, act, _db):
-					targets.append(ps.hero_instance_id)
-		for pid in _state.players:
-			for ally in _state.cards_in_zone(pid + "_ally_row"):
-				var act := PendingAction.make("choose_enter_play_target", ctrl,
-					{"source_card_id": card_id, "target_id": ally.instance_id})
-				if StackResolver.can_submit(_state, act, _db):
-					targets.append(ally.instance_id)
+		var ps_opp := _state.players.get(opp) as PlayerState
+		if ps_opp and ps_opp.hero_instance_id != "":
+			var act := PendingAction.make("choose_enter_play_target", ctrl,
+				{"source_card_id": card_id, "target_id": ps_opp.hero_instance_id})
+			if StackResolver.can_submit(_state, act, _db):
+				targets.append(ps_opp.hero_instance_id)
+		for ally in _state.cards_in_zone(opp + "_ally_row"):
+			var act := PendingAction.make("choose_enter_play_target", ctrl,
+				{"source_card_id": card_id, "target_id": ally.instance_id})
+			if StackResolver.can_submit(_state, act, _db):
+				targets.append(ally.instance_id)
 		if not targets.is_empty():
 			var target_id: String = targets[randi() % targets.size()]
 			var action := PendingAction.make("choose_enter_play_target", ctrl,
@@ -1265,7 +1370,7 @@ func _build_x_dialog() -> void:
 
 	_x_input = LineEdit.new()
 	_x_input.placeholder_text = "enter X"
-	_x_input.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_x_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_x_input.text_submitted.connect(_on_x_submitted)
 	vbox.add_child(_x_input)
 
@@ -1486,6 +1591,10 @@ func _on_rematch() -> void:
 func _schedule_next_turn() -> void:
 	if _game_over:
 		return
+	if _state.pending_discard_count > 0:
+		return  # wait for discard resolution before advancing
+	if _state.pending_pet_sacrifice_player != "":
+		return  # wait for pet sacrifice before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	if pid_type != "human" \
@@ -1512,6 +1621,10 @@ func _maybe_turbo_pass() -> void:
 	if not _turbo_mode or not _state or not _router:
 		return
 	if _in_protect_mode:
+		return
+	if _state.pending_discard_count > 0:
+		return
+	if _state.pending_pet_sacrifice_player != "":
 		return
 	if _state.priority_player != "p1" or _p1_type != "human":
 		return

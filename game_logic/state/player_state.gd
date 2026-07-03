@@ -23,6 +23,10 @@ var has_used_hero_power: bool = false
 # Rule 415.4b: default is 7; some card effects raise or lower it.
 var max_hand_size: int = 7
 
+# Maximum number of Pets a player may have in their ally_row simultaneously.
+# Default is 1; some card effects increase this.
+var pet_capacity: int = 1
+
 
 static func make(p_player_id: String) -> PlayerState:
 	var ps := PlayerState.new()
@@ -37,6 +41,7 @@ func to_dict() -> Dictionary:
 		"resource_placed_this_turn": resource_placed_this_turn,
 		"has_used_hero_power":      has_used_hero_power,
 		"max_hand_size":            max_hand_size,
+		"pet_capacity":             pet_capacity,
 	}
 
 static func from_dict(d: Dictionary) -> PlayerState:
@@ -46,4 +51,5 @@ static func from_dict(d: Dictionary) -> PlayerState:
 	ps.resource_placed_this_turn = d.get("resource_placed_this_turn", false)
 	ps.has_used_hero_power      = d.get("has_used_hero_power", false)
 	ps.max_hand_size            = d.get("max_hand_size", 7)
+	ps.pet_capacity             = d.get("pet_capacity", 1)
 	return ps

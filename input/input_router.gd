@@ -13,7 +13,7 @@ extends Node
 # Never touches card visual nodes — BoardRenderer owns those.
 # Both human and AI call the same StackResolver entry points (spec §7.1).
 
-signal highlights_updated(playable_ids: Array)
+signal highlights_updated(playable_ids: Array, color: Color)
 signal conditional_highlights_updated(orange_ids: Array)
 # dmg_type: "fire", "melee", etc.  "" = unspecified (show crosshair)
 # dmg_amount: damage shown on the cursor overlay; 0 = don't show
@@ -21,6 +21,8 @@ signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 signal targeting_cancelled()
 signal discard_mode_started(count: int)
 signal discard_mode_ended()
+signal pet_sacrifice_mode_started(candidate_ids: Array)
+signal pet_sacrifice_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
@@ -34,10 +36,14 @@ var _targeting_source:      String = ""   # instance_id of attacker / hero; "" =
 var _targeting_action_type: String = ""   # "propose_combat" or "activate_power"
 var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for crosshair)
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
+var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet to sacrifice
+var _pet_sacrifice_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 # Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
 var _targeting_x_value: int = 0
+# Color used for card highlights; changes per mode (green = play, red = mandatory choice).
+var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 
 
 func setup(p_state: GameState, p_db, p_player: String) -> void:
@@ -65,6 +71,11 @@ func _unhandled_input(event: InputEvent) -> void:
 # Called by BoardRenderer when a card visual is clicked.
 func handle_card_click(instance_id: String) -> void:
 	if not state:
+		return
+
+	# ── Pet sacrifice mode: click sacrifices the chosen pet ──────────────────
+	if _in_pet_sacrifice_mode:
+		_handle_pet_sacrifice_click(instance_id)
 		return
 
 	# ── Discard mode: click discards the chosen hand card ─────────────────────
@@ -115,6 +126,7 @@ func handle_card_click(instance_id: String) -> void:
 
 func start_discard_mode(count: int) -> void:
 	_in_discard_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)  # red — mandatory discard
 	refresh_highlights()
 	discard_mode_started.emit(count)
 
@@ -133,7 +145,39 @@ func _handle_discard_click(instance_id: String) -> void:
 	# Stay in discard mode if more cards still need to be discarded.
 	if state.pending_discard_count <= 0:
 		_in_discard_mode = false
+		_highlight_color = Color(0.2, 1.0, 0.3)
 		discard_mode_ended.emit()
+	refresh_highlights()
+
+
+# ── Pet sacrifice mode ─────────────────────────────────────────────────────────
+
+func start_pet_sacrifice_mode(candidate_ids: Array) -> void:
+	_in_pet_sacrifice_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)  # red — mandatory pet sacrifice
+	_pet_sacrifice_candidates.clear()
+	for cid in candidate_ids:
+		_pet_sacrifice_candidates.append(cid as String)
+	refresh_highlights()
+	pet_sacrifice_mode_started.emit(candidate_ids)
+
+
+func _handle_pet_sacrifice_click(instance_id: String) -> void:
+	if instance_id not in _pet_sacrifice_candidates:
+		return
+	var events := StackResolver.choose_pet_sacrifice(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	if state.pending_pet_sacrifice_player == "":
+		_in_pet_sacrifice_mode = false
+		_highlight_color = Color(0.2, 1.0, 0.3)
+		_pet_sacrifice_candidates.clear()
+		pet_sacrifice_mode_ended.emit()
+	else:
+		_pet_sacrifice_candidates.clear()
+		for cid: String in state.pending_pet_sacrifice_ids:
+			_pet_sacrifice_candidates.append(cid)
 	refresh_highlights()
 
 
@@ -343,6 +387,13 @@ func get_playable_card_ids() -> Array:
 	if not state:
 		return []
 
+	# Pet sacrifice mode: highlight the candidate pets.
+	if _in_pet_sacrifice_mode and state.pending_pet_sacrifice_player == local_player:
+		var result: Array = []
+		for cid: String in _pet_sacrifice_candidates:
+			result.append(cid)
+		return result
+
 	# Discard mode: all local hand cards are valid discard choices.
 	if _in_discard_mode and state.pending_discard_player == local_player:
 		var result: Array = []
@@ -416,7 +467,7 @@ func get_conditional_quest_ids() -> Array:
 
 
 func refresh_highlights() -> void:
-	highlights_updated.emit(get_playable_card_ids())
+	highlights_updated.emit(get_playable_card_ids(), _highlight_color)
 	conditional_highlights_updated.emit(get_conditional_quest_ids())
 
 
@@ -450,15 +501,18 @@ func get_context_actions(instance_id: String) -> Array:
 	if not def:
 		return []
 
-	# ── Face-up quests in resource row: Complete option ───────────────────────
+	# ── Resource row cards ────────────────────────────────────────────────────
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
-		if zone and zone.zone_type == "resource_row" and not card.face_down:
+		if zone and zone.zone_type == "resource_row":
+			if card.face_down:
+				return []  # no actions on face-down resources
 			if def.card_type == "Quest":
 				var a := PendingAction.make("use_quest", local_player,
 					{"quest_id": instance_id})
 				return [{"label": "Complete Quest — %s" % def.card_name,
 					"action": a, "enabled": StackResolver.can_submit(state, a, db)}]
+			return []  # face-up non-quest resources also have no actions
 
 	# ── In-play characters: Attack + (heroes) Hero Power ─────────────────────
 	if state.is_in_play(instance_id):
@@ -481,13 +535,15 @@ func get_context_actions(instance_id: String) -> Array:
 			if zone.zone_type == "ally_row" and card.controller == local_player:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
-					var ap_needs_target := ap_data.get("targets", "") in ["hero_or_ally"]
+					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally"]
 					var ap_enabled: bool
 					if ap_needs_target:
 						# Check affordability only (target chosen after targeting mode starts).
+						# No turn_player restriction — ally powers work on either player's turn
+						# as long as you hold priority (e.g. defending with Grimdron's power).
 						ap_enabled = not card.is_exhausted and not card.just_summoned \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
-							and state.phase == "action" and state.turn_player == local_player \
+							and state.phase == "action" and state.priority_player == local_player \
 							and state.pending_actions.is_empty()
 					else:
 						var ap_action := PendingAction.make("use_ally_power", local_player,
@@ -570,7 +626,7 @@ func handle_context_action(action: PendingAction) -> void:
 				var ap_dmg_type: String = (ally_ap.get("dmg_type", "") as String).to_lower() if ally_ap else ""
 				if ap_dmg_type == "":
 					ap_dmg_type = "heal"
-				start_targeting(cid, "use_ally_power", ap_dmg_type, 0)
+				start_targeting(cid, "use_ally_power", ap_dmg_type, int(ally_ap.get("amount", 0)))
 				return
 		"begin_attack_targeting":
 			if state.priority_player == local_player:

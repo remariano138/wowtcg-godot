@@ -26,6 +26,10 @@ func _ready() -> void:
 	_test_vanquish()
 	_test_pet_uniqueness()
 	_test_grimdron_ally_power()
+	_test_sarmoth_taunt_forces_attacker()
+	_test_sarmoth_taunt_multiple_attackers()
+	_test_sarmoth_elusive_no_taunt()
+	_test_sarmoth_taunt_lifts_on_death()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -881,3 +885,151 @@ func _test_grimdron_ally_power() -> void:
 	# sc10-f: power no longer available (exhausted).
 	ok(not StackResolver.can_submit(state, good_action, db),
 		"sc10-f: use_ally_power not available again (Grimdron exhausted)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 11 — Sarmoth taunt: attacker must target Sarmoth
+#
+# Setup: P1 has one attacker. P2 has Sarmoth + a normal ally + hero.
+#
+# Assertions:
+#   sc11-a  Sarmoth is the only legal defender (hero and normal ally excluded)
+#   sc11-b  combat targeting Sarmoth is accepted
+#   sc11-c  combat targeting the hero is rejected (taunt active)
+#   sc11-d  combat targeting the other ally is rejected (taunt active)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sarmoth_taunt_forces_attacker() -> void:
+	print("\n-- Scenario 11: Sarmoth taunt forces attacker to target Sarmoth --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 3, 4)
+	db.pet("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
+	db.ally("normal_ally_def", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "atk", "attacker_def", "p1")
+	_add_ally(state, "sarmoth", "sarmoth_def", "p2")
+	_add_ally(state, "normal", "normal_ally_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var defenders := StackResolver.get_legal_defenders(state, "atk", db)
+
+	eq(defenders.size(), 1,           "sc11-a: only 1 legal defender when Sarmoth is in play")
+	ok("sarmoth" in defenders,        "sc11-a: Sarmoth is that defender")
+
+	var good := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "sarmoth"})
+	ok(StackResolver.can_submit(state, good, db),
+		"sc11-b: combat targeting Sarmoth is accepted")
+
+	var bad_hero := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, bad_hero, db),
+		"sc11-c: combat targeting hero is rejected while Sarmoth taunts")
+
+	var bad_ally := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "normal"})
+	ok(not StackResolver.can_submit(state, bad_ally, db),
+		"sc11-d: combat targeting normal ally is rejected while Sarmoth taunts")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 12 — Sarmoth taunt applies to all of P1's attackers
+#
+# Setup: P1 has two attackers. P2 has Sarmoth + normal ally.
+# Each attacker's legal defenders list must contain only Sarmoth.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sarmoth_taunt_multiple_attackers() -> void:
+	print("\n-- Scenario 12: Sarmoth taunt restricts all attackers --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 2, 3)
+	db.pet("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
+	db.ally("normal_ally_def", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "atk1", "attacker_def", "p1")
+	_add_ally(state, "atk2", "attacker_def", "p1")
+	_add_ally(state, "sarmoth", "sarmoth_def", "p2")
+	_add_ally(state, "normal", "normal_ally_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var def1 := StackResolver.get_legal_defenders(state, "atk1", db)
+	var def2 := StackResolver.get_legal_defenders(state, "atk2", db)
+
+	ok("sarmoth" in def1 and def1.size() == 1, "sc12-a: atk1 must target Sarmoth only")
+	ok("sarmoth" in def2 and def2.size() == 1, "sc12-b: atk2 must target Sarmoth only")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 13 — Sarmoth taunt lifts when Sarmoth dies
+#
+# Setup: P1 attacks Sarmoth for lethal damage. After combat, P1's second
+# attacker should be able to target the hero or normal ally freely.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sarmoth_taunt_lifts_on_death() -> void:
+	print("\n-- Scenario 13: Sarmoth taunt lifts after Sarmoth dies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 6, 4)   # enough ATK to kill Sarmoth (5 health)
+	db.pet("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
+	db.ally("normal_ally_def", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "atk1", "attacker_def", "p1")
+	_add_ally(state, "atk2", "attacker_def", "p1")
+	_add_ally(state, "sarmoth", "sarmoth_def", "p2")
+	_add_ally(state, "normal", "normal_ally_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Confirm taunt is active before Sarmoth leaves play.
+	var before := StackResolver.get_legal_defenders(state, "atk1", db)
+	ok("sarmoth" in before and before.size() == 1, "sc13-a: taunt active before Sarmoth dies")
+
+	# Remove Sarmoth directly — sc13 tests that the taunt lifts on removal,
+	# not the combat system itself (which is covered by sc1/sc2/sc11).
+	GameLogic.move_card(state, "sarmoth", "p2_graveyard")
+
+	ok(state.get_card("sarmoth").zone_id == "p2_graveyard",
+		"sc13-b: Sarmoth is in graveyard")
+
+	# Taunt should be gone — atk2 can now target hero or normal ally.
+	var after := StackResolver.get_legal_defenders(state, "atk2", db)
+	ok("p2_hero" in after,  "sc13-c: hero is a legal defender after Sarmoth dies")
+	ok("normal" in after,   "sc13-d: normal ally is a legal defender after Sarmoth dies")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 14 — Elusive Sarmoth: taunt doesn't restrict (Sarmoth not a legal defender)
+#
+# Edge case: if Sarmoth gains Elusive it can't be chosen as a defender, so the
+# taunt filter finds no taunt cards in the legal-defenders list and falls through
+# to normal targeting (hero + other allies).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sarmoth_elusive_no_taunt() -> void:
+	print("\n-- Scenario 14: Elusive Sarmoth — taunt doesn't restrict --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 3, 4)
+	db.pet("sarmoth_elusive_def", 1, 5, (["elusive"] as Array[String]), 3, "sarmoth_taunt")
+	db.ally("normal_ally_def", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "atk", "attacker_def", "p1")
+	_add_ally(state, "sarmoth", "sarmoth_elusive_def", "p2")
+	_add_ally(state, "normal", "normal_ally_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var defenders := StackResolver.get_legal_defenders(state, "atk", db)
+
+	ok("sarmoth" not in defenders, "sc14-a: Elusive Sarmoth is not a legal defender")
+	ok("p2_hero" in defenders,     "sc14-b: hero is a legal defender (taunt not restricting)")
+	ok("normal" in defenders,      "sc14-c: normal ally is a legal defender (taunt not restricting)")

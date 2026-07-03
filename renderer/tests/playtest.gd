@@ -577,7 +577,8 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		DECK_HORDE_OMEDUS:        return Deck.make("azeroth_12", omedus_cards)
 		DECK_ALLIANCE_TIMMO:      return Deck.make("azeroth_7", alliance_cards)
 		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", dizdemona_cards)
-		_:                        return Deck.make("azeroth_6", alliance_cards)  # DECK_ALLIANCE_MOONSHADOW
+		DECK_ALLIANCE_MOONSHADOW: return Deck.make("azeroth_6", alliance_cards)
+		_:                        return Deck.make("azeroth_6", alliance_cards)
 
 
 func _add_deck_back_sprite(pos: Vector2) -> void:

@@ -193,8 +193,11 @@ static func _can_play_non_instant(state: GameState, action: PendingAction,
 		return false
 	if card.controller != action.source_player:
 		return false
-	# Rule 409.1: non-instants require the turn player's action phase, chain empty.
+	# Rule 502.1 / 1199: non-instants require the NON-COMBAT action phase — illegal
+	# during attack or defend windows even though phase == "action" and chain is empty.
 	if state.phase != "action":
+		return false
+	if state.combat_attack_window or state.combat_defend_window:
 		return false
 	if state.turn_player != action.source_player:
 		return false
@@ -250,6 +253,7 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 	if not zone or zone.zone_type != "hand": return false
 	if card.controller != action.source_player: return false
 	if state.phase != "action": return false
+	if state.combat_attack_window or state.combat_defend_window: return false
 	if state.turn_player != action.source_player: return false
 	if not state.pending_actions.is_empty(): return false
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
@@ -311,8 +315,10 @@ static func _can_place_resource(state: GameState, action: PendingAction,
 		return false
 	if card.controller != action.source_player:
 		return false
-	# Rule 412.1a: turn player's action phase only, chain empty.
+	# Rule 412.1a: turn player's NON-COMBAT action phase only, chain empty.
 	if state.phase != "action":
+		return false
+	if state.combat_attack_window or state.combat_defend_window:
 		return false
 	if state.turn_player != action.source_player:
 		return false
@@ -634,8 +640,10 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 
 static func _can_propose_combat(state: GameState, action: PendingAction,
 		db = null) -> bool:
-	# Rule 601.1: action phase only, chain empty, turn player.
+	# Rule 601.1: non-combat action phase only, chain empty, turn player.
 	if state.phase != "action":
+		return false
+	if state.combat_attack_window or state.combat_defend_window or state.in_protect_point:
 		return false
 	if state.turn_player != action.source_player:
 		return false
@@ -669,6 +677,9 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 		return false
 	# Rule 601.2b: defender must not be Elusive.
 	if _has_keyword(defender, "elusive", db):
+		return false
+	# Taunt check: if any legal defender has sarmoth_taunt, only that card is valid.
+	if defender_id not in get_legal_defenders(state, attacker_id, db):
 		return false
 	return true
 

@@ -31,6 +31,8 @@ var _targeting_source:      String = ""   # instance_id of attacker / hero; "" =
 var _targeting_action_type: String = ""   # "propose_combat" or "activate_power"
 var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for crosshair)
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
+# Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
+var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 
 
 func setup(p_state: GameState, p_db, p_player: String) -> void:
@@ -88,6 +90,10 @@ func handle_card_click(instance_id: String) -> void:
 	# ── Hand card left-click → play / place ───────────────────────────────────
 	var action_type := _action_type_for(instance_id)
 	if action_type == "":
+		return
+	# Abilities with targets: enter targeting mode rather than submitting directly.
+	if action_type == "play_ability" and _ability_needs_target(instance_id):
+		start_targeting(instance_id, "play_ability", _card_dmg_type(instance_id), 0)
 		return
 	var action := PendingAction.make(action_type, local_player,
 			_params_for(instance_id, action_type))
@@ -161,9 +167,10 @@ func start_enter_play_targeting(card_id: String, dmg_type: String, dmg_amount: i
 
 # Abort targeting — called by Escape key or scene logic.
 func cancel_targeting() -> void:
-	_targeting_source      = ""
-	_targeting_action_type = ""
-	_targeting_dmg_type    = ""
+	_targeting_source       = ""
+	_targeting_action_type  = ""
+	_targeting_dmg_type     = ""
+	_targeting_first_target = ""
 	refresh_highlights()
 	targeting_cancelled.emit()
 
@@ -173,6 +180,8 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"propose_combat":            _handle_combat_targeting_click(instance_id)
 		"activate_power":            _handle_power_targeting_click(instance_id)
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
+		"play_instant":              _handle_instant_targeting_click(instance_id)
+		"play_ability":              _handle_ability_targeting_click(instance_id)
 
 
 func _handle_combat_targeting_click(instance_id: String) -> void:
@@ -199,6 +208,40 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 		"source_card_id": _targeting_source, "target_id": instance_id,
 	})
 	if StackResolver.can_submit(state, action, db):
+		var events := StackResolver.submit_action(state, action, db)
+		EventBus.emit_events(events)
+		# cancel_targeting fires targeting_cancelled; playtest._on_targeting_cancelled
+		# checks pending_actions for an existing choose_enter_play_target before restarting.
+		cancel_targeting()
+		var pass_events := StackResolver.pass_priority(state, db)
+		EventBus.emit_events(pass_events)
+		refresh_highlights()
+	elif instance_id == _targeting_source:
+		cancel_targeting()
+
+
+func _handle_ability_targeting_click(instance_id: String) -> void:
+	var action := PendingAction.make("play_ability", local_player, {
+		"card_id": _targeting_source, "target_id": instance_id,
+	})
+	if StackResolver.can_submit(state, action, db):
+		_targeting_source = ""
+		targeting_cancelled.emit()
+		var events := StackResolver.submit_action(state, action, db)
+		if not events.is_empty():
+			EventBus.emit_events(events)
+			var pass_events := StackResolver.pass_priority(state, db)
+			EventBus.emit_events(pass_events)
+		refresh_highlights()
+	elif instance_id == _targeting_source:
+		cancel_targeting()
+
+
+func _handle_instant_targeting_click(instance_id: String) -> void:
+	var action := PendingAction.make("play_instant", local_player, {
+		"card_id": _targeting_source, "target_id": instance_id,
+	})
+	if StackResolver.can_submit(state, action, db):
 		_targeting_source = ""
 		targeting_cancelled.emit()
 		var events := StackResolver.submit_action(state, action, db)
@@ -213,6 +256,43 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 
 
 func _handle_power_targeting_click(instance_id: String) -> void:
+	# Two-phase for deal_damage_and_heal: first click = damage target, second = heal target.
+	if _is_damage_and_heal_power(_targeting_source):
+		if _targeting_first_target == "":
+			# Phase 1: validate as a damage target by probing with a placeholder heal target.
+			var probe_heal := _any_valid_heal_target(_targeting_source, instance_id)
+			if probe_heal != "":
+				_targeting_first_target = instance_id
+				targeting_started.emit(_targeting_source, "heal", 0)   # re-emit to update status
+				refresh_highlights()
+			elif instance_id == _targeting_source:
+				cancel_targeting()
+			return
+		else:
+			# Phase 2: instance_id is the heal target.
+			var action := PendingAction.make("activate_power", local_player, {
+				"hero_id": _targeting_source,
+				"target_id": _targeting_first_target,
+				"heal_target_id": instance_id,
+			})
+			if StackResolver.can_submit(state, action, db):
+				_targeting_source       = ""
+				_targeting_first_target = ""
+				targeting_cancelled.emit()
+				var events := StackResolver.submit_action(state, action, db)
+				if events.is_empty():
+					return
+				EventBus.emit_events(events)
+				var pass_events := StackResolver.pass_priority(state, db)
+				EventBus.emit_events(pass_events)
+				refresh_highlights()
+			elif instance_id == _targeting_first_target:
+				# Clicked the damage target again — go back to phase 1.
+				_targeting_first_target = ""
+				targeting_started.emit(_targeting_source, _targeting_dmg_type, 0)
+				refresh_highlights()
+			return
+
 	var action := PendingAction.make("activate_power", local_player, {
 		"hero_id": _targeting_source, "target_id": instance_id,
 	})
@@ -274,6 +354,10 @@ func get_playable_card_ids() -> Array:
 				return _get_hero_power_targets(_targeting_source)
 			"choose_enter_play_target":
 				return _get_enter_play_targets(_targeting_source)
+			"play_instant":
+				return _get_instant_targets(_targeting_source)
+			"play_ability":
+				return _get_ability_targets(_targeting_source)
 		return []
 
 	var result: Array = []
@@ -281,6 +365,13 @@ func get_playable_card_ids() -> Array:
 	for card in state.cards_in_zone(local_player + "_hand"):
 		var atype := _action_type_for(card.instance_id)
 		if atype == "":
+			continue
+		# Abilities are highlighted green when playable even before a target is chosen —
+		# can_submit would reject them with no target_id, so use the looser probe.
+		if atype == "play_ability":
+			if StackResolver.can_play_ability_no_target_check(
+					state, card.instance_id, local_player, db):
+				result.append(card.instance_id)
 			continue
 		var action := PendingAction.make(atype, local_player,
 				_params_for(card.instance_id, atype))
@@ -374,6 +465,15 @@ func get_context_actions(instance_id: String) -> Array:
 					local_player, {"attacker_id": instance_id}),
 				"enabled": can_attack})
 
+			# Ally activated power (if the ally has one).
+			if zone.zone_type == "ally_row" and card.controller == local_player:
+				if StackResolver._ally_activated_power(def) != {}:
+					var ap_action := PendingAction.make("use_ally_power", local_player,
+						{"card_id": instance_id})
+					result.append({"label": "Activate Power",
+						"action": ap_action,
+						"enabled": StackResolver.can_submit(state, ap_action, db)})
+
 			# Hero power entry (heroes only, controlled by local player).
 			if zone.zone_type == "hero_row" and card.controller == local_player:
 				var ps := state.players.get(local_player) as PlayerState
@@ -396,10 +496,18 @@ func get_context_actions(instance_id: String) -> Array:
 	var is_resource_type := def.card_type in ["Quest", "Location"]
 
 	if not is_resource_type:
-		var play_type := "play_instant" if def.is_instant else "play_ally"
-		var a := PendingAction.make(play_type, local_player, {"card_id": instance_id})
-		result.append({"label": "Play %s" % def.card_name,
-			"action": a, "enabled": StackResolver.can_submit(state, a, db)})
+		var play_type := _action_type_for(instance_id)
+		if play_type != "" and play_type != "place_resource":
+			var a := PendingAction.make(play_type, local_player, {"card_id": instance_id})
+			var enabled: bool
+			if play_type == "play_ability":
+				# Use no-target probe so the item shows enabled before the target is chosen.
+				enabled = StackResolver.can_play_ability_no_target_check(
+					state, instance_id, local_player, db)
+			else:
+				enabled = StackResolver.can_submit(state, a, db)
+			result.append({"label": "Play %s" % def.card_name,
+				"action": a, "enabled": enabled})
 
 	if is_resource_type:
 		var a := PendingAction.make("place_resource", local_player,
@@ -419,6 +527,16 @@ func handle_context_action(action: PendingAction) -> void:
 	if not state:
 		return
 	match action.action_type:
+		"play_ability":
+			if _ability_needs_target(action.params.get("card_id", "")):
+				var cid: String = action.params.get("card_id", "")
+				start_targeting(cid, "play_ability", _card_dmg_type(cid), 0)
+				return
+		"play_instant":
+			if _instant_needs_target(action.params.get("card_id", "")):
+				var cid: String = action.params.get("card_id", "")
+				start_targeting(cid, "play_instant", _card_dmg_type(cid), 0)
+				return
 		"begin_attack_targeting":
 			if state.priority_player == local_player:
 				start_attack_targeting(action.params.get("attacker_id", ""))
@@ -455,7 +573,45 @@ func handle_context_action(action: PendingAction) -> void:
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 # Returns all in-play cards that are valid targets for the given hero's power.
+# For deal_damage_and_heal, returns damage targets (phase 1) or heal targets (phase 2).
 func _get_hero_power_targets(hero_id: String) -> Array:
+	if _is_damage_and_heal_power(hero_id):
+		if _targeting_first_target == "":
+			# Phase 1: show all valid damage targets (those that have at least one valid heal partner).
+			var result: Array = []
+			for pid in state.players:
+				var ps := state.players.get(pid) as PlayerState
+				if ps and ps.hero_instance_id != "":
+					if _any_valid_heal_target(hero_id, ps.hero_instance_id) != "":
+						result.append(ps.hero_instance_id)
+				for card in state.cards_in_zone(pid + "_ally_row"):
+					if _any_valid_heal_target(hero_id, card.instance_id) != "":
+						result.append(card.instance_id)
+			return result
+		else:
+			# Phase 2: show valid heal targets for the already-chosen damage target.
+			var result: Array = []
+			for pid in state.players:
+				var ps := state.players.get(pid) as PlayerState
+				if ps and ps.hero_instance_id != "":
+					var id := ps.hero_instance_id
+					if id != _targeting_first_target:
+						var act := PendingAction.make("activate_power", local_player, {
+							"hero_id": hero_id, "target_id": _targeting_first_target,
+							"heal_target_id": id,
+						})
+						if StackResolver.can_submit(state, act, db):
+							result.append(id)
+				for card in state.cards_in_zone(pid + "_ally_row"):
+					if card.instance_id != _targeting_first_target:
+						var act := PendingAction.make("activate_power", local_player, {
+							"hero_id": hero_id, "target_id": _targeting_first_target,
+							"heal_target_id": card.instance_id,
+						})
+						if StackResolver.can_submit(state, act, db):
+							result.append(card.instance_id)
+			return result
+
 	var result: Array = []
 	for pid in state.players:
 		var ps := state.players.get(pid) as PlayerState
@@ -471,6 +627,40 @@ func _get_hero_power_targets(hero_id: String) -> Array:
 			if StackResolver.can_submit(state, act, db):
 				result.append(card.instance_id)
 	return result
+
+
+func _is_damage_and_heal_power(hero_id: String) -> bool:
+	if not db:
+		return false
+	var hero := state.get_card(hero_id)
+	if not hero:
+		return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def:
+		return false
+	return StackResolver._power_effect_is(def, "deal_damage_and_heal")
+
+
+# Returns the id of any valid heal target paired with dmg_target, or "" if none.
+func _any_valid_heal_target(hero_id: String, dmg_target: String) -> String:
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "" and ps.hero_instance_id != dmg_target:
+			var act := PendingAction.make("activate_power", local_player, {
+				"hero_id": hero_id, "target_id": dmg_target,
+				"heal_target_id": ps.hero_instance_id,
+			})
+			if StackResolver.can_submit(state, act, db):
+				return ps.hero_instance_id
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			if card.instance_id != dmg_target:
+				var act := PendingAction.make("activate_power", local_player, {
+					"hero_id": hero_id, "target_id": dmg_target,
+					"heal_target_id": card.instance_id,
+				})
+				if StackResolver.can_submit(state, act, db):
+					return card.instance_id
+	return ""
 
 
 # Returns all in-play cards that are valid targets for an enters-play effect.
@@ -492,6 +682,52 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 	return result
 
 
+func _get_ability_targets(card_id: String) -> Array:
+	var result: Array = []
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var act := PendingAction.make("play_ability", local_player,
+				{"card_id": card_id, "target_id": card.instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(card.instance_id)
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var act := PendingAction.make("play_ability", local_player,
+				{"card_id": card_id, "target_id": ps.hero_instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(ps.hero_instance_id)
+	return result
+
+
+func _get_instant_targets(card_id: String) -> Array:
+	var result: Array = []
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var act := PendingAction.make("play_instant", local_player,
+				{"card_id": card_id, "target_id": card.instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(card.instance_id)
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var act := PendingAction.make("play_instant", local_player,
+				{"card_id": card_id, "target_id": ps.hero_instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(ps.hero_instance_id)
+	return result
+
+
+func _instant_needs_target(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return false
+	return StackResolver._instant_needs_target(def)
+
+
 func _hero_power_needs_target(hero_id: String) -> bool:
 	if not db: return false
 	var hero := state.get_card(hero_id)
@@ -499,7 +735,8 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	var def := db.get_def(hero.card_def_id) as CardDef
 	if not def: return false
 	for entry in def.effects.split("|"):
-		if entry.strip_edges().begins_with("deal_damage_to_target"):
+		var key := entry.strip_edges().split(":")[0].strip_edges()
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal"]:
 			return true
 	return false
 
@@ -512,8 +749,29 @@ func _hero_power_dmg_type(hero_id: String) -> String:
 	if not def: return ""
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] == "deal_damage_to_target" and parts.size() > 2:
-			return parts[2].to_lower()
+		match parts[0]:
+			"destroy_exhausted_ally":
+				return "destroy"
+			"deal_damage_to_target", "deal_damage_and_heal":
+				if parts.size() > 2:
+					return parts[2].to_lower()
+	return ""
+
+
+func _card_dmg_type(card_id: String) -> String:
+	if not db: return ""
+	var card := state.get_card(card_id)
+	if not card: return ""
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def: return ""
+	for entry in def.effects.split("|"):
+		var key := entry.strip_edges().split(":")[0].strip_edges()
+		match key:
+			"destroy_target", "destroy_exhausted_ally": return "destroy"
+			"deal_damage_to_target", "deal_damage_and_heal":
+				var parts := entry.strip_edges().split(":")
+				if parts.size() > 2: return parts[2].to_lower()
+			"heal_target": return "heal"
 	return ""
 
 
@@ -525,7 +783,7 @@ func _hero_power_dmg_amount(hero_id: String) -> int:
 	if not def: return 0
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] == "deal_damage_to_target" and parts.size() > 1:
+		if parts[0] in ["deal_damage_to_target", "deal_damage_and_heal"] and parts.size() > 1:
 			return int(parts[1])
 	return 0
 
@@ -540,8 +798,18 @@ func _action_type_for(instance_id: String) -> String:
 	if not def:
 		return ""
 	if def.card_type in ["Quest", "Location"]:
-		return "place_resource"   # left-click default: place face-up
-	return "play_instant" if def.is_instant else "play_ally"
+		return "place_resource"
+	if def.card_type == "Ally":
+		return "play_ally"
+	if def.is_instant:
+		return "play_instant"
+	if def.card_type == "Ability":
+		return "play_ability"
+	return ""   # Equipment and other unimplemented types
+
+
+func _ability_needs_target(card_id: String) -> bool:
+	return _instant_needs_target(card_id)
 
 
 func _params_for(instance_id: String, action_type: String) -> Dictionary:

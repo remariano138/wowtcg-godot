@@ -4,16 +4,16 @@ azeroth,2,Dizdemona,3,Hero,Alliance,Warlock,,Gnome Warlock,,,28,Uncommon,,"Flip 
 azeroth,3,Elendril,1,Hero,Alliance,Hunter,,Night Elf Hunter,,,28,Uncommon,,,unchecked,,,assets\cards\elendril.png
 azeroth,4,Graccus,3,Hero,Alliance,Paladin,,Human Paladin,,,29,Uncommon,,,unchecked,,,assets\cards\graccus.png
 azeroth,5,Litori Frostburn,2,Hero,Alliance,Mage,,Human Mage,,,25,Uncommon,,,unchecked,,,assets\cards\litori_frostburn.png
-azeroth,6,Moonshadow,3,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,"Flip Moonshadow and pay 3: Shuffle your hand into your deck, then draw that many cards.",verified,implemented,shuffle_hand_draw,assets\cards\moonshadow.png
-azeroth,7,Timmo Shadestep,5,Hero,Alliance,Rogue,,Gnome Rogue,,,27,Uncommon,,Flip Timmo Shadestep and pay 5: Destroy target exhausted ally. Use only on your turn.,verified,,,assets\cards\timmo_shadestep.png
+azeroth,6,Moonshadow,3,Hero,Alliance,Druid,,Night Elf Druid,,,27,Uncommon,,"Flip Moonshadow and pay 3: Shuffle your hand into your deck, then draw that many cards.",verified,implemented,shuffle_hand_draw|on_your_turn,assets\cards\moonshadow.png
+azeroth,7,Timmo Shadestep,5,Hero,Alliance,Rogue,,Gnome Rogue,,,27,Uncommon,,Flip Timmo Shadestep and pay 5: Destroy target exhausted ally. Use only on your turn.,verified,implemented,destroy_exhausted_ally|on_your_turn,assets\cards\timmo_shadestep.png
 azeroth,8,Warrax,1,Hero,Alliance,Warrior,,Dwarf Warrior,,,30,Uncommon,,,unchecked,,,assets\cards\warrax.png
 azeroth,9,Gorebelly,1,Hero,Horde,Warrior,,Orc Warrior,,,30,Uncommon,,,unchecked,,,assets\cards\gorebelly.png
-azeroth,10,Grennan Stormspeaker,5,Hero,Horde,Shaman,,Tauren Shaman,,,29,Uncommon,,Flip Grennan Stormspeaker and pay 5: Grennan Stormspeaker deals 3 nature damage to target hero or ally and heals 3 damage from another target hero or ally. Use only on your turn.,verified,,,assets\cards\grennan_stormspeaker.png
+azeroth,10,Grennan Stormspeaker,5,Hero,Horde,Shaman,,Tauren Shaman,,,29,Uncommon,,Flip Grennan Stormspeaker and pay 5: Grennan Stormspeaker deals 3 nature damage to target hero or ally and heals 3 damage from another target hero or ally. Use only on your turn.,verified,implemented,deal_damage_and_heal:3:nature:3|on_your_turn,assets\cards\grennan_stormspeaker.png
 azeroth,11,Kayleitha,2,Hero,Horde,Rogue,,Undead Rogue,,,27,Uncommon,,,unchecked,,,assets\cards\kayleitha.png
 azeroth,12,Omedus the Punisher,3,Hero,Horde,Priest,,Undead Priest,,,26,Uncommon,,Flip Omedus the Punisher and pay 3: Omedus the Punisher deals shadow damage to target hero equal to 7 minus the number of cards in its controller's hand.,verified,,,assets\cards\omedus_the_punisher.png
 azeroth,13,Radak Doombringer,,Hero,Horde,Warlock,,Orc Warlock,,,28,Uncommon,,"Flip Radak Doombringer, destroy one of your Pets with cost X: Radak Doombringer deals X shadow damage to target hero or ally. Use only on your turn.",verified,,,assets\cards\radak_doombringer.png
 azeroth,14,Sen'zir Beastwalker,3,Hero,Horde,Hunter,,Troll Hunter,,,28,Uncommon,,,unchecked,,,assets\cards\senzir_beastwalker.png
-azeroth,15,Ta'zo,3,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,Flip Ta'zo and pay 3: Ta'zo deals 3 fire damage to target hero or ally. Use only on your turn.,verified,implemented,deal_damage_to_target:3:fire,assets\cards\tazo.png
+azeroth,15,Ta'zo,3,Hero,Horde,Mage,,Troll Mage,,,25,Uncommon,,Flip Ta'zo and pay 3: Ta'zo deals 3 fire damage to target hero or ally. Use only on your turn.,verified,implemented,deal_damage_to_target:3:fire|on_your_turn,assets\cards\tazo.png
 azeroth,16,Thangal,3,Hero,Horde,Druid,,Tauren Druid,,,28,Uncommon,,,unchecked,,,assets\cards\thangal.png
 azeroth,17,Bash,2,Ability,,Druid,,Feral,,,,Uncommon,,,unchecked,,,assets\cards\bash.png
 azeroth,18,Bear Form,1,Ability,,Druid,,Feral,,,,Uncommon,,,unchecked,,,assets\cards\bear_form.png
@@ -169,10 +169,10 @@ azeroth,167,Rise to the Challenge,15,Ability,,,,,,,,Epic,,,unchecked,,,assets\ca
 azeroth,168,Shattering Blow,4,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\shattering_blow.png
 azeroth,169,Spirit Healer,8,Ability,,,,,,,,Epic,,,unchecked,,,assets\cards\spirit_healer.png
 azeroth,170,Sudden Reversal,1,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\sudden_reversal.png
-azeroth,171,Vanquish,4,Ability,,,,,,,,Common,,Destroy target ally.,verified,,,assets\cards\vanquish.png
+azeroth,171,Vanquish,4,Ability,,,,,,,,Common,,Destroy target ally.,verified,implemented,destroy_target:ally,assets\cards\vanquish.png
 azeroth,172,Withdraw,3,Ability,,,,,,,,Common,,,unchecked,,,assets\cards\withdraw.png
 azeroth,173,Acolyte Demia,6,Ally,Alliance,Warlock,,Human Warlock,3,Shadow,6,Uncommon,,"Activate, 1, put 1 damage on Acolyte Demia: Demia deals 1 shadow damage to target hero or ally. Use only on your turn.",verified,,,assets\cards\acolyte_demia.png
-azeroth,174,Adept Breton,2,Ally,Alliance,Mage,,Human Mage,1,Arcane,1,Uncommon,,"Activate, exhaust, 3: Adept Breton deals 1 arcane damage to each opposing hero and ally.",verified,,,assets\cards\adept_breton.png
+azeroth,174,Adept Breton,2,Ally,Alliance,Mage,,Human Mage,1,Arcane,1,Uncommon,,"3, Activate: Adept Breton deals 1 arcane damage to each opposing hero and ally.",verified,implemented,activated_power:3:deal_damage_aoe:1:arcane:opposing,assets\cards\adept_breton.png
 azeroth,175,Anika Berlyn,6,Ally,Alliance,Paladin,,Human Paladin,5,Melee,6,Common,,,verified,implemented,,assets\cards\anika_berlyn.png
 azeroth,176,Apprentice Teep,1,Ally,Alliance,Mage,,Gnome Mage,2,Frost,1,Common,elusive,,verified,implemented,,assets\cards\apprentice_teep.png
 azeroth,177,Augustus Corpsemonger,5,Ally,Alliance,Warlock,,Human Warlock,3,Shadow,4,Rare,,,unchecked,,,assets\cards\augustus_corpsemonger.png
@@ -223,7 +223,7 @@ azeroth,221,Tristan Rapidstrike,4,Ally,Alliance,Warrior,Instant,Night Elf Warrio
 azeroth,222,Warden Tonarin,1,Ally,Alliance,Warrior,,Night Elf Warrior,1,Melee,1,Common,"elusive, protector",,verified,implemented,,assets\cards\warden_tonarin.png
 azeroth,223,Wilba,4,Ally,Alliance,Hunter,,Dwarf Hunter,2,Ranged,4,Rare,,,unchecked,,,assets\cards\wilba.png
 azeroth,224,Wyneth Harridan,4,Ally,Alliance,Paladin,,Human Paladin,2,Holy,4,Rare,,,unchecked,,,assets\cards\wyneth_harridan.png
-azeroth,225,Arnold Flem,4,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Uncommon,,"When Arnold Flem is destroyed, he deals 1 fire damage to each opposing hero and ally.",verified,,,assets\cards\arnold_flem.png
+azeroth,225,Arnold Flem,4,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Uncommon,,"When Arnold Flem is destroyed, he deals 1 fire damage to each opposing hero and ally.",verified,implemented,on_destroyed:deal_damage_aoe:1:fire:opposing,assets\cards\arnold_flem.png
 azeroth,226,Bala Silentblade,3,Ally,Horde,Rogue,,Orc Rogue,1,Melee,4,Common,,Bala Silentblade has +3 ATK while attacking an exhausted hero or ally.,verified,,,assets\cards\bala_silentblade.png
 azeroth,227,Barak the Shamed,3,Ally,Horde,Warrior,,Orc Warrior,5,Melee,5,Rare,,,unchecked,,,assets\cards\barak_the_shamed.png
 azeroth,228,Benethor Draigo,3,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Common,,,verified,implemented,,assets\cards\benethor_draigo.png

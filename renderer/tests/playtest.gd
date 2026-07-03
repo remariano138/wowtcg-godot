@@ -19,9 +19,11 @@ extends Node2D
 
 const AI_THINK_TIME := 0.5
 
-const DECK_ALLIANCE := "alliance"
-const DECK_HORDE    := "horde"
-const DECK_RANDOM   := "random"
+const DECK_ALLIANCE_MOONSHADOW := "alliance_moonshadow_test"
+const DECK_ALLIANCE_TIMMO      := "alliance_timmo_test"
+const DECK_HORDE_TAZO          := "horde_tazo_test"
+const DECK_HORDE_GRENNAN       := "horde_grennan_test"
+const DECK_RANDOM              := "random"
 
 var _state:  GameState
 var _db:     CardDatabase
@@ -61,6 +63,10 @@ var _game_over: bool = false
 var _last_p1_deck_id: String = ""
 var _last_p2_deck_id: String = ""
 
+# ── Game log ───────────────────────────────────────────────────────────────────
+var _log: RichTextLabel
+var _log_in_mulligan: bool = false
+
 # ── Control panel ──────────────────────────────────────────────────────────────
 var _turbo_mode: bool = true
 var _turbo_btn:  Button
@@ -89,13 +95,20 @@ func _build_scene() -> void:
 	bg.size  = Vector2(1600, 1120)
 	add_child(bg)
 
-	# ── Board zone labels (left gutter x=20) ──────────────────────────────────────
-	_add_label("P2 hand",         Vector2(20,  52), 11, Color(0.5, 0.35, 0.35))
-	_add_label("P2 resource row", Vector2(20, 182), 11, Color(0.5, 0.5,  0.35))
-	_add_label("P2 ally row",     Vector2(20, 312), 11, Color(0.45, 0.45, 0.6))
-	_add_label("P1 ally row",     Vector2(20, 572), 11, Color(0.45, 0.6,  0.45))
-	_add_label("P1 resource row", Vector2(20, 702), 11, Color(0.45, 0.55, 0.35))
-	_add_label("Your hand (P1)",  Vector2(20, 832), 11, Color(0.45, 0.6,  0.45))
+	# ── Game log panel (left gutter, replaces zone labels) ────────────────────────
+	var log_bg := ColorRect.new()
+	log_bg.color    = Color(0.07, 0.09, 0.12, 0.88)
+	log_bg.position = Vector2(5, 5)
+	log_bg.size     = Vector2(248, 950)
+	add_child(log_bg)
+
+	_log = RichTextLabel.new()
+	_log.bbcode_enabled  = true
+	_log.scroll_active   = true
+	_log.position        = Vector2(8, 8)
+	_log.size            = Vector2(242, 944)
+	_log.add_theme_font_size_override("normal_font_size", 10)
+	add_child(_log)
 
 	# ── Right column labels (graveyard x=1130, deck/hero x=1280) ─────────────────
 	_add_label("P2 grave",  Vector2(1130,  52), 11, Color(0.5, 0.4, 0.4))
@@ -307,11 +320,12 @@ func _build_menu() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	inner.add_child(title)
 
+	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Random"]
 	inner.add_child(_player_row("Player 1", ["Human", "BaseAI", "FullRandomAI"], 0,
-		["Alliance (Moonshadow)", "Horde (Ta'zo)", "Random"], 2,
+		deck_labels, 4,
 		func(opt): _p1_type_opt = opt, func(opt): _p1_deck_opt = opt))
 	inner.add_child(_player_row("Player 2", ["BaseAI", "FullRandomAI"], 1,
-		["Alliance (Moonshadow)", "Horde (Ta'zo)", "Random"], 2,
+		deck_labels, 4,
 		func(opt): _p2_type_opt = opt, func(opt): _p2_deck_opt = opt))
 
 	var btn_box := HBoxContainer.new()
@@ -367,22 +381,25 @@ func _player_row(label_text: String, type_items: Array, type_default: int,
 
 
 func _on_quick_start() -> void:
-	var alliance_to_p1 := randi() % 2 == 0
-	var p1_deck := DECK_ALLIANCE if alliance_to_p1 else DECK_HORDE
-	var p2_deck := DECK_HORDE    if alliance_to_p1 else DECK_ALLIANCE
-	_launch_game("human", p1_deck, "fullrandom", p2_deck)
+	var all_decks := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO,
+					  DECK_HORDE_TAZO, DECK_HORDE_GRENNAN]
+	all_decks.shuffle()
+	_launch_game("human", all_decks[0], "fullrandom", all_decks[1])
 
 
 func _on_start_game() -> void:
 	var p1_types := ["human", "base", "fullrandom"]
 	var p2_types := ["base", "fullrandom"]
-	var deck_ids := [DECK_ALLIANCE, DECK_HORDE, DECK_RANDOM]
+	var deck_ids := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO,
+					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_RANDOM]
 	_launch_game(p1_types[_p1_type_opt.selected], deck_ids[_p1_deck_opt.selected],
 				 p2_types[_p2_type_opt.selected], deck_ids[_p2_deck_opt.selected])
 
 
 func _launch_game(p1_type: String, p1_deck_id: String,
 		p2_type: String, p2_deck_id: String) -> void:
+	_log.clear()
+	_log_in_mulligan = false
 	_menu_layer.visible = false
 	_p1_type = p1_type
 	_p2_type = p2_type
@@ -404,41 +421,80 @@ func _make_ai(type: String) -> Object:
 
 func _resolve_deck(deck_id: String) -> String:
 	if deck_id == DECK_RANDOM:
-		return DECK_ALLIANCE if randi() % 2 == 0 else DECK_HORDE
+		var pool := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO,
+					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN]
+		return pool[randi() % pool.size()]
 	return deck_id
 
 
 func _build_deck_for(resolved_id: String) -> Deck:
-	if resolved_id == DECK_HORDE:
-		var cards: Array[String] = [
-			"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-			"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",
-			"azeroth_248", "azeroth_248", "azeroth_248", "azeroth_248",
-			"azeroth_246", "azeroth_246", "azeroth_246", "azeroth_246",
-			"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
-			"azeroth_252", "azeroth_252",
-			"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",
-			"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
-			"azeroth_260", "azeroth_260", "azeroth_260", "azeroth_260",
-		]
-		while cards.size() < 60:
-			cards.append("azeroth_262")
-		return Deck.make("azeroth_15", cards)
-	else:  # DECK_ALLIANCE
-		var cards: Array[String] = [
-			"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-			"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",
-			"azeroth_222", "azeroth_222", "azeroth_222", "azeroth_222",
-			"azeroth_176", "azeroth_176", "azeroth_176", "azeroth_176",
-			"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-			"azeroth_179", "azeroth_179",
-			"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",
-			"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
-			"azeroth_212", "azeroth_212", "azeroth_212", "azeroth_212",
-		]
-		while cards.size() < 60:
-			cards.append("azeroth_192")
-		return Deck.make("azeroth_6", cards)
+	# ── Horde test deck (60 cards) ────────────────────────────────────────────────
+	# Core (22): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish
+	# Filler (38): 5 remaining horde allies spread evenly (8/8/8/7/7)
+	var horde_cards: Array[String] = [
+		# 12× Your Fortune Awaits You
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		# 2× Ka'tali Stonetusk  (1-cost protector)
+		"azeroth_248", "azeroth_248",
+		# 2× Kagra of the Crossroads  (1-cost offensive / Ferocity)
+		"azeroth_246", "azeroth_246",
+		# 2× Taz'dingo  (3-cost alignment staple)
+		"azeroth_260", "azeroth_260",
+		# 2× Arnold Flem  (on-death AoE)
+		"azeroth_225", "azeroth_225",
+		# 2× Vanquish
+		"azeroth_171", "azeroth_171",
+		# Filler — 38 slots across 5 remaining horde allies
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×8
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
+		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8
+		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
+		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×7
+		"azeroth_228", "azeroth_228", "azeroth_228",
+		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×7
+		"azeroth_252", "azeroth_252", "azeroth_252",
+	]
+
+	# ── Alliance test deck (60 cards) ─────────────────────────────────────────────
+	# Core (22): 12 YFA · 2 Teep · 2 Tonarin · 2 Parvink · 2 Adept Breton · 2 Vanquish
+	# Filler (38): 5 remaining alliance allies spread evenly (8/8/8/7/7)
+	var alliance_cards: Array[String] = [
+		# 12× Your Fortune Awaits You
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		# 2× Apprentice Teep  (1-cost protector)
+		"azeroth_176", "azeroth_176",
+		# 2× Warden Tonarin   (1-cost protector)
+		"azeroth_222", "azeroth_222",
+		# 2× Parvink          (3-cost alignment staple)
+		"azeroth_212", "azeroth_212",
+		# 2× Adept Breton     (activated-power AoE)
+		"azeroth_174", "azeroth_174",
+		# 2× Vanquish
+		"azeroth_171", "azeroth_171",
+		# Filler — 38 slots across 5 remaining alliance allies
+		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×8
+		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×7
+		"azeroth_175", "azeroth_175", "azeroth_175",
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×7
+		"azeroth_179", "azeroth_179", "azeroth_179",
+	]
+
+	match resolved_id:
+		DECK_HORDE_TAZO:    return Deck.make("azeroth_15", horde_cards)
+		DECK_HORDE_GRENNAN: return Deck.make("azeroth_10", horde_cards)
+		DECK_ALLIANCE_TIMMO: return Deck.make("azeroth_7", alliance_cards)
+		_:                  return Deck.make("azeroth_6", alliance_cards)  # DECK_ALLIANCE_MOONSHADOW
 
 
 func _add_deck_back_sprite(pos: Vector2) -> void:
@@ -690,6 +746,112 @@ func _make_stylebox(color: Color) -> StyleBoxFlat:
 	return s
 
 
+# ── Game log ───────────────────────────────────────────────────────────────────
+
+func _log_card(id: String) -> String:
+	if not _state:
+		return id
+	var card := _state.get_card(id)
+	if not card:
+		return id
+	if _db:
+		var def := _db.get_def(card.card_def_id) as CardDef
+		if def:
+			return def.card_name
+	return card.card_def_id
+
+
+func _log_player(pid: String) -> String:
+	return "P1" if pid == "p1" else "P2"
+
+
+func _log_entry(text: String) -> void:
+	_log.append_text(text + "\n")
+	_log.scroll_to_line(_log.get_line_count())
+
+
+func _log_event(event: GameEvent) -> void:
+	match event.event_type:
+		"turn_changed":
+			var n: int    = event.payload.get("turn", 0)
+			var p: String = _log_player(event.payload.get("player", ""))
+			_log_entry("\n[color=#d4af37][b]── Turn %d · %s ──[/b][/color]" % [n, p])
+		"phase_changed":
+			var ph: String = event.payload.get("new", "")
+			match ph:
+				"draw":
+					_log_entry("[color=#555]draw phase[/color]")
+				"action":
+					_log_entry("[color=#555]action phase[/color]")
+		"mulligan_phase_started":
+			_log_in_mulligan = true
+			_log_entry("[color=#888]── Mulligan ──[/color]")
+		"mulligan_committed":
+			var p: String    = _log_player(event.payload.get("player", ""))
+			var wants: bool  = event.payload.get("mulligan", false)
+			var msg := "%s %s" % [p, ("mulligans" if wants else "keeps hand")]
+			_log_entry("[color=#888]%s[/color]" % msg)
+		"card_moved":
+			if _log_in_mulligan:
+				return
+			var from_z: String = event.payload.get("from", "")
+			var to_z:   String = event.payload.get("to", "")
+			var cid:    String = event.payload.get("card", "")
+			if from_z.ends_with("_deck") and to_z.ends_with("_hand"):
+				var owner := cid.split("_")[0] if "_" in cid else "p?"
+				if _state:
+					var ci := _state.get_card(cid)
+					if ci:
+						owner = ci.owner
+				var col := "#7af" if owner == "p1" else "#fa8"
+				_log_entry("[color=%s]%s draws a card[/color]" % [col, _log_player(owner)])
+			elif from_z.ends_with("_hand") and to_z.ends_with("_ally_row"):
+				var owner := ""
+				if _state:
+					var ci := _state.get_card(cid)
+					if ci:
+						owner = ci.owner
+				var col := "#7af" if owner == "p1" else "#fa8"
+				_log_entry("[color=%s]%s plays [b]%s[/b][/color]" % [col, _log_player(owner), _log_card(cid)])
+		"resource_placed":
+			var p:  String = _log_player(event.payload.get("player", ""))
+			var cid: String = event.payload.get("card_id", "")
+			var face_up: bool = event.payload.get("face_up", false)
+			var face := "face-up" if face_up else "face-down"
+			_log_entry("[color=#888]%s places %s %s[/color]" % [p, _log_card(cid), face])
+		"combat_started":
+			var att: String = _log_card(event.payload.get("attacker_id", ""))
+			var def: String = _log_card(event.payload.get("defender_id", ""))
+			_log_entry("[color=#fc8][b]%s ⚔ %s[/b][/color]" % [att, def])
+		"damage_dealt":
+			var src:    String = _log_card(event.payload.get("source", ""))
+			var tgt:    String = _log_card(event.payload.get("target", ""))
+			var amt:    int    = event.payload.get("amount", 0)
+			_log_entry("[color=#f66]%s deals %d dmg to %s[/color]" % [src, amt, tgt])
+		"card_destroyed":
+			var name:   String = _log_card(event.payload.get("card",   ""))
+			var source: String = event.payload.get("source", "")
+			if source != "":
+				var src_name: String = _log_card(source)
+				_log_entry("[color=#f44][b]%s destroyed by %s[/b][/color]" % [name, src_name])
+			else:
+				_log_entry("[color=#f44][b]%s destroyed[/b][/color]" % name)
+		"hero_power_used":
+			var p: String = _log_player(event.payload.get("player", ""))
+			_log_entry("[color=#aef]%s hero power[/color]" % p)
+		"ally_power_used":
+			var p: String   = _log_player(event.payload.get("player", ""))
+			var cid: String = event.payload.get("ally_id", "")
+			_log_entry("[color=#aef]%s activates [b]%s[/b][/color]" % [p, _log_card(cid)])
+		"quest_completed":
+			var p:  String = _log_player(event.payload.get("player", ""))
+			var cid: String = event.payload.get("quest_id", "")
+			_log_entry("[color=#af8]%s completes %s[/color]" % [p, _log_card(cid)])
+		"game_over":
+			var winner: String = _log_player(event.payload.get("winner", ""))
+			_log_entry("\n[color=#d4af37][b]═══ %s WINS ═══[/b][/color]" % winner)
+
+
 # ── AI ─────────────────────────────────────────────────────────────────────────
 
 func _do_ai_turn() -> void:
@@ -715,6 +877,7 @@ func _do_ai_turn() -> void:
 # ── Event reactions ────────────────────────────────────────────────────────────
 
 func _on_game_event(event: GameEvent) -> void:
+	_log_event(event)
 	match event.event_type:
 		"priority_passed":
 			if event.payload.get("player", "") == "p2":
@@ -730,8 +893,18 @@ func _on_game_event(event: GameEvent) -> void:
 			_maybe_turbo_pass()
 		"card_moved":
 			# A card drawn from deck needs a fresh CardNode spawned at the hand anchor.
-			var to_zone: String = event.payload.get("to", "")
-			var moved_id: String = event.payload.get("card", "")
+			var to_zone: String   = event.payload.get("to", "")
+			var from_zone: String = event.payload.get("from", "")
+			var moved_id: String  = event.payload.get("card", "")
+			# Show summoning-sickness badge when an ally enters the ally_row from hand.
+			if to_zone.ends_with("_ally_row") and from_zone.ends_with("_hand") and _state and _db:
+				var sick_card := _state.get_card(moved_id)
+				if sick_card and sick_card.just_summoned:
+					var sick_def := _db.get_def(sick_card.card_def_id) as CardDef
+					var is_ferocity := sick_def != null and "ferocity" in sick_def.keywords
+					var sick_cn := _renderer.card_nodes.get(moved_id) as CardNode
+					if sick_cn:
+						sick_cn.show_sick_badge(is_ferocity)
 			if to_zone.ends_with("_hand") and not _renderer.has_card_node(moved_id):
 				var card := _state.get_card(moved_id)
 				if card:
@@ -774,8 +947,9 @@ func _on_game_event(event: GameEvent) -> void:
 		"mulligan_phase_started":
 			_handle_mulligan_started(event.payload)
 		"mulligan_committed":
-			pass   # visual feedback could be added here later
+			pass
 		"mulligan_phase_ended":
+			_log_in_mulligan = false
 			_mulligan_panel.visible      = false
 			_pass_btn.visible            = true
 			_mulligan_hint_label.visible = true
@@ -936,16 +1110,34 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
-func _on_targeting_started(source_id: String, _dmg_type: String, _dmg_amount: int) -> void:
+func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int) -> void:
 	var card := _state.get_card(source_id) as CardInstance
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
 	var name_str := def.card_name if def else source_id
-	_set_status("⚔ %s — select a target  [Esc to cancel]" % name_str)
+	if dmg_type == "heal":
+		_set_status("✚ %s — select a target to heal  [Esc to cancel]" % name_str)
+	else:
+		_set_status("⚔ %s — select a target  [Esc to cancel]" % name_str)
 	_refresh_ui()
 
 
 func _on_targeting_cancelled() -> void:
 	_set_status("")
+	# If an enters-play effect is still pending, targeting is mandatory — restart it.
+	# Exception: if a choose_enter_play_target action is already on the chain, the human
+	# already picked a target; don't restart (pending_enter_play_effect clears later when
+	# both players pass and the action resolves).
+	if _state and not _state.pending_enter_play_effect.is_empty():
+		var target_queued := false
+		for a in _state.pending_actions:
+			if (a as PendingAction).action_type == "choose_enter_play_target":
+				target_queued = true
+				break
+		if not target_queued:
+			var eff := _state.pending_enter_play_effect
+			_router.start_enter_play_targeting(
+				eff.get("card_id", ""), eff.get("dmg_type", ""), eff.get("amount", 0))
+			return
 	_refresh_ui()
 
 

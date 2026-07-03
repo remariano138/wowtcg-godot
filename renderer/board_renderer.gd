@@ -21,6 +21,7 @@ var zone_anchors: Dictionary = {}
 # zone_id (String) -> Array[String] instance_ids currently in that zone (renderer's view)
 var _zone_cards: Dictionary = {}
 
+
 var _input_router: InputRouter = null
 var _status_label: Label = null
 
@@ -49,6 +50,17 @@ var _hero_bars: Dictionary = {}
 var _deck_labels: Dictionary = {}
 # zone_id -> int, maintained separately because deck cards have no visual nodes.
 var _deck_counts: Dictionary = {}
+
+# ── Wiggle tracking ────────────────────────────────────────────────────────────
+# instance_id of the card currently in a continuous targeting wiggle ("" = none).
+var _wiggling_id: String = ""
+
+# ── Position tween registry ────────────────────────────────────────────────────
+# Tracks the active movement/layout tween per card so that a new tween can
+# kill the old one before starting.  Prevents stale deck-animation tweens
+# from overwriting a layout tween when the same card is returned and redrawn
+# during mulligan (hand→deck tween 0.3 s vs layout tween 0.2 s race).
+var _pos_tweens: Dictionary = {}   # card_id -> Tween
 
 # Zones where cards are fanned out horizontally. All others stack at the anchor.
 const SPREAD_ZONES := ["chain",
@@ -270,16 +282,17 @@ func _on_game_event(event: GameEvent) -> void:
 		"hp_changed":
 			var cid: String  = event.payload.get("card", "")
 			var new_hp: int  = event.payload.get("new_hp", 0)
+			var old_hp: int  = event.payload.get("old_hp", 0)
 			var max_hp: int  = event.payload.get("max_hp", 0)
 			var cn := card_nodes.get(cid) as CardNode
 			if not cn:
 				return
-			# Determine if this card is a hero by checking which zone it occupies.
+			if new_hp > old_hp:
+				_show_heal_number(cid, new_hp - old_hp)
 			var hero_player := _hero_player_for(cid)
 			if hero_player != "":
 				_update_hero_bar(hero_player, cid, new_hp, max_hp)
 			else:
-				# Ally: show damage badge. damage = max_hp - new_hp.
 				cn.update_damage(max_hp - new_hp)
 		"card_destroyed":
 			pass  # card_moved to graveyard handles the visual
@@ -300,10 +313,32 @@ func _on_game_event(event: GameEvent) -> void:
 				cn.show_card_back()
 			_set_status("Quest completed by %s — reward applied!" % event.payload.get("player", "?"))
 		"hero_power_used":
-			var cn := card_nodes.get(event.payload.get("hero_id", "")) as CardNode
-			if cn and cn.has_method("set_power_used"):
-				cn.set_power_used(true)
+			var hero_id: String = event.payload.get("hero_id", "")
+			var hcn := card_nodes.get(hero_id) as CardNode
+			if hcn:
+				if hcn.has_method("set_power_used"):
+					hcn.set_power_used(true)
+				# If we were wiggling this card (targeted hero power), transition to 2-sec
+				# post-resolution wiggle; otherwise start a fresh 2-sec wiggle (AoE / instant).
+				if _wiggling_id == hero_id:
+					hcn.stop_wiggle(2.0)
+					_wiggling_id = ""
+				else:
+					hcn.wiggle_for(2.0)
 			_set_status("%s used their hero power!" % event.payload.get("player", "?"))
+		"ally_power_used":
+			var ally_id: String = event.payload.get("ally_id", "")
+			var acn := card_nodes.get(ally_id) as CardNode
+			if acn:
+				if _wiggling_id == ally_id:
+					_wiggling_id = ""
+				# Delay wiggle until after the exhaust rotation tween (0.2 s) settles,
+				# so _wiggle_base captures 90° (exhausted) not 0° (pre-exhaust).
+				var captured := acn
+				get_tree().create_timer(0.22).timeout.connect(
+					func() -> void:
+						if is_instance_valid(captured):
+							captured.wiggle_for(2.0))
 		"action_proposed":
 			if event.payload.get("action_type") == "place_resource" \
 					and not event.payload.get("face_up", true):
@@ -375,17 +410,31 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	_relayout_zone(from_zone)
 
 	if to_zone in SPREAD_ZONES:
-		# Re-centring the destination handles the arriving card's tween too.
 		_relayout_zone(to_zone)
 	else:
-		# Non-spread zone (graveyard, deck …): tween the card to the anchor directly.
 		var anchor := zone_anchors.get(to_zone) as Node2D
 		if anchor:
+			_kill_pos_tween(card_id)
 			var tween := create_tween()
 			tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 			tween.tween_property(card_node, "global_position", anchor.global_position, 0.3)
+			_pos_tweens[card_id] = tween
 
 	await get_tree().create_timer(0.3).timeout
+
+	# Deck cards have no persistent node — the deck is represented by the back-sprite
+	# and count label only. Destroy the node now so it's cleanly gone; if this card
+	# is drawn later, playtest.gd spawns a fresh node at that moment.
+	#
+	# Guard: if the card was drawn back out of the deck before this timer fired
+	# (e.g. during mulligan redraw), it is no longer in _zone_cards[to_zone].
+	# In that case a deck→hand animate_move already re-homed it — do not destroy.
+	if to_zone.ends_with("_deck"):
+		var still_in_deck: Array = _zone_cards.get(to_zone, [])
+		if card_id in still_in_deck:
+			_remove_from_zone(card_id, to_zone)
+			card_nodes.erase(card_id)
+			card_node.queue_free()
 
 
 func _animate_exhaust(card_id: String) -> void:
@@ -398,9 +447,12 @@ func _animate_exhaust(card_id: String) -> void:
 
 
 func _animate_ready(card_id: String) -> void:
-	var card_node := card_nodes.get(card_id) as Node2D
+	var card_node := card_nodes.get(card_id) as CardNode
 	if not card_node:
 		return
+	# Summoning sickness clears at the ready step — remove the Zzz/Grr badge.
+	if card_node.has_method("hide_sick_badge"):
+		card_node.hide_sick_badge()
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 	tween.tween_property(card_node, "rotation_degrees", 0.0, 0.2)
@@ -437,6 +489,7 @@ func _add_to_zone(card_id: String, zone_id: String) -> void:
 func _remove_from_zone(card_id: String, zone_id: String) -> void:
 	if _zone_cards.has(zone_id):
 		(_zone_cards[zone_id] as Array).erase(card_id)
+
 
 
 func _spread_gap(zone_id: String) -> float:
@@ -483,9 +536,19 @@ func _relayout_zone(zone_id: String) -> void:
 			continue
 		var total  := gap * (count - 1)
 		var target := anchor.global_position + Vector2(-total * 0.5 + i * gap, 0.0)
+		_kill_pos_tween(cid)
 		var tween  := create_tween()
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 		tween.tween_property(node, "global_position", target, 0.2)
+		_pos_tweens[cid] = tween
+
+
+func _kill_pos_tween(card_id: String) -> void:
+	if _pos_tweens.has(card_id):
+		var t: Tween = _pos_tweens[card_id]
+		if t:
+			t.kill()
+		_pos_tweens.erase(card_id)
 
 
 # ── Input bridge ───────────────────────────────────────────────────────────────
@@ -540,6 +603,11 @@ func _on_conditional_highlights_updated(orange_ids: Array) -> void:
 func _on_targeting_started(source_id: String, dmg_type: String, dmg_amount: int) -> void:
 	_targeting_active    = true
 	_targeting_source_id = source_id
+	# Wiggle the source card while the player is picking a target.
+	_wiggling_id = source_id
+	var wcn := card_nodes.get(source_id) as CardNode
+	if wcn:
+		wcn.start_wiggle()
 	if _targeting_line:
 		var cn := card_nodes.get(source_id) as Node2D
 		var src := cn.global_position if cn else get_viewport().get_mouse_position()
@@ -558,6 +626,12 @@ func _on_targeting_cancelled() -> void:
 	if _targeting_cursor:
 		_targeting_cursor.visible = false
 	Input.set_default_cursor_shape(Input.CURSOR_ARROW)
+	# Targeting cancelled — stop wiggle immediately.
+	if _wiggling_id != "":
+		var wcn := card_nodes.get(_wiggling_id) as CardNode
+		if wcn:
+			wcn.stop_wiggle(0.0)
+		_wiggling_id = ""
 
 
 # Build the cursor overlay: damage-type icon (if any) with the amount below it.
@@ -568,10 +642,23 @@ func _update_targeting_cursor(dmg_type: String, dmg_amount: int) -> void:
 	var lbl  := _targeting_cursor.get_node("Amount") as Label
 
 	if dmg_type != "":
-		var path := "res://assets/dmg_icons/%s.png" % dmg_type.to_lower()
-		var tex: Texture2D = load(path)
+		# Non-standard filenames for icons whose filename differs from the type key.
+		var icon_file_map: Dictionary = {
+			"heal":    "GreenCrossHeal",
+			"destroy": "SkullDestroy",
+		}
+		# Oversized icons need a compensating scale (standard is 0.55).
+		var icon_scale_map: Dictionary = {
+			"heal":    Vector2(0.055, 0.055),
+			"destroy": Vector2(0.55 / 8.0, 0.55 / 8.0),
+		}
+		var key    := dmg_type.to_lower()
+		var fname  := key if not icon_file_map.has(key) else (icon_file_map[key] as String)
+		var path   := "res://assets/type_icons/%s.png" % fname
+		var tex: Texture2D = load(path) if ResourceLoader.exists(path) else null
 		if icon:
-			icon.texture = tex   # null is fine — just hides the sprite
+			icon.texture = tex
+			icon.scale   = icon_scale_map[key] if icon_scale_map.has(key) else Vector2(0.55, 0.55)
 			icon.visible = tex != null
 	else:
 		if icon:
@@ -707,25 +794,43 @@ func _refresh_deck_label(zone_id: String) -> void:
 
 # ── Damage popup ───────────────────────────────────────────────────────────────
 
-func _show_damage_number(card_id: String, amount: int) -> void:
-	var origin: Vector2
-	# Heroes: anchor to the centre of the HP bar so the number is clearly visible.
+func _show_heal_number(card_id: String, amount: int) -> void:
+	var origin := _number_origin(card_id)
+	if origin == Vector2.ZERO:
+		return
+	var label := Label.new()
+	label.text    = "+%d" % amount
+	label.z_index = 20
+	label.add_theme_font_size_override("font_size", 32)
+	label.add_theme_color_override("font_color", Color(0.2, 1.0, 0.35))
+	label.add_theme_constant_override("outline_size", 2)
+	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	label.global_position = origin
+	get_tree().root.add_child(label)
+	var tween := create_tween()
+	tween.tween_property(label, "global_position", origin + Vector2(0, -60), 0.9)
+	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.9)
+	await tween.finished
+	label.queue_free()
+
+
+func _number_origin(card_id: String) -> Vector2:
 	var hero_player := _hero_player_for(card_id)
 	if hero_player != "":
 		var bar: Dictionary = _hero_bars.get(hero_player, {})
 		var bg := bar.get("bg") as ColorRect
 		if bg:
-			origin = bg.global_position + Vector2(bg.size.x * 0.5, 0)
-		else:
-			var cn := card_nodes.get(card_id) as Node2D
-			if not cn:
-				return
-			origin = cn.global_position + Vector2(-20, -30)
-	else:
+			return bg.global_position + Vector2(bg.size.x * 0.5, 0)
 		var cn := card_nodes.get(card_id) as Node2D
-		if not cn:
-			return
-		origin = cn.global_position + Vector2(10, -30)
+		return cn.global_position + Vector2(-20, -30) if cn else Vector2.ZERO
+	var cn := card_nodes.get(card_id) as Node2D
+	return cn.global_position + Vector2(10, -30) if cn else Vector2.ZERO
+
+
+func _show_damage_number(card_id: String, amount: int) -> void:
+	var origin := _number_origin(card_id)
+	if origin == Vector2.ZERO:
+		return
 
 	var label := Label.new()
 	label.text     = "-%d" % amount

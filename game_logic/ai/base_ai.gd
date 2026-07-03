@@ -36,6 +36,12 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 		var action_type := _action_type_for(card, db)
 		if action_type == "":
 			continue
+		if action_type in ["play_instant", "play_ability"] and db:
+			var def := db.get_def(card.card_def_id) as CardDef
+			if def and StackResolver._instant_needs_target(def):
+				# Targeted spell: one action per valid target.
+				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id))
+				continue
 		var action := PendingAction.make(action_type, player_id,
 				{"card_id": card.instance_id})
 		if StackResolver.can_submit(state, action, db):
@@ -63,6 +69,9 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			for def_id in StackResolver.get_legal_defenders(state, atk_id, db):
 				result.append(PendingAction.make("propose_combat", player_id,
 					{"attacker_id": atk_id, "defender_id": def_id}))
+
+	# Ally activated powers.
+	result.append_array(_get_ally_power_actions(state, db, player_id))
 
 	# Hero power activations.
 	result.append_array(_get_hero_power_actions(state, db, player_id))
@@ -151,6 +160,30 @@ func choose_protector(state: GameState, db, _player_id: String) -> String:
 
 
 # Returns activate_power actions for the player's hero.
+func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
+	var result: Array[PendingAction] = []
+	if state.phase != "action" or state.turn_player != player_id:
+		return result
+	if not state.pending_actions.is_empty():
+		return result
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		if card.is_exhausted or card.just_summoned:
+			continue
+		if not db:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var ap := StackResolver._ally_activated_power(def)
+		if ap.is_empty():
+			continue
+		var action := PendingAction.make("use_ally_power", player_id,
+			{"card_id": card.instance_id})
+		if StackResolver.can_submit(state, action, db):
+			result.append(action)
+	return result
+
+
 # For targeted powers, one action is created per valid target.
 # For untargeted powers, one action is created with no target_id.
 func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
@@ -162,23 +195,35 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 	var needs_target := _hero_power_needs_target(state, db, hero_id)
 
 	if needs_target:
-		# One action per valid target (any in-play hero or ally).
-		for pid in state.players:
-			var ps2 := state.players.get(pid) as PlayerState
-			if ps2 and ps2.hero_instance_id != "":
+		# deal_damage_and_heal needs two distinct targets — enumerate all valid pairs.
+		if _hero_power_is(state, db, hero_id, "deal_damage_and_heal"):
+			result.append_array(_damage_and_heal_actions(state, db, player_id, hero_id))
+		else:
+			# Single-target powers: one action per valid target (any in-play hero or ally).
+			var is_destroy_power := _hero_power_is(state, db, hero_id, "destroy_exhausted_ally")
+			var power_cost := _hero_power_cost(state, db, hero_id)
+			for pid in state.players:
+				var ps2 := state.players.get(pid) as PlayerState
+				if ps2 and ps2.hero_instance_id != "":
+					var action := PendingAction.make("activate_power", player_id,
+						{"hero_id": hero_id, "target_id": ps2.hero_instance_id})
+					if StackResolver.can_submit(state, action, db):
+						result.append(action)
+			for card in state.cards_in_zone(player_id + "_ally_row"):
 				var action := PendingAction.make("activate_power", player_id,
-					{"hero_id": hero_id, "target_id": ps2.hero_instance_id})
-				if StackResolver.can_submit(state, action, db):
-					result.append(action)
-		for card in state.cards_in_zone(player_id + "_ally_row"):
-			var action := PendingAction.make("activate_power", player_id,
-				{"hero_id": hero_id, "target_id": card.instance_id})
-			if StackResolver.can_submit(state, action, db):
+					{"hero_id": hero_id, "target_id": card.instance_id})
+				if not StackResolver.can_submit(state, action, db):
+					continue
+				if is_destroy_power and not _destroy_is_worth_it(state, db, player_id, card.instance_id, power_cost):
+					continue
 				result.append(action)
-		for card in state.cards_in_zone(_other_player_id(state, player_id) + "_ally_row"):
-			var action := PendingAction.make("activate_power", player_id,
-				{"hero_id": hero_id, "target_id": card.instance_id})
-			if StackResolver.can_submit(state, action, db):
+			for card in state.cards_in_zone(_other_player_id(state, player_id) + "_ally_row"):
+				var action := PendingAction.make("activate_power", player_id,
+					{"hero_id": hero_id, "target_id": card.instance_id})
+				if not StackResolver.can_submit(state, action, db):
+					continue
+				if is_destroy_power and not _destroy_is_worth_it(state, db, player_id, card.instance_id, power_cost):
+					continue
 				result.append(action)
 	else:
 		var action := PendingAction.make("activate_power", player_id,
@@ -187,6 +232,183 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 			result.append(action)
 
 	return result
+
+
+func _hero_power_is(state: GameState, db, hero_id: String, effect_key: String) -> bool:
+	var hero := state.get_card(hero_id)
+	if not hero or not db:
+		return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def:
+		return false
+	return StackResolver._power_effect_is(def, effect_key)
+
+
+# Use the targeted-damage and targeted-heal heuristics to pick the single best
+# (dmg_target, heal_target) pair for deal_damage_and_heal powers.
+func _damage_and_heal_actions(state: GameState, db, player_id: String,
+		hero_id: String) -> Array[PendingAction]:
+	# Parse damage amount from effect string (format: deal_damage_and_heal:DMG:type:HEAL).
+	var def := _card_def(state, db, hero_id)
+	var damage := 3
+	if def:
+		var parts := def.effects.split(":")
+		if parts.size() > 1:
+			damage = int(parts[1])
+
+	# Collect every in-play character.
+	var all_ids: Array[String] = []
+	for pid in state.players:
+		var ps2 := state.players.get(pid) as PlayerState
+		if ps2 and ps2.hero_instance_id != "":
+			all_ids.append(ps2.hero_instance_id)
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			all_ids.append(card.instance_id)
+
+	# Find valid damage targets (those with at least one valid heal partner).
+	var valid_dmg: Array[String] = []
+	for dmg_id in all_ids:
+		for heal_id in all_ids:
+			if heal_id == dmg_id:
+				continue
+			var act := PendingAction.make("activate_power", player_id,
+				{"hero_id": hero_id, "target_id": dmg_id, "heal_target_id": heal_id})
+			if StackResolver.can_submit(state, act, db):
+				valid_dmg.append(dmg_id)
+				break
+
+	if valid_dmg.is_empty():
+		return []
+
+	var best_dmg := _best_damage_target(state, db, player_id, valid_dmg, damage)
+	if best_dmg == "":
+		return []
+
+	# Find valid heal targets for the chosen damage target.
+	var valid_heal: Array[String] = []
+	for heal_id in all_ids:
+		if heal_id == best_dmg:
+			continue
+		var act := PendingAction.make("activate_power", player_id,
+			{"hero_id": hero_id, "target_id": best_dmg, "heal_target_id": heal_id})
+		if StackResolver.can_submit(state, act, db):
+			valid_heal.append(heal_id)
+
+	if valid_heal.is_empty():
+		return []
+
+	var best_heal := _best_heal_target(state, db, player_id, valid_heal)
+	if best_heal == "":
+		return []
+
+	var final_act := PendingAction.make("activate_power", player_id,
+		{"hero_id": hero_id, "target_id": best_dmg, "heal_target_id": best_heal})
+	if StackResolver.can_submit(state, final_act, db):
+		return [final_act]
+	return []
+
+
+func _hero_power_cost(state: GameState, db, hero_id: String) -> int:
+	var def := _card_def(state, db, hero_id)
+	return def.cost if def else 0
+
+
+# ── Targeted damage heuristic ──────────────────────────────────────────────
+# Picks the best damage target from a list of candidate instance IDs.
+# Priority 0 — lethal on enemy hero.
+# Priority 1 — any lethal hit; tiebreak: highest HP → highest cost →
+#              Protector → Elusive → first in list.
+# Priority 2 — no lethal: maximize effective damage dealt (min(dmg, cur_hp)).
+func _best_damage_target(state: GameState, db, player_id: String,
+		candidates: Array[String], damage: int) -> String:
+	if candidates.is_empty():
+		return ""
+	var enemy_pid := _other_player_id(state, player_id)
+	var ep := state.players.get(enemy_pid) as PlayerState
+	var enemy_hero_id: String = ep.hero_instance_id if ep else ""
+
+	# Priority 0: lethal on enemy hero.
+	if enemy_hero_id != "" and enemy_hero_id in candidates:
+		if state.get_current_hp(enemy_hero_id, db) <= damage:
+			return enemy_hero_id
+
+	var lethal: Array[String] = []
+	var non_lethal: Array[String] = []
+	for c in candidates:
+		if state.get_current_hp(c, db) <= damage:
+			lethal.append(c)
+		else:
+			non_lethal.append(c)
+
+	if not lethal.is_empty():
+		lethal.sort_custom(func(a: String, b: String) -> bool:
+			var hp_a := state.get_current_hp(a, db)
+			var hp_b := state.get_current_hp(b, db)
+			if hp_a != hp_b:
+				return hp_a > hp_b
+			var da := _card_def(state, db, a)
+			var db_ := _card_def(state, db, b)
+			var cost_a := da.cost if da else 0
+			var cost_b := db_.cost if db_ else 0
+			if cost_a != cost_b:
+				return cost_a > cost_b
+			var prot_a: bool = da != null and "Protector" in da.keywords
+			var prot_b: bool = db_ != null and "Protector" in db_.keywords
+			if prot_a != prot_b:
+				return prot_a
+			var elu_a: bool = da != null and "Elusive" in da.keywords
+			var elu_b: bool = db_ != null and "Elusive" in db_.keywords
+			return elu_a and not elu_b
+		)
+		return lethal[0]
+
+	# Priority 2: maximize effective damage.
+	non_lethal.sort_custom(func(a: String, b: String) -> bool:
+		return min(damage, state.get_current_hp(a, db)) > min(damage, state.get_current_hp(b, db))
+	)
+	return non_lethal[0]
+
+
+# ── Targeted heal heuristic ────────────────────────────────────────────────
+# Picks the most damaged friendly character from candidates.
+# Allies are preferred over the hero, UNLESS the hero is at ≤ 1/3 of its max HP
+# (then the hero's survival outweighs keeping an ally).
+func _best_heal_target(state: GameState, db, player_id: String,
+		candidates: Array[String]) -> String:
+	if candidates.is_empty():
+		return ""
+	var ps := state.players.get(player_id) as PlayerState
+	var hero_id: String = ps.hero_instance_id if ps else ""
+	var hero_low_hp := false
+	if hero_id != "" and hero_id in candidates:
+		hero_low_hp = state.get_current_hp(hero_id, db) <= 12
+
+	var best := candidates[0]
+	for i in range(1, candidates.size()):
+		var cid := candidates[i]
+		var cid_card := state.get_card(cid)
+		if not cid_card:
+			continue
+		var cid_is_hero := (cid == hero_id)
+		var best_is_hero := (best == hero_id)
+		# Bucket preference.
+		if hero_low_hp:
+			if cid_is_hero and not best_is_hero:
+				best = cid
+				continue
+			if not cid_is_hero and best_is_hero:
+				continue
+		else:
+			if not cid_is_hero and best_is_hero:
+				best = cid
+				continue
+			if cid_is_hero and not best_is_hero:
+				continue
+		# Same bucket: most damage_taken wins.
+		var best_card := state.get_card(best)
+		if best_card and cid_card.damage_taken > best_card.damage_taken:
+			best = cid
+	return best
 
 
 func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
@@ -199,7 +421,8 @@ func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
 	if not def:
 		return false
 	for entry in def.effects.split("|"):
-		if entry.strip_edges().begins_with("deal_damage_to_target"):
+		var key := entry.strip_edges().split(":")[0].strip_edges()
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal"]:
 			return true
 	return false
 
@@ -211,12 +434,88 @@ func _other_player_id(state: GameState, player_id: String) -> String:
 	return player_id
 
 
+func _targeted_instant_actions(state: GameState, db, player_id: String,
+		card_id: String) -> Array[PendingAction]:
+	var result: Array[PendingAction] = []
+	var spell_card := state.get_card(card_id)
+	var spell_def  := db.get_def(spell_card.card_def_id) as CardDef if spell_card else null
+
+	for pid in state.players:
+		for ally in state.cards_in_zone(pid + "_ally_row"):
+			var act := PendingAction.make("play_instant", player_id,
+				{"card_id": card_id, "target_id": ally.instance_id})
+			if not StackResolver.can_submit(state, act, db):
+				continue
+			if spell_def and _effect_is_destroy_ally(spell_def) \
+					and not _destroy_is_worth_it(state, db, player_id, ally.instance_id, spell_def.cost):
+				continue
+			result.append(act)
+		# Heroes are valid targets only if the spell allows it (destroy_target:ally excludes them).
+		if spell_def and not _effect_is_destroy_ally(spell_def):
+			var ps := state.players.get(pid) as PlayerState
+			if ps and ps.hero_instance_id != "":
+				var act := PendingAction.make("play_instant", player_id,
+					{"card_id": card_id, "target_id": ps.hero_instance_id})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
+	return result
+
+
+# Returns true if this spell's effects include destroy_target:ally.
+func _effect_is_destroy_ally(def: CardDef) -> bool:
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "destroy_target" and parts.size() > 1 and parts[1] == "ally":
+			return true
+	return false
+
+
+# A destroy effect is "worth it" on a target if:
+#   - Target's cost >= spell cost (value-neutral or better trade)
+#   - AND no single ready friendly ally can solo-kill it in combat (ATK >= target current HP)
+# Un-attackable targets (Elusive, "can't attack" effects, etc.) fail the solo-lethal check
+# naturally since get_legal_defenders won't include them — no special keyword check needed.
+func _destroy_is_worth_it(state: GameState, db, player_id: String,
+		target_id: String, spell_cost: int) -> bool:
+	var t_def  := _card_def(state, db, target_id)
+	var t_cost := t_def.cost if t_def else 0
+	if t_cost < spell_cost:
+		return false
+	var t_hp := state.get_current_hp(target_id, db)
+	return not _has_solo_lethal_attacker(state, db, player_id, target_id, t_hp)
+
+
+# Returns true if any single ready ally controlled by player_id can legally attack
+# target_id and has ATK >= target's current HP (solo kill without needing another attacker).
+func _has_solo_lethal_attacker(state: GameState, db, player_id: String,
+		target_id: String, target_hp: int) -> bool:
+	for ally in state.cards_in_play(player_id):
+		if state.get_atk(ally.instance_id, db) >= target_hp:
+			var legal := StackResolver.get_legal_defenders(state, ally.instance_id, db)
+			if target_id in legal:
+				return true
+	return false
+
+
+func _card_def(state: GameState, db, card_id: String) -> CardDef:
+	var card := state.get_card(card_id)
+	if not card or not db:
+		return null
+	return db.get_def(card.card_def_id) as CardDef
+
+
 func _action_type_for(card: CardInstance, db) -> String:
 	if not db:
 		return "play_ally"
 	var def: CardDef = db.get_def(card.card_def_id)
 	if not def:
 		return ""
-	if def.card_type == "Quest":
-		return ""   # quests go to resource row via place_resource, never play_ally
-	return "play_instant" if def.is_instant else "play_ally"
+	if def.card_type in ["Quest", "Location"]:
+		return ""   # go to resource row via place_resource
+	if def.card_type == "Ally":
+		return "play_ally"
+	if def.is_instant:
+		return "play_instant"
+	if def.card_type == "Ability":
+		return "play_ability"
+	return ""

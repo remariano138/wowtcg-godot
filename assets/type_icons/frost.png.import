@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dov2del5jshye"
-path="res://.godot/imported/holy.png-4411b9a06f38d2705f3508ff13dbe6c5.ctex"
+uid="uid://c7efv8ykrdb13"
+path="res://.godot/imported/frost.png-f9e1a85f5f309c286d24dc2186ed4cc1.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/dmg_icons/holy.png"
-dest_files=["res://.godot/imported/holy.png-4411b9a06f38d2705f3508ff13dbe6c5.ctex"]
+source_file="res://assets/type_icons/frost.png"
+dest_files=["res://.godot/imported/frost.png-f9e1a85f5f309c286d24dc2186ed4cc1.ctex"]
 
 [params]
 

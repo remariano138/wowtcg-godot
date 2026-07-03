@@ -24,7 +24,12 @@ var _base_color: Color = Color(0.25, 0.45, 0.75)
 var _mouse_inside: bool = false
 var _damage_badge: Label = null
 var _power_used_badge: Label = null
+var _sick_badge: Label = null
 var _outline: ColorRect = null
+
+# ── Wiggle state ───────────────────────────────────────────────────────────────
+var _wiggle_tween: Tween = null
+var _wiggle_base: float = 0.0
 
 
 static func create(inst_id: String, card_name: String,
@@ -117,6 +122,19 @@ static func create(inst_id: String, card_name: String,
 	node.add_child(used_lbl)
 	node._power_used_badge = used_lbl
 
+	# Summoning-sickness badge (Zzz / Grr) — shown above the card when just_summoned.
+	var sick_lbl := Label.new()
+	sick_lbl.add_theme_font_size_override("font_size", 15)
+	sick_lbl.add_theme_constant_override("outline_size", 3)
+	sick_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	sick_lbl.size                 = Vector2(W, 22)
+	sick_lbl.position             = Vector2(-W * 0.5, -H * 0.5 - 22)
+	sick_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sick_lbl.mouse_filter         = Control.MOUSE_FILTER_IGNORE
+	sick_lbl.visible              = false
+	node.add_child(sick_lbl)
+	node._sick_badge = sick_lbl
+
 	# Try to load the real card image.
 	if image_path != "" and image_path != "No match":
 		var res_path := "res://" + image_path.replace("\\", "/")
@@ -193,6 +211,65 @@ func _show_fallback() -> void:
 	_tex_rect.visible = false
 	for child in get_children():
 		child.visible = true
+
+
+# ── Summoning-sickness badge ───────────────────────────────────────────────────
+
+func show_sick_badge(ferocity: bool) -> void:
+	if not _sick_badge:
+		return
+	if ferocity:
+		_sick_badge.text = "Grr"
+		_sick_badge.add_theme_color_override("font_color", Color(0.95, 0.25, 0.15))
+	else:
+		_sick_badge.text = "Zzz"
+		_sick_badge.add_theme_color_override("font_color", Color(0.75, 0.85, 1.0))
+	_sick_badge.visible = true
+
+
+func hide_sick_badge() -> void:
+	if _sick_badge:
+		_sick_badge.visible = false
+
+
+# ── Wiggle ─────────────────────────────────────────────────────────────────────
+
+# Continuous wiggle loop (targeting in progress).
+func start_wiggle() -> void:
+	if _wiggle_tween:
+		_wiggle_tween.kill()
+	_wiggle_base = rotation_degrees
+	_wiggle_tween = create_tween().set_loops()
+	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base + 6.0, 0.09)
+	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base - 6.0, 0.09)
+	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base,       0.09)
+
+
+# Wiggle for a fixed duration then snap back (post-resolution effect cue).
+func wiggle_for(duration: float) -> void:
+	if _wiggle_tween:
+		_wiggle_tween.kill()
+	_wiggle_base = rotation_degrees
+	_wiggle_tween = create_tween()
+	var t := 0.0
+	while t < duration:
+		_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base + 6.0, 0.09)
+		_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base - 6.0, 0.09)
+		_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base,       0.09)
+		t += 0.27
+	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base, 0.15)
+	_wiggle_tween.tween_callback(func() -> void: _wiggle_tween = null)
+
+
+# Stop an in-progress continuous wiggle; optionally keep going for `more_seconds`.
+func stop_wiggle(more_seconds: float = 0.0) -> void:
+	if _wiggle_tween:
+		_wiggle_tween.kill()
+		_wiggle_tween = null
+	if more_seconds > 0.0:
+		wiggle_for(more_seconds)
+	else:
+		rotation_degrees = _wiggle_base
 
 
 func _input(event: InputEvent) -> void:

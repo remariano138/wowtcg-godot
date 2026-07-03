@@ -29,6 +29,9 @@ func _ready() -> void:
 	_test_moonshadow_hero_power()
 	_test_tazdingo_enter_play()
 	_test_parvink_enter_play()
+	_test_vanquish()
+	_test_timmo_hero_power()
+	_test_grennan_hero_power()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -99,6 +102,16 @@ class MockDB extends RefCounted:
 		d.printed_health = 0
 		d.cost           = cost
 		d.card_type      = "Quest"
+		_defs[def_id] = d
+
+	func instant(def_id: String, cost: int, effects: String) -> void:
+		var d := CardDef.new()
+		d.card_def_id    = def_id
+		d.card_name      = def_id
+		d.cost           = cost
+		d.card_type      = "Ability"
+		d.is_instant     = true
+		d.effects        = effects
 		_defs[def_id] = d
 
 	func get_def(id: String) -> CardDef:
@@ -989,10 +1002,11 @@ func _test_tazdingo_enter_play() -> void:
 			saw_target_req = true
 	ok(saw_target_req, "sc12-b: enter_play_target_required event fired")
 
-	# sc12-c: exactly 1 ranged damage was dealt to some target (either hero is valid).
-	var p1h := state.get_card("p1_hero")
-	var p2h := state.get_card("p2_hero")
-	var total_dmg := (p1h.damage_taken if p1h else 0) + (p2h.damage_taken if p2h else 0)
+	# sc12-c: exactly 1 ranged damage was dealt to any target (heroes or Taz'dingo itself are all valid).
+	var total_dmg := 0
+	for e in all_events:
+		if e.event_type == "damage_dealt":
+			total_dmg += e.payload.get("amount", 0)
 	eq(total_dmg, 1, "sc12-c: exactly 1 total damage dealt by Taz'dingo enters-play effect")
 
 	# sc12-d: pending_enter_play_effect cleared after resolution.
@@ -1047,3 +1061,161 @@ func _test_parvink_enter_play() -> void:
 	# sc13-c: p1 hand has exactly 1 card (just the drawn one; Parvink left hand on play).
 	eq(state.cards_in_zone("p1_hand").size(), 1,
 		"sc13-c: p1 hand has exactly 1 card after draw")
+
+
+func _test_vanquish() -> void:
+	print("\n-- Scenario 14: Vanquish destroys target ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_ally_def", 3, 5, [], 5)   # p2 ally: cost 5, out of reach of combat
+	db.instant("vanquish_def", 4, "destroy_target:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+
+	# Put Vanquish in p1's hand.
+	var vanquish := CardInstance.create("vanquish_inst", "vanquish_def", "p1", "p1_hand")
+	state.cards["vanquish_inst"] = vanquish
+	state.zones["p1_hand"].card_ids.append("vanquish_inst")
+
+	# Put a big ally in p2's ally row.
+	var big := CardInstance.create("big_ally_inst", "big_ally_def", "p2", "p2_ally_row")
+	state.cards["big_ally_inst"] = big
+	state.zones["p2_ally_row"].card_ids.append("big_ally_inst")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_instant", "p1",
+		{"card_id": "vanquish_inst", "target_id": "big_ally_inst"}))
+	var p2_ai := ScriptedAI.new()
+
+	_drive_turns(state, db, p1_ai, p2_ai, 3)
+
+	# sc14-a: target ally is in graveyard.
+	var target := state.get_card("big_ally_inst")
+	ok(target != null and target.zone_id == "p2_graveyard",
+		"sc14-a: target ally moved to p2_graveyard")
+
+	# sc14-b: Vanquish itself is in graveyard after resolution.
+	var spell := state.get_card("vanquish_inst")
+	ok(spell != null and spell.zone_id == "p1_graveyard",
+		"sc14-b: Vanquish moved to p1_graveyard after resolution")
+
+	# sc14-c: targeting a hero is rejected (destroy_target:ally = allies only).
+	var p2_hero_id := (state.players.get("p2") as PlayerState).hero_instance_id
+	var bad_action := PendingAction.make("play_instant", "p1",
+		{"card_id": "vanquish_inst", "target_id": p2_hero_id})
+	ok(not StackResolver.can_submit(state, bad_action, db),
+		"sc14-c: Vanquish cannot target a hero")
+
+
+func _test_timmo_hero_power() -> void:
+	print("\n-- Scenario 15: Timmo Shadestep hero power destroys exhausted ally --")
+	var db := MockDB.new()
+	db.hero("timmo_def", 27, 5, "destroy_exhausted_ally")
+	db.hero("p2_hero_def", 30)
+	db.ally("target_def", 2, 3, [], 3)
+
+	var state := _base_state(db, "timmo_def", "p2_hero_def")
+	_add_resources(state, "p1", 5)
+
+	# Put an exhausted ally in p2's row.
+	var target := CardInstance.create("target_inst", "target_def", "p2", "p2_ally_row")
+	target.is_exhausted = true
+	state.cards["target_inst"] = target
+	state.zones["p2_ally_row"].card_ids.append("target_inst")
+
+	# Put a ready ally in p2's row (must NOT be a legal target).
+	var ready_ally := CardInstance.create("ready_inst", "target_def", "p2", "p2_ally_row")
+	ready_ally.is_exhausted = false
+	state.cards["ready_inst"] = ready_ally
+	state.zones["p2_ally_row"].card_ids.append("ready_inst")
+
+	var timmo_id := (state.players.get("p1") as PlayerState).hero_instance_id
+
+	# sc15-a: exhausted ally is a legal target.
+	var good_action := PendingAction.make("activate_power", "p1",
+		{"hero_id": timmo_id, "target_id": "target_inst"})
+	ok(StackResolver.can_submit(state, good_action, db),
+		"sc15-a: exhausted ally is a legal target for Timmo power")
+
+	# sc15-b: ready ally is NOT a legal target.
+	var bad_ready := PendingAction.make("activate_power", "p1",
+		{"hero_id": timmo_id, "target_id": "ready_inst"})
+	ok(not StackResolver.can_submit(state, bad_ready, db),
+		"sc15-b: ready ally is not a legal target for Timmo power")
+
+	# sc15-c: hero is NOT a legal target.
+	var p2_hero_id := (state.players.get("p2") as PlayerState).hero_instance_id
+	var bad_hero := PendingAction.make("activate_power", "p1",
+		{"hero_id": timmo_id, "target_id": p2_hero_id})
+	ok(not StackResolver.can_submit(state, bad_hero, db),
+		"sc15-c: hero is not a legal target for Timmo power")
+
+	# sc15-d: power resolves — exhausted ally is destroyed.
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(good_action)
+	var p2_ai := ScriptedAI.new()
+	_drive_turns(state, db, p1_ai, p2_ai, 3)
+
+	var destroyed := state.get_card("target_inst")
+	ok(destroyed != null and destroyed.zone_id == "p2_graveyard",
+		"sc15-d: exhausted ally moved to graveyard after Timmo power")
+
+
+func _test_grennan_hero_power() -> void:
+	print("\n-- Scenario 16: Grennan Stormspeaker hero power deals damage and heals --")
+	var db := MockDB.new()
+	db.hero("grennan_def", 29, 5, "deal_damage_and_heal:3:nature:3")
+	db.hero("p2_hero_def", 30)
+	db.ally("ally_def", 2, 3, [], 3)
+
+	var state := _base_state(db, "grennan_def", "p2_hero_def")
+	_add_resources(state, "p1", 5)
+
+	# Put an ally in p2's row (damage target).
+	var p2_ally := CardInstance.create("p2_ally_inst", "ally_def", "p2", "p2_ally_row")
+	state.cards["p2_ally_inst"] = p2_ally
+	state.zones["p2_ally_row"].card_ids.append("p2_ally_inst")
+
+	# Put an ally in p1's row (heal target).
+	var p1_ally := CardInstance.create("p1_ally_inst", "ally_def", "p1", "p1_ally_row")
+	p1_ally.damage_taken = 2   # wounded so heal has visible effect
+	state.cards["p1_ally_inst"] = p1_ally
+	state.zones["p1_ally_row"].card_ids.append("p1_ally_inst")
+
+	var grennan_id := (state.players.get("p1") as PlayerState).hero_instance_id
+	var p2_hero_id := (state.players.get("p2") as PlayerState).hero_instance_id
+
+	# sc16-a: untargeted activate_power is not legal.
+	var no_target := PendingAction.make("activate_power", "p1",
+		{"hero_id": grennan_id, "target_id": "", "heal_target_id": ""})
+	ok(not StackResolver.can_submit(state, no_target, db),
+		"sc16-a: untargeted Grennan power is illegal")
+
+	# sc16-b: targeting p2 hero as dmg target + p1 ally as heal target is legal.
+	var good_action := PendingAction.make("activate_power", "p1",
+		{"hero_id": grennan_id, "target_id": p2_hero_id, "heal_target_id": "p1_ally_inst"})
+	ok(StackResolver.can_submit(state, good_action, db),
+		"sc16-b: hero dmg target + ally heal target is legal")
+
+	# sc16-c: same target for both dmg and heal is illegal.
+	var same_target := PendingAction.make("activate_power", "p1",
+		{"hero_id": grennan_id, "target_id": p2_hero_id, "heal_target_id": p2_hero_id})
+	ok(not StackResolver.can_submit(state, same_target, db),
+		"sc16-c: same card for dmg and heal targets is illegal")
+
+	# sc16-d: power resolves — p2 hero takes 3 damage, p1 ally heals 2 (capped at max).
+	var p2_hero_hp_before := state.get_current_hp(p2_hero_id, db)
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(good_action)
+	var p2_ai := ScriptedAI.new()
+	_drive_turns(state, db, p1_ai, p2_ai, 3)
+
+	var p2_hero_card := state.get_card(p2_hero_id)
+	eq(p2_hero_card.damage_taken, 3,
+		"sc16-d: p2 hero took 3 damage from Grennan power")
+
+	var p1_ally_card := state.get_card("p1_ally_inst")
+	eq(p1_ally_card.damage_taken, 0,
+		"sc16-e: p1 ally healed back to full (damage_taken=0)")

@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cyud8j01tgwg4"
-path="res://.godot/imported/shadow.png-84c12ff447d3ed426c7bfb642a96120f.ctex"
+uid="uid://c42w4b8wreuxo"
+path="res://.godot/imported/melee.png-0320d85ec946b574ca4c32a350932233.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/dmg_icons/shadow.png"
-dest_files=["res://.godot/imported/shadow.png-84c12ff447d3ed426c7bfb642a96120f.ctex"]
+source_file="res://assets/type_icons/melee.png"
+dest_files=["res://.godot/imported/melee.png-0320d85ec946b574ca4c32a350932233.ctex"]
 
 [params]
 

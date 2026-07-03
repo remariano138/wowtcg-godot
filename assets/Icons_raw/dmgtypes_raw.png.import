@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c0hmqcmknxpcs"
-path="res://.godot/imported/ranged.png-374d72beadd99446ed720238f1d30ad7.ctex"
+uid="uid://dbmcel6lfpqa8"
+path="res://.godot/imported/dmgtypes_raw.png-f7d8798111b89addbd7c1eefee06d60a.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/dmg_icons/ranged.png"
-dest_files=["res://.godot/imported/ranged.png-374d72beadd99446ed720238f1d30ad7.ctex"]
+source_file="res://assets/Icons_raw/dmgtypes_raw.png"
+dest_files=["res://.godot/imported/dmgtypes_raw.png-f7d8798111b89addbd7c1eefee06d60a.ctex"]
 
 [params]
 

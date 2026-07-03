@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bs01m5hgwli84"
-path="res://.godot/imported/arcane.png-7e658e31b2b2b675cdbed0d1a720cb50.ctex"
+uid="uid://dov2del5jshye"
+path="res://.godot/imported/holy.png-8ae19fac34d584e4569d7da89038b55d.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/dmg_icons/arcane.png"
-dest_files=["res://.godot/imported/arcane.png-7e658e31b2b2b675cdbed0d1a720cb50.ctex"]
+source_file="res://assets/type_icons/holy.png"
+dest_files=["res://.godot/imported/holy.png-8ae19fac34d584e4569d7da89038b55d.ctex"]
 
 [params]
 

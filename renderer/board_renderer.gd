@@ -363,9 +363,6 @@ func _on_game_event(event: GameEvent) -> void:
 			_set_status("Discard %d card(s) from hand  [click a card]" % event.payload.get("count", 1))
 		"combat_started":
 			_set_status("⚔ Combat begins!")
-			await _animate_attack(
-				event.payload.get("attacker_id", ""),
-				event.payload.get("defender_id", ""))
 		"protect_point_opened":
 			_set_status("⚔ Protect point — defending player may exhaust a Protector  [or skip]")
 		"protect_chosen":
@@ -375,6 +372,9 @@ func _on_game_event(event: GameEvent) -> void:
 			else:
 				_set_status("⚔ Protector intercepts!")
 		"combat_concluded":
+			await _animate_attack(
+				event.payload.get("attacker_id", ""),
+				event.payload.get("defender_id", ""))
 			var a_dmg: int = event.payload.get("attacker_damage", 0)
 			var d_dmg: int = event.payload.get("defender_damage", 0)
 			_set_status("⚔ Combat resolved  (dealt %d / received %d)" % [a_dmg, d_dmg])

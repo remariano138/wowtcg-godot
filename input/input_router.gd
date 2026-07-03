@@ -98,9 +98,17 @@ func handle_card_click(instance_id: String) -> void:
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
 		if zone and zone.zone_type in ["ally_row", "hero_row"]:
-			var legal := StackResolver.get_legal_attackers(state, local_player, db)
-			if instance_id in legal:
-				start_attack_targeting(instance_id)
+			# Only enter targeting if combat can actually be proposed right now (rule 601.1).
+			var can_propose := state.phase == "action" \
+				and state.turn_player == local_player \
+				and state.pending_actions.is_empty() \
+				and not state.combat_attack_window \
+				and not state.combat_defend_window \
+				and not state.in_protect_point
+			if can_propose:
+				var legal := StackResolver.get_legal_attackers(state, local_player, db)
+				if instance_id in legal:
+					start_attack_targeting(instance_id)
 			return
 
 	# ── Hand card left-click → play / place ───────────────────────────────────
@@ -440,9 +448,11 @@ func get_playable_card_ids() -> Array:
 				_params_for(card.instance_id, atype))
 		if StackResolver.can_submit(state, action, db):
 			result.append(card.instance_id)
-	# Legal attackers (in action phase with empty chain).
+	# Legal attackers (non-combat action phase only — rule 601.1).
 	if state.phase == "action" and state.turn_player == local_player \
-			and state.pending_actions.is_empty():
+			and state.pending_actions.is_empty() \
+			and not state.combat_attack_window and not state.combat_defend_window \
+			and not state.in_protect_point:
 		result.append_array(StackResolver.get_legal_attackers(state, local_player, db))
 	# Face-up quests in resource row whose cost is currently payable (simple quests).
 	for card in state.cards_in_zone(local_player + "_resource_row"):
@@ -525,7 +535,9 @@ func get_context_actions(instance_id: String) -> Array:
 				and instance_id in legal_attackers \
 				and state.phase == "action" \
 				and state.turn_player == local_player \
-				and state.pending_actions.is_empty()
+				and state.pending_actions.is_empty() \
+				and not state.combat_attack_window and not state.combat_defend_window \
+				and not state.in_protect_point
 			result.append({"label": "Attack",
 				"action": PendingAction.make("begin_attack_targeting",
 					local_player, {"attacker_id": instance_id}),

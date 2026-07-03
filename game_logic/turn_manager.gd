@@ -43,18 +43,24 @@ static func commit_mulligan(state: GameState, player_id: String,
 	if not all_decided:
 		return events
 
-	# Execute all mulligans simultaneously.
+	# Execute all mulligans in two phases separated by mulligan_shuffle_done.
+	# Phase 1: return cards and shuffle decks.
+	var mulligan_draw_counts: Dictionary = {}
 	for pid in state.players:
 		if state.mulligan_wants.get(pid, false):
 			var hand := state.cards_in_zone(pid + "_hand").duplicate()
-			var count := hand.size()
+			mulligan_draw_counts[pid] = hand.size()
 			for card in hand:
 				events.append_array(GameLogic.move_card(state, card.instance_id, pid + "_deck"))
 			var deck := state.zones.get(pid + "_deck") as Zone
 			if deck:
 				deck.card_ids.shuffle()
-			for _i in count:
-				events.append_array(_draw_one(state, pid))
+	# Marker: renderer uses this to pause before the draw phase fires.
+	events.append(GameEvent.mulligan_shuffle_done())
+	# Phase 2: draw new hands.
+	for pid in mulligan_draw_counts:
+		for _i in mulligan_draw_counts[pid]:
+			events.append_array(_draw_one(state, pid))
 
 	events.append(GameEvent.mulligan_phase_ended())
 	events.append_array(_enter_ready(state, db))

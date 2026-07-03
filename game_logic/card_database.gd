@@ -92,6 +92,7 @@ func size() -> int:
 
 # Strip one layer of surrounding double-quotes, and unescape "" → ".
 func _unquote(s: String) -> String:
+	s = s.strip_edges()
 	if s.begins_with("\"") and s.ends_with("\""):
 		s = s.substr(1, s.length() - 2)
 		s = s.replace("\"\"", "\"")

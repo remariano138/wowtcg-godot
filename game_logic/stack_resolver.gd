@@ -34,7 +34,7 @@ static func submit_action(state: GameState, action: PendingAction,
 	# Rule 409.1 / 412.1a: card moves from hand to chain on submission.
 	# Resource costs are paid at submission time (before chain), not at resolution.
 	match action.action_type:
-		"play_ally", "play_instant":
+		"play_ally", "play_instant", "play_ability":
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":
 				events.append_array(GameLogic.move_card(state, card_id, "chain"))
@@ -529,7 +529,14 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	var ap := _ally_activated_power(def)
 	if ap.is_empty():
 		return false
-	return state.get_available_resources(action.source_player) >= int(ap.get("resource_cost", 0))
+	if state.get_available_resources(action.source_player) < int(ap.get("resource_cost", 0)):
+		return false
+	# Targeted effects require a valid in-play target.
+	if ap.get("targets", "") in ["hero_or_ally"]:
+		var target_id: String = action.params.get("target_id", "")
+		if target_id == "" or not state.is_in_play(target_id):
+			return false
+	return true
 
 
 # ── Ally activated power — resolution ─────────────────────────────────────────
@@ -575,6 +582,11 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 							_other_player(state, t_card.controller), t_card.controller))
 					else:
 						events.append_array(_check_destroyed_trigger(state, t_id, card_id, db))
+		"heal_target":
+			var amount: int = int(ap.get("amount", 0))
+			var target_id: String = action.params.get("target_id", "")
+			if target_id != "" and state.is_in_play(target_id):
+				events.append_array(GameLogic.heal(state, target_id, amount, db))
 
 	return events
 
@@ -978,7 +990,7 @@ static func retract_last(state: GameState, player_id: String,
 				if res_card.is_exhausted:
 					events.append_array(GameLogic.ready_card(state, res_card.instance_id))
 					ap_cost2 -= 1
-	if top.action_type in ["play_ally", "play_instant"] and db and card_id != "":
+	if top.action_type in ["play_ally", "play_instant", "play_ability"] and db and card_id != "":
 		var cost: int = state.get_play_cost(card_id, db)
 		for res_card in state.cards_in_zone(player_id + "_resource_row"):
 			if cost <= 0:

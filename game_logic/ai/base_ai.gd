@@ -177,10 +177,32 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		var ap := StackResolver._ally_activated_power(def)
 		if ap.is_empty():
 			continue
-		var action := PendingAction.make("use_ally_power", player_id,
-			{"card_id": card.instance_id})
-		if StackResolver.can_submit(state, action, db):
-			result.append(action)
+		if ap.get("targets", "") in ["hero_or_ally"]:
+			# Targeted: try all in-play cards, pick the one with most damage taken.
+			var candidates: Array[String] = []
+			for pid in state.players:
+				for ally in state.cards_in_zone(pid + "_ally_row"):
+					candidates.append(ally.instance_id)
+				var ps2 := state.players.get(pid) as PlayerState
+				if ps2 and ps2.hero_instance_id != "":
+					candidates.append(ps2.hero_instance_id)
+			candidates.sort_custom(func(a: String, b: String) -> bool:
+				var ca := state.get_card(a)
+				var cb := state.get_card(b)
+				var a_dmg := ca.damage_taken if ca else 0
+				var b_dmg := cb.damage_taken if cb else 0
+				return a_dmg > b_dmg)
+			for target_id in candidates:
+				var act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": target_id})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
+					break
+		else:
+			var action := PendingAction.make("use_ally_power", player_id,
+				{"card_id": card.instance_id})
+			if StackResolver.can_submit(state, action, db):
+				result.append(action)
 	return result
 
 

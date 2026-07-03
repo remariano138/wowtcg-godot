@@ -574,6 +574,13 @@ func _on_card_right_clicked(instance_id: String) -> void:
 
 
 func _on_card_hovered(instance_id: String) -> void:
+	# In stacked (non-spread) zones, only the topmost card (last in list) drives the inspector.
+	for zone_id in _zone_cards:
+		var zone_list: Array = _zone_cards[zone_id]
+		if instance_id in zone_list and zone_id not in SPREAD_ZONES:
+			if zone_list[-1] != instance_id:
+				return
+			break
 	_hovered_card_id = instance_id
 	if Input.is_key_pressed(KEY_ALT):
 		_try_show_inspector()

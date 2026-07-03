@@ -110,6 +110,9 @@ static func mulligan_phase_started(first_player: String, player_order: Array) ->
 static func mulligan_committed(player_id: String, wants_mulligan: bool) -> GameEvent:
 	return make("mulligan_committed", {"player": player_id, "mulligan": wants_mulligan})
 
+static func mulligan_shuffle_done() -> GameEvent:
+	return make("mulligan_shuffle_done", {})
+
 static func mulligan_phase_ended() -> GameEvent:
 	return make("mulligan_phase_ended", {})
 

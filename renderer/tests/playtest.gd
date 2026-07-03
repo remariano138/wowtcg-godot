@@ -989,7 +989,7 @@ func _handle_mulligan_started(payload: Dictionary) -> void:
 			var pid_ai: Object = _p1_ai if pid == "p1" else _p2_ai
 			var wants: bool = pid_ai.wants_mulligan(_state, _db, pid) if pid_ai else false
 			var events := TurnManager.commit_mulligan(_state, pid, wants, _db)
-			EventBus.emit_events(events)
+			_emit_mulligan_events(events)
 
 
 func _commit_mulligan(wants: bool) -> void:
@@ -997,8 +997,31 @@ func _commit_mulligan(wants: bool) -> void:
 		_p1_has_mulliganed    = true
 		_mulligan_btn.disabled = true
 	var events := TurnManager.commit_mulligan(_state, "p1", wants, _db)
-	EventBus.emit_events(events)
+	_emit_mulligan_events(events)
 	_refresh_ui()
+
+
+# Emit mulligan events in two phases separated by mulligan_shuffle_done.
+# Phase 1 (hand→deck + shuffle marker) fires immediately.
+# Phase 2 (deck→hand + game start) fires after a short delay so the renderer
+# has time to finish the hand→deck animations before redraw nodes arrive.
+func _emit_mulligan_events(events: Array[GameEvent]) -> void:
+	var split := -1
+	for i in events.size():
+		if events[i].event_type == "mulligan_shuffle_done":
+			split = i
+			break
+	if split == -1:
+		EventBus.emit_events(events)
+		return
+	EventBus.emit_events(events.slice(0, split + 1))
+	_refresh_ui()
+	var phase2: Array[GameEvent] = events.slice(split + 1)
+	get_tree().create_timer(0.45).timeout.connect(func() -> void:
+		EventBus.emit_events(phase2)
+		_refresh_ui()
+		_schedule_next_turn()
+		_maybe_turbo_pass())
 
 
 func _on_card_right_clicked(instance_id: String) -> void:

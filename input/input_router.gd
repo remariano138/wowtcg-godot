@@ -182,6 +182,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
+		"use_ally_power":            _handle_ally_power_targeting_click(instance_id)
 
 
 func _handle_combat_targeting_click(instance_id: String) -> void:
@@ -358,6 +359,8 @@ func get_playable_card_ids() -> Array:
 				return _get_instant_targets(_targeting_source)
 			"play_ability":
 				return _get_ability_targets(_targeting_source)
+			"use_ally_power":
+				return _get_ally_power_targets(_targeting_source)
 		return []
 
 	var result: Array = []
@@ -467,12 +470,24 @@ func get_context_actions(instance_id: String) -> Array:
 
 			# Ally activated power (if the ally has one).
 			if zone.zone_type == "ally_row" and card.controller == local_player:
-				if StackResolver._ally_activated_power(def) != {}:
-					var ap_action := PendingAction.make("use_ally_power", local_player,
-						{"card_id": instance_id})
+				var ap_data := StackResolver._ally_activated_power(def)
+				if ap_data != {}:
+					var ap_needs_target := ap_data.get("targets", "") in ["hero_or_ally"]
+					var ap_enabled: bool
+					if ap_needs_target:
+						# Check affordability only (target chosen after targeting mode starts).
+						ap_enabled = not card.is_exhausted and not card.just_summoned \
+							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
+							and state.phase == "action" and state.turn_player == local_player \
+							and state.pending_actions.is_empty()
+					else:
+						var ap_action := PendingAction.make("use_ally_power", local_player,
+							{"card_id": instance_id})
+						ap_enabled = StackResolver.can_submit(state, ap_action, db)
 					result.append({"label": "Activate Power",
-						"action": ap_action,
-						"enabled": StackResolver.can_submit(state, ap_action, db)})
+						"action": PendingAction.make("use_ally_power", local_player,
+							{"card_id": instance_id, "_needs_target": ap_needs_target}),
+						"enabled": ap_enabled})
 
 			# Hero power entry (heroes only, controlled by local player).
 			if zone.zone_type == "hero_row" and card.controller == local_player:
@@ -536,6 +551,17 @@ func handle_context_action(action: PendingAction) -> void:
 			if _instant_needs_target(action.params.get("card_id", "")):
 				var cid: String = action.params.get("card_id", "")
 				start_targeting(cid, "play_instant", _card_dmg_type(cid), 0)
+				return
+		"use_ally_power":
+			if action.params.get("_needs_target", false):
+				var cid: String = action.params.get("card_id", "")
+				var ally_card := state.get_card(cid) if state else null
+				var ally_def := db.get_def(ally_card.card_def_id) as CardDef if ally_card and db else null
+				var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
+				var ap_dmg_type: String = (ally_ap.get("dmg_type", "") as String).to_lower() if ally_ap else ""
+				if ap_dmg_type == "":
+					ap_dmg_type = "heal"
+				start_targeting(cid, "use_ally_power", ap_dmg_type, 0)
 				return
 		"begin_attack_targeting":
 			if state.priority_player == local_player:
@@ -810,6 +836,42 @@ func _action_type_for(instance_id: String) -> String:
 
 func _ability_needs_target(card_id: String) -> bool:
 	return _instant_needs_target(card_id)
+
+
+func _get_ally_power_targets(ally_id: String) -> Array:
+	var result: Array = []
+	if not db or not state:
+		return result
+	var ally := state.get_card(ally_id)
+	if not ally:
+		return result
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var act := PendingAction.make("use_ally_power", local_player,
+				{"card_id": ally_id, "target_id": card.instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(card.instance_id)
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var act := PendingAction.make("use_ally_power", local_player,
+				{"card_id": ally_id, "target_id": ps.hero_instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(ps.hero_instance_id)
+	return result
+
+
+func _handle_ally_power_targeting_click(instance_id: String) -> void:
+	var legal := _get_ally_power_targets(_targeting_source)
+	if instance_id not in legal:
+		return
+	var action := PendingAction.make("use_ally_power", local_player,
+		{"card_id": _targeting_source, "target_id": instance_id})
+	_targeting_source = ""
+	targeting_cancelled.emit()
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
 
 
 func _params_for(instance_id: String, action_type: String) -> Dictionary:

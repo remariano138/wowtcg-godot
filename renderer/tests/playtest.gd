@@ -19,10 +19,12 @@ extends Node2D
 
 const AI_THINK_TIME := 0.5
 
-const DECK_ALLIANCE_MOONSHADOW := "alliance_moonshadow_test"
-const DECK_ALLIANCE_TIMMO      := "alliance_timmo_test"
+const DECK_ALLIANCE_MOONSHADOW  := "alliance_moonshadow_test"
+const DECK_ALLIANCE_TIMMO       := "alliance_timmo_test"
+const DECK_ALLIANCE_DIZDEMONA   := "alliance_dizdemona_test"
 const DECK_HORDE_TAZO          := "horde_tazo_test"
 const DECK_HORDE_GRENNAN       := "horde_grennan_test"
+const DECK_HORDE_OMEDUS        := "horde_omedus_test"
 const DECK_RANDOM              := "random"
 
 var _state:  GameState
@@ -57,6 +59,13 @@ var _mulligan_hint_label:  Label
 var _p1_has_mulliganed:    bool = false
 var _context_menu: PopupMenu
 var _context_actions: Array   # Array of {label, action, enabled}
+# ── X-select dialog (Dizdemona-style "put X damage on herself" powers) ─────────
+var _x_dialog:       Panel
+var _x_label:        Label
+var _x_input:        LineEdit
+var _x_ok_btn:       Button
+var _x_hero_id:      String = ""
+var _x_max:          int = 0
 var _end_turn_dialog: ConfirmationDialog
 var _p1_played_this_action_phase: bool = false
 var _game_over: bool = false
@@ -156,6 +165,8 @@ func _build_scene() -> void:
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
+	_router.x_select_requested.connect(_on_x_select_requested)
+	_build_x_dialog()
 
 	# ── Control panel (y=895..1050) ───────────────────────────────────────────────
 	# Panel background — added before labels/buttons so it renders behind them.
@@ -320,7 +331,7 @@ func _build_menu() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	inner.add_child(title)
 
-	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Random"]
+	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Alliance_test (Dizdemona)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Horde_test (Omedus)", "Random"]
 	inner.add_child(_player_row("Player 1", ["Human", "BaseAI", "FullRandomAI"], 0,
 		deck_labels, 4,
 		func(opt): _p1_type_opt = opt, func(opt): _p1_deck_opt = opt))
@@ -381,8 +392,8 @@ func _player_row(label_text: String, type_items: Array, type_default: int,
 
 
 func _on_quick_start() -> void:
-	var all_decks := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO,
-					  DECK_HORDE_TAZO, DECK_HORDE_GRENNAN]
+	var all_decks := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
+					  DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
 	all_decks.shuffle()
 	_launch_game("human", all_decks[0], "fullrandom", all_decks[1])
 
@@ -390,8 +401,8 @@ func _on_quick_start() -> void:
 func _on_start_game() -> void:
 	var p1_types := ["human", "base", "fullrandom"]
 	var p2_types := ["base", "fullrandom"]
-	var deck_ids := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO,
-					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_RANDOM]
+	var deck_ids := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
+					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS, DECK_RANDOM]
 	_launch_game(p1_types[_p1_type_opt.selected], deck_ids[_p1_deck_opt.selected],
 				 p2_types[_p2_type_opt.selected], deck_ids[_p2_deck_opt.selected])
 
@@ -421,8 +432,8 @@ func _make_ai(type: String) -> Object:
 
 func _resolve_deck(deck_id: String) -> String:
 	if deck_id == DECK_RANDOM:
-		var pool := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO,
-					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN]
+		var pool := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
+					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
 		return pool[randi() % pool.size()]
 	return deck_id
 
@@ -460,8 +471,8 @@ func _build_deck_for(resolved_id: String) -> Deck:
 	]
 
 	# ── Alliance test deck (60 cards) ─────────────────────────────────────────────
-	# Core (22): 12 YFA · 2 Teep · 2 Tonarin · 2 Parvink · 2 Adept Breton · 2 Vanquish
-	# Filler (38): 5 remaining alliance allies spread evenly (8/8/8/7/7)
+	# Core (24): 12 YFA · 2 Teep · 2 Tonarin · 2 Parvink · 2 Adept Breton · 2 Vanquish · 2 Freya
+	# Filler (36): 5 remaining alliance allies spread evenly (8/8/8/6/6)
 	var alliance_cards: Array[String] = [
 		# 12× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
@@ -477,24 +488,60 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_174", "azeroth_174",
 		# 2× Vanquish
 		"azeroth_171", "azeroth_171",
-		# Filler — 38 slots across 5 remaining alliance allies
+		# 2× Freya Lightsworn (activated heal)
+		"azeroth_183", "azeroth_183",
+		# Filler — 36 slots across 5 remaining alliance allies
 		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×8
 		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",
 		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
 		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
 		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
 		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×7
-		"azeroth_175", "azeroth_175", "azeroth_175",
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×7
-		"azeroth_179", "azeroth_179", "azeroth_179",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×6
+		"azeroth_175", "azeroth_175",
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×6
+		"azeroth_179", "azeroth_179",
+	]
+
+	# ── Omedus deck (60 cards) — horde base with Mias replacing half of Fa'tafi ──
+	# Core (26): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish · 4 Mias
+	# Filler (34): same 5 allies but Fa'tafi trimmed 8→4 to make room
+	var omedus_cards: Array[String] = [
+		# 12× Your Fortune Awaits You
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		# 2× Ka'tali Stonetusk
+		"azeroth_248", "azeroth_248",
+		# 2× Kagra of the Crossroads
+		"azeroth_246", "azeroth_246",
+		# 2× Taz'dingo
+		"azeroth_260", "azeroth_260",
+		# 2× Arnold Flem
+		"azeroth_225", "azeroth_225",
+		# 2× Vanquish
+		"azeroth_171", "azeroth_171",
+		# 4× Mias the Putrid (hand disruption synergy with Omedus)
+		"azeroth_251", "azeroth_251", "azeroth_251", "azeroth_251",
+		# Filler — Fa'tafi trimmed to 4 (was 8), rest unchanged
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×4
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
+		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8
+		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
+		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×7
+		"azeroth_228", "azeroth_228", "azeroth_228",
+		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×7
+		"azeroth_252", "azeroth_252", "azeroth_252",
 	]
 
 	match resolved_id:
-		DECK_HORDE_TAZO:    return Deck.make("azeroth_15", horde_cards)
-		DECK_HORDE_GRENNAN: return Deck.make("azeroth_10", horde_cards)
-		DECK_ALLIANCE_TIMMO: return Deck.make("azeroth_7", alliance_cards)
-		_:                  return Deck.make("azeroth_6", alliance_cards)  # DECK_ALLIANCE_MOONSHADOW
+		DECK_HORDE_TAZO:          return Deck.make("azeroth_15", horde_cards)
+		DECK_HORDE_GRENNAN:       return Deck.make("azeroth_10", horde_cards)
+		DECK_HORDE_OMEDUS:        return Deck.make("azeroth_12", omedus_cards)
+		DECK_ALLIANCE_TIMMO:      return Deck.make("azeroth_7", alliance_cards)
+		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", alliance_cards)
+		_:                        return Deck.make("azeroth_6", alliance_cards)  # DECK_ALLIANCE_MOONSHADOW
 
 
 func _add_deck_back_sprite(pos: Vector2) -> void:
@@ -685,8 +732,22 @@ func _input(event: InputEvent) -> void:
 	# Godot 4 processes _unhandled_input children-first, so InputRouter would
 	# consume the event before this scene's _unhandled_input ever ran.
 	if event.is_action_pressed("ui_accept"):
+		# If the X dialog is open, Enter confirms it (the LineEdit grabs Enter via text_submitted,
+		# but we also handle it here for the case where focus has drifted to the OK button).
+		if _x_dialog and _x_dialog.visible:
+			_confirm_x_value(_x_input.text)
+			get_viewport().set_input_as_handled()
+			return
 		_try_pass()
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("ui_cancel"):
+		# Escape: close the X dialog (cancels the whole power use).
+		if _x_dialog and _x_dialog.visible:
+			_x_dialog.visible = false
+			_router.cancel_targeting()
+			_set_status("")
+			get_viewport().set_input_as_handled()
+			return
 	# Right-click on empty space while targeting → cancel targeting.
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT \
 			and event.pressed and _router and _router._targeting_source != "":
@@ -1073,12 +1134,11 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 	var count: int     = payload.get("count", 1)
 	_discard_reason    = payload.get("reason", "card_effect")
 	if player == "p2":
-		# AI: discard random hand card(s) immediately.
+		# AI: discard using smart heuristic (lowest-cost non-quest/location first).
 		for _i in count:
-			var hand := _state.cards_in_zone("p2_hand")
-			if hand.is_empty():
+			var pick := _pick_ai_discard("p2")
+			if pick == null:
 				break
-			var pick: CardInstance = hand[randi() % hand.size()]
 			var events := StackResolver.choose_discard(_state, pick.instance_id, _db)
 			EventBus.emit_events(events)
 		_refresh_ui()
@@ -1090,6 +1150,29 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 	else:
 		# Human (p1): enter discard mode — green highlights + click to resolve.
 		_router.start_discard_mode(count)
+
+
+# Returns the CardInstance the AI should discard from player_id's hand.
+# Priority: lowest-cost non-quest/location card; fall back to random quest/location.
+func _pick_ai_discard(player_id: String) -> CardInstance:
+	var hand := _state.cards_in_zone(player_id + "_hand")
+	if hand.is_empty():
+		return null
+	var non_resource: Array = []
+	var resource_only: Array = []
+	for card in hand:
+		var def: CardDef = _db.get_def(card.card_def_id) if _db else null
+		if def and def.card_type in ["Quest", "Location"]:
+			resource_only.append(card)
+		else:
+			non_resource.append(card)
+	if not non_resource.is_empty():
+		non_resource.sort_custom(func(a: CardInstance, b: CardInstance) -> bool:
+			var da: CardDef = _db.get_def(a.card_def_id) if _db else null
+			var db_: CardDef = _db.get_def(b.card_def_id) if _db else null
+			return (da.cost if da else 0) < (db_.cost if db_ else 0))
+		return non_resource[0]
+	return resource_only[randi() % resource_only.size()]
 
 
 func _handle_enter_play_target(payload: Dictionary) -> void:
@@ -1162,6 +1245,69 @@ func _on_targeting_cancelled() -> void:
 				eff.get("card_id", ""), eff.get("dmg_type", ""), eff.get("amount", 0))
 			return
 	_refresh_ui()
+
+
+# ── X-select dialog ────────────────────────────────────────────────────────────
+
+func _build_x_dialog() -> void:
+	_x_dialog = Panel.new()
+	_x_dialog.visible = false
+	_x_dialog.custom_minimum_size = Vector2(280, 120)
+	_x_dialog.z_index = 20
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 12)
+	_x_dialog.add_child(vbox)
+
+	_x_label = Label.new()
+	_x_label.text = "Choose X (1 – ?):"
+	_x_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(_x_label)
+
+	_x_input = LineEdit.new()
+	_x_input.placeholder_text = "enter X"
+	_x_input.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_x_input.text_submitted.connect(_on_x_submitted)
+	vbox.add_child(_x_input)
+
+	_x_ok_btn = Button.new()
+	_x_ok_btn.text = "OK"
+	_x_ok_btn.pressed.connect(_on_x_ok_pressed)
+	vbox.add_child(_x_ok_btn)
+
+	add_child(_x_dialog)
+
+
+func _on_x_select_requested(hero_id: String, max_x: int) -> void:
+	_x_hero_id = hero_id
+	_x_max = max_x
+	_x_label.text = "Choose X (1 – %d):" % max_x
+	_x_input.text = ""
+	# Centre the dialog in the viewport.
+	var vp := get_viewport().get_visible_rect().size
+	_x_dialog.position = (vp - _x_dialog.custom_minimum_size) * 0.5
+	_x_dialog.visible = true
+	_x_input.grab_focus()
+	_set_status("Enter X damage Dizdemona deals to herself and to target ally")
+
+
+func _on_x_submitted(text: String) -> void:
+	_confirm_x_value(text)
+
+
+func _on_x_ok_pressed() -> void:
+	_confirm_x_value(_x_input.text)
+
+
+func _confirm_x_value(text: String) -> void:
+	var x := text.strip_edges().to_int()
+	if x < 1 or x > _x_max:
+		_x_input.text = ""
+		_x_input.placeholder_text = "1 – %d" % _x_max
+		_x_input.grab_focus()
+		return
+	_x_dialog.visible = false
+	_set_status("")
+	_router.confirm_x_value(x)
 
 
 # ── Protect point ──────────────────────────────────────────────────────────────

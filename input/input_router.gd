@@ -21,6 +21,9 @@ signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 signal targeting_cancelled()
 signal discard_mode_started(count: int)
 signal discard_mode_ended()
+# Emitted when a power requires the player to select a numeric X value before targeting.
+# hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
+signal x_select_requested(hero_id: String, max_x: int)
 
 var state: GameState
 var db
@@ -33,6 +36,8 @@ var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for cros
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
+# Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
+var _targeting_x_value: int = 0
 
 
 func setup(p_state: GameState, p_db, p_player: String) -> void:
@@ -171,6 +176,7 @@ func cancel_targeting() -> void:
 	_targeting_action_type  = ""
 	_targeting_dmg_type     = ""
 	_targeting_first_target = ""
+	_targeting_x_value      = 0
 	refresh_highlights()
 	targeting_cancelled.emit()
 
@@ -179,6 +185,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 	match _targeting_action_type:
 		"propose_combat":            _handle_combat_targeting_click(instance_id)
 		"activate_power":            _handle_power_targeting_click(instance_id)
+		"activate_power_x":          _handle_x_power_targeting_click(instance_id)
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
@@ -353,6 +360,8 @@ func get_playable_card_ids() -> Array:
 				return StackResolver.get_legal_defenders(state, _targeting_source, db)
 			"activate_power":
 				return _get_hero_power_targets(_targeting_source)
+			"activate_power_x":
+				return _get_x_power_targets(_targeting_source)
 			"choose_enter_play_target":
 				return _get_enter_play_targets(_targeting_source)
 			"play_instant":
@@ -570,8 +579,15 @@ func handle_context_action(action: PendingAction) -> void:
 		"begin_power_targeting":
 			if state.priority_player == local_player:
 				var hero_id: String = action.params.get("hero_id", "")
-				start_targeting(hero_id, "activate_power",
-					_hero_power_dmg_type(hero_id), _hero_power_dmg_amount(hero_id))
+				if _hero_power_needs_x(hero_id):
+					# X-select flow: emit signal so the UI shows the number input dialog.
+					var hero := state.get_card(hero_id)
+					var max_x := (state.get_current_hp(hero_id, db) - 1) if hero else 1
+					_targeting_source = hero_id
+					x_select_requested.emit(hero_id, max_x)
+				else:
+					start_targeting(hero_id, "activate_power",
+						_hero_power_dmg_type(hero_id), _hero_power_dmg_amount(hero_id))
 			return
 		"use_hero_power_direct":
 			if state.priority_player != local_player:
@@ -762,7 +778,7 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero"]:
 			return true
 	return false
 
@@ -781,6 +797,9 @@ func _hero_power_dmg_type(hero_id: String) -> String:
 			"deal_damage_to_target", "deal_damage_and_heal":
 				if parts.size() > 2:
 					return parts[2].to_lower()
+			"deal_7_minus_hand_to_hero":
+				if parts.size() > 1:
+					return parts[1].to_lower()
 	return ""
 
 
@@ -858,6 +877,65 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
 	return result
+
+
+# Called by the UI (playtest.gd) after the player confirms the X value in the dialog.
+# Transitions from X-select state into ally targeting mode.
+func confirm_x_value(x_value: int) -> void:
+	if _targeting_source == "":
+		return
+	_targeting_x_value = x_value
+	start_targeting(_targeting_source, "activate_power_x", "shadow", x_value)
+
+
+# Returns ally targets valid for a deal_x_damage_to_ally power with the stored X value.
+func _get_x_power_targets(hero_id: String) -> Array:
+	var result: Array = []
+	if not state or not db:
+		return result
+	var opp := ""
+	for pid in state.players:
+		if pid != local_player:
+			opp = pid
+	for card in state.cards_in_zone(opp + "_ally_row"):
+		var act := PendingAction.make("activate_power", local_player,
+			{"hero_id": hero_id, "target_id": card.instance_id, "x_value": _targeting_x_value})
+		if StackResolver.can_submit(state, act, db):
+			result.append(card.instance_id)
+	return result
+
+
+func _handle_x_power_targeting_click(instance_id: String) -> void:
+	var legal := _get_x_power_targets(_targeting_source)
+	if instance_id not in legal:
+		return
+	var action := PendingAction.make("activate_power", local_player, {
+		"hero_id": _targeting_source,
+		"target_id": instance_id,
+		"x_value": _targeting_x_value,
+	})
+	var src := _targeting_source
+	_targeting_source  = ""
+	_targeting_x_value = 0
+	targeting_cancelled.emit()
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		# Restore targeting in case can_submit failed.
+		_targeting_source = src
+		return
+	EventBus.emit_events(events)
+	var pass_events := StackResolver.pass_priority(state, db)
+	EventBus.emit_events(pass_events)
+	refresh_highlights()
+
+
+func _hero_power_needs_x(hero_id: String) -> bool:
+	if not db: return false
+	var hero := state.get_card(hero_id)
+	if not hero: return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return false
+	return StackResolver._power_effect_is(def, "deal_x_damage_to_ally")
 
 
 func _handle_ally_power_targeting_click(instance_id: String) -> void:

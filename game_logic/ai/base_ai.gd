@@ -217,8 +217,23 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 	var needs_target := _hero_power_needs_target(state, db, hero_id)
 
 	if needs_target:
+		# deal_x_damage_to_ally: pick best target and optimal X.
+		if _hero_power_is(state, db, hero_id, "deal_x_damage_to_ally"):
+			result.append_array(_x_damage_ally_actions(state, db, player_id, hero_id))
+		# deal_7_minus_hand_to_hero: only fire when damage > 0 (enemy hand has < 7 cards).
+		elif _hero_power_is(state, db, hero_id, "deal_7_minus_hand_to_hero"):
+			var opp_id2 := _other_player_id(state, player_id)
+			var opp_hand := state.cards_in_zone(opp_id2 + "_hand").size()
+			var dmg2 := max(7 - opp_hand, 0)
+			if dmg2 > 0:
+				var opp_ps2 := state.players.get(opp_id2) as PlayerState
+				if opp_ps2 and opp_ps2.hero_instance_id != "":
+					var action := PendingAction.make("activate_power", player_id,
+						{"hero_id": hero_id, "target_id": opp_ps2.hero_instance_id})
+					if StackResolver.can_submit(state, action, db):
+						result.append(action)
 		# deal_damage_and_heal needs two distinct targets — enumerate all valid pairs.
-		if _hero_power_is(state, db, hero_id, "deal_damage_and_heal"):
+		elif _hero_power_is(state, db, hero_id, "deal_damage_and_heal"):
 			result.append_array(_damage_and_heal_actions(state, db, player_id, hero_id))
 		else:
 			# Single-target powers: one action per valid target (any in-play hero or ally).
@@ -264,6 +279,57 @@ func _hero_power_is(state: GameState, db, hero_id: String, effect_key: String) -
 	if not def:
 		return false
 	return StackResolver._power_effect_is(def, effect_key)
+
+
+# Picks the best (target, x_value) pair for deal_x_damage_to_ally powers.
+# X heuristic: min(enemy ally current HP, hero HP - 1), floored at 1.
+# Prefers: lethal hit on highest-cost target; among non-lethal, maximize damage.
+# Protector ties are broken the same as _best_damage_target.
+func _x_damage_ally_actions(state: GameState, db, player_id: String,
+		hero_id: String) -> Array[PendingAction]:
+	var hero_hp := state.get_current_hp(hero_id, db)
+	if hero_hp <= 1:
+		return []   # Can't use without killing self (x >= 1 required, x < hero_hp).
+	var max_x := hero_hp - 1
+	var opp_id := _other_player_id(state, player_id)
+	# Gather enemy allies and their current HP.
+	var candidates: Array = []
+	for card in state.cards_in_zone(opp_id + "_ally_row"):
+		candidates.append(card.instance_id)
+	if candidates.is_empty():
+		return []
+	# Sort by: lethal first (highest cost wins ties), then most damage dealt.
+	candidates.sort_custom(func(a: String, b: String) -> bool:
+		var hp_a := state.get_current_hp(a, db)
+		var hp_b := state.get_current_hp(b, db)
+		var x_a := min(hp_a, max_x)
+		var x_b := min(hp_b, max_x)
+		var lethal_a := x_a >= hp_a
+		var lethal_b := x_b >= hp_b
+		if lethal_a != lethal_b:
+			return lethal_a
+		# Both lethal or both non-lethal: prefer highest cost, then protector.
+		var da := _card_def(state, db, a)
+		var db_ := _card_def(state, db, b)
+		var cost_a := da.cost if da else 0
+		var cost_b := db_.cost if db_ else 0
+		if cost_a != cost_b:
+			return cost_a > cost_b
+		var prot_a: bool = da != null and "Protector" in da.keywords
+		var prot_b: bool = db_ != null and "Protector" in db_.keywords
+		return prot_a and not prot_b
+	)
+	for target_id in candidates:
+		var target_hp := state.get_current_hp(target_id, db)
+		# Use the minimum X that kills, or max affordable if non-lethal.
+		var x_value := min(target_hp, max_x)
+		if x_value < 1:
+			continue
+		var act := PendingAction.make("activate_power", player_id,
+			{"hero_id": hero_id, "target_id": target_id, "x_value": x_value})
+		if StackResolver.can_submit(state, act, db):
+			return [act]
+	return []
 
 
 # Use the targeted-damage and targeted-heal heuristics to pick the single best
@@ -444,7 +510,7 @@ func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero"]:
 			return true
 	return false
 

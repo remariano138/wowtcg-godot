@@ -389,6 +389,14 @@ static func _resolve_play_ally(state: GameState,
 						var n := int(parts[2]) if parts.size() > 2 else 1
 						for _i in n:
 							events.append_array(_draw_one(state, card.controller))
+					"discard_opponent":
+						var n := int(parts[2]) if parts.size() > 2 else 1
+						var opp := _other_player(state, card.controller)
+						var opp_hand := state.cards_in_zone(opp + "_hand")
+						if not opp_hand.is_empty():
+							state.pending_discard_player = opp
+							state.pending_discard_count  = n
+							events.append(GameEvent.discard_choice_opened(opp, n, "card_effect"))
 					"deal_damage_to_target":
 						var amount := int(parts[2]) if parts.size() > 2 else 0
 						var dmg_type := parts[3].to_lower().strip_edges() if parts.size() > 3 else ""
@@ -1063,6 +1071,27 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 				return false
 			if heal_target_id == target_id:
 				return false
+	# deal_7_minus_hand_to_hero: target must be a hero (in hero_row).
+	if _power_effect_is(def, "deal_7_minus_hand_to_hero"):
+		var t_card2 := state.get_card(target_id)
+		if not t_card2:
+			return false
+		var t_zone2 := state.zones.get(t_card2.zone_id) as Zone
+		if not t_zone2 or t_zone2.zone_type != "hero_row":
+			return false
+	# deal_x_damage_to_ally: target must be an ally, x_value >= 1, hero must survive the self-damage.
+	if _power_effect_is(def, "deal_x_damage_to_ally"):
+		var t_card := state.get_card(target_id)
+		if not t_card:
+			return false
+		var t_zone := state.zones.get(t_card.zone_id) as Zone
+		if not t_zone or t_zone.zone_type != "ally_row":
+			return false
+		var x_value: int = action.params.get("x_value", 0)
+		if x_value < 1:
+			return false
+		if x_value >= state.get_current_hp(hero_id, db):
+			return false
 	return true
 
 
@@ -1107,6 +1136,31 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					else:
 						events.append_array(
 							_check_destroyed_trigger(state, target_id, hero_id, db))
+			"deal_7_minus_hand_to_hero":
+				# Format: deal_7_minus_hand_to_hero:DMG_TYPE
+				# Damage = max(7 - hand size of target hero's controller, 0).
+				if target_id != "" and state.is_in_play(target_id):
+					var t_card := state.get_card(target_id)
+					var hand_size := state.cards_in_zone(t_card.controller + "_hand").size()
+					var amount2 := max(7 - hand_size, 0)
+					if amount2 > 0:
+						events.append_array(GameLogic.deal_damage(
+							state, hero_id, target_id, amount2, db))
+						if state.get_current_hp(target_id, db) <= 0:
+							events.append(GameEvent.game_over(
+								_other_player(state, t_card.controller), t_card.controller))
+			"deal_x_damage_to_ally":
+				# Format: deal_x_damage_to_ally:DMG_TYPE
+				# x_value is chosen by the player; paid as self-damage before effect resolves.
+				var x_value: int = action.params.get("x_value", 0)
+				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
+					# Self-damage on the hero (paid as part of cost).
+					events.append_array(GameLogic.deal_damage(state, hero_id, hero_id, x_value, db))
+					# Damage to target ally.
+					events.append_array(GameLogic.deal_damage(state, hero_id, target_id, x_value, db))
+					var t_card := state.get_card(target_id)
+					if t_card and state.get_current_hp(target_id, db) <= 0:
+						events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
 			"shuffle_hand_draw":
 				events.append_array(
 					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))

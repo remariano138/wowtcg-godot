@@ -30,6 +30,7 @@ func _ready() -> void:
 	_test_sarmoth_taunt_multiple_attackers()
 	_test_sarmoth_elusive_no_taunt()
 	_test_sarmoth_taunt_lifts_on_death()
+	_test_boris_heal_x()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1033,3 +1034,51 @@ func _test_sarmoth_elusive_no_taunt() -> void:
 	ok("sarmoth" not in defenders, "sc14-a: Elusive Sarmoth is not a legal defender")
 	ok("p2_hero" in defenders,     "sc14-b: hero is a legal defender (taunt not restricting)")
 	ok("normal" in defenders,      "sc14-c: normal ally is a legal defender (taunt not restricting)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 15 — Boris Brightbeard: heal X from target, capped at max HP
+# Setup: Crazy Igvand (6 max HP, 3 damage taken → 3 current HP).
+#        Boris pays X=4, heals 4 → capped at max HP → Igvand at exactly 6 HP.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_boris_heal_x() -> void:
+	print("\n-- Scenario 15: Boris Brightbeard heal-X hero power --")
+	var db := MockDB.new()
+	db.hero("boris_def", 26, 0, "heal_x_from_target:holy|on_your_turn")
+	db.hero("p2_hero", 30)
+	db.ally("igvand_def", 2, 6, [], 3)   # Crazy Igvand: 2 ATK, 6 HP, cost 3
+
+	var state := _base_state(db, "boris_def", "p2_hero")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var igvand := _add_ally(state, "igvand", "igvand_def", "p1")
+	igvand.damage_taken = 3   # Igvand at 3/6 HP
+
+	_add_resources(state, "p1", 5)
+
+	# ── sc15-a: can_submit probe (no target) succeeds when resources available ──
+	var probe := PendingAction.make("activate_power", "p1",
+		{"hero_id": "boris_def", "target_id": "", "x_value": 0})
+	ok(StackResolver.can_submit(state, probe, db), "sc15-a: probe passes with 5 resources available")
+
+	# ── sc15-b: x > available resources is illegal ──
+	var too_big := PendingAction.make("activate_power", "p1",
+		{"hero_id": "boris_def", "target_id": "igvand", "x_value": 6})
+	ok(not StackResolver.can_submit(state, too_big, db), "sc15-b: x=6 rejected (only 5 resources)")
+
+	# ── sc15-c: heal 4 from Igvand (3 damage taken) — overheal capped at max HP ──
+	var act := PendingAction.make("activate_power", "p1",
+		{"hero_id": "boris_def", "target_id": "igvand", "x_value": 4})
+	ok(StackResolver.can_submit(state, act, db), "sc15-c: heal x=4 is legal")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(state, act, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.get_current_hp("igvand", db), 6,
+		"sc15-d: Igvand at exactly 6 HP (overheal capped, not 7)")
+	eq(igvand.damage_taken, 0,
+		"sc15-e: damage_taken is 0 (fully healed, not negative)")
+	eq(state.get_available_resources("p1"), 1,
+		"sc15-f: 4 resources spent, 1 remaining")

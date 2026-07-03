@@ -75,6 +75,10 @@ static func submit_action(state: GameState, action: PendingAction,
 					var def := db.get_def(h_card.card_def_id) as CardDef
 					if def and def.cost > 0:
 						events.append_array(_pay_resources(state, action.source_player, def.cost))
+					elif def and _power_effect_is(def, "heal_x_from_target"):
+						var x_val: int = action.params.get("x_value", 0)
+						if x_val > 0:
+							events.append_array(_pay_resources(state, action.source_player, x_val))
 			var ps := state.players.get(action.source_player) as PlayerState
 			if ps:
 				ps.has_used_hero_power = true
@@ -1214,6 +1218,19 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 				return false
 			if x_value >= state.get_current_hp(hero_id, db):
 				return false
+	if _power_effect_is(def, "heal_x_from_target"):
+		if target_id == "":
+			# Pre-targeting probe: need at least 1 resource and a valid target in play.
+			if state.get_available_resources(action.source_player) < 1:
+				return false
+		else:
+			if not state.is_in_play(target_id):
+				return false
+			var x_value: int = action.params.get("x_value", 0)
+			if x_value < 1:
+				return false
+			if x_value > state.get_available_resources(action.source_player):
+				return false
 	return true
 
 
@@ -1283,6 +1300,11 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					var t_card := state.get_card(target_id)
 					if t_card and state.get_current_hp(target_id, db) <= 0:
 						events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
+			"heal_x_from_target":
+				# X resources are already paid at submission. Heal X from target.
+				var x_value: int = action.params.get("x_value", 0)
+				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
+					events.append_array(GameLogic.heal(state, target_id, x_value, db))
 			"shuffle_hand_draw":
 				events.append_array(
 					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))

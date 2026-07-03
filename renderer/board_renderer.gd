@@ -330,21 +330,33 @@ func _on_game_event(event: GameEvent) -> void:
 			var ally_id: String = event.payload.get("ally_id", "")
 			var acn := card_nodes.get(ally_id) as CardNode
 			if acn:
-				if _wiggling_id == ally_id:
+				var was_wiggling := _wiggling_id == ally_id
+				if was_wiggling:
 					_wiggling_id = ""
-				# Delay wiggle until after the exhaust rotation tween (0.2 s) settles,
-				# so _wiggle_base captures 90° (exhausted) not 0° (pre-exhaust).
+				# Delay until after the exhaust rotation tween (0.2 s) so _wiggle_base
+				# captures the 90° exhausted angle, not the pre-exhaust angle.
 				var captured := acn
 				get_tree().create_timer(0.22).timeout.connect(
 					func() -> void:
 						if is_instance_valid(captured):
-							captured.wiggle_for(2.0))
+							if was_wiggling:
+								captured.stop_wiggle(2.0)
+							else:
+								captured.wiggle_for(2.0))
 		"action_proposed":
 			if event.payload.get("action_type") == "place_resource" \
 					and not event.payload.get("face_up", true):
 				var cn := card_nodes.get(event.payload.get("card_id", "")) as CardNode
 				if cn:
 					cn.show_card_back()
+			# Start a continuous wiggle on the source card when a non-targeted ally
+			# power enters the stack (targeted powers start wiggling at targeting_started).
+			if event.payload.get("action_type") == "use_ally_power" and _wiggling_id == "":
+				var ap_id: String = event.payload.get("card_id", "")
+				var apcn := card_nodes.get(ap_id) as CardNode
+				if apcn:
+					_wiggling_id = ap_id
+					apcn.start_wiggle()
 			var atype: String = event.payload.get("action_type", "?")
 			if atype == "propose_combat":
 				_set_status("⚔ %s attacks  —  SPACE to let it resolve" % event.payload.get("player", "?"))

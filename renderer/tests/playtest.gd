@@ -22,6 +22,7 @@ const AI_THINK_TIME := 0.5
 const DECK_ALLIANCE_MOONSHADOW  := "alliance_moonshadow_test"
 const DECK_ALLIANCE_TIMMO       := "alliance_timmo_test"
 const DECK_ALLIANCE_DIZDEMONA   := "alliance_dizdemona_test"
+const DECK_ALLIANCE_BORIS       := "alliance_boris_test"
 const DECK_HORDE_TAZO          := "horde_tazo_test"
 const DECK_HORDE_GRENNAN       := "horde_grennan_test"
 const DECK_HORDE_OMEDUS        := "horde_omedus_test"
@@ -333,7 +334,7 @@ func _build_menu() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	inner.add_child(title)
 
-	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Alliance_test (Dizdemona)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Horde_test (Omedus)", "Random"]
+	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Alliance_test (Dizdemona)", "Alliance_test (Boris)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Horde_test (Omedus)", "Random"]
 	inner.add_child(_player_row("Player 1", ["Human", "BaseAI", "FullRandomAI"], 0,
 		deck_labels, 4,
 		func(opt): _p1_type_opt = opt, func(opt): _p1_deck_opt = opt))
@@ -395,7 +396,7 @@ func _player_row(label_text: String, type_items: Array, type_default: int,
 
 func _on_quick_start() -> void:
 	var all_decks := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					  DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
+					  DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
 	all_decks.shuffle()
 	_launch_game("human", all_decks[0], "fullrandom", all_decks[1])
 
@@ -404,7 +405,7 @@ func _on_start_game() -> void:
 	var p1_types := ["human", "base", "fullrandom"]
 	var p2_types := ["base", "fullrandom"]
 	var deck_ids := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS, DECK_RANDOM]
+					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS, DECK_RANDOM]
 	_launch_game(p1_types[_p1_type_opt.selected], deck_ids[_p1_deck_opt.selected],
 				 p2_types[_p2_type_opt.selected], deck_ids[_p2_deck_opt.selected])
 
@@ -435,7 +436,7 @@ func _make_ai(type: String) -> Object:
 func _resolve_deck(deck_id: String) -> String:
 	if deck_id == DECK_RANDOM:
 		var pool := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					 DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
+					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
 		return pool[randi() % pool.size()]
 	return deck_id
 
@@ -539,6 +540,36 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_179", "azeroth_179",
 	]
 
+	# ── Boris Brightbeard deck (60 cards) — alliance base, Priest healer hero ──
+	var boris_cards: Array[String] = [
+		# 12× Your Fortune Awaits You
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		# 2× Apprentice Teep  (1-cost protector)
+		"azeroth_176", "azeroth_176",
+		# 2× Warden Tonarin   (1-cost protector)
+		"azeroth_222", "azeroth_222",
+		# 2× Parvink          (3-cost alignment staple)
+		"azeroth_212", "azeroth_212",
+		# 2× Adept Breton     (activated-power AoE)
+		"azeroth_174", "azeroth_174",
+		# 2× Vanquish
+		"azeroth_171", "azeroth_171",
+		# 2× Freya Lightsworn (activated heal)
+		"azeroth_183", "azeroth_183",
+		# Filler
+		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×4
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×6
+		"azeroth_175", "azeroth_175",
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×6
+		"azeroth_179", "azeroth_179",
+	]
+
 	# ── Omedus deck (60 cards) — horde base with Mias replacing half of Fa'tafi ──
 	# Core (26): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish · 4 Mias
 	# Filler (34): same 5 allies but Fa'tafi trimmed 8→4 to make room
@@ -577,6 +608,7 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		DECK_HORDE_OMEDUS:        return Deck.make("azeroth_12", omedus_cards)
 		DECK_ALLIANCE_TIMMO:      return Deck.make("azeroth_7", alliance_cards)
 		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", dizdemona_cards)
+		DECK_ALLIANCE_BORIS:      return Deck.make("azeroth_1", boris_cards)
 		DECK_ALLIANCE_MOONSHADOW: return Deck.make("azeroth_6", alliance_cards)
 		_:                        return Deck.make("azeroth_6", alliance_cards)
 
@@ -735,6 +767,8 @@ func _update_pass_btn() -> void:
 	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
 	var in_action  := _state.phase == "action"
+	var in_attack  := _state.combat_attack_window
+	var in_defend  := _state.combat_defend_window
 
 	_pass_btn.disabled = not my_turn
 
@@ -749,6 +783,12 @@ func _update_pass_btn() -> void:
 	elif chain_busy:
 		_pass_btn.text     = "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(1.0, 1.0, 1.0)
+	elif in_attack:
+		_pass_btn.text     = "Attack window — Pass  [Space]"
+		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
+	elif in_defend:
+		_pass_btn.text     = "Defend window — Pass  [Space]"
+		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
 	elif in_action:
 		_pass_btn.text     = "Wrap Up  [Space]"
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
@@ -924,12 +964,12 @@ func _log_event(event: GameEvent) -> void:
 			var def: String = _log_card(event.payload.get("defender_id", ""))
 			_log_entry("[color=#fc8][b]%s ⚔ %s[/b][/color]" % [att, def])
 		"attack_window_opened":
-			_set_status("⚔ Attack window — you may respond before protect  [Space to pass]")
+			_set_status("⚔ Attack window — you may respond before protect")
 			_refresh_ui()
 			_schedule_next_turn()
 			_maybe_turbo_pass()
 		"defend_window_opened":
-			_set_status("⚔ Defend window — you may respond before damage  [Space to pass]")
+			_set_status("⚔ Defend window — you may respond before damage")
 			_refresh_ui()
 			_schedule_next_turn()
 			_maybe_turbo_pass()
@@ -1393,7 +1433,12 @@ func _on_x_select_requested(hero_id: String, max_x: int) -> void:
 	_x_dialog.position = (vp - _x_dialog.custom_minimum_size) * 0.5
 	_x_dialog.visible = true
 	_x_input.grab_focus()
-	_set_status("Enter X damage Dizdemona deals to herself and to target ally")
+	var hero_card := _router.state.get_card(hero_id) if _router.state else null
+	var hero_def: CardDef = _router.db.get_def(hero_card.card_def_id) if hero_card and _router.db else null
+	if hero_def and StackResolver._power_effect_is(hero_def, "heal_x_from_target"):
+		_set_status("Enter X resources to pay — Boris heals X from target hero or ally")
+	else:
+		_set_status("Enter X damage Dizdemona deals to herself and to target ally")
 
 
 func _on_x_submitted(text: String) -> void:

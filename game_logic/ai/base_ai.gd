@@ -232,6 +232,8 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 						{"hero_id": hero_id, "target_id": opp_ps2.hero_instance_id})
 					if StackResolver.can_submit(state, action, db):
 						result.append(action)
+		elif _hero_power_is(state, db, hero_id, "heal_x_from_target"):
+			result.append_array(_x_heal_actions(state, db, player_id, hero_id))
 		# deal_damage_and_heal needs two distinct targets — enumerate all valid pairs.
 		elif _hero_power_is(state, db, hero_id, "deal_damage_and_heal"):
 			result.append_array(_damage_and_heal_actions(state, db, player_id, hero_id))
@@ -329,6 +331,41 @@ func _x_damage_ally_actions(state: GameState, db, player_id: String,
 			{"hero_id": hero_id, "target_id": target_id, "x_value": x_value})
 		if StackResolver.can_submit(state, act, db):
 			return [act]
+	return []
+
+
+# heal_x_from_target AI: find the most-damaged friendly target; heal it for
+# min(damage_on_target, available_resources). Only fires if target has damage.
+# Hero is preferred over allies (keeping the hero alive matters most).
+func _x_heal_actions(state: GameState, db, player_id: String,
+		hero_id: String) -> Array[PendingAction]:
+	var avail := state.get_available_resources(player_id)
+	if avail < 1:
+		return []
+	# Collect damaged friendly targets: hero first, then allies.
+	var candidates: Array[String] = []
+	var ps := state.players.get(player_id) as PlayerState
+	if ps and ps.hero_instance_id != "" and state.is_in_play(ps.hero_instance_id):
+		candidates.append(ps.hero_instance_id)
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		candidates.append(card.instance_id)
+	# Pick the target with the most damage taken (max_hp - current_hp).
+	var best_target := ""
+	var best_damage := 0
+	for tid in candidates:
+		var max_hp := state.get_max_hp(tid, db)
+		var cur_hp := state.get_current_hp(tid, db)
+		var dmg_on := max_hp - cur_hp
+		if dmg_on > best_damage:
+			best_damage = dmg_on
+			best_target = tid
+	if best_target == "" or best_damage < 3:
+		return []
+	var x_value: int = min(best_damage, avail)
+	var act := PendingAction.make("activate_power", player_id,
+		{"hero_id": hero_id, "target_id": best_target, "x_value": x_value})
+	if StackResolver.can_submit(state, act, db):
+		return [act]
 	return []
 
 
@@ -510,7 +547,7 @@ func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target"]:
 			return true
 	return false
 

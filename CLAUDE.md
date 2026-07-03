@@ -175,10 +175,22 @@ Notable implemented mechanics:
 
 ---
 
+## Combat window rules (enforced in multiple layers)
+
+Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non-instants same) are enforced in three layers:
+
+1. **`stack_resolver.gd` — submission guard** (`_can_propose_combat`, `_can_play_non_instant`, `_can_play_ability`, `_can_place_resource`): all check `not (combat_attack_window or combat_defend_window or in_protect_point)` and `pending_actions.is_empty()`.
+2. **`input_router.gd` — highlight guard** (`get_playable_card_ids`, `can_attack` in context menu): same flags, so allies don't stay green during combat windows.
+3. **`input_router.gd` — direct click guard** (`handle_card_click`, in-play ally/hero branch): `can_propose` check before calling `get_legal_attackers`, prevents entering targeting animation when `pending_actions` non-empty or combat window is open.
+
+**Attack animation** (`_animate_attack` in `board_renderer.gd`) fires on `combat_concluded` (not `combat_started`) so the lunge plays toward the actual defender after any protector swap, not the proposed defender before the protect point.
+
+---
+
 ## Known open issues / next work
 
 - **Grimdron hero-targeting bug (unconfirmed):** User reported Grimdron's power couldn't target opponent's hero when no enemy allies were in play. All code paths appear correct — hero IS included in `_get_ally_power_targets`. Suspected cause: visual (hero not highlighted?) or runtime state issue. Needs more investigation with actual play. Suggested: add temp `print("ally_power_targets:", result)` in `_get_ally_power_targets` to confirm.
-- **Sarmoth** is implemented but untested in play. Watch for edge cases with taunt + Elusive attackers (Elusive means you can't be attacked, so the question doesn't arise on the attacker side — but an Elusive attacker can still be forced to hit Sarmoth if Sarmoth is their legal defender).
+- **Sarmoth** playtested and working. Watch for edge cases with taunt + Elusive attackers.
 - **Combat window AI:** AI currently passes during attack/defend windows (returns empty actions for non-turn player). This is acceptable but means AI never uses Grimdron to counter-attack during enemy combats. Future: extend `get_all_legal_actions` to return useful defensive plays for non-turn player during combat windows.
-- **Next card to implement: Sarmoth has been added to Dizdemona's deck. Other Warlock pets (Helwen, Infernal) are `unchecked` — implement when ready.**
+- **Next cards to implement:** New Horde hero (X mechanic) and new Alliance hero (heals). Check `data/cards.csv` for candidates.
 - **`logic/BasicAI_behavior.txt` is legacy** and may be stale — actual AI is fully in `game_logic/ai/base_ai.gd`.

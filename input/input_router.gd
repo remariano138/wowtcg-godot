@@ -650,7 +650,9 @@ func handle_context_action(action: PendingAction) -> void:
 				if _hero_power_needs_x(hero_id):
 					# X-select flow: emit signal so the UI shows the number input dialog.
 					var hero := state.get_card(hero_id)
-					var max_x := (state.get_current_hp(hero_id, db) - 1) if hero else 1
+					var max_x := state.get_available_resources(local_player) \
+						if _is_heal_x_power(hero_id) \
+						else (state.get_current_hp(hero_id, db) - 1) if hero else 1
 					_targeting_source = hero_id
 					x_select_requested.emit(hero_id, max_x)
 				else:
@@ -846,7 +848,7 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target"]:
 			return true
 	return false
 
@@ -868,6 +870,8 @@ func _hero_power_dmg_type(hero_id: String) -> String:
 			"deal_7_minus_hand_to_hero":
 				if parts.size() > 1:
 					return parts[1].to_lower()
+			"heal_x_from_target":
+				return "heal"
 	return ""
 
 
@@ -953,14 +957,31 @@ func confirm_x_value(x_value: int) -> void:
 	if _targeting_source == "":
 		return
 	_targeting_x_value = x_value
-	start_targeting(_targeting_source, "activate_power_x", "shadow", x_value)
+	var dmg_type := "heal" if _is_heal_x_power(_targeting_source) else "shadow"
+	start_targeting(_targeting_source, "activate_power_x", dmg_type, x_value)
 
 
-# Returns ally targets valid for a deal_x_damage_to_ally power with the stored X value.
+# Returns valid targets for an X-value hero power (damage or heal).
 func _get_x_power_targets(hero_id: String) -> Array:
 	var result: Array = []
 	if not state or not db:
 		return result
+	if _is_heal_x_power(hero_id):
+		# Heal X: all in-play heroes and allies are valid targets.
+		for pid in state.players:
+			var ps2 := state.players.get(pid) as PlayerState
+			if ps2 and ps2.hero_instance_id != "":
+				var act := PendingAction.make("activate_power", local_player,
+					{"hero_id": hero_id, "target_id": ps2.hero_instance_id, "x_value": _targeting_x_value})
+				if StackResolver.can_submit(state, act, db):
+					result.append(ps2.hero_instance_id)
+			for card in state.cards_in_zone(pid + "_ally_row"):
+				var act := PendingAction.make("activate_power", local_player,
+					{"hero_id": hero_id, "target_id": card.instance_id, "x_value": _targeting_x_value})
+				if StackResolver.can_submit(state, act, db):
+					result.append(card.instance_id)
+		return result
+	# Damage X: enemy allies only.
 	var opp := ""
 	for pid in state.players:
 		if pid != local_player:
@@ -1003,7 +1024,17 @@ func _hero_power_needs_x(hero_id: String) -> bool:
 	if not hero: return false
 	var def := db.get_def(hero.card_def_id) as CardDef
 	if not def: return false
-	return StackResolver._power_effect_is(def, "deal_x_damage_to_ally")
+	return StackResolver._power_effect_is(def, "deal_x_damage_to_ally") \
+		or StackResolver._power_effect_is(def, "heal_x_from_target")
+
+
+func _is_heal_x_power(hero_id: String) -> bool:
+	if not db: return false
+	var hero := state.get_card(hero_id)
+	if not hero: return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return false
+	return StackResolver._power_effect_is(def, "heal_x_from_target")
 
 
 func _handle_ally_power_targeting_click(instance_id: String) -> void:

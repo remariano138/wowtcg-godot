@@ -941,6 +941,12 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 		return false
 	if card.face_down:
 		return false
+	# Can't chain this quest's completion with itself while it's already pending.
+	for pending in state.pending_actions:
+		var p_action := pending as PendingAction
+		if p_action and p_action.action_type == "use_quest" \
+				and p_action.params.get("quest_id", "") == quest_id:
+			return false
 	if not db:
 		return true
 	var def := db.get_def(card.card_def_id) as CardDef

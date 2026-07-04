@@ -33,6 +33,7 @@ func _ready() -> void:
 	_test_boris_heal_x()
 	_test_radak_pet_sacrifice()
 	_test_radak_no_pets()
+	_test_quest_cant_reuse_while_pending()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1089,8 +1090,10 @@ func _test_boris_heal_x() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 16 — Radak Doombringer: sacrifice Sarmoth (cost 3), deal 3 shadow dmg
 #
-# Setup: P1 is Radak (no flip cost, no resource payment needed — the Pet IS the
-#        cost). P1 has a Sarmoth (cost 3) in ally_row, not summoning-sick.
+# Setup: P1 is Radak (no flip cost, no resources spent — the Pet IS the cost).
+#        P1 has a Sarmoth (cost 3) in ally_row, not summoning-sick, and 3
+#        available resources (can_submit requires availability to cover the
+#        Pet's cost even though sacrificing the Pet is the actual payment).
 #        P2 has a 2/5 ally as the damage target.
 #
 # Assertions:
@@ -1118,6 +1121,7 @@ func _test_radak_pet_sacrifice() -> void:
 	sarmoth.is_exhausted  = false
 
 	_add_ally(state, "target_inst", "target_def", "p2")
+	_add_resources(state, "p1", 3)   # Sarmoth costs 3 — radak_pet_sacrifice needs an affordable Pet
 
 	# sc16-a: probe passes when Pet is in play.
 	var probe := PendingAction.make("activate_power", "p1",
@@ -1143,6 +1147,7 @@ func _test_radak_pet_sacrifice() -> void:
 		{"hero_id": "radak_def", "pet_id": "sarmoth_inst", "target_id": "target_inst", "x_value": 0})
 	ok(not StackResolver.can_submit(state, bad_x, db),
 		"sc16-g: x_value=0 with valid pet+target is rejected")
+
 
 	# sc16-d/e/f: submit and resolve; check Pet destroyed and damage dealt.
 	var events: Array[GameEvent] = StackResolver.submit_action(state, full_act, db)
@@ -1194,3 +1199,57 @@ func _test_radak_no_pets() -> void:
 	GameLogic.move_card(state, "normal_inst", "p1_discard")
 	ok(not StackResolver.can_submit(state, probe, db),
 		"sc17-b: probe rejected when ally_row is empty")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 18 — Quest completion can't be chained with itself while pending
+#
+# Bug: a quest whose cost (e.g. 3) is less than total available resources (e.g. 6)
+# still looked "legal" via can_submit even after its own use_quest action was
+# already pushed to pending_actions (awaiting resolution) — because the resource
+# check only compared the flat cost against total available resources, not
+# accounting for the fact the quest itself was already mid-activation. This let
+# turbo-mode treat the same quest as a second legal move and refuse to auto-pass.
+#
+# Assertions:
+#   sc18-a  can_submit passes before the quest is on the stack
+#   sc18-b  once pushed to pending_actions, can_submit for the same quest_id is false
+#   sc18-c  a different face-up quest is unaffected (still legal)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_quest_cant_reuse_while_pending() -> void:
+	print("\n-- Scenario 18: quest can't be re-triggered while its own completion is pending --")
+	var db := MockDB.new()
+	db.hero("p1_hero_def", 30)
+	db.hero("p2_hero_def", 30)
+	db.quest("yfay_def", 3)
+	db.quest("other_quest_def", 2)
+
+	var state := _base_state(db, "p1_hero_def", "p2_hero_def")
+
+	var yfay := CardInstance.create("yfay_inst", "yfay_def", "p1", "p1_resource_row")
+	state.cards["yfay_inst"] = yfay
+	state.zones["p1_resource_row"].card_ids.append("yfay_inst")
+
+	var other := CardInstance.create("other_inst", "other_quest_def", "p1", "p1_resource_row")
+	state.cards["other_inst"] = other
+	state.zones["p1_resource_row"].card_ids.append("other_inst")
+
+	_add_resources(state, "p1", 6)
+
+	var complete_yfay := PendingAction.make("use_quest", "p1", {"quest_id": "yfay_inst"})
+
+	# sc18-a: legal before it's on the stack.
+	ok(StackResolver.can_submit(state, complete_yfay, db),
+		"sc18-a: YFAY completion legal with 6 available resources (cost 3)")
+
+	state.pending_actions.push_back(complete_yfay)
+
+	# sc18-b: same quest_id rejected while pending, even though 6 resources remain untouched.
+	ok(not StackResolver.can_submit(state, complete_yfay, db),
+		"sc18-b: re-checking YFAY while its own completion is pending is illegal")
+
+	# sc18-c: a different quest is unaffected.
+	var complete_other := PendingAction.make("use_quest", "p1", {"quest_id": "other_inst"})
+	ok(StackResolver.can_submit(state, complete_other, db),
+		"sc18-c: unrelated quest is still legal while YFAY is pending")

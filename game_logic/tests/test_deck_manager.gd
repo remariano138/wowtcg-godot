@@ -36,11 +36,13 @@ func _check(cond: bool, label: String) -> void:
 
 func _test_library_scan() -> void:
 	var index := DeckManager.get_available_decks(true)
-	_check(index.recommended_ai.size() == 8, "library finds 8 recommended_ai decks (got %d)" % index.recommended_ai.size())
-	_check(index.base.is_empty(), "base category empty")
+	_check(index.recommended_ai.size() == 6, "library finds 6 recommended_ai decks (got %d)" % index.recommended_ai.size())
+	_check(index.base.size() == 2, "library finds 2 base decks (got %d)" % index.base.size())
 	_check(index.custom.is_empty(), "custom category empty")
 	_check(index.all().size() == 8, "all() aggregates categories")
 	_check(index.recommended_ai.has("horde_tazo_test"), "horde_tazo_test discovered")
+	_check(index.base.has("alliance_dizdemona_test"), "dizdemona (Warlock) is in base, not recommended_ai")
+	_check(index.base.has("horde_radak_test"), "radak (Warlock) is in base, not recommended_ai")
 
 
 func _test_load_all_decks() -> void:
@@ -102,3 +104,5 @@ func _test_make_ai_for_deck() -> void:
 	_check(ai is FullRandomAI, "make_ai_for_deck uses recommended profile (FullRandomAI)")
 	var fallback := DeckManager.make_ai_for_deck("no_such_deck")
 	_check(fallback is FullRandomAI, "unknown deck falls back to generic profile")
+	var warlock_ai := DeckManager.make_ai_for_deck("horde_radak_test")
+	_check(warlock_ai is FullRandomAI, "base-category deck still uses its recommended_ai_id (FullRandomAI)")

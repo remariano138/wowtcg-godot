@@ -924,6 +924,10 @@ func _log_event(event: GameEvent) -> void:
 		"attack_window_opened":
 			_set_status("⚔ Attack window — you may respond before protect")
 			_refresh_ui()
+			# The pass that resolved propose_combat may have been the human's, in
+			# which case no priority_passed event follows and nothing else drives
+			# the AI — same reason defend_window_opened drains below.
+			_drain_passes()
 		"defend_window_opened":
 			_set_status("⚔ Defend window — you may respond before damage")
 			_refresh_ui()

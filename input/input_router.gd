@@ -445,17 +445,17 @@ func get_playable_card_ids() -> Array:
 
 	# Pet sacrifice mode: highlight the candidate pets.
 	if _in_pet_sacrifice_mode and state.pending_pet_sacrifice_player == local_player:
-		var result: Array = []
+		var sacrifice_ids: Array = []
 		for cid: String in _pet_sacrifice_candidates:
-			result.append(cid)
-		return result
+			sacrifice_ids.append(cid)
+		return sacrifice_ids
 
 	# Discard mode: all local hand cards are valid discard choices.
 	if _in_discard_mode and state.pending_discard_player == local_player:
-		var result: Array = []
+		var discard_ids: Array = []
 		for card in state.cards_in_zone(local_player + "_hand"):
-			result.append(card.instance_id)
-		return result
+			discard_ids.append(card.instance_id)
+		return discard_ids
 
 	if state.priority_player != local_player:
 		return []
@@ -492,9 +492,9 @@ func get_playable_card_ids() -> Array:
 					state, card.instance_id, local_player, db):
 				result.append(card.instance_id)
 			continue
-		var action := PendingAction.make(atype, local_player,
+		var hand_action := PendingAction.make(atype, local_player,
 				_params_for(card.instance_id, atype))
-		if StackResolver.can_submit(state, action, db):
+		if StackResolver.can_submit(state, hand_action, db):
 			result.append(card.instance_id)
 	# Legal attackers (non-combat action phase only — rule 601.1).
 	if state.phase == "action" and state.turn_player == local_player \
@@ -509,9 +509,9 @@ func get_playable_card_ids() -> Array:
 		var def: CardDef = db.get_def(card.card_def_id) if db else null
 		if not def or def.card_type != "Quest":
 			continue
-		var action := PendingAction.make("use_quest", local_player,
+		var quest_action := PendingAction.make("use_quest", local_player,
 				{"quest_id": card.instance_id})
-		if StackResolver.can_submit(state, action, db):
+		if StackResolver.can_submit(state, quest_action, db):
 			result.append(card.instance_id)
 	return result
 
@@ -582,7 +582,7 @@ func get_context_actions(instance_id: String) -> Array:
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
 		if zone and zone.zone_type in ["ally_row", "hero_row"]:
-			var result: Array = []
+			var char_actions: Array = []
 
 			var legal_attackers := StackResolver.get_legal_attackers(state, local_player, db)
 			var can_attack := state.priority_player == local_player \
@@ -592,7 +592,7 @@ func get_context_actions(instance_id: String) -> Array:
 				and state.pending_actions.is_empty() \
 				and not state.combat_attack_window and not state.combat_defend_window \
 				and not state.in_protect_point
-			result.append({"label": "Attack",
+			char_actions.append({"label": "Attack",
 				"action": PendingAction.make("begin_attack_targeting",
 					local_player, {"attacker_id": instance_id}),
 				"enabled": can_attack})
@@ -615,7 +615,7 @@ func get_context_actions(instance_id: String) -> Array:
 						var ap_action := PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id})
 						ap_enabled = StackResolver.can_submit(state, ap_action, db)
-					result.append({"label": "Activate Power",
+					char_actions.append({"label": "Activate Power",
 						"action": PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id, "_needs_target": ap_needs_target}),
 						"enabled": ap_enabled})
@@ -630,12 +630,12 @@ func get_context_actions(instance_id: String) -> Array:
 					var power_atype := "begin_power_targeting" \
 						if _hero_power_needs_target(instance_id) \
 						else "use_hero_power_direct"
-					result.append({"label": "Use Hero Power",
+					char_actions.append({"label": "Use Hero Power",
 						"action": PendingAction.make(power_atype, local_player,
 							{"hero_id": instance_id}),
 						"enabled": can_power})
 
-			return result
+			return char_actions
 
 	# ── Hand cards ─────────────────────────────────────────────────────────────
 	var result: Array = []
@@ -719,10 +719,10 @@ func handle_context_action(action: PendingAction) -> void:
 			var hero_id: String = action.params.get("hero_id", "")
 			var act := PendingAction.make("activate_power", local_player,
 				{"hero_id": hero_id, "target_id": ""})
-			var events := StackResolver.submit_action(state, act, db)
-			if events.is_empty():
+			var direct_power_events := StackResolver.submit_action(state, act, db)
+			if direct_power_events.is_empty():
 				return
-			EventBus.emit_events(events)
+			EventBus.emit_events(direct_power_events)
 			_pass_own_proposal(act)
 			refresh_highlights()
 			return

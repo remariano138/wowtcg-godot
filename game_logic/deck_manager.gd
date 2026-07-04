@@ -139,7 +139,6 @@ static func build_random(db: CardDatabase) -> Deck:
 	# Fill deck: cycle through available allies, adding up to 4 copies each
 	# pass until TARGET_SIZE is reached. No legality check yet.
 	var card_ids: Array[String] = []
-	var pass_num := 0
 	while card_ids.size() < TARGET_SIZE:
 		var added := 0
 		for ally_id in allies:
@@ -155,7 +154,6 @@ static func build_random(db: CardDatabase) -> Deck:
 			if name_count < 4:
 				card_ids.append(ally_id)
 				added += 1
-		pass_num += 1
 		if added == 0:
 			push_warning("DeckManager: pool exhausted at %d cards (need %d)" % [card_ids.size(), TARGET_SIZE])
 			break

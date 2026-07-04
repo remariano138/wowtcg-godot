@@ -149,13 +149,15 @@ Pet capacity is a player attribute (`PlayerState.pet_capacity`, default 1) that 
 
 Deck lists live as JSON files on disk, NOT in playtest.gd. Playtest only picks deck ids.
 
-- `decks/base/`, `decks/recommended_ai/`, `decks/custom/` — one JSON per deck (`deck_id` = filename stem). The 8 demo decks are in `recommended_ai/`.
-- `ai_profiles/*.json` — `AIProfile` (`ai_id`, `ai_class`: "base"|"fullrandom", `strategy_data`). All demo decks recommend `ai_fullrandom`.
+- `decks/base/`, `decks/recommended_ai/`, `decks/custom/` — one JSON per deck (`deck_id` = filename stem).
+  - `recommended_ai/` (6 decks): simple-heuristic-friendly decks AI plays reasonably well — Ta'zo, Grennan, Omedus, Timmo, Moonshadow, Boris.
+  - `base/` (2 decks): Dizdemona and Radak — both Warlock pet-sacrifice decks (Grimdron/Sarmoth) that need situational judgment (which pet to sacrifice, when) beyond what FullRandomAI/BaseAI handle well, so they're excluded from the "Recommended for AI" category. Still human-playable, and still findable under "All decks" — can be slotted onto an AI player from there if wanted, just expect weaker AI performance. `recommended_ai_id` is still set (`ai_fullrandom`), since that remains the correct AI to use if one is forced onto the deck.
+- `ai_profiles/*.json` — `AIProfile` (`ai_id`, `ai_class`: "base"|"fullrandom", `strategy_data`). All 8 demo decks specify `ai_fullrandom`.
 - Classes: `DeckDefinition`/`DeckCardEntry` (game_logic/deck_definition.gd, deck_card_entry.gd), `DeckLibrary`/`DeckLibraryIndex` (scan/categorize, ids only), `DeckManager` (single entry point: `get_available_decks()`, `load_deck()`, `validate_deck()` [hero + ≥60 cards], `get_runtime_deck()` → `Deck`, `load_ai_profile()`, `make_ai_for_deck()`).
-- **Nothing except DeckManager reads deck files or calls DeckLibrary.** Playtest menu builds its dropdown from `get_available_decks()`; "Recommended AI" player type uses `make_ai_for_deck()`.
+- **Nothing except DeckManager reads deck files or calls DeckLibrary.** Playtest menu has a category dropdown per player ("All decks" vs "Recommended for AI") that filters the deck dropdown via `get_available_decks()`; "Recommended AI" player type uses `make_ai_for_deck()`. An "Avoid mirror matches" checkbox (default on) excludes the other player's fixed deck from a random pick, or refuses to start on a fixed mirror.
 - Tests: `game_logic/tests/test_deck_manager.gd`.
 
-Demo decks (all 60 cards): Dizdemona (azeroth_2), Ta'zo (azeroth_15), Grennan (azeroth_10), Boris (azeroth_1), Omedus (azeroth_12), Radak (azeroth_13), Timmo (azeroth_7), Moonshadow (azeroth_6).
+Demo decks (all 60 cards): Dizdemona (azeroth_2, base), Ta'zo (azeroth_15, recommended_ai), Grennan (azeroth_10, recommended_ai), Boris (azeroth_1, recommended_ai), Omedus (azeroth_12, recommended_ai), Radak (azeroth_13, base), Timmo (azeroth_7, recommended_ai), Moonshadow (azeroth_6, recommended_ai).
 
 ---
 
@@ -189,6 +191,8 @@ Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non
 3. **`input_router.gd` — direct click guard** (`handle_card_click`, in-play ally/hero branch): `can_propose` check before calling `get_legal_attackers`, prevents entering targeting animation when `pending_actions` non-empty or combat window is open.
 
 **Attack animation** (`_animate_attack` in `board_renderer.gd`) fires on `combat_concluded` (not `combat_started`) so the lunge plays toward the actual defender after any protector swap, not the proposed defender before the protect point.
+
+**Window-opened events must drain (playtest.gd):** both `attack_window_opened` and `defend_window_opened` handlers call `_drain_passes()`. When the *human's* pass is the one that resolves the pending action, `pass_priority` returns only the resolution events (no `priority_passed`), so nothing else re-drives the AI — priority sits on the AI forever and the game stalls. `_drain_passes()` is re-entrancy-guarded (`_draining`), so calling it from a handler fired mid-drain is safe. Any new event that hands priority to a potentially-AI player needs the same treatment.
 
 ---
 

@@ -394,13 +394,13 @@ static func _resolve_play_ally(state: GameState,
 		})]
 	var zone := state.zones.get(card.zone_id) as Zone
 	if not zone or zone.zone_type != "chain":
-		var events: Array[GameEvent] = []
-		events.append(GameEvent.make("action_fizzled", {
+		var fizzle_events: Array[GameEvent] = []
+		fizzle_events.append(GameEvent.make("action_fizzled", {
 			"action_type": "play_ally", "reason": "card_left_chain",
 		}))
 		if zone and zone.zone_type != "graveyard":
-			events.append_array(GameLogic.move_card(state, card_id, card.owner + "_graveyard"))
-		return events
+			fizzle_events.append_array(GameLogic.move_card(state, card_id, card.owner + "_graveyard"))
+		return fizzle_events
 
 	var events: Array[GameEvent] = []
 	var target_zone_id: String = card.controller + "_ally_row"
@@ -751,7 +751,7 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 
 # Returns instance_ids of all characters that can protect this combat (rule 602.2).
 # The defending player chooses whether to use one of these — it is NOT mandatory.
-static func get_legal_protectors(state: GameState, attacker_id: String,
+static func get_legal_protectors(state: GameState, _attacker_id: String,
 		defender_id: String, db) -> Array[String]:
 	var defender := state.get_card(defender_id)
 	if not defender:
@@ -856,7 +856,7 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 # by the scene after the defending player makes their choice).
 # protector_id == "" means the defending player chose to skip protection.
 static func choose_protector(state: GameState, protector_id: String,
-		db = null) -> Array[GameEvent]:
+		_db = null) -> Array[GameEvent]:
 	if not state.in_protect_point:
 		return []
 	state.in_protect_point = false
@@ -990,7 +990,7 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 # Effects that require player input (discard_from_hand) set pending state and emit
 # a choice event; the caller must handle that event before continuing.
 static func _apply_quest_reward(state: GameState, player_id: String,
-		effects_str: String, db) -> Array[GameEvent]:
+		effects_str: String, _db) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	if effects_str == "":
 		return events
@@ -1013,7 +1013,7 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 
 # Entry point: player (or AI) has chosen a card to discard.
 static func choose_discard(state: GameState, card_id: String,
-		db = null) -> Array[GameEvent]:
+		_db = null) -> Array[GameEvent]:
 	if state.pending_discard_count <= 0 or state.pending_discard_player == "":
 		return []
 	var card := state.get_card(card_id)

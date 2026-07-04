@@ -133,3 +133,8 @@ static func enter_play_target_required(card_id: String, dmg_type: String, amount
 	return make("enter_play_target_required", {
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,
 	})
+
+static func card_returned_from_graveyard(card_id: String, player_id: String) -> GameEvent:
+	return make("card_returned_from_graveyard", {
+		"card_id": card_id, "player": player_id,
+	})

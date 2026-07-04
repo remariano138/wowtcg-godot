@@ -38,6 +38,8 @@ func _ready() -> void:
 	_test_kulan_earthguard_end_of_turn_ready()
 	_test_tracker_gallen_atk_per_ally()
 	_test_malwani_atk_per_damage_self()
+	_test_chasing_ame_graveyard_to_hand()
+	_test_chasing_ame_blocked_and_filtered()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1373,3 +1375,100 @@ func _test_malwani_atk_per_damage_self() -> void:
 
 	ok(state.get_atk("malwani_inst", db) == 4,
 		"sc22-c: ATK keeps scaling as more damage accumulates")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 23 — Chasing A-Me 01: return target ally from your graveyard to hand
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_chasing_ame_graveyard_to_hand() -> void:
+	print("\n-- Scenario 23: Chasing A-Me 01 returns an ally from the graveyard to hand --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("chasing_ame_def", 3, "graveyard_to_hand:Ally:1:1:own")
+	db.ally("dead_ally_def", 2, 2, [], 4)
+	db.quest("dead_quest_def", 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var quest := CardInstance.create("ame_inst", "chasing_ame_def", "p1", "p1_resource_row")
+	state.cards["ame_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("ame_inst")
+
+	# p1 graveyard: one ally (valid) and one quest card (filtered out).
+	for pair in [["dead_ally", "dead_ally_def"], ["dead_quest", "dead_quest_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+	# p2 graveyard: an ally that must NOT be a candidate (owner filter = own).
+	var opp_dead := CardInstance.create("opp_dead_ally", "dead_ally_def", "p2", "p2_graveyard")
+	state.cards["opp_dead_ally"] = opp_dead
+	state.zones["p2_graveyard"].card_ids.append("opp_dead_ally")
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("chasing_ame_def"))
+	var cands := StackResolver.get_graveyard_search_candidates(state, "p1", req, db)
+	eq(cands, ["dead_ally"], "sc23-a: only own graveyard ally is a candidate")
+
+	ok(StackResolver.can_use_quest_no_target_check(state, "ame_inst", "p1", db),
+		"sc23-b: no-target probe passes with a valid candidate")
+
+	var no_target := PendingAction.make("use_quest", "p1", {"quest_id": "ame_inst"})
+	ok(not StackResolver.can_submit(state, no_target, db),
+		"sc23-c: completion without announced targets is rejected")
+
+	var bad_target := PendingAction.make("use_quest", "p1",
+			{"quest_id": "ame_inst", "target_ids": ["dead_quest"]})
+	ok(not StackResolver.can_submit(state, bad_target, db),
+		"sc23-d: non-ally graveyard card is an illegal target")
+
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "ame_inst", "target_ids": ["dead_ally"]})
+	var events := StackResolver.submit_action(state, good, db)
+	ok(not events.is_empty(), "sc23-e: completion with valid target submits")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	ok(state.get_card("dead_ally").zone_id == "p1_hand",
+		"sc23-f: dead ally returned to p1 hand")
+	ok(state.get_card("ame_inst").face_down,
+		"sc23-g: quest flipped face-down after completion")
+	var returned := false
+	for ev in events:
+		if ev.event_type == "card_returned_from_graveyard" \
+				and ev.payload.get("card_id", "") == "dead_ally":
+			returned = true
+	ok(returned, "sc23-h: card_returned_from_graveyard event emitted")
+
+
+func _test_chasing_ame_blocked_and_filtered() -> void:
+	print("\n-- Scenario 24: Chasing A-Me 01 blocked with no valid graveyard target --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("chasing_ame_def", 3, "graveyard_to_hand:Ally:1:1:own")
+	db.quest("dead_quest_def", 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var quest := CardInstance.create("ame_inst", "chasing_ame_def", "p1", "p1_resource_row")
+	state.cards["ame_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("ame_inst")
+
+	# Empty graveyard: probe and submission both fail.
+	ok(not StackResolver.can_use_quest_no_target_check(state, "ame_inst", "p1", db),
+		"sc24-a: probe fails with empty graveyard")
+
+	# Graveyard with only a non-ally card: still blocked.
+	var dq := CardInstance.create("dead_quest", "dead_quest_def", "p1", "p1_graveyard")
+	state.cards["dead_quest"] = dq
+	state.zones["p1_graveyard"].card_ids.append("dead_quest")
+	ok(not StackResolver.can_use_quest_no_target_check(state, "ame_inst", "p1", db),
+		"sc24-b: probe fails when graveyard has no ally")
+
+	var forced := PendingAction.make("use_quest", "p1",
+			{"quest_id": "ame_inst", "target_ids": ["dead_quest"]})
+	ok(not StackResolver.can_submit(state, forced, db),
+		"sc24-c: submission with only-invalid targets rejected")

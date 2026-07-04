@@ -58,8 +58,20 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 				var def := db.get_def(card.card_def_id) as CardDef
 				if not def or def.card_type != "Quest":
 					continue
-			var action := PendingAction.make("use_quest", player_id,
-					{"quest_id": card.instance_id})
+			var params := {"quest_id": card.instance_id}
+			# Graveyard-target rewards: announce targets with the completion.
+			# Heuristic: take the highest-cost candidates (best card back to hand).
+			if db:
+				var q_def := db.get_def(card.card_def_id) as CardDef
+				var gy_req := StackResolver.get_graveyard_search_requirement(q_def)
+				if not gy_req.is_empty():
+					var candidates := StackResolver.get_graveyard_search_candidates(
+							state, player_id, gy_req, db)
+					candidates.sort_custom(func(a, b):
+						return _def_cost(state, db, a) > _def_cost(state, db, b))
+					var take: int = min(int(gy_req.get("max_count", 1)), candidates.size())
+					params["target_ids"] = candidates.slice(0, take)
+			var action := PendingAction.make("use_quest", player_id, params)
 			if StackResolver.can_submit(state, action, db):
 				result.append(action)
 
@@ -669,6 +681,11 @@ func _card_def(state: GameState, db, card_id: String) -> CardDef:
 	if not card or not db:
 		return null
 	return db.get_def(card.card_def_id) as CardDef
+
+
+func _def_cost(state: GameState, db, card_id: String) -> int:
+	var def := _card_def(state, db, card_id)
+	return def.cost if def else 0
 
 
 func _action_type_for(card: CardInstance, db) -> String:

@@ -924,6 +924,67 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	return events
 
 
+# ── Graveyard search (generic query API) ──────────────────────────────────────
+#
+# Effects segment: graveyard_to_hand:TYPE:MIN:MAX:OWNER[:MAX_COST]
+#   TYPE     — card_type filter ("Ally", "Ability", …) or "any"
+#   MIN/MAX  — how many cards must/may be chosen (min=max for exact counts)
+#   OWNER    — whose graveyard(s): "own", "opponent", or "both"
+#   MAX_COST — optional printed-cost ceiling (omit or -1 for no limit)
+
+# Parse the graveyard-search requirement off a card def. {} if the def has none.
+static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
+	if not def or def.effects == "":
+		return {}
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() >= 5 and parts[0].strip_edges() == "graveyard_to_hand":
+			return {
+				"card_type": parts[1].strip_edges(),
+				"min_count": int(parts[2]),
+				"max_count": int(parts[3]),
+				"owner":     parts[4].strip_edges(),
+				"max_cost":  int(parts[5]) if parts.size() >= 6 else -1,
+			}
+	return {}
+
+
+# All graveyard cards matching a requirement, from player_id's point of view.
+static func get_graveyard_search_candidates(state: GameState, player_id: String,
+		req: Dictionary, db) -> Array[String]:
+	var result: Array[String] = []
+	if req.is_empty() or not db:
+		return result
+	var owner: String = req.get("owner", "own")
+	var gy_players: Array[String] = []
+	if owner == "own" or owner == "both":
+		gy_players.append(player_id)
+	if owner == "opponent" or owner == "both":
+		gy_players.append(_other_player(state, player_id))
+	var type_filter: String = req.get("card_type", "any")
+	var max_cost: int = req.get("max_cost", -1)
+	for gy_player in gy_players:
+		for card in state.cards_in_zone(gy_player + "_graveyard"):
+			var def := db.get_def(card.card_def_id) as CardDef
+			if not def:
+				continue
+			if type_filter != "any" and type_filter != "" and def.card_type != type_filter:
+				continue
+			if max_cost >= 0 and def.cost > max_cost:
+				continue
+			result.append(card.instance_id)
+	return result
+
+
+# Probe: could this quest be completed if valid graveyard targets were supplied?
+# Used by UI highlights and AI before the player has chosen targets.
+static func can_use_quest_no_target_check(state: GameState, quest_id: String,
+		player_id: String, db) -> bool:
+	var probe := PendingAction.make("use_quest", player_id,
+			{"quest_id": quest_id, "_skip_target_check": true})
+	return can_submit(state, probe, db)
+
+
 # ── Quest completion ───────────────────────────────────────────────────────────
 
 static func _can_use_quest(state: GameState, action: PendingAction,
@@ -956,6 +1017,22 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	var resource_cost: int = max(def.cost, 0)
 	if resource_cost > state.get_available_resources(action.source_player):
 		return false
+	# Graveyard-target rewards: targets are announced with the completion (rule 601-style
+	# targeting) and must be legal now. Blocked entirely when too few candidates exist.
+	var gy_req := get_graveyard_search_requirement(def)
+	if not gy_req.is_empty():
+		var candidates := get_graveyard_search_candidates(state, action.source_player, gy_req, db)
+		if candidates.size() < int(gy_req.get("min_count", 1)):
+			return false
+		if action.params.get("_skip_target_check", false):
+			return true
+		var targets: Array = action.params.get("target_ids", [])
+		if targets.size() < int(gy_req.get("min_count", 1)) \
+				or targets.size() > int(gy_req.get("max_count", 1)):
+			return false
+		for tid in targets:
+			if tid not in candidates or targets.count(tid) > 1:
+				return false
 	return true
 
 
@@ -981,7 +1058,8 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def:
-			events.append_array(_apply_quest_reward(state, action.source_player, def.effects, db))
+			events.append_array(_apply_quest_reward(state, action.source_player, def.effects, db,
+					action.params.get("target_ids", [])))
 
 	return events
 
@@ -990,7 +1068,7 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 # Effects that require player input (discard_from_hand) set pending state and emit
 # a choice event; the caller must handle that event before continuing.
 static func _apply_quest_reward(state: GameState, player_id: String,
-		effects_str: String, _db) -> Array[GameEvent]:
+		effects_str: String, _db, target_ids: Array = []) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	if effects_str == "":
 		return events
@@ -1008,6 +1086,18 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 				state.pending_discard_player = player_id
 				state.pending_discard_count  = n
 				events.append(GameEvent.discard_choice_opened(player_id, n))
+			"graveyard_to_hand":
+				# Targets were validated at announcement; re-check they are still
+				# in a graveyard at resolution (fizzle per-card otherwise).
+				for tid in target_ids:
+					var t_card := state.get_card(tid)
+					if not t_card:
+						continue
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if not t_zone or t_zone.zone_type != "graveyard":
+						continue
+					events.append_array(GameLogic.move_card(state, tid, player_id + "_hand"))
+					events.append(GameEvent.card_returned_from_graveyard(tid, player_id))
 	return events
 
 

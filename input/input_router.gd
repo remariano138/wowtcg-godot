@@ -26,6 +26,13 @@ signal pet_sacrifice_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
+# Emitted when a quest reward needs graveyard cards chosen before submitting.
+# The UI shows a browser over candidate_ids; it must call
+# confirm_graveyard_selection(ids) or cancel_graveyard_selection().
+signal graveyard_select_requested(quest_id: String, candidate_ids: Array,
+		min_count: int, max_count: int)
+# Emitted when the player wants to browse a graveyard (view-only, no selection).
+signal graveyard_examine_requested(graveyard_player: String, card_ids: Array)
 
 var state: GameState
 var db
@@ -42,6 +49,8 @@ var _pet_sacrifice_candidates: Array[String] = []
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 # Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
 var _targeting_x_value: int = 0
+# Quest awaiting graveyard-target selection; "" = no browser open.
+var _gy_select_quest_id: String = ""
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 
@@ -71,6 +80,10 @@ func _unhandled_input(event: InputEvent) -> void:
 # Called by BoardRenderer when a card visual is clicked.
 func handle_card_click(instance_id: String) -> void:
 	if not state:
+		return
+
+	# ── Graveyard browser open: board clicks are ignored (modal owns input) ──
+	if _gy_select_quest_id != "":
 		return
 
 	# ── Pet sacrifice mode: click sacrifices the chosen pet ──────────────────
@@ -154,6 +167,47 @@ func _handle_discard_click(instance_id: String) -> void:
 		_in_discard_mode = false
 		_highlight_color = Color(0.2, 1.0, 0.3)
 		discard_mode_ended.emit()
+	refresh_highlights()
+
+
+# ── Graveyard selection (quest rewards that target graveyard cards) ───────────
+
+# Open the browser for a quest whose reward needs graveyard targets.
+func start_graveyard_selection(quest_id: String) -> void:
+	if not state or state.priority_player != local_player:
+		return
+	var card := state.get_card(quest_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card and db else null
+	var req := StackResolver.get_graveyard_search_requirement(def)
+	if req.is_empty():
+		return
+	var candidates := StackResolver.get_graveyard_search_candidates(
+			state, local_player, req, db)
+	if candidates.size() < int(req.get("min_count", 1)):
+		return
+	_gy_select_quest_id = quest_id
+	graveyard_select_requested.emit(quest_id, candidates,
+			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
+
+
+# UI confirmed a selection: submit the quest completion with announced targets.
+func confirm_graveyard_selection(selected_ids: Array) -> void:
+	if _gy_select_quest_id == "":
+		return
+	var quest_id := _gy_select_quest_id
+	_gy_select_quest_id = ""
+	var action := PendingAction.make("use_quest", local_player,
+			{"quest_id": quest_id, "target_ids": selected_ids})
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		refresh_highlights()
+		return
+	EventBus.emit_events(events)
+	refresh_highlights()
+
+
+func cancel_graveyard_selection() -> void:
+	_gy_select_quest_id = ""
 	refresh_highlights()
 
 
@@ -509,9 +563,8 @@ func get_playable_card_ids() -> Array:
 		var def: CardDef = db.get_def(card.card_def_id) if db else null
 		if not def or def.card_type != "Quest":
 			continue
-		var quest_action := PendingAction.make("use_quest", local_player,
-				{"quest_id": card.instance_id})
-		if StackResolver.can_submit(state, quest_action, db):
+		# No-target probe: graveyard-target quests light up before targets are chosen.
+		if StackResolver.can_use_quest_no_target_check(state, card.instance_id, local_player, db):
 			result.append(card.instance_id)
 	return result
 
@@ -559,7 +612,19 @@ func get_context_actions(instance_id: String) -> Array:
 	if not state or not db:
 		return []
 	var card := state.get_card(instance_id)
-	if not card or card.controller != local_player:
+	if not card:
+		return []
+
+	# ── Graveyard cards: examine (view-only) — works on EITHER player's pile ──
+	var card_zone := state.zones.get(card.zone_id) as Zone
+	if card_zone and card_zone.zone_type == "graveyard":
+		var gy_owner := "p1" if card.zone_id.begins_with("p1") else "p2"
+		return [{"label": "Examine Graveyard",
+			"action": PendingAction.make("examine_graveyard", local_player,
+				{"graveyard_player": gy_owner}),
+			"enabled": true}]
+
+	if card.controller != local_player:
 		return []
 	var def: CardDef = db.get_def(card.card_def_id)
 	if not def:
@@ -572,10 +637,12 @@ func get_context_actions(instance_id: String) -> Array:
 			if card.face_down:
 				return []  # no actions on face-down resources
 			if def.card_type == "Quest":
+				var needs_gy := not StackResolver.get_graveyard_search_requirement(def).is_empty()
 				var a := PendingAction.make("use_quest", local_player,
-					{"quest_id": instance_id})
+					{"quest_id": instance_id, "_needs_gy_targets": needs_gy})
 				return [{"label": "Complete Quest — %s" % def.card_name,
-					"action": a, "enabled": StackResolver.can_submit(state, a, db)}]
+					"action": a, "enabled": StackResolver.can_use_quest_no_target_check(
+						state, instance_id, local_player, db)}]
 			return []  # face-up non-quest resources also have no actions
 
 	# ── In-play characters: Attack + (heroes) Hero Power ─────────────────────
@@ -682,6 +749,17 @@ func handle_context_action(action: PendingAction) -> void:
 			if _instant_needs_target(action.params.get("card_id", "")):
 				var cid: String = action.params.get("card_id", "")
 				start_targeting(cid, "play_instant", _card_dmg_type(cid), 0)
+				return
+		"examine_graveyard":
+			var gy_player: String = action.params.get("graveyard_player", "")
+			var ids: Array = []
+			for c in state.cards_in_zone(gy_player + "_graveyard"):
+				ids.append(c.instance_id)
+			graveyard_examine_requested.emit(gy_player, ids)
+			return
+		"use_quest":
+			if action.params.get("_needs_gy_targets", false):
+				start_graveyard_selection(action.params.get("quest_id", ""))
 				return
 		"use_ally_power":
 			if action.params.get("_needs_target", false):

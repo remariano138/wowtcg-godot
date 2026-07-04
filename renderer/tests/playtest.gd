@@ -73,6 +73,18 @@ var _x_input:        LineEdit
 var _x_ok_btn:       Button
 var _x_hero_id:      String = ""
 var _x_max:          int = 0
+# ── Graveyard browser (quest rewards targeting graveyard cards) ────────────────
+var _gy_dialog:        Panel
+var _gy_dimmer:        ColorRect
+var _gy_title:         Label
+var _gy_scroll:        ScrollContainer
+var _gy_card_grid:     GridContainer
+var _gy_confirm_btn:   Button
+var _gy_cancel_btn:    Button
+var _gy_selected:      Array = []       # instance_ids currently picked
+var _gy_min:           int = 1
+var _gy_max:           int = 1
+var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
 var _end_turn_dialog: ConfirmationDialog
 var _p1_played_this_action_phase: bool = false
 var _game_over: bool = false
@@ -177,7 +189,10 @@ func _build_scene() -> void:
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
+	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
+	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
 	_build_x_dialog()
+	_build_graveyard_dialog()
 
 	# ── Control panel (y=960..1080) ───────────────────────────────────────────────
 	# Panel background — added before labels/buttons so it renders behind them.
@@ -747,6 +762,10 @@ func _input(event: InputEvent) -> void:
 			_confirm_x_value(_x_input.text)
 			get_viewport().set_input_as_handled()
 			return
+		# Graveyard browser open: Space must not pass priority underneath the modal.
+		if _gy_dialog and _gy_dialog.visible:
+			get_viewport().set_input_as_handled()
+			return
 		_try_pass()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_cancel"):
@@ -757,6 +776,23 @@ func _input(event: InputEvent) -> void:
 			_set_status("")
 			get_viewport().set_input_as_handled()
 			return
+		# Escape: close/cancel the graveyard browser.
+		if _gy_dialog and _gy_dialog.visible:
+			_on_gy_cancel_pressed()
+			get_viewport().set_input_as_handled()
+			return
+	# C confirms the graveyard selection (matches the "Confirm (C)" button).
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_C \
+			and _gy_dialog and _gy_dialog.visible:
+		if not _gy_view_only and not _gy_confirm_btn.disabled:
+			_on_gy_confirm_pressed()
+		get_viewport().set_input_as_handled()
+	# Right-click outside the graveyard dialog → cancel/close it.
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT \
+			and event.pressed and _gy_dialog and _gy_dialog.visible:
+		if not _gy_dialog.get_global_rect().has_point(get_viewport().get_mouse_position()):
+			_on_gy_cancel_pressed()
+			get_viewport().set_input_as_handled()
 	# Right-click on empty space while targeting → cancel targeting.
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT \
 			and event.pressed and _router and _router._targeting_source != "":
@@ -1435,6 +1471,175 @@ func _confirm_x_value(text: String) -> void:
 	_x_dialog.visible = false
 	_set_status("")
 	_router.confirm_x_value(x)
+
+
+# ── Graveyard browser dialog ───────────────────────────────────────────────────
+# Modal overlay: fans out candidate graveyard cards; click toggles selection,
+# Confirm submits via InputRouter.confirm_graveyard_selection.
+
+const GY_CARD_SIZE := Vector2(150, 210)
+
+func _build_graveyard_dialog() -> void:
+	_gy_dimmer = ColorRect.new()
+	_gy_dimmer.color = Color(0, 0, 0, 0.6)
+	_gy_dimmer.size = Vector2(1920, 1080)
+	_gy_dimmer.visible = false
+	_gy_dimmer.z_index = 19
+	add_child(_gy_dimmer)
+
+	_gy_dialog = Panel.new()
+	_gy_dialog.visible = false
+	_gy_dialog.z_index = 20
+	add_child(_gy_dialog)
+
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 16)
+	vbox.add_theme_constant_override("separation", 12)
+	_gy_dialog.add_child(vbox)
+
+	_gy_title = Label.new()
+	_gy_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_gy_title.add_theme_font_size_override("font_size", 20)
+	vbox.add_child(_gy_title)
+
+	# Cards wrap into rows; the scroll container caps the dialog height when
+	# the graveyard grows large.
+	_gy_scroll = ScrollContainer.new()
+	_gy_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_gy_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(_gy_scroll)
+
+	_gy_card_grid = GridContainer.new()
+	_gy_card_grid.add_theme_constant_override("h_separation", 14)
+	_gy_card_grid.add_theme_constant_override("v_separation", 14)
+	_gy_card_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gy_scroll.add_child(_gy_card_grid)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	btn_row.add_theme_constant_override("separation", 24)
+	vbox.add_child(btn_row)
+
+	_gy_confirm_btn = Button.new()
+	_gy_confirm_btn.text = "Confirm (C)"
+	_gy_confirm_btn.custom_minimum_size = Vector2(140, 36)
+	_gy_confirm_btn.pressed.connect(_on_gy_confirm_pressed)
+	btn_row.add_child(_gy_confirm_btn)
+
+	_gy_cancel_btn = Button.new()
+	_gy_cancel_btn.text = "Cancel (Esc)"
+	_gy_cancel_btn.custom_minimum_size = Vector2(140, 36)
+	_gy_cancel_btn.pressed.connect(_on_gy_cancel_pressed)
+	btn_row.add_child(_gy_cancel_btn)
+
+
+func _on_graveyard_select_requested(quest_id: String, candidate_ids: Array,
+		min_count: int, max_count: int) -> void:
+	var quest_card := _state.get_card(quest_id)
+	var quest_def: CardDef = _db.get_def(quest_card.card_def_id) if quest_card else null
+	var quest_name := quest_def.card_name if quest_def else "Quest"
+	var count_str := ("%d" % min_count) if min_count == max_count \
+			else "%d – %d" % [min_count, max_count]
+	_open_gy_dialog(candidate_ids, false,
+			"%s — choose %s card(s) from the graveyard" % [quest_name, count_str],
+			min_count, max_count)
+
+
+func _on_graveyard_examine_requested(graveyard_player: String, card_ids: Array) -> void:
+	var who := "Your" if graveyard_player == "p1" else "Opponent's"
+	_open_gy_dialog(card_ids, true,
+			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0)
+
+
+# Shared open path for both selection and examine modes. Sizes the dialog to
+# the card count: cards wrap at GY_MAX_COLS per row, height is capped and the
+# grid scrolls beyond that.
+const GY_MAX_COLS := 9
+const GY_MAX_DIALOG_H := 920
+
+func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
+		min_count: int, max_count: int) -> void:
+	_gy_selected.clear()
+	_gy_view_only = view_only
+	_gy_min = min_count
+	_gy_max = max_count
+	_gy_title.text = title
+
+	for child in _gy_card_grid.get_children():
+		child.queue_free()
+	var count: int = max(card_ids.size(), 1)
+	var cols: int = clamp(count, 1, GY_MAX_COLS)
+	_gy_card_grid.columns = cols
+	for cid in card_ids:
+		_gy_card_grid.add_child(_make_gy_card_button(cid as String))
+
+	_gy_confirm_btn.visible = not view_only
+	_gy_cancel_btn.text = "Close (Esc)" if view_only else "Cancel (Esc)"
+
+	# Size to content: width from columns, height from rows (capped → scrolls).
+	var rows: int = ceili(float(count) / cols)
+	var content_w: int = cols * int(GY_CARD_SIZE.x + 14) + 60
+	var content_h: int = rows * int(GY_CARD_SIZE.y + 14) + 140
+	_gy_dialog.size = Vector2(max(content_w, 480), min(content_h, GY_MAX_DIALOG_H))
+	_gy_dialog.position = (Vector2(1920, 1080) - _gy_dialog.size) * 0.5
+	_gy_dimmer.visible = true
+	_gy_dialog.visible = true
+	_update_gy_confirm()
+
+
+func _make_gy_card_button(instance_id: String) -> Button:
+	var card := _state.get_card(instance_id)
+	var def: CardDef = _db.get_def(card.card_def_id) if card else null
+	var btn := Button.new()
+	btn.custom_minimum_size = GY_CARD_SIZE
+	btn.toggle_mode = not _gy_view_only
+	btn.clip_text = true
+	var tex_path := "res://" + def.image_path.replace("\\", "/") if def and def.image_path != "" else ""
+	if tex_path != "" and ResourceLoader.exists(tex_path):
+		var tex: Texture2D = load(tex_path)
+		btn.icon = tex
+		btn.expand_icon = true
+	else:
+		btn.text = "%s\n(%d) %s" % [def.card_name if def else instance_id,
+				def.cost if def else 0, def.card_type if def else ""]
+	if not _gy_view_only:
+		btn.toggled.connect(func(pressed: bool) -> void:
+			if pressed:
+				if _gy_selected.size() >= _gy_max:
+					btn.set_pressed_no_signal(false)   # over the limit — refuse the pick
+					return
+				_gy_selected.append(instance_id)
+			else:
+				_gy_selected.erase(instance_id)
+			_update_gy_confirm())
+	return btn
+
+
+func _update_gy_confirm() -> void:
+	_gy_confirm_btn.disabled = _gy_selected.size() < _gy_min \
+			or _gy_selected.size() > _gy_max
+
+
+func _on_gy_confirm_pressed() -> void:
+	if _gy_view_only or _gy_confirm_btn.disabled:
+		return
+	_close_gy_dialog()
+	_router.confirm_graveyard_selection(_gy_selected.duplicate())
+	_refresh_ui()
+
+
+func _on_gy_cancel_pressed() -> void:
+	var was_view_only := _gy_view_only
+	_close_gy_dialog()
+	if not was_view_only:
+		_router.cancel_graveyard_selection()
+	_refresh_ui()
+
+
+func _close_gy_dialog() -> void:
+	_gy_dialog.visible = false
+	_gy_dimmer.visible = false
+	_gy_view_only = false
 
 
 # ── Protect point ──────────────────────────────────────────────────────────────

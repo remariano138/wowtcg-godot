@@ -139,7 +139,7 @@ static func check_destroyed(state: GameState, card_id: String,
 # ── heal ──────────────────────────────────────────────────────────────────────
 # Remove damage from a card, up to its max HP. Does nothing if already at
 # full health. Healing cannot bring a card above max HP.
-static func heal(state: GameState, target_id: String, amount: int, db) -> Array[GameEvent]:
+static func heal(state: GameState, target_id: String, amount: int, db, source_id: String = "") -> Array[GameEvent]:
 	if amount <= 0:
 		return []
 
@@ -154,7 +154,7 @@ static func heal(state: GameState, target_id: String, amount: int, db) -> Array[
 	var new_hp := state.get_current_hp(target_id, db)
 
 	if new_hp != old_hp:
-		events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, state.get_max_hp(target_id, db)))
+		events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, state.get_max_hp(target_id, db), source_id))
 
 	return events
 

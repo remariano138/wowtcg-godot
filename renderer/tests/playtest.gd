@@ -1061,6 +1061,18 @@ func _log_event(event: GameEvent) -> void:
 			var tgt:    String = _log_card(event.payload.get("target", ""))
 			var amt:    int    = event.payload.get("amount", 0)
 			_log_entry("[color=#f66]%s receives %d dmg from %s[/color]" % [tgt, amt, src])
+		"hp_changed":
+			var old_hp: int = event.payload.get("old_hp", 0)
+			var new_hp: int = event.payload.get("new_hp", 0)
+			if new_hp > old_hp:
+				var tgt_name: String = _log_card(event.payload.get("card", ""))
+				var src_id:   String = event.payload.get("source", "")
+				var healed:   int    = new_hp - old_hp
+				if src_id != "":
+					var src_name: String = _log_card(src_id)
+					_log_entry("[color=#8f8]%s healed %s for %d hp[/color]" % [src_name, tgt_name, healed])
+				else:
+					_log_entry("[color=#8f8]%s healed for %d hp[/color]" % [tgt_name, healed])
 		"card_destroyed":
 			var card_name: String = _log_card(event.payload.get("card",   ""))
 			var source: String = event.payload.get("source", "")

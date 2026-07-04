@@ -48,8 +48,8 @@ static func card_exhausted(card_id: String) -> GameEvent:
 static func card_readied(card_id: String) -> GameEvent:
 	return make("card_readied", {"card": card_id})
 
-static func hp_changed(card_id: String, old_hp: int, new_hp: int, max_hp: int) -> GameEvent:
-	return make("hp_changed", {"card": card_id, "old_hp": old_hp, "new_hp": new_hp, "max_hp": max_hp})
+static func hp_changed(card_id: String, old_hp: int, new_hp: int, max_hp: int, source_id: String = "") -> GameEvent:
+	return make("hp_changed", {"card": card_id, "old_hp": old_hp, "new_hp": new_hp, "max_hp": max_hp, "source": source_id})
 
 static func buff_added(card_id: String, buff_id: String) -> GameEvent:
 	return make("buff_added", {"card": card_id, "buff_id": buff_id})

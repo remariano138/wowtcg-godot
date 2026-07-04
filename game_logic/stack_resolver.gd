@@ -644,7 +644,7 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
 			if target_id != "" and state.is_in_play(target_id):
-				events.append_array(GameLogic.heal(state, target_id, amount, db))
+				events.append_array(GameLogic.heal(state, target_id, amount, db, card_id))
 
 	return events
 
@@ -1359,7 +1359,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				# X resources are already paid at submission. Heal X from target.
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
-					events.append_array(GameLogic.heal(state, target_id, x_value, db))
+					events.append_array(GameLogic.heal(state, target_id, x_value, db, hero_id))
 			"radak_pet_sacrifice":
 				# Pet already destroyed at submission. Deal x_value shadow damage to target.
 				var x_value: int = action.params.get("x_value", 0)
@@ -1397,7 +1397,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 							events.append_array(
 								_check_destroyed_trigger(state, target_id, hero_id, db))
 				if heal_target_id != "" and state.is_in_play(heal_target_id):
-					events.append_array(GameLogic.heal(state, heal_target_id, heal_amount, db))
+					events.append_array(GameLogic.heal(state, heal_target_id, heal_amount, db, hero_id))
 	return events
 
 

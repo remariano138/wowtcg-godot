@@ -60,17 +60,15 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 					continue
 			var params := {"quest_id": card.instance_id}
 			# Graveyard-target rewards: announce targets with the completion.
-			# Heuristic: take the highest-cost candidates (best card back to hand).
+			# Target choice is an overridable hook (see _choose_graveyard_targets).
 			if db:
 				var q_def := db.get_def(card.card_def_id) as CardDef
 				var gy_req := StackResolver.get_graveyard_search_requirement(q_def)
 				if not gy_req.is_empty():
 					var candidates := StackResolver.get_graveyard_search_candidates(
 							state, player_id, gy_req, db)
-					candidates.sort_custom(func(a, b):
-						return _def_cost(state, db, a) > _def_cost(state, db, b))
-					var take: int = min(int(gy_req.get("max_count", 1)), candidates.size())
-					params["target_ids"] = candidates.slice(0, take)
+					params["target_ids"] = _choose_graveyard_targets(
+							state, db, player_id, gy_req, candidates)
 			var action := PendingAction.make("use_quest", player_id, params)
 			if StackResolver.can_submit(state, action, db):
 				result.append(action)
@@ -194,21 +192,46 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		if ap.is_empty():
 			continue
 		if ap.get("targets", "") in ["hero_or_ally"]:
-			# Targeted: only consider enemy characters (never self-target friendlies).
-			var opp := "p2" if player_id == "p1" else "p1"
+			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []
-			for ally in state.cards_in_zone(opp + "_ally_row"):
-				candidates.append(ally.instance_id)
-			var ps_opp := state.players.get(opp) as PlayerState
-			if ps_opp and ps_opp.hero_instance_id != "":
-				candidates.append(ps_opp.hero_instance_id)
+			if is_heal:
+				# Heal: FRIENDLY damaged characters only — never heal the enemy.
+				var ps_own := state.players.get(player_id) as PlayerState
+				if ps_own and ps_own.hero_instance_id != "" \
+						and state.get_card(ps_own.hero_instance_id).damage_taken > 0:
+					candidates.append(ps_own.hero_instance_id)
+				for ally in state.cards_in_zone(player_id + "_ally_row"):
+					if ally.damage_taken > 0:
+						candidates.append(ally.instance_id)
+				if candidates.is_empty():
+					continue   # nothing worth healing — don't waste the power
+			else:
+				# Damage: only consider enemy characters (never self-target friendlies).
+				var opp := "p2" if player_id == "p1" else "p1"
+				for ally in state.cards_in_zone(opp + "_ally_row"):
+					candidates.append(ally.instance_id)
+				var ps_opp := state.players.get(opp) as PlayerState
+				if ps_opp and ps_opp.hero_instance_id != "":
+					candidates.append(ps_opp.hero_instance_id)
 			candidates.sort_custom(func(a: String, b: String) -> bool:
 				var ca := state.get_card(a)
 				var cb := state.get_card(b)
 				var a_dmg := ca.damage_taken if ca else 0
 				var b_dmg := cb.damage_taken if cb else 0
 				return a_dmg > b_dmg)
-			for target_id in candidates:
+			# Baseline: lethal targets first (hero-only when hero is lethal —
+			# see find_lethal / ai_functions.md), ranked by the subclass hook,
+			# then the remaining candidates in most-damaged order.
+			var lethal := find_lethal(state, db, player_id, int(ap.get("amount", 0)))
+			var lethal_pool: Array[String] = []
+			for tid in candidates:
+				if tid in lethal:
+					lethal_pool.append(tid)
+			var ordered: Array[String] = rank_lethal_targets(state, db, lethal_pool)
+			for tid in candidates:
+				if tid not in ordered:
+					ordered.append(tid)
+			for target_id in ordered:
 				var act := PendingAction.make("use_ally_power", player_id,
 					{"card_id": card.instance_id, "target_id": target_id})
 				if StackResolver.can_submit(state, act, db):
@@ -261,11 +284,14 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 			var power_cost := _hero_power_cost(state, db, hero_id)
 			var opp_id3 := _other_player_id(state, player_id)
 			var opp_ps3 := state.players.get(opp_id3) as PlayerState
+			var legal: Array[PendingAction] = []
+			var legal_ids: Array[String] = []
 			if opp_ps3 and opp_ps3.hero_instance_id != "":
 				var action := PendingAction.make("activate_power", player_id,
 					{"hero_id": hero_id, "target_id": opp_ps3.hero_instance_id})
 				if StackResolver.can_submit(state, action, db):
-					result.append(action)
+					legal.append(action)
+					legal_ids.append(opp_ps3.hero_instance_id)
 			for card in state.cards_in_zone(opp_id3 + "_ally_row"):
 				var action := PendingAction.make("activate_power", player_id,
 					{"hero_id": hero_id, "target_id": card.instance_id})
@@ -273,7 +299,23 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 					continue
 				if is_destroy_power and not _destroy_is_worth_it(state, db, player_id, card.instance_id, power_cost):
 					continue
-				result.append(action)
+				legal.append(action)
+				legal_ids.append(card.instance_id)
+			# Baseline for damage powers (e.g. Ta'zo): when any legal target dies
+			# to this damage, offer ONLY lethal targets — so even a random AI
+			# picks a kill (the hero alone if the hero is lethal). See
+			# find_lethal / ai_functions.md.
+			var dmg_amount := _hero_power_damage_amount(state, db, hero_id)
+			if dmg_amount > 0:
+				var lethal_pool: Array[String] = []
+				for tid in find_lethal(state, db, player_id, dmg_amount):
+					if tid in legal_ids:
+						lethal_pool.append(tid)
+				if not lethal_pool.is_empty():
+					# Commit to the best-ranked kill (subclass hook decides "best").
+					var top: String = rank_lethal_targets(state, db, lethal_pool)[0]
+					legal = [legal[legal_ids.find(top)]]
+			result.append_array(legal)
 	else:
 		var action := PendingAction.make("activate_power", player_id,
 			{"hero_id": hero_id, "target_id": ""})
@@ -487,9 +529,160 @@ func _damage_and_heal_actions(state: GameState, db, player_id: String,
 	return []
 
 
+# Damage dealt by a deal_damage_to_target hero power (format:
+# deal_damage_to_target:AMOUNT:DMG_TYPE). 0 if the hero has no such power.
+func _hero_power_damage_amount(state: GameState, db, hero_id: String) -> int:
+	var def := _card_def(state, db, hero_id)
+	if not def:
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "deal_damage_to_target":
+			return int(parts[1]) if parts.size() > 1 else 0
+	return 0
+
+
 func _hero_power_cost(state: GameState, db, hero_id: String) -> int:
 	var def := _card_def(state, db, hero_id)
 	return def.cost if def else 0
+
+
+# ── sort_valuable_cards ─────────────────────────────────────────────────────
+# See game_logic/ai/ai_functions.md for the full contract.
+# Sorts card instance ids from most to least valuable (simple printed-stats
+# heuristic): rarity > cost > allies-before-non-allies > Protector > HP >
+# Ferocity > Elusive > ATK > random.
+const _RARITY_RANK := {"epic": 3, "rare": 2, "uncommon": 1, "common": 0}
+
+static func sort_valuable_cards(state: GameState, db,
+		card_ids: Array[String]) -> Array[String]:
+	var result: Array[String] = card_ids.duplicate()
+	result.shuffle()   # random final tiebreak — everything else is deterministic
+	result.sort_custom(func(a: String, b: String) -> bool:
+		return _card_value_key(state, db, a) > _card_value_key(state, db, b))
+	return result
+
+
+# Lexicographic value key for sort_valuable_cards. Non-allies zero out the
+# combat fields, so at equal rarity+cost an ally always outranks a non-ally.
+# HP/ATK use current values for in-play cards (a 3-HP-left target is worth
+# more than a 1-HP-left one), printed values for out-of-play cards (graveyard).
+static func _card_value_key(state: GameState, db, cid: String) -> Array:
+	var card := state.get_card(cid)
+	var def: CardDef = db.get_def(card.card_def_id) if (card and db) else null
+	if not def:
+		return [0, 0, 0, 0, 0, 0, 0, 0]
+	var kw: Array[String] = []
+	for k in def.keywords:
+		kw.append(str(k).to_lower())
+	var is_ally := def.card_type == "Ally"
+	var hp  := def.printed_health
+	var atk := def.printed_atk
+	if state.is_in_play(cid):
+		hp  = state.get_current_hp(cid, db)
+		atk = state.get_atk(cid, db)
+	return [
+		_RARITY_RANK.get(def.rarity.to_lower(), 0),
+		def.cost,
+		1 if is_ally else 0,
+		1 if is_ally and "protector" in kw else 0,
+		hp if is_ally else 0,
+		1 if is_ally and "ferocity" in kw else 0,
+		1 if is_ally and "elusive" in kw else 0,
+		atk if is_ally else 0,
+	]
+
+
+# Hook: pick graveyard targets for a quest reward (Chasing A-Me, Darrowshire).
+# Base heuristic: to hand → highest-cost candidates (best card back);
+# to RFG → lowest-cost ones (removing your own cards is a cost, not a gain).
+# Subclasses may override (GenericAI uses sort_valuable_cards).
+func _choose_graveyard_targets(state: GameState, db, _player_id: String,
+		gy_req: Dictionary, candidates: Array[String]) -> Array[String]:
+	var picks := candidates.duplicate()
+	var to_rfg: bool = gy_req.get("dest", "hand") == "rfg"
+	picks.sort_custom(func(a, b):
+		if to_rfg:
+			return _def_cost(state, db, a) < _def_cost(state, db, b)
+		return _def_cost(state, db, a) > _def_cost(state, db, b))
+	var take: int = min(int(gy_req.get("max_count", 1)), picks.size())
+	return picks.slice(0, take)
+
+
+# Hook: pick the card to discard when this player must discard (wrap-up or
+# card effect). Called once per card by the scene. Base heuristic: lowest-cost
+# non-quest/location card; fall back to a random quest/location.
+func choose_discard_card(state: GameState, db, player_id: String) -> String:
+	var hand := state.cards_in_zone(player_id + "_hand")
+	if hand.is_empty():
+		return ""
+	var non_resource: Array[String] = []
+	var resource_only: Array[String] = []
+	for card in hand:
+		var def: CardDef = db.get_def(card.card_def_id) if db else null
+		if def and def.card_type in ["Quest", "Location"]:
+			resource_only.append(card.instance_id)
+		else:
+			non_resource.append(card.instance_id)
+	if not non_resource.is_empty():
+		non_resource.sort_custom(func(a, b) -> bool:
+			return _def_cost(state, db, a) < _def_cost(state, db, b))
+		return non_resource[0]
+	return resource_only[randi() % resource_only.size()]
+
+
+# Hook: order a find_lethal pool before this AI commits to a target.
+# Base keeps the incoming order (hero first, then ally_row order); subclasses
+# decide if and when to apply a real heuristic (FullRandomAI sorts by
+# sort_valuable_cards so it always kills the most valuable target).
+func rank_lethal_targets(state: GameState, db,
+		lethal: Array[String]) -> Array[String]:
+	return lethal
+
+
+# ── find_lethal ────────────────────────────────────────────────────────────
+# See game_logic/ai/ai_functions.md for the full contract.
+# Returns opposing in-play characters that would die to `damage` points
+# (current HP <= damage). If the opposing HERO is lethal, returns ONLY the
+# hero — killing the hero wins the game, nothing else matters.
+static func find_lethal(state: GameState, db, player_id: String,
+		damage: int) -> Array[String]:
+	var result: Array[String] = []
+	if damage <= 0:
+		return result
+	var opp := "p2" if player_id == "p1" else "p1"
+	var ps_opp := state.players.get(opp) as PlayerState
+	if ps_opp and ps_opp.hero_instance_id != "" \
+			and state.is_in_play(ps_opp.hero_instance_id) \
+			and state.get_current_hp(ps_opp.hero_instance_id, db) <= damage:
+		result.append(ps_opp.hero_instance_id)
+		return result
+	for card in state.cards_in_zone(opp + "_ally_row"):
+		if state.get_current_hp(card.instance_id, db) <= damage:
+			result.append(card.instance_id)
+	return result
+
+
+# ── find_safe_lethals ───────────────────────────────────────────────────────
+# See game_logic/ai/ai_functions.md for the full contract.
+# For every (attacker, defender) combination, keeps the pairs where the
+# attacker kills AND survives:
+#   attacker current ATK >= defender current HP
+#   attacker current HP  >  defender current ATK
+# Returns an Array of [attacker_id, defender_id] pairs. Pure math — no
+# combat-legality check (Elusive, exhaustion, …); callers filter with
+# can_submit / get_legal_defenders.
+static func find_safe_lethals(state: GameState, db, attackers: Array[String],
+		defenders: Array[String]) -> Array:
+	var result: Array = []
+	for a in attackers:
+		var a_atk := state.get_atk(a, db)
+		var a_hp  := state.get_current_hp(a, db)
+		for d in defenders:
+			if a_atk >= state.get_current_hp(d, db) \
+					and a_hp > state.get_atk(d, db):
+				result.append([a, d])
+	return result
 
 
 # ── Targeted damage heuristic ──────────────────────────────────────────────
@@ -506,10 +699,11 @@ func _best_damage_target(state: GameState, db, player_id: String,
 	var ep := state.players.get(enemy_pid) as PlayerState
 	var enemy_hero_id: String = ep.hero_instance_id if ep else ""
 
-	# Priority 0: lethal on enemy hero.
-	if enemy_hero_id != "" and enemy_hero_id in candidates:
-		if state.get_current_hp(enemy_hero_id, db) <= damage:
-			return enemy_hero_id
+	# Priority 0: lethal on enemy hero (find_lethal returns only the hero then).
+	var lethal_scan := find_lethal(state, db, player_id, damage)
+	if lethal_scan.size() == 1 and lethal_scan[0] == enemy_hero_id \
+			and enemy_hero_id in candidates:
+		return enemy_hero_id
 
 	var lethal: Array[String] = []
 	var non_lethal: Array[String] = []

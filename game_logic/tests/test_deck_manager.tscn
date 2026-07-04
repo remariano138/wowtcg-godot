@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://dm4nfcy8kdeck"]
+
+[ext_resource type="Script" uid="uid://d06r068e8vxe5" path="res://game_logic/tests/test_deck_manager.gd" id="1_dmgr1"]
+
+[node name="Node" type="Node"]
+script = ExtResource("1_dmgr1")

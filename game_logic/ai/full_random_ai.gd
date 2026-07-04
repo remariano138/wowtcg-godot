@@ -20,6 +20,13 @@ func choose_protector(state: GameState, db, _player_id: String) -> String:
 	return pool[randi() % pool.size()]
 
 
+# Lethal pools (find_lethal) are ranked by card value: FullRandomAI always
+# kills the most valuable target. See game_logic/ai/ai_functions.md.
+func rank_lethal_targets(state: GameState, db,
+		lethal: Array[String]) -> Array[String]:
+	return BaseAI.sort_valuable_cards(state, db, lethal)
+
+
 func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	# Don't act during ready or draw phases — pass and let the phase advance.
 	if state.phase in ["ready", "draw"]:

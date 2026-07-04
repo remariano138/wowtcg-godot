@@ -37,7 +37,7 @@ var _draining: bool = false  # true while _drain_passes is running
 
 # Per-player type + AI instance (null = human).
 var _p1_type: String = "human"
-var _p2_type: String = "fullrandom"
+var _p2_type: String = "recommended"
 var _p1_ai:   Object = null
 var _p2_ai:   Object = null
 
@@ -51,6 +51,8 @@ var _p1_cat_opt:  OptionButton
 var _p2_cat_opt:  OptionButton
 var _p1_deck_ids: Array[String] = []   # dropdown index -> deck_id (last entry = DECK_RANDOM)
 var _p2_deck_ids: Array[String] = []
+var _p1_ai_types: Array[String] = []   # dropdown index -> type string ("human", "recommended", or an ai_id)
+var _p2_ai_types: Array[String] = []
 var _avoid_mirror_cb: CheckBox
 var _menu_error_label: Label
 var _status:     Label
@@ -358,10 +360,22 @@ func _build_menu() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	inner.add_child(title)
 
-	inner.add_child(_player_row("Player 1", ["Human", "Recommended AI", "BaseAI", "FullRandomAI"], 0,
+	var ai_ids := DeckManager.list_ai_profile_ids()
+	_p1_ai_types = ["human", "recommended"]
+	_p1_ai_types.append_array(ai_ids)
+	_p2_ai_types = ["recommended"]
+	_p2_ai_types.append_array(ai_ids)
+	var p1_labels: Array[String] = ["Human", "Recommended AI"]
+	for id in ai_ids:
+		p1_labels.append(_ai_profile_label(id))
+	var p2_labels: Array[String] = ["Recommended AI"]
+	for id in ai_ids:
+		p2_labels.append(_ai_profile_label(id))
+
+	inner.add_child(_player_row("Player 1", p1_labels, 0,
 		CAT_ALL,
 		func(opt): _p1_type_opt = opt, func(opt): _p1_cat_opt = opt, func(opt): _p1_deck_opt = opt))
-	inner.add_child(_player_row("Player 2", ["Recommended AI", "BaseAI", "FullRandomAI"], 0,
+	inner.add_child(_player_row("Player 2", p2_labels, 0,
 		CAT_RECOMMENDED,
 		func(opt): _p2_type_opt = opt, func(opt): _p2_cat_opt = opt, func(opt): _p2_deck_opt = opt))
 	_p1_cat_opt.item_selected.connect(func(idx): _repopulate_deck_opt("p1", idx))
@@ -435,6 +449,12 @@ func _player_row(label_text: String, type_items: Array, type_default: int,
 	deck_cb.call(deck_opt)
 
 	return row
+
+
+# Display label for an ai_profiles/*.json id, e.g. "ai_generic" -> "Generic AI".
+func _ai_profile_label(ai_id: String) -> String:
+	var stem := ai_id.trim_prefix("ai_")
+	return "%s AI" % stem.capitalize()
 
 
 # Deck ids for one category dropdown value ("Random" sentinel not included).
@@ -515,8 +535,6 @@ func _on_quick_start() -> void:
 
 func _on_start_game() -> void:
 	_menu_error_label.visible = false
-	var p1_types := ["human", "recommended", "base", "fullrandom"]
-	var p2_types := ["recommended", "base", "fullrandom"]
 	var resolved := _resolve_matchup(
 		_p1_deck_ids[_p1_deck_opt.selected], _p1_deck_ids,
 		_p2_deck_ids[_p2_deck_opt.selected], _p2_deck_ids,
@@ -524,8 +542,8 @@ func _on_start_game() -> void:
 	if resolved.is_empty():
 		_show_menu_error("Mirror match — pick different decks or uncheck 'Avoid mirror matches'.")
 		return
-	_launch_game(p1_types[_p1_type_opt.selected], resolved[0],
-				 p2_types[_p2_type_opt.selected], resolved[1])
+	_launch_game(_p1_ai_types[_p1_type_opt.selected], resolved[0],
+				 _p2_ai_types[_p2_type_opt.selected], resolved[1])
 
 
 func _launch_game(p1_type: String, p1_deck_id: String,
@@ -544,12 +562,15 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 					  DeckManager.get_runtime_deck(p2_deck_id))
 
 
+# type is "" / "human" (no AI), "recommended" (deck's recommended_ai_id), or
+# an ai_profiles/*.json id (e.g. "ai_generic") straight from the dropdown.
 func _make_ai(type: String, deck_id: String) -> Object:
 	match type:
-		"base":        return BaseAI.new()
-		"fullrandom":  return FullRandomAI.new()
+		"", "human":   return null
 		"recommended": return DeckManager.make_ai_for_deck(deck_id)
-		_:             return null   # human
+		_:
+			var profile := DeckManager.load_ai_profile(type)
+			return profile.make_ai() if profile else null
 
 
 func _add_deck_back_sprite(pos: Vector2) -> void:
@@ -824,12 +845,19 @@ func _try_pass() -> void:
 	else:
 		_router.pass_priority_action()
 		_blink_pass_btn()
+		# The pass may have resolved a chained action (quest, hero/ally power…)
+		# whose resolution events don't include "priority_passed" or a
+		# "card_moved" from the chain — nothing else re-arms the AI timer.
+		_schedule_next_turn()
+		_maybe_turbo_pass()
 
 
 func _on_end_turn_confirmed() -> void:
 	# Player confirmed they want to pass — do it for them (no need to press again).
 	_router.pass_priority_action()
 	_blink_pass_btn()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
 
 
 func _blink_pass_btn() -> void:
@@ -1249,12 +1277,18 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 	var count: int     = payload.get("count", 1)
 	_discard_reason    = payload.get("reason", "card_effect")
 	if player == "p2":
-		# AI: discard using smart heuristic (lowest-cost non-quest/location first).
+		# AI: the AI instance picks each discard (BaseAI: lowest-cost non-quest;
+		# GenericAI: least valuable via sort_valuable_cards).
 		for _i in count:
-			var pick := _pick_ai_discard("p2")
-			if pick == null:
+			var pick_id := ""
+			if _p2_ai is BaseAI:
+				pick_id = (_p2_ai as BaseAI).choose_discard_card(_state, _db, "p2")
+			else:
+				var pick := _pick_ai_discard("p2")
+				pick_id = pick.instance_id if pick else ""
+			if pick_id == "":
 				break
-			var events := StackResolver.choose_discard(_state, pick.instance_id, _db)
+			var events := StackResolver.choose_discard(_state, pick_id, _db)
 			EventBus.emit_events(events)
 		_refresh_ui()
 		if _discard_reason == "wrap_up":
@@ -1359,7 +1393,22 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			if StackResolver.can_submit(_state, act, _db):
 				targets.append(ally.instance_id)
 		if not targets.is_empty():
-			var target_id: String = targets[randi() % targets.size()]
+			# Prefer targets that die to this damage. find_lethal returns only the
+			# hero when the hero is lethal (see game_logic/ai/ai_functions.md).
+			var lethal := BaseAI.find_lethal(_state, _db, ctrl, amount)
+			var pool: Array[String] = []
+			for tid in lethal:
+				if tid in targets:
+					pool.append(tid)
+			var target_id: String
+			if not pool.is_empty():
+				# The controlling AI ranks the kills; take its top pick.
+				var ai_obj: Object = _p1_ai if ctrl == "p1" else _p2_ai
+				if ai_obj is BaseAI:
+					pool = (ai_obj as BaseAI).rank_lethal_targets(_state, _db, pool)
+				target_id = pool[0]
+			else:
+				target_id = targets[randi() % targets.size()]
 			var action := PendingAction.make("choose_enter_play_target", ctrl,
 				{"source_card_id": card_id, "target_id": target_id})
 			var events := StackResolver.submit_action(_state, action, _db)

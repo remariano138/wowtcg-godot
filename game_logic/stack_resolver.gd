@@ -926,11 +926,14 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 
 # ── Graveyard search (generic query API) ──────────────────────────────────────
 #
-# Effects segment: graveyard_to_hand:TYPE:MIN:MAX:OWNER[:MAX_COST]
+# Effects segments: graveyard_to_hand:TYPE:MIN:MAX:OWNER[:MAX_COST]
+#                    graveyard_to_rfg:TYPE:MIN:MAX:OWNER[:MAX_COST]
 #   TYPE     — card_type filter ("Ally", "Ability", …) or "any"
 #   MIN/MAX  — how many cards must/may be chosen (min=max for exact counts)
 #   OWNER    — whose graveyard(s): "own", "opponent", or "both"
 #   MAX_COST — optional printed-cost ceiling (omit or -1 for no limit)
+# _to_hand returns the chosen cards to the controller's hand;
+# _to_rfg removes them from the game (rule 415.7 — owner's RFG zone).
 
 # Parse the graveyard-search requirement off a card def. {} if the def has none.
 static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
@@ -938,13 +941,15 @@ static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
 		return {}
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts.size() >= 5 and parts[0].strip_edges() == "graveyard_to_hand":
+		var key := parts[0].strip_edges()
+		if parts.size() >= 5 and (key == "graveyard_to_hand" or key == "graveyard_to_rfg"):
 			return {
 				"card_type": parts[1].strip_edges(),
 				"min_count": int(parts[2]),
 				"max_count": int(parts[3]),
 				"owner":     parts[4].strip_edges(),
 				"max_cost":  int(parts[5]) if parts.size() >= 6 else -1,
+				"dest":      "rfg" if key == "graveyard_to_rfg" else "hand",
 			}
 	return {}
 
@@ -1098,6 +1103,18 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 						continue
 					events.append_array(GameLogic.move_card(state, tid, player_id + "_hand"))
 					events.append(GameEvent.card_returned_from_graveyard(tid, player_id))
+			"graveyard_to_rfg":
+				# Same re-check as graveyard_to_hand; cards go to their owner's
+				# RFG zone (rule 415.7a) instead of the hand.
+				for tid in target_ids:
+					var t_card := state.get_card(tid)
+					if not t_card:
+						continue
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if not t_zone or t_zone.zone_type != "graveyard":
+						continue
+					events.append_array(GameLogic.move_card(state, tid, t_card.owner + "_rfg"))
+					events.append(GameEvent.card_removed_from_game(tid, player_id))
 	return events
 
 

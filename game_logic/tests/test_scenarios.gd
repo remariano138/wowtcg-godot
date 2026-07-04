@@ -40,6 +40,15 @@ func _ready() -> void:
 	_test_malwani_atk_per_damage_self()
 	_test_chasing_ame_graveyard_to_hand()
 	_test_chasing_ame_blocked_and_filtered()
+	_test_darrowshire_rfg_three_allies()
+	_test_darrowshire_blocked_with_too_few_allies()
+	_test_find_lethal()
+	_test_find_lethal_baseline_in_ai_actions()
+	_test_sort_valuable_cards()
+	_test_find_safe_lethals()
+	_test_generic_ai_safe_kill_flow()
+	_test_generic_ai_value_choices()
+	_test_ally_heal_power_targets_friendlies()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1472,3 +1481,502 @@ func _test_chasing_ame_blocked_and_filtered() -> void:
 			{"quest_id": "ame_inst", "target_ids": ["dead_quest"]})
 	ok(not StackResolver.can_submit(state, forced, db),
 		"sc24-c: submission with only-invalid targets rejected")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 25 — Battle of Darrowshire: RFG three allies from graveyard, draw a card
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_darrowshire_rfg_three_allies() -> void:
+	print("\n-- Scenario 25: Battle of Darrowshire removes 3 allies from the game, draws 1 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("darrowshire_def", 1, "graveyard_to_rfg:Ally:3:3:own|draw:1")
+	db.ally("dead_ally_def", 2, 2, [], 4)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	for i in 2:
+		var did := "deck_%d" % i
+		var dc := CardInstance.create(did, "dead_ally_def", "p1", "p1_deck")
+		state.cards[did] = dc
+		state.zones["p1_deck"].card_ids.append(did)
+
+	var quest := CardInstance.create("dar_inst", "darrowshire_def", "p1", "p1_resource_row")
+	state.cards["dar_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("dar_inst")
+
+	# Four dead allies in p1's graveyard.
+	for i in 4:
+		var cid := "dead_%d" % i
+		var c := CardInstance.create(cid, "dead_ally_def", "p1", "p1_graveyard")
+		state.cards[cid] = c
+		state.zones["p1_graveyard"].card_ids.append(cid)
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("darrowshire_def"))
+	eq(req.get("dest", ""), "rfg", "sc25-a: requirement parsed with dest=rfg")
+	eq(int(req.get("min_count", 0)), 3, "sc25-b: min_count is 3")
+
+	# Two announced targets (below min) is rejected; a duplicated target too.
+	var too_few := PendingAction.make("use_quest", "p1",
+			{"quest_id": "dar_inst", "target_ids": ["dead_0", "dead_1"]})
+	ok(not StackResolver.can_submit(state, too_few, db),
+		"sc25-c: fewer than 3 targets rejected")
+	var dupes := PendingAction.make("use_quest", "p1",
+			{"quest_id": "dar_inst", "target_ids": ["dead_0", "dead_0", "dead_1"]})
+	ok(not StackResolver.can_submit(state, dupes, db),
+		"sc25-d: duplicated target rejected (must be 3 distinct cards)")
+
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "dar_inst", "target_ids": ["dead_0", "dead_1", "dead_2"]})
+	var events := StackResolver.submit_action(state, good, db)
+	ok(not events.is_empty(), "sc25-e: completion with 3 distinct targets submits")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	for cid in ["dead_0", "dead_1", "dead_2"]:
+		ok(state.get_card(cid).zone_id == "p1_rfg",
+			"sc25-f: %s moved to p1_rfg" % cid)
+	ok(state.get_card("dead_3").zone_id == "p1_graveyard",
+		"sc25-g: unchosen ally stays in the graveyard")
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before + 1,
+		"sc25-h: reward drew exactly one card")
+	ok(state.get_card("dar_inst").face_down,
+		"sc25-i: quest flipped face-down after completion")
+	var rfg_events := 0
+	for ev in events:
+		if ev.event_type == "card_removed_from_game":
+			rfg_events += 1
+	eq(rfg_events, 3, "sc25-j: three card_removed_from_game events emitted")
+
+
+func _test_darrowshire_blocked_with_too_few_allies() -> void:
+	print("\n-- Scenario 26: Battle of Darrowshire blocked with fewer than 3 graveyard allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("darrowshire_def", 1, "graveyard_to_rfg:Ally:3:3:own|draw:1")
+	db.ally("dead_ally_def", 2, 2, [], 4)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+
+	var quest := CardInstance.create("dar_inst", "darrowshire_def", "p1", "p1_resource_row")
+	state.cards["dar_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("dar_inst")
+
+	# Only two allies in the graveyard — one short of the requirement.
+	for i in 2:
+		var cid := "dead_%d" % i
+		var c := CardInstance.create(cid, "dead_ally_def", "p1", "p1_graveyard")
+		state.cards[cid] = c
+		state.zones["p1_graveyard"].card_ids.append(cid)
+
+	ok(not StackResolver.can_use_quest_no_target_check(state, "dar_inst", "p1", db),
+		"sc26-a: probe fails with only 2 graveyard allies")
+	var forced := PendingAction.make("use_quest", "p1",
+			{"quest_id": "dar_inst", "target_ids": ["dead_0", "dead_1"]})
+	ok(not StackResolver.can_submit(state, forced, db),
+		"sc26-b: forced submission with 2 targets rejected")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 27 — BaseAI.find_lethal: opposing characters that die to N damage
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_find_lethal() -> void:
+	print("\n-- Scenario 27: find_lethal lists lethal targets, hero-only when hero is lethal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("small_def", 1, 2, [], 1)   # 2 HP
+	db.ally("big_def",   3, 5, [], 4)   # 5 HP
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "small_a", "small_def", "p2")
+	_add_ally(state, "small_b", "small_def", "p2")
+	_add_ally(state, "big",     "big_def",   "p2")
+
+	# No hero lethal: both 2-HP allies listed, 5-HP ally excluded.
+	var lethal3 := BaseAI.find_lethal(state, db, "p1", 3)
+	ok("small_a" in lethal3 and "small_b" in lethal3,
+		"sc27-a: both 2-HP allies die to 3 damage")
+	ok("big" not in lethal3, "sc27-b: 5-HP ally not listed at 3 damage")
+	ok(state.players["p2"].hero_instance_id not in lethal3,
+		"sc27-c: 30-HP hero not listed")
+
+	# Nothing dies to 1 damage... except the 2-HP allies don't; empty list.
+	eq(BaseAI.find_lethal(state, db, "p1", 1).size(), 0,
+		"sc27-d: no target dies to 1 damage")
+	eq(BaseAI.find_lethal(state, db, "p1", 0).size(), 0,
+		"sc27-e: 0 damage returns empty list")
+
+	# Hero lethal: only the hero is returned, even with lethal allies around.
+	var p2_hero_id: String = state.players["p2"].hero_instance_id
+	state.get_card(p2_hero_id).damage_taken = 28   # 2 HP left
+	var hero_lethal := BaseAI.find_lethal(state, db, "p1", 3)
+	eq(hero_lethal, [p2_hero_id],
+		"sc27-f: lethal hero returned alone despite lethal allies")
+
+	# Opposing perspective: p2 scans p1's side (no p1 allies, healthy hero).
+	eq(BaseAI.find_lethal(state, db, "p2", 3).size(), 0,
+		"sc27-g: p2 finds no lethal targets on p1's side")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 28 — find_lethal baseline in AI action generation
+# (Ta'zo-style hero powers offer only lethal targets; ally powers try lethal first)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_find_lethal_baseline_in_ai_actions() -> void:
+	print("\n-- Scenario 28: hero/ally power actions restricted/ordered by find_lethal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("tazo_def", 25, 3, "deal_damage_to_target:3:fire")
+	db.ally("small_def", 1, 2, [], 1)   # 2 HP — dies to 3
+	db.ally("big_def",   3, 6, [], 4)   # 6 HP — survives 3
+	db.ally("grimdron_def", 1, 3, [], 2,
+			"activated_power:1:deal_damage_to_target:1:fire:hero_or_ally")
+
+	var state := GameState.create_new(["p1", "p2"])
+	var h1 := CardInstance.create("p1_hero", "p1_hero", "p1", "p1_hero_row")
+	state.cards["p1_hero"] = h1
+	state.zones["p1_hero_row"].card_ids.append("p1_hero")
+	state.players["p1"].hero_instance_id = "p1_hero"
+	var h2 := CardInstance.create("tazo_inst", "tazo_def", "p2", "p2_hero_row")
+	state.cards["tazo_inst"] = h2
+	state.zones["p2_hero_row"].card_ids.append("tazo_inst")
+	state.players["p2"].hero_instance_id = "tazo_inst"
+
+	state.phase = "action"
+	state.turn_player = "p2"
+	state.priority_player = "p2"
+	state.turn_number = 1
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	_add_ally(state, "small", "small_def", "p1")
+	_add_ally(state, "big",   "big_def",   "p1")
+
+	var helper := BaseAI.new()
+
+	# sc28-a/b: Ta'zo's 3-damage power offers ONLY the lethal 2-HP ally.
+	var power_targets: Array = []
+	for a in helper._get_hero_power_actions(state, db, "p2"):
+		power_targets.append(a.params.get("target_id"))
+	eq(power_targets, ["small"],
+		"sc28-a: only the lethal ally is offered as a hero power target")
+
+	# sc28-b: hero lethal → the power offers ONLY the hero.
+	state.get_card("p1_hero").damage_taken = 28   # 2 HP left
+	power_targets.clear()
+	for a in helper._get_hero_power_actions(state, db, "p2"):
+		power_targets.append(a.params.get("target_id"))
+	eq(power_targets, ["p1_hero"],
+		"sc28-b: lethal hero is the only offered target")
+	state.get_card("p1_hero").damage_taken = 0
+
+	# sc28-c: no lethal target → all legal targets offered (baseline unchanged).
+	state.get_card("small").damage_taken = 0
+	(db._defs["tazo_def"] as CardDef).effects = "deal_damage_to_target:1:fire"
+	power_targets.clear()
+	for a in helper._get_hero_power_actions(state, db, "p2"):
+		power_targets.append(a.params.get("target_id"))
+	eq(power_targets.size(), 3,
+		"sc28-c: with no lethal target, hero + both allies all offered")
+
+	# sc28-d: Grimdron (1 dmg) prefers the lethal 1-HP target over a more-damaged one.
+	_add_ally(state, "grim", "grimdron_def", "p2")
+	state.get_card("grim").just_summoned = false
+	state.get_card("small").damage_taken = 1   # 1 HP left — lethal to 1 dmg
+	state.get_card("big").damage_taken   = 2   # 4 HP left — more damage taken
+	var ally_actions := helper._get_ally_power_actions(state, db, "p2")
+	ok(ally_actions.size() == 1
+			and ally_actions[0].params.get("target_id") == "small",
+		"sc28-d: ally power targets the lethal ally first")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 29 — sort_valuable_cards: rarity > cost > ally > Protector > HP >
+# Ferocity > Elusive > ATK
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sort_valuable_cards() -> void:
+	print("\n-- Scenario 29: sort_valuable_cards orders most valuable first --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# atk, health, keywords, cost
+	db.ally("epic_cheap",  1, 1, [],            1)
+	db.ally("rare_exp",    1, 1, [],            5)
+	db.ally("ally_4",      2, 3, [],            4)
+	db.quest("spell_4",    4)   # non-ally, same cost as ally_4
+	db.ally("prot_2",      1, 2, ["Protector"], 2)
+	db.ally("hp_2",        1, 5, [],            2)
+	db.ally("fero_2",      1, 2, ["Ferocity"],  2)
+	db.ally("elu_2",       1, 2, ["Elusive"],   2)
+	db.ally("atk_2",       4, 2, [],            2)
+	db.ally("plain_2",     1, 2, [],            2)
+	(db._defs["epic_cheap"] as CardDef).rarity = "Epic"
+	(db._defs["rare_exp"]   as CardDef).rarity = "Rare"
+	for did in ["ally_4", "spell_4", "prot_2", "hp_2", "fero_2", "elu_2", "atk_2", "plain_2"]:
+		(db._defs[did] as CardDef).rarity = "Common"
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var ids: Array[String] = []
+	for did in ["plain_2", "atk_2", "elu_2", "fero_2", "hp_2", "prot_2",
+			"spell_4", "ally_4", "rare_exp", "epic_cheap"]:
+		var c := CardInstance.create(did + "_i", did, "p1", "p1_graveyard")
+		state.cards[did + "_i"] = c
+		state.zones["p1_graveyard"].card_ids.append(did + "_i")
+		ids.append(did + "_i")
+
+	var sorted_ids := BaseAI.sort_valuable_cards(state, db, ids)
+	eq(sorted_ids, ["epic_cheap_i", "rare_exp_i", "ally_4_i", "spell_4_i",
+			"prot_2_i", "hp_2_i", "fero_2_i", "elu_2_i", "atk_2_i", "plain_2_i"],
+		"sc29-a: full order — rarity, cost, ally-first, Protector, HP, Ferocity, Elusive, ATK")
+	eq(ids.size(), 10, "sc29-b: input list not mutated (still 10 entries)")
+	ok(ids[0] == "plain_2_i", "sc29-c: input order untouched")
+
+	# FullRandomAI hook: lethal pools come back value-sorted.
+	var fr := FullRandomAI.new()
+	var ranked := fr.rank_lethal_targets(state, db, ids)
+	eq(ranked[0], "epic_cheap_i",
+		"sc29-d: FullRandomAI ranks the most valuable card first")
+
+	# In-play cards use CURRENT values: same def, one damaged → the healthy
+	# one (3 HP left) is more valuable than the hurt one (1 HP left).
+	db.ally("twin_def", 1, 3, [], 2)
+	_add_ally(state, "twin_full", "twin_def", "p2")
+	_add_ally(state, "twin_hurt", "twin_def", "p2")
+	state.get_card("twin_hurt").damage_taken = 2
+	var twins: Array[String] = ["twin_hurt", "twin_full"]
+	eq(BaseAI.sort_valuable_cards(state, db, twins),
+			["twin_full", "twin_hurt"],
+		"sc29-e: in-play cards ranked by current HP, not printed")
+
+	# Mixed zones: a graveyard copy of the same def uses printed HP (3),
+	# tying the healthy twin and beating the hurt one.
+	var gy_twin := CardInstance.create("twin_gy", "twin_def", "p2", "p2_graveyard")
+	state.cards["twin_gy"] = gy_twin
+	state.zones["p2_graveyard"].card_ids.append("twin_gy")
+	var mixed: Array[String] = ["twin_hurt", "twin_gy"]
+	eq(BaseAI.sort_valuable_cards(state, db, mixed),
+			["twin_gy", "twin_hurt"],
+		"sc29-f: mixed-zone list — graveyard card uses printed values")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 30 — find_safe_lethals: kill-and-survive pairs
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_find_safe_lethals() -> void:
+	print("\n-- Scenario 30: find_safe_lethals returns kill-and-survive pairs --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("striker_def", 3, 3, [], 2)   # 3/3
+	db.ally("weak_def",    1, 2, [], 1)   # 1/2 — dies to 3, deals 1 back
+	db.ally("trader_def",  3, 3, [], 2)   # 3/3 — dies to 3 but kills back (3 not < 3)
+	db.ally("tank_def",    1, 4, [], 3)   # 1/4 — survives 3 damage
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "striker", "striker_def", "p1")
+	_add_ally(state, "weak",    "weak_def",    "p2")
+	_add_ally(state, "trader",  "trader_def",  "p2")
+	_add_ally(state, "tank",    "tank_def",    "p2")
+
+	var atk_list: Array[String] = ["striker"]
+	var def_list: Array[String] = ["weak", "trader", "tank"]
+	var pairs := BaseAI.find_safe_lethals(state, db, atk_list, def_list)
+	eq(pairs, [["striker", "weak"]],
+		"sc30-a: only the kill-and-survive pair is returned")
+
+	# Damaged defender becomes safe: trader at 1 HP left still hits back for 3,
+	# which ties striker's 3 HP — still NOT safe (survival needs strict >).
+	state.get_card("trader").damage_taken = 2
+	pairs = BaseAI.find_safe_lethals(state, db, atk_list, def_list)
+	ok(not _pairs_contain(pairs, "striker", "trader"),
+		"sc30-b: mutual-kill trade is not a safe kill (HP must strictly beat ATK)")
+
+	# Damaged ATTACKER loses its safe kill: striker at 1 HP dies to weak's 1 ATK...
+	# 1 > 1 is false → no pairs.
+	state.get_card("striker").damage_taken = 2
+	pairs = BaseAI.find_safe_lethals(state, db, atk_list, def_list)
+	eq(pairs.size(), 0,
+		"sc30-c: attacker at 1 HP can no longer safely kill a 1-ATK defender")
+
+
+func _pairs_contain(pairs: Array, attacker: String, defender: String) -> bool:
+	for p in pairs:
+		if p[0] == attacker and p[1] == defender:
+			return true
+	return false
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 31 — GenericAI: safe-kill selection flow
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_safe_kill_flow() -> void:
+	print("\n-- Scenario 31: GenericAI baits with cheap attacker, kills best target --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("cheap_def",  3, 3, [],            1)
+	db.ally("pricey_def", 4, 4, [],            5)
+	db.ally("fero_def",   2, 2, ["Ferocity"],  0)
+	db.ally("victim_lo",  1, 2, [],            1)
+	db.ally("victim_hi",  1, 2, [],            4)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "cheap",  "cheap_def",  "p1")
+	_add_ally(state, "pricey", "pricey_def", "p1")
+	_add_ally(state, "v_lo",   "victim_lo",  "p2")
+	_add_ally(state, "v_hi",   "victim_hi",  "p2")
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var ai := GenericAI.new()
+
+	# sc31-a: two board attackers, both with safe kills → cheap goes first,
+	# and it targets the most valuable victim (cost 4 over cost 1).
+	var act := ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "propose_combat"
+			and act.params.get("attacker_id") == "cheap"
+			and act.params.get("defender_id") == "v_hi",
+		"sc31-a: least valuable attacker proposed against most valuable safe kill")
+
+	# sc31-b: a playable Ferocity ally in hand (cost 0 — least valuable of all)
+	# is played immediately instead of attacking with a board ally.
+	var fero := CardInstance.create("fero", "fero_def", "p1", "p1_hand")
+	state.cards["fero"] = fero
+	state.zones["p1_hand"].card_ids.append("fero")
+	act = ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "play_ally"
+			and act.params.get("card_id") == "fero",
+		"sc31-b: hand Ferocity ally with a safe kill is played first")
+	state.zones["p1_hand"].card_ids.erase("fero")
+	state.cards.erase("fero")
+
+	# sc31-c: Elusive best target is skipped (can_submit fails) — the attacker
+	# falls through to the next-best legal safe kill.
+	(db._defs["victim_hi"] as CardDef).keywords.append("elusive")
+	act = ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "propose_combat"
+			and act.params.get("attacker_id") == "cheap"
+			and act.params.get("defender_id") == "v_lo",
+		"sc31-c: illegal (Elusive) pair skipped, next safe kill chosen")
+	(db._defs["victim_hi"] as CardDef).keywords.erase("elusive")
+
+	# sc31-d: no safe kill (victims outclass attackers) → falls back to random
+	# legal behaviour, i.e. NOT a doomed propose_combat from the safe-kill path.
+	state.get_card("cheap").damage_taken = 2    # 1 HP left, dies to any 1-ATK hit
+	state.get_card("pricey").damage_taken = 3   # 1 HP left
+	var fallback := ai._safe_lethal_action(state, db, "p1")
+	ok(fallback == null, "sc31-d: no safe kill → safe-lethal path returns null")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 32 — GenericAI value-based choices: discard, resource, graveyard
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_value_choices() -> void:
+	print("\n-- Scenario 32: GenericAI discards/places least valuable, picks best from graveyard --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("gem_def",  3, 3, [], 5)   # valuable
+	db.ally("junk_def", 1, 1, [], 0)   # least valuable
+	db.quest("quest_def", 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var ai := GenericAI.new()
+
+	# Hand: valuable ally + junk ally.
+	for pair in [["gem", "gem_def"], ["junk", "junk_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_hand")
+		state.cards[pair[0]] = c
+		state.zones["p1_hand"].card_ids.append(pair[0])
+
+	# sc32-a: discard the least valuable card.
+	eq(ai.choose_discard_card(state, db, "p1"), "junk",
+		"sc32-a: least valuable hand card chosen for discard")
+
+	# sc32-b: resource placement — least valuable goes face-down.
+	var res_act := ai._decide_resource_placement(state, db, "p1")
+	ok(res_act != null and res_act.params.get("card_id") == "junk"
+			and res_act.params.get("face_up") == false,
+		"sc32-b: least valuable hand card placed face-down as resource")
+
+	# sc32-c: a quest in hand still takes priority, face-up.
+	var q := CardInstance.create("quest_c", "quest_def", "p1", "p1_hand")
+	state.cards["quest_c"] = q
+	state.zones["p1_hand"].card_ids.append("quest_c")
+	res_act = ai._decide_resource_placement(state, db, "p1")
+	ok(res_act != null and res_act.params.get("card_id") == "quest_c"
+			and res_act.params.get("face_up") == true,
+		"sc32-c: quest still placed face-up first")
+
+	# sc32-d: graveyard-to-hand reward → MOST valuable candidate.
+	for pair in [["dead_gem", "gem_def"], ["dead_junk", "junk_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+	var to_hand := {"card_type": "Ally", "min_count": 1, "max_count": 1,
+			"owner": "own", "max_cost": -1, "dest": "hand"}
+	var gy_cands: Array[String] = ["dead_junk", "dead_gem"]
+	eq(ai._choose_graveyard_targets(state, db, "p1", to_hand, gy_cands),
+			["dead_gem"],
+		"sc32-d: most valuable graveyard card returned to hand")
+
+	# sc32-e: own-graveyard RFG cost (Darrowshire) → LEAST valuable.
+	var to_rfg := {"card_type": "Ally", "min_count": 1, "max_count": 1,
+			"owner": "own", "max_cost": -1, "dest": "rfg"}
+	eq(ai._choose_graveyard_targets(state, db, "p1", to_rfg, gy_cands),
+			["dead_junk"],
+		"sc32-e: least valuable own card removed from the game as a cost")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 33 — Ally heal powers (Freya) target FRIENDLY damaged characters only
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ally_heal_power_targets_friendlies() -> void:
+	print("\n-- Scenario 33: heal_target ally power never heals the enemy --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("freya_def", 2, 2, [], 2,
+			"activated_power:0:heal_target:3:holy:hero_or_ally")
+	db.ally("dummy_def", 2, 5, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "freya",     "freya_def", "p1")
+	_add_ally(state, "own_hurt",  "dummy_def", "p1")
+	_add_ally(state, "opp_hurt",  "dummy_def", "p2")
+	state.get_card("own_hurt").damage_taken = 2
+	state.get_card("opp_hurt").damage_taken = 4   # more damaged — must be ignored
+
+	var ai := BaseAI.new()
+	var actions := ai._get_ally_power_actions(state, db, "p1")
+	ok(actions.size() == 1
+			and actions[0].params.get("target_id") == "own_hurt",
+		"sc33-a: heal targets the damaged FRIENDLY ally, not the enemy")
+
+	# Damaged own hero outranks a less-damaged ally (most damage first).
+	state.get_card("p1_hero").damage_taken = 6
+	actions = ai._get_ally_power_actions(state, db, "p1")
+	ok(actions.size() == 1
+			and actions[0].params.get("target_id") == "p1_hero",
+		"sc33-b: most damaged friendly (hero) preferred")
+
+	# Nothing damaged on our side → power not used at all.
+	state.get_card("p1_hero").damage_taken = 0
+	state.get_card("own_hurt").damage_taken = 0
+	actions = ai._get_ally_power_actions(state, db, "p1")
+	eq(actions.size(), 0,
+		"sc33-c: no damaged friendly → heal power not offered (enemy never healed)")

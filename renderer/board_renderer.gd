@@ -437,6 +437,13 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 			tween.tween_property(card_node, "global_position", anchor.global_position, 0.3)
 			_pos_tweens[card_id] = tween
 
+	# RFG is not rendered — the card leaves the board entirely.
+	if to_zone.ends_with("_rfg"):
+		_remove_from_zone(card_id, to_zone)
+		card_nodes.erase(card_id)
+		card_node.queue_free()
+		return
+
 	# Deck cards have no persistent node — destroy the node after the move tween
 	# so it's cleanly gone before the next draw spawns a fresh one.
 	if to_zone.ends_with("_deck"):

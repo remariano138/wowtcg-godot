@@ -20,6 +20,7 @@ var dmg_type: String = ""      # "Melee", "Ranged", "Frost", "Fire", etc.
 var power_text: String = ""
 var card_class: String = ""
 var card_subtype: String = ""  # e.g. "Gnome Warrior", "Pet", "Instant"
+var rarity: String = ""        # "Common", "Uncommon", "Rare", "Epic"
 var keywords: Array[String] = []   # lowercase, e.g. ["protector", "ferocity"]
 var effects: String = ""       # raw recipe string from CSV effects column
 var image_path: String = ""    # relative path under res://
@@ -43,6 +44,7 @@ static func from_csv_row(id: String, row: Dictionary) -> CardDef:
 	d.power_text  = row.get("power_text", "")
 	d.card_class  = row.get("class", "")
 	d.card_subtype = row.get("subtype", "")
+	d.rarity      = row.get("rarity", "").strip_edges()
 	d.effects     = row.get("effects", "")
 	d.image_path  = row.get("image_path", "")
 

@@ -21,7 +21,7 @@ extends RefCounted
 
 const TARGET_SIZE := 60
 const AI_PROFILES_ROOT := "res://ai_profiles"
-const GENERIC_AI_PROFILE_ID := "ai_fullrandom"
+const GENERIC_AI_PROFILE_ID := "ai_generic"
 
 static var _index: DeckLibraryIndex = null
 
@@ -73,6 +73,24 @@ static func get_runtime_deck(deck_id: String) -> Deck:
 
 
 # ── AI profiles ────────────────────────────────────────────────────────────────
+
+# Every ai_id found under res://ai_profiles/ (filename stem), sorted.
+# Used to populate AI-selection dropdowns without hardcoding profile names.
+static func list_ai_profile_ids() -> Array[String]:
+	var ids: Array[String] = []
+	var dir := DirAccess.open(AI_PROFILES_ROOT)
+	if not dir:
+		return ids
+	dir.list_dir_begin()
+	var fname := dir.get_next()
+	while fname != "":
+		if not dir.current_is_dir() and fname.ends_with(".json"):
+			ids.append(fname.get_basename())
+		fname = dir.get_next()
+	dir.list_dir_end()
+	ids.sort()
+	return ids
+
 
 static func load_ai_profile(ai_id: String) -> AIProfile:
 	var path := "%s/%s.json" % [AI_PROFILES_ROOT, ai_id]

@@ -1,4 +1,4 @@
-{
+﻿{
   "deck_id": "alliance_dizdemona_test",
   "display_name": "Alliance_test (Dizdemona)",
   "hero_card_def_id": "azeroth_2",
@@ -20,7 +20,7 @@
     { "card_def_id": "azeroth_179", "count": 4 },
     { "card_def_id": "azeroth_200", "count": 4 }
   ],
-  "recommended_ai_id": "ai_fullrandom",
+  "recommended_ai_id": "ai_generic",
   "source": "base",
   "metadata": { "author": "playtest", "origin": "migrated from renderer/tests/playtest.gd" }
 }

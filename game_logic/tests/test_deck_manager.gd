@@ -54,7 +54,7 @@ func _test_load_all_decks() -> void:
 		_check(deck.deck_id == deck_id, "%s: deck_id matches filename" % deck_id)
 		_check(deck.total_cards() == 60, "%s: 60 cards (got %d)" % [deck_id, deck.total_cards()])
 		_check(not deck.hero_card_def_id.is_empty(), "%s: has hero" % deck_id)
-		_check(deck.recommended_ai_id == "ai_fullrandom", "%s: recommends ai_fullrandom" % deck_id)
+		_check(deck.recommended_ai_id == "ai_generic", "%s: recommends ai_generic" % deck_id)
 
 
 func _test_validate_rejects_bad_decks() -> void:
@@ -97,12 +97,16 @@ func _test_ai_profiles() -> void:
 		_check(fullrandom.make_ai() is FullRandomAI, "ai_fullrandom -> FullRandomAI instance")
 	if base != null:
 		_check(base.make_ai() is BaseAI, "ai_base -> BaseAI instance")
+	var generic := DeckManager.load_ai_profile("ai_generic")
+	_check(generic != null and generic.ai_class == "generic", "ai_generic profile loads")
+	if generic != null:
+		_check(generic.make_ai() is GenericAI, "ai_generic -> GenericAI instance")
 
 
 func _test_make_ai_for_deck() -> void:
 	var ai := DeckManager.make_ai_for_deck("horde_tazo_test")
-	_check(ai is FullRandomAI, "make_ai_for_deck uses recommended profile (FullRandomAI)")
+	_check(ai is GenericAI, "make_ai_for_deck uses recommended profile (GenericAI)")
 	var fallback := DeckManager.make_ai_for_deck("no_such_deck")
-	_check(fallback is FullRandomAI, "unknown deck falls back to generic profile")
+	_check(fallback is GenericAI, "unknown deck falls back to the generic profile (GenericAI)")
 	var warlock_ai := DeckManager.make_ai_for_deck("horde_radak_test")
-	_check(warlock_ai is FullRandomAI, "base-category deck still uses its recommended_ai_id (FullRandomAI)")
+	_check(warlock_ai is GenericAI, "base-category deck still uses its recommended_ai_id (GenericAI)")

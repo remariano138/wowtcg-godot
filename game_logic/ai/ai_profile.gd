@@ -7,7 +7,8 @@ extends RefCounted
 # free-form tuning data for that implementation (unused by current AIs).
 
 var ai_id: String = ""
-var ai_class: String = ""        # "base" -> BaseAI, "fullrandom" -> FullRandomAI
+var ai_class: String = ""        # "base" -> BaseAI, "fullrandom" -> FullRandomAI,
+                                 # "generic" -> GenericAI
 var strategy_data: Dictionary = {}
 
 
@@ -15,6 +16,7 @@ func make_ai() -> Object:
 	match ai_class:
 		"base":       return BaseAI.new()
 		"fullrandom": return FullRandomAI.new()
+		"generic":    return GenericAI.new()
 		_:
 			push_error("AIProfile %s: unknown ai_class '%s'" % [ai_id, ai_class])
 			return null

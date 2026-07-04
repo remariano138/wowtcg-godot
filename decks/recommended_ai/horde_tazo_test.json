@@ -1,9 +1,10 @@
-{
+﻿{
   "deck_id": "horde_tazo_test",
   "display_name": "Horde_test (Ta'zo)",
   "hero_card_def_id": "azeroth_15",
   "card_entries": [
-    { "card_def_id": "azeroth_281", "count": 10 },
+    { "card_def_id": "azeroth_281", "count": 8 },
+    { "card_def_id": "azeroth_347", "count": 2 },
     { "card_def_id": "azeroth_351", "count": 2 },
     { "card_def_id": "azeroth_248", "count": 2 },
     { "card_def_id": "azeroth_246", "count": 2 },
@@ -18,7 +19,7 @@
     { "card_def_id": "azeroth_252", "count": 4 },
     { "card_def_id": "azeroth_249", "count": 4 }
   ],
-  "recommended_ai_id": "ai_fullrandom",
+  "recommended_ai_id": "ai_generic",
   "source": "recommended_ai",
   "metadata": { "author": "playtest", "origin": "migrated from renderer/tests/playtest.gd" }
 }

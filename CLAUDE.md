@@ -15,9 +15,10 @@ Engine lives in: `game_logic/` — see Architecture section below.
 
 1. Find the card in `data/cards.csv` (grep by name). Read the card image to get exact card text. If `image_path` is blank but the image file exists under `assets/cards/`, fill in `image_path` now.
 2. **Confirm the card text with the user before writing any code.** Also check `References/wow_rules.txt` for any keywords or mechanics.
-3. Implement: engine actions in `game_logic/stack_resolver.gd`, AI heuristics in `game_logic/ai/base_ai.gd` if needed, add to relevant deck in `renderer/tests/playtest.gd`.
+3. Implement: engine actions in `game_logic/stack_resolver.gd`, AI heuristics in `game_logic/ai/base_ai.gd` if needed.
 4. Write headless test scenarios in `game_logic/tests/test_scenarios.gd` covering the new mechanic. User runs these to verify correctness before finalizing.
 5. Update `data/cards.csv`: set `data_status=verified`, `engine_status=implemented`, fill `power_text` and `effects` recipe. Do this last, after tests pass.
+6. **Ask the user whether the newly implemented card should be added to any deck(s)** in `renderer/tests/playtest.gd`. Do not add it unprompted.
 
 ---
 

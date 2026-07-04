@@ -148,6 +148,9 @@ func get_atk(instance_id: String, db) -> int:
 			var per_ally := int(parts[1]) if parts.size() > 1 else 1
 			var ally_count := cards_in_zone(inst.controller + "_ally_row").size()
 			atk += per_ally * ally_count
+		elif parts[0] == "atk_per_damage_self":
+			var per_damage := int(parts[1]) if parts.size() > 1 else 1
+			atk += per_damage * inst.damage_taken
 	return atk
 
 func get_max_hp(instance_id: String, db) -> int:

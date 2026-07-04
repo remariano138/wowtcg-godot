@@ -37,6 +37,7 @@ func _ready() -> void:
 	_test_liba_wobblebonk_enter_play()
 	_test_kulan_earthguard_end_of_turn_ready()
 	_test_tracker_gallen_atk_per_ally()
+	_test_malwani_atk_per_damage_self()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1346,3 +1347,31 @@ func _test_tracker_gallen_atk_per_ally() -> void:
 
 	ok(state.get_atk("gallen_inst", db) == 2,
 		"sc21-c: Opponent's allies don't count toward Gallen's ATK")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 22 — Blood Guard Mal'wani: +1 ATK for each damage on him
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_malwani_atk_per_damage_self() -> void:
+	print("\n-- Scenario 22: Blood Guard Mal'wani gains ATK per damage on him --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("malwani_def", 1, 5, [], 4, "atk_per_damage_self:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "malwani_inst", "malwani_def", "p1")
+
+	ok(state.get_atk("malwani_inst", db) == 1,
+		"sc22-a: Mal'wani has base 1 ATK with no damage on him")
+
+	GameLogic.deal_damage(state, "p2_hero", "malwani_inst", 2, db)
+
+	ok(state.get_atk("malwani_inst", db) == 3,
+		"sc22-b: Mal'wani gains +1 ATK per damage taken (1 base + 2 damage)")
+
+	GameLogic.deal_damage(state, "p2_hero", "malwani_inst", 1, db)
+
+	ok(state.get_atk("malwani_inst", db) == 4,
+		"sc22-c: ATK keeps scaling as more damage accumulates")

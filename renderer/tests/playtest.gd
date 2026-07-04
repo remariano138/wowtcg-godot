@@ -472,9 +472,9 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_225", "azeroth_225",
 		# 2× Vanquish
 		"azeroth_171", "azeroth_171",
-		# Filler — 38 slots across 5 remaining horde allies
-		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×8
-		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",
+		# Filler — 38 slots across 6 remaining horde allies
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×4
+		"azeroth_230", "azeroth_230", "azeroth_230", "azeroth_230",  # Blood Guard Mal'wani ×4
 		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
 		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
 		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8

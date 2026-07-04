@@ -330,19 +330,19 @@ func _on_game_event(event: GameEvent) -> void:
 			var ally_id: String = event.payload.get("ally_id", "")
 			var acn := card_nodes.get(ally_id) as CardNode
 			if acn:
-				var was_wiggling := _wiggling_id == ally_id
-				if was_wiggling:
+				if _wiggling_id == ally_id:
 					_wiggling_id = ""
-				# Delay until after the exhaust rotation tween (0.2 s) so _wiggle_base
-				# captures the 90° exhausted angle, not the pre-exhaust angle.
+					# Kill the continuous wiggle immediately so it doesn't fight the
+					# exhaust rotation tween (0.2 s). snap to _wiggle_base; the exhaust
+					# tween will override it to 90° before our 0.22 s timer fires.
+					acn.stop_wiggle(0.0)
+				# Delay until after the exhaust rotation tween (0.2 s) so wiggle_for
+				# captures the correct exhausted/ready angle as its new base.
 				var captured := acn
 				get_tree().create_timer(0.22).timeout.connect(
 					func() -> void:
 						if is_instance_valid(captured):
-							if was_wiggling:
-								captured.stop_wiggle(2.0)
-							else:
-								captured.wiggle_for(2.0))
+							captured.wiggle_for(2.0))
 		"action_proposed":
 			if event.payload.get("action_type") == "place_resource" \
 					and not event.payload.get("face_up", true):
@@ -384,9 +384,14 @@ func _on_game_event(event: GameEvent) -> void:
 			else:
 				_set_status("⚔ Protector intercepts!")
 		"combat_concluded":
-			await _animate_attack(
-				event.payload.get("attacker_id", ""),
-				event.payload.get("defender_id", ""))
+			var attacker_id: String = event.payload.get("attacker_id", "")
+			await _animate_attack(attacker_id, event.payload.get("defender_id", ""))
+			# Re-spread the attacker's zone: layout tweens can conflict with the
+			# attack tween (they're not tracked in _pos_tweens), leaving cards misaligned.
+			for zone_id in _zone_cards:
+				if attacker_id in (_zone_cards.get(zone_id, []) as Array):
+					_relayout_zone(zone_id)
+					break
 			var a_dmg: int = event.payload.get("attacker_damage", 0)
 			var d_dmg: int = event.payload.get("defender_damage", 0)
 			_set_status("⚔ Combat resolved  (dealt %d / received %d)" % [a_dmg, d_dmg])
@@ -432,16 +437,10 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 			tween.tween_property(card_node, "global_position", anchor.global_position, 0.3)
 			_pos_tweens[card_id] = tween
 
-	await get_tree().create_timer(0.3).timeout
-
-	# Deck cards have no persistent node — the deck is represented by the back-sprite
-	# and count label only. Destroy the node now so it's cleanly gone; if this card
-	# is drawn later, playtest.gd spawns a fresh node at that moment.
-	#
-	# Guard: if the card was drawn back out of the deck before this timer fired
-	# (e.g. during mulligan redraw), it is no longer in _zone_cards[to_zone].
-	# In that case a deck→hand animate_move already re-homed it — do not destroy.
+	# Deck cards have no persistent node — destroy the node after the move tween
+	# so it's cleanly gone before the next draw spawns a fresh one.
 	if to_zone.ends_with("_deck"):
+		await get_tree().create_timer(0.3).timeout
 		var still_in_deck: Array = _zone_cards.get(to_zone, [])
 		if card_id in still_in_deck:
 			_remove_from_zone(card_id, to_zone)
@@ -475,6 +474,13 @@ func _animate_attack(attacker_id: String, defender_id: String) -> void:
 	var def_node := card_nodes.get(defender_id) as Node2D
 	if not atk_node or not def_node:
 		return
+	# Snap attacker to its zone resting position in case a placement tween is still running
+	# (ferocity cards attack immediately, before the 0.2s relayout tween completes).
+	_kill_pos_tween(attacker_id)
+	for zone_id in _zone_cards:
+		if attacker_id in (_zone_cards.get(zone_id, []) as Array):
+			atk_node.global_position = _card_position_in_zone(attacker_id, zone_id)
+			break
 	var start     := atk_node.global_position
 	var direction := (def_node.global_position - start).normalized()
 	var distance  := atk_node.global_position.distance_to(def_node.global_position)
@@ -483,7 +489,9 @@ func _animate_attack(attacker_id: String, defender_id: String) -> void:
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 	tween.tween_property(atk_node, "global_position", punch, 0.12)
 	tween.tween_property(atk_node, "global_position", start, 0.10)
+	_pos_tweens[attacker_id] = tween  # tracked so _kill_pos_tween can cancel mid-lunge
 	await tween.finished
+	_pos_tweens.erase(attacker_id)
 
 
 # ── Zone layout helpers ────────────────────────────────────────────────────────

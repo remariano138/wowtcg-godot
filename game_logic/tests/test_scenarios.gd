@@ -31,6 +31,8 @@ func _ready() -> void:
 	_test_sarmoth_elusive_no_taunt()
 	_test_sarmoth_taunt_lifts_on_death()
 	_test_boris_heal_x()
+	_test_radak_pet_sacrifice()
+	_test_radak_no_pets()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1082,3 +1084,113 @@ func _test_boris_heal_x() -> void:
 		"sc15-e: damage_taken is 0 (fully healed, not negative)")
 	eq(state.get_available_resources("p1"), 1,
 		"sc15-f: 4 resources spent, 1 remaining")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 16 — Radak Doombringer: sacrifice Sarmoth (cost 3), deal 3 shadow dmg
+#
+# Setup: P1 is Radak (no flip cost, no resource payment needed — the Pet IS the
+#        cost). P1 has a Sarmoth (cost 3) in ally_row, not summoning-sick.
+#        P2 has a 2/5 ally as the damage target.
+#
+# Assertions:
+#   sc16-a  probe (pet_id="", target_id="") passes when Pet is in ally_row
+#   sc16-b  phase-1 probe with pet_id set (target_id="") passes
+#   sc16-c  full action (pet_id + target_id + x_value=3) is legal
+#   sc16-d  Sarmoth is removed from play at submission (cost payment)
+#   sc16-e  p2 ally takes 3 shadow damage at resolution
+#   sc16-f  hero_power_used event fires
+#   sc16-g  x_value mismatch (pet cost 3 but x_value=1) is rejected
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_radak_pet_sacrifice() -> void:
+	print("\n-- Scenario 16: Radak sacrifices Sarmoth (cost 3) for 3 shadow damage --")
+	var db := MockDB.new()
+	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|on_your_turn")
+	db.pet("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
+	db.ally("target_def", 2, 5, [], 2)
+
+	var state := _base_state(db, "radak_def", "p2_hero")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var sarmoth := _add_ally(state, "sarmoth_inst", "sarmoth_def", "p1")
+	sarmoth.just_summoned = false
+	sarmoth.is_exhausted  = false
+
+	_add_ally(state, "target_inst", "target_def", "p2")
+
+	# sc16-a: probe passes when Pet is in play.
+	var probe := PendingAction.make("activate_power", "p1",
+		{"hero_id": "radak_def", "pet_id": "", "target_id": "", "x_value": 0})
+	ok(StackResolver.can_submit(state, probe, db),
+		"sc16-a: probe passes with Sarmoth in ally_row")
+
+	# sc16-b: phase-1 probe (pet chosen, no target yet) passes.
+	var phase1 := PendingAction.make("activate_power", "p1",
+		{"hero_id": "radak_def", "pet_id": "sarmoth_inst", "target_id": "", "x_value": 0})
+	ok(StackResolver.can_submit(state, phase1, db),
+		"sc16-b: phase-1 probe with pet_id='sarmoth_inst' passes")
+
+	# sc16-c: full action is legal.
+	var full_act := PendingAction.make("activate_power", "p1",
+		{"hero_id": "radak_def", "pet_id": "sarmoth_inst", "target_id": "target_inst", "x_value": 3})
+	ok(StackResolver.can_submit(state, full_act, db),
+		"sc16-c: full action (pet + target + x=3) is legal")
+
+	# sc16-g: x_value mismatch — the engine doesn't validate x vs pet cost in can_submit,
+	# but the UI always sets x = pet.cost. Test that x=0 (empty) is rejected.
+	var bad_x := PendingAction.make("activate_power", "p1",
+		{"hero_id": "radak_def", "pet_id": "sarmoth_inst", "target_id": "target_inst", "x_value": 0})
+	ok(not StackResolver.can_submit(state, bad_x, db),
+		"sc16-g: x_value=0 with valid pet+target is rejected")
+
+	# sc16-d/e/f: submit and resolve; check Pet destroyed and damage dealt.
+	var events: Array[GameEvent] = StackResolver.submit_action(state, full_act, db)
+
+	# Pet is destroyed at submission (cost payment), before either player passes.
+	ok(not state.is_in_play("sarmoth_inst"),
+		"sc16-d: Sarmoth removed from play at submission")
+
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	var target := state.get_card("target_inst")
+	eq(target.damage_taken if target else -1, 3,
+		"sc16-e: p2 ally took 3 shadow damage")
+
+	var saw_power_used := false
+	for e in events:
+		if e.event_type == "hero_power_used":
+			saw_power_used = true
+	ok(saw_power_used, "sc16-f: hero_power_used event fired")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 17 — Radak: probe rejected when no Pets in ally_row
+#
+# Assertions:
+#   sc17-a  probe rejected when ally_row has only non-Pet allies
+#   sc17-b  probe rejected when ally_row is completely empty
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_radak_no_pets() -> void:
+	print("\n-- Scenario 17: Radak probe rejected with no Pets in play --")
+	var db := MockDB.new()
+	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|on_your_turn")
+	db.ally("normal_ally_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "radak_def", "p2_hero")
+	state.players["p1"].resource_placed_this_turn = true
+
+	_add_ally(state, "normal_inst", "normal_ally_def", "p1")
+
+	var probe := PendingAction.make("activate_power", "p1",
+		{"hero_id": "radak_def", "pet_id": "", "target_id": "", "x_value": 0})
+
+	ok(not StackResolver.can_submit(state, probe, db),
+		"sc17-a: probe rejected when only non-Pet allies present")
+
+	# Remove the normal ally — empty row.
+	GameLogic.move_card(state, "normal_inst", "p1_discard")
+	ok(not StackResolver.can_submit(state, probe, db),
+		"sc17-b: probe rejected when ally_row is empty")

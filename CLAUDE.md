@@ -103,6 +103,7 @@ power_text, data_status, engine_status, effects, image_path
 | `on_enter:EFFECT:AMOUNT:DMG_TYPE` | Enter-play triggered effect |
 | `destroy_target:ally` | Destroy a target ally (Vanquish-style) |
 | `sarmoth_taunt` | Opposing characters that can attack this must attack only this |
+| `heal_x_from_target:DMG_TYPE` | Hero power: pay X resources → heal X from target hero or ally (Boris) |
 | `elusive` | (keyword in keywords col, not effects) — can't be chosen as defender |
 | `protector` | (keyword) — can intercept attacks |
 | `ferocity` | (keyword) — no summoning sickness |
@@ -151,7 +152,9 @@ Pet capacity is a player attribute (`PlayerState.pet_capacity`, default 1) that 
 | `DECK_ALLIANCE_DIZDEMONA` | Dizdemona (azeroth_2, Alliance Warlock) | Uses `dizdemona_cards`: 2× Grimdron, 2× Sarmoth, Freya Lightsworn ×2, Bloodclaw ×4, Mias ×4, Latro Abiectus ×8, Kor Cindervein ×8, Crazy Igvand ×4, Vanquish ×4 |
 | `DECK_HORDE_TAZO` | Ta'zo (azeroth_15, Horde Mage) | Uses `horde_cards` incl. Taz'dingo ×4 |
 | `DECK_HORDE_GRENNAN` | Grennan Stormspeaker (azeroth_10) | Uses `horde_cards` |
+| `DECK_ALLIANCE_BORIS` | Boris Brightbeard (azeroth_1, Alliance Priest) | Uses `boris_cards`: same as alliance base + Freya ×2, no Grimdron/Sarmoth |
 | `DECK_HORDE_OMEDUS` | Omedus the Punisher (azeroth_12) | Uses `omedus_cards` |
+| `DECK_HORDE_RADAK` | Radak Doombringer (azeroth_13, Horde Warlock) | Flip: sacrifice a Pet with cost X → deal X shadow damage to target hero or ally |
 | `DECK_ALLIANCE_TIMMO` | Timmo Shadestep (azeroth_7) | Uses `alliance_cards` |
 | `DECK_ALLIANCE_MOONSHADOW` | Commander Moonshadow (azeroth_6) | Uses `alliance_cards` |
 
@@ -170,8 +173,11 @@ Notable implemented mechanics:
 - **sarmoth_taunt** — Sarmoth (opposing characters that can attack Sarmoth must only target Sarmoth)
 - **destroy_target:ally** — Vanquish
 - **Pet uniqueness** — pet_capacity enforced with immediate sacrifice choice
-- **Hero powers**: Ta'zo flip (deal_damage_to_target:3:fire), Dizdemona (deal_x_damage_to_ally), Omedus (deal_damage_aoe), Grennan (heal)
+- **Hero powers**: Ta'zo flip (deal_damage_to_target:3:fire), Dizdemona (deal_x_damage_to_ally), Omedus (deal_damage_aoe), Grennan (heal), Boris Brightbeard (heal_x_from_target — pay X resources, heal X from any hero or ally), Radak Doombringer (radak_pet_sacrifice — flip: sacrifice Pet with cost X, deal X shadow dmg to target)
 - **Quest cards** — basic cost-based quest completion
+
+### Playtested heroes (confirmed working)
+Dizdemona, Ta'zo, Grennan, Boris Brightbeard, Omedus, Sarmoth (ally), Radak Doombringer
 
 ---
 
@@ -187,10 +193,20 @@ Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non
 
 ---
 
+## Display / layout
+
+- Viewport: **1920×1080**, `stretch/mode=canvas_items`, `stretch/aspect=expand` (fills 16:9 window, no grey bars).
+- All card spawn positions and deck back sprites are derived from `_renderer.zone_anchors` — **never hardcode a spawn Vector2**. `_spawn_zone_nodes(zone_id, color)` reads the anchor automatically. The deck back sprite loop does the same via `_renderer.zone_anchors.get("p1_deck"/"p2_deck")`.
+- At startup, `_spawn_zone_nodes` is called for every visible zone: hero_row, hand, ally_row, resource_row, graveyard, chain (deck excluded — back sprite only).
+- UI bar occupies y=960..1080. Board occupies y=0..950. `CENTER_X = 960`.
+- Pass button shows **"Sacrifice a pet [Space]"** (disabled, no color change) when `pending_pet_sacrifice_player == "p1"`.
+
+---
+
 ## Known open issues / next work
 
 - **Grimdron hero-targeting bug (unconfirmed):** User reported Grimdron's power couldn't target opponent's hero when no enemy allies were in play. All code paths appear correct — hero IS included in `_get_ally_power_targets`. Suspected cause: visual (hero not highlighted?) or runtime state issue. Needs more investigation with actual play. Suggested: add temp `print("ally_power_targets:", result)` in `_get_ally_power_targets` to confirm.
 - **Sarmoth** playtested and working. Watch for edge cases with taunt + Elusive attackers.
 - **Combat window AI:** AI currently passes during attack/defend windows (returns empty actions for non-turn player). This is acceptable but means AI never uses Grimdron to counter-attack during enemy combats. Future: extend `get_all_legal_actions` to return useful defensive plays for non-turn player during combat windows.
-- **Next cards to implement:** New Horde hero (X mechanic) and new Alliance hero (heals). Check `data/cards.csv` for candidates.
+- **Next cards to implement:** Check `data/cards.csv` for candidates.
 - **`logic/BasicAI_behavior.txt` is legacy** and may be stale — actual AI is fully in `game_logic/ai/base_ai.gd`.

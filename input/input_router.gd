@@ -125,8 +125,7 @@ func handle_card_click(instance_id: String) -> void:
 	if events.is_empty():
 		return
 	EventBus.emit_events(events)
-	var pass_events := StackResolver.pass_priority(state, db)
-	EventBus.emit_events(pass_events)
+	_pass_own_proposal(action)
 	refresh_highlights()
 
 
@@ -256,8 +255,7 @@ func _handle_combat_targeting_click(instance_id: String) -> void:
 		if events.is_empty():
 			return
 		EventBus.emit_events(events)
-		var pass_events := StackResolver.pass_priority(state, db)
-		EventBus.emit_events(pass_events)
+		_pass_own_proposal(action)
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
@@ -273,8 +271,7 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 		# cancel_targeting fires targeting_cancelled; playtest._on_targeting_cancelled
 		# checks pending_actions for an existing choose_enter_play_target before restarting.
 		cancel_targeting()
-		var pass_events := StackResolver.pass_priority(state, db)
-		EventBus.emit_events(pass_events)
+		_pass_own_proposal(action)
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
@@ -290,8 +287,7 @@ func _handle_ability_targeting_click(instance_id: String) -> void:
 		var events := StackResolver.submit_action(state, action, db)
 		if not events.is_empty():
 			EventBus.emit_events(events)
-			var pass_events := StackResolver.pass_priority(state, db)
-			EventBus.emit_events(pass_events)
+			_pass_own_proposal(action)
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
@@ -308,14 +304,54 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		if events.is_empty():
 			return
 		EventBus.emit_events(events)
-		var pass_events := StackResolver.pass_priority(state, db)
-		EventBus.emit_events(pass_events)
+		_pass_own_proposal(action)
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
 
 
 func _handle_power_targeting_click(instance_id: String) -> void:
+	# Two-phase for radak_pet_sacrifice: first click = Pet to sacrifice, second = damage target.
+	if _is_radak_power(_targeting_source):
+		if _targeting_first_target == "":
+			# Phase 1: validate as an owned Pet via can_submit probe.
+			var probe := PendingAction.make("activate_power", local_player, {
+				"hero_id": _targeting_source, "pet_id": instance_id, "target_id": "",
+			})
+			if StackResolver.can_submit(state, probe, db):
+				_targeting_first_target = instance_id
+				targeting_started.emit(_targeting_source, "shadow", 0)   # re-emit: now in phase 2, shadow damage
+				refresh_highlights()
+			elif instance_id == _targeting_source:
+				cancel_targeting()
+		else:
+			# Phase 2: instance_id is the damage target.
+			var pet_card := state.get_card(_targeting_first_target)
+			var pet_def: CardDef = db.get_def(pet_card.card_def_id) if pet_card and db else null
+			var x_val: int = pet_def.cost if pet_def else 0
+			var action := PendingAction.make("activate_power", local_player, {
+				"hero_id":  _targeting_source,
+				"pet_id":   _targeting_first_target,
+				"target_id": instance_id,
+				"x_value":  x_val,
+			})
+			if StackResolver.can_submit(state, action, db):
+				_targeting_source       = ""
+				_targeting_first_target = ""
+				targeting_cancelled.emit()
+				var events := StackResolver.submit_action(state, action, db)
+				if events.is_empty():
+					return
+				EventBus.emit_events(events)
+				_pass_own_proposal(action)
+				refresh_highlights()
+			elif instance_id == _targeting_first_target:
+				# Clicked the Pet again — go back to phase 1.
+				_targeting_first_target = ""
+				targeting_started.emit(_targeting_source, _targeting_dmg_type, 0)
+				refresh_highlights()
+		return
+
 	# Two-phase for deal_damage_and_heal: first click = damage target, second = heal target.
 	if _is_damage_and_heal_power(_targeting_source):
 		if _targeting_first_target == "":
@@ -343,8 +379,7 @@ func _handle_power_targeting_click(instance_id: String) -> void:
 				if events.is_empty():
 					return
 				EventBus.emit_events(events)
-				var pass_events := StackResolver.pass_priority(state, db)
-				EventBus.emit_events(pass_events)
+				_pass_own_proposal(action)
 				refresh_highlights()
 			elif instance_id == _targeting_first_target:
 				# Clicked the damage target again — go back to phase 1.
@@ -363,8 +398,7 @@ func _handle_power_targeting_click(instance_id: String) -> void:
 		if events.is_empty():
 			return
 		EventBus.emit_events(events)
-		var pass_events := StackResolver.pass_priority(state, db)
-		EventBus.emit_events(pass_events)
+		_pass_own_proposal(action)
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
@@ -377,6 +411,20 @@ func retract_last_action() -> void:
 	var events := StackResolver.retract_last(state, local_player, db)
 	EventBus.emit_events(events)
 	refresh_highlights()
+
+
+# Convenience auto-pass on the player's own proposal (rule 410.1: proposer keeps
+# priority, but responding to your own action is rare, so the UI passes for them).
+# Guarded: the playtest's synchronous drain may have already passed/resolved the
+# proposal during EventBus.emit_events (turbo mode) — in that case the chain top
+# is no longer our action and passing again would burn a fresh priority window.
+func _pass_own_proposal(action: PendingAction) -> void:
+	if not state or state.priority_player != local_player:
+		return
+	if state.pending_actions.is_empty() or state.pending_actions.back() != action:
+		return
+	var pass_events := StackResolver.pass_priority(state, db)
+	EventBus.emit_events(pass_events)
 
 
 func pass_priority_action() -> void:
@@ -495,6 +543,12 @@ func has_any_legal_play() -> bool:
 	for card in state.cards_in_zone(local_player + "_hand"):
 		fd_action_template.params["card_id"] = card.instance_id
 		if StackResolver.can_submit(state, fd_action_template, db):
+			return true
+	# Check ally activated powers — legal on either player's turn (rule 701.2).
+	for card in state.cards_in_zone(local_player + "_ally_row"):
+		var ap_action := PendingAction.make("use_ally_power", local_player,
+			{"card_id": card.instance_id})
+		if StackResolver.can_submit(state, ap_action, db):
 			return true
 	return false
 
@@ -669,8 +723,7 @@ func handle_context_action(action: PendingAction) -> void:
 			if events.is_empty():
 				return
 			EventBus.emit_events(events)
-			var pass_events := StackResolver.pass_priority(state, db)
-			EventBus.emit_events(pass_events)
+			_pass_own_proposal(act)
 			refresh_highlights()
 			return
 	if state.priority_player != local_player:
@@ -687,6 +740,43 @@ func handle_context_action(action: PendingAction) -> void:
 # Returns all in-play cards that are valid targets for the given hero's power.
 # For deal_damage_and_heal, returns damage targets (phase 1) or heal targets (phase 2).
 func _get_hero_power_targets(hero_id: String) -> Array:
+	if _is_radak_power(hero_id):
+		if _targeting_first_target == "":
+			# Phase 1: show owned Pets in ally_row.
+			var result: Array = []
+			for card in state.cards_in_zone(local_player + "_ally_row"):
+				var probe := PendingAction.make("activate_power", local_player, {
+					"hero_id": hero_id, "pet_id": card.instance_id, "target_id": "",
+				})
+				if StackResolver.can_submit(state, probe, db):
+					result.append(card.instance_id)
+			return result
+		else:
+			# Phase 2: show all in-play heroes and allies as damage targets.
+			var result: Array = []
+			var pet_card := state.get_card(_targeting_first_target)
+			var pet_def: CardDef = db.get_def(pet_card.card_def_id) if pet_card and db else null
+			var x_val: int = pet_def.cost if pet_def else 0
+			for pid in state.players:
+				var ps2 := state.players.get(pid) as PlayerState
+				if ps2 and ps2.hero_instance_id != "":
+					var act := PendingAction.make("activate_power", local_player, {
+						"hero_id": hero_id, "pet_id": _targeting_first_target,
+						"target_id": ps2.hero_instance_id, "x_value": x_val,
+					})
+					if StackResolver.can_submit(state, act, db):
+						result.append(ps2.hero_instance_id)
+				for card in state.cards_in_zone(pid + "_ally_row"):
+					if card.instance_id == _targeting_first_target:
+						continue
+					var act := PendingAction.make("activate_power", local_player, {
+						"hero_id": hero_id, "pet_id": _targeting_first_target,
+						"target_id": card.instance_id, "x_value": x_val,
+					})
+					if StackResolver.can_submit(state, act, db):
+						result.append(card.instance_id)
+			return result
+
 	if _is_damage_and_heal_power(hero_id):
 		if _targeting_first_target == "":
 			# Phase 1: show all valid damage targets (those that have at least one valid heal partner).
@@ -848,7 +938,7 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice"]:
 			return true
 	return false
 
@@ -872,6 +962,8 @@ func _hero_power_dmg_type(hero_id: String) -> String:
 					return parts[1].to_lower()
 			"heal_x_from_target":
 				return "heal"
+			"radak_pet_sacrifice":
+				return "destroy"  # phase 1 = sacrifice (skull); phase 2 re-emits shadow
 	return ""
 
 
@@ -1013,8 +1105,7 @@ func _handle_x_power_targeting_click(instance_id: String) -> void:
 		_targeting_source = src
 		return
 	EventBus.emit_events(events)
-	var pass_events := StackResolver.pass_priority(state, db)
-	EventBus.emit_events(pass_events)
+	_pass_own_proposal(action)
 	refresh_highlights()
 
 
@@ -1035,6 +1126,15 @@ func _is_heal_x_power(hero_id: String) -> bool:
 	var def := db.get_def(hero.card_def_id) as CardDef
 	if not def: return false
 	return StackResolver._power_effect_is(def, "heal_x_from_target")
+
+
+func _is_radak_power(hero_id: String) -> bool:
+	if not db: return false
+	var hero := state.get_card(hero_id)
+	if not hero: return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return false
+	return StackResolver._power_effect_is(def, "radak_pet_sacrifice")
 
 
 func _handle_ally_power_targeting_click(instance_id: String) -> void:

@@ -79,6 +79,14 @@ static func submit_action(state: GameState, action: PendingAction,
 						var x_val: int = action.params.get("x_value", 0)
 						if x_val > 0:
 							events.append_array(_pay_resources(state, action.source_player, x_val))
+					elif def and _power_effect_is(def, "radak_pet_sacrifice"):
+						# Pay X resources and destroy the chosen Pet as costs.
+						var pet_id: String = action.params.get("pet_id", "")
+						var x_val: int = action.params.get("x_value", 0)
+						if x_val > 0:
+							events.append_array(_pay_resources(state, action.source_player, x_val))
+						if pet_id != "" and state.is_in_play(pet_id):
+							events.append_array(_destroy_card_trigger(state, pet_id, hero_id, db))
 			var ps := state.players.get(action.source_player) as PlayerState
 			if ps:
 				ps.has_used_hero_power = true
@@ -285,6 +293,7 @@ static func can_play_ability_no_target_check(state: GameState,
 	if not zone or zone.zone_type != "hand": return false
 	if card.controller != player_id: return false
 	if state.phase != "action": return false
+	if state.combat_attack_window or state.combat_defend_window: return false
 	if state.turn_player != player_id: return false
 	if not state.pending_actions.is_empty(): return false
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
@@ -1231,6 +1240,46 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 				return false
 			if x_value > state.get_available_resources(action.source_player):
 				return false
+	if _power_effect_is(def, "radak_pet_sacrifice"):
+		var pet_id: String = action.params.get("pet_id", "")
+		if pet_id == "" and target_id == "":
+			# Pre-targeting probe: need at least one Pet whose cost we can afford.
+			var affordable_pet := false
+			var avail := state.get_available_resources(action.source_player)
+			for c in state.cards_in_zone(action.source_player + "_ally_row"):
+				var d := db.get_def(c.card_def_id) as CardDef
+				if d and d.card_subtype == "Pet" and d.cost >= 1 and d.cost <= avail:
+					affordable_pet = true
+					break
+			if not affordable_pet:
+				return false
+		elif pet_id != "" and target_id == "":
+			# Phase 1→2 probe: pet must be owned, in play, and its cost must be affordable.
+			if not state.is_in_play(pet_id):
+				return false
+			var pet_card := state.get_card(pet_id)
+			if not pet_card or pet_card.controller != action.source_player:
+				return false
+			var pet_def := db.get_def(pet_card.card_def_id) as CardDef
+			if not pet_def or pet_def.card_subtype != "Pet":
+				return false
+			if pet_def.cost < 1 or pet_def.cost > state.get_available_resources(action.source_player):
+				return false
+		else:
+			# Full action: validate pet, resource cost, and damage target.
+			if not state.is_in_play(pet_id) or not state.is_in_play(target_id):
+				return false
+			var pet_card2 := state.get_card(pet_id)
+			if not pet_card2 or pet_card2.controller != action.source_player:
+				return false
+			var pet_def2 := db.get_def(pet_card2.card_def_id) as CardDef
+			if not pet_def2 or pet_def2.card_subtype != "Pet":
+				return false
+			var x_value: int = action.params.get("x_value", 0)
+			if x_value < 1 or x_value != pet_def2.cost:
+				return false
+			if x_value > state.get_available_resources(action.source_player):
+				return false
 	return true
 
 
@@ -1305,6 +1354,19 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
 					events.append_array(GameLogic.heal(state, target_id, x_value, db))
+			"radak_pet_sacrifice":
+				# Pet already destroyed at submission. Deal x_value shadow damage to target.
+				var x_value: int = action.params.get("x_value", 0)
+				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
+					events.append_array(GameLogic.deal_damage(state, hero_id, target_id, x_value, db))
+					var t_card := state.get_card(target_id)
+					if t_card and state.get_current_hp(target_id, db) <= 0:
+						var t_zone := state.zones.get(t_card.zone_id) as Zone
+						if t_zone and t_zone.zone_type == "hero_row":
+							events.append(GameEvent.game_over(
+								_other_player(state, t_card.controller), t_card.controller))
+						else:
+							events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
 			"shuffle_hand_draw":
 				events.append_array(
 					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))

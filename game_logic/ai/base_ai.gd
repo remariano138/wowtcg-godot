@@ -48,21 +48,25 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			result.append(action)
 
 	# Quest completions (face-up quests in resource row whose cost is payable).
-	for card in state.cards_in_zone(player_id + "_resource_row"):
-		if card.face_down:
-			continue
-		if db:
-			var def := db.get_def(card.card_def_id) as CardDef
-			if not def or def.card_type != "Quest":
+	# Skip during combat windows — completing quests mid-combat is never useful and
+	# prevents the attack/defend window from advancing cleanly.
+	if not state.combat_attack_window and not state.combat_defend_window:
+		for card in state.cards_in_zone(player_id + "_resource_row"):
+			if card.face_down:
 				continue
-		var action := PendingAction.make("use_quest", player_id,
-				{"quest_id": card.instance_id})
-		if StackResolver.can_submit(state, action, db):
-			result.append(action)
+			if db:
+				var def := db.get_def(card.card_def_id) as CardDef
+				if not def or def.card_type != "Quest":
+					continue
+			var action := PendingAction.make("use_quest", player_id,
+					{"quest_id": card.instance_id})
+			if StackResolver.can_submit(state, action, db):
+				result.append(action)
 
-	# Combat proposals (only valid in action phase with empty chain, so check once).
+	# Combat proposals (only valid in action phase with empty chain and no combat window open).
 	if state.phase == "action" and state.turn_player == player_id \
-			and state.pending_actions.is_empty():
+			and state.pending_actions.is_empty() \
+			and not state.combat_attack_window and not state.combat_defend_window:
 		for atk_id in StackResolver.get_legal_attackers(state, player_id, db):
 			if state.get_atk(atk_id, db) <= 0:
 				continue   # never propose combat with a 0-ATK attacker
@@ -234,29 +238,23 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 						result.append(action)
 		elif _hero_power_is(state, db, hero_id, "heal_x_from_target"):
 			result.append_array(_x_heal_actions(state, db, player_id, hero_id))
+		elif _hero_power_is(state, db, hero_id, "radak_pet_sacrifice"):
+			result.append_array(_radak_sacrifice_actions(state, db, player_id, hero_id))
 		# deal_damage_and_heal needs two distinct targets — enumerate all valid pairs.
 		elif _hero_power_is(state, db, hero_id, "deal_damage_and_heal"):
 			result.append_array(_damage_and_heal_actions(state, db, player_id, hero_id))
 		else:
-			# Single-target powers: one action per valid target (any in-play hero or ally).
+			# Single-target powers: enemy targets only (never damage/destroy own cards).
 			var is_destroy_power := _hero_power_is(state, db, hero_id, "destroy_exhausted_ally")
 			var power_cost := _hero_power_cost(state, db, hero_id)
-			for pid in state.players:
-				var ps2 := state.players.get(pid) as PlayerState
-				if ps2 and ps2.hero_instance_id != "":
-					var action := PendingAction.make("activate_power", player_id,
-						{"hero_id": hero_id, "target_id": ps2.hero_instance_id})
-					if StackResolver.can_submit(state, action, db):
-						result.append(action)
-			for card in state.cards_in_zone(player_id + "_ally_row"):
+			var opp_id3 := _other_player_id(state, player_id)
+			var opp_ps3 := state.players.get(opp_id3) as PlayerState
+			if opp_ps3 and opp_ps3.hero_instance_id != "":
 				var action := PendingAction.make("activate_power", player_id,
-					{"hero_id": hero_id, "target_id": card.instance_id})
-				if not StackResolver.can_submit(state, action, db):
-					continue
-				if is_destroy_power and not _destroy_is_worth_it(state, db, player_id, card.instance_id, power_cost):
-					continue
-				result.append(action)
-			for card in state.cards_in_zone(_other_player_id(state, player_id) + "_ally_row"):
+					{"hero_id": hero_id, "target_id": opp_ps3.hero_instance_id})
+				if StackResolver.can_submit(state, action, db):
+					result.append(action)
+			for card in state.cards_in_zone(opp_id3 + "_ally_row"):
 				var action := PendingAction.make("activate_power", player_id,
 					{"hero_id": hero_id, "target_id": card.instance_id})
 				if not StackResolver.can_submit(state, action, db):
@@ -369,6 +367,44 @@ func _x_heal_actions(state: GameState, db, player_id: String,
 	return []
 
 
+# radak_pet_sacrifice AI: one action per owned Pet (AI sees each sacrifice as a distinct option).
+# For each Pet, pairs with the best damage target for that Pet's cost as X.
+# Skips Pets whose cost is 0 (X=0 deals no damage).
+func _radak_sacrifice_actions(state: GameState, db, player_id: String,
+		hero_id: String) -> Array[PendingAction]:
+	var opp_id := _other_player_id(state, player_id)
+	# Collect enemy targets for damage heuristic.
+	var all_targets: Array[String] = []
+	var opp_ps := state.players.get(opp_id) as PlayerState
+	if opp_ps and opp_ps.hero_instance_id != "":
+		all_targets.append(opp_ps.hero_instance_id)
+	for card in state.cards_in_zone(opp_id + "_ally_row"):
+		all_targets.append(card.instance_id)
+	if all_targets.is_empty():
+		return []
+
+	var result: Array[PendingAction] = []
+	for pet_card in state.cards_in_zone(player_id + "_ally_row"):
+		var pet_def := _card_def(state, db, pet_card.instance_id)
+		if not pet_def or pet_def.card_subtype != "Pet":
+			continue
+		var x_value: int = pet_def.cost
+		if x_value < 1:
+			continue
+		var best_target := _best_damage_target(state, db, player_id, all_targets, x_value)
+		if best_target == "":
+			continue
+		var act := PendingAction.make("activate_power", player_id, {
+			"hero_id":   hero_id,
+			"pet_id":    pet_card.instance_id,
+			"target_id": best_target,
+			"x_value":   x_value,
+		})
+		if StackResolver.can_submit(state, act, db):
+			result.append(act)
+	return result
+
+
 # Use the targeted-damage and targeted-heal heuristics to pick the single best
 # (dmg_target, heal_target) pair for deal_damage_and_heal powers.
 func _damage_and_heal_actions(state: GameState, db, player_id: String,
@@ -390,9 +426,12 @@ func _damage_and_heal_actions(state: GameState, db, player_id: String,
 		for card in state.cards_in_zone(pid + "_ally_row"):
 			all_ids.append(card.instance_id)
 
-	# Find valid damage targets (those with at least one valid heal partner).
+	# Find valid damage targets — enemy only (never damage own characters).
 	var valid_dmg: Array[String] = []
 	for dmg_id in all_ids:
+		var dmg_card := state.get_card(dmg_id)
+		if not dmg_card or dmg_card.controller == player_id:
+			continue
 		for heal_id in all_ids:
 			if heal_id == dmg_id:
 				continue
@@ -409,10 +448,13 @@ func _damage_and_heal_actions(state: GameState, db, player_id: String,
 	if best_dmg == "":
 		return []
 
-	# Find valid heal targets for the chosen damage target.
+	# Find valid heal targets for the chosen damage target — friendly only.
 	var valid_heal: Array[String] = []
 	for heal_id in all_ids:
 		if heal_id == best_dmg:
+			continue
+		var heal_card := state.get_card(heal_id)
+		if not heal_card or heal_card.controller != player_id:
 			continue
 		var act := PendingAction.make("activate_power", player_id,
 			{"hero_id": hero_id, "target_id": best_dmg, "heal_target_id": heal_id})
@@ -547,7 +589,7 @@ func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice"]:
 			return true
 	return false
 

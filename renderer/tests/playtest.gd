@@ -17,7 +17,8 @@ extends Node2D
 #   Draw step draws mechanically (no visual yet — Phase 7c).
 #   TurnManager + StackResolver + FullRandomAI all cooperate.
 
-const AI_THINK_TIME := 0.5
+const AI_THINK_TIME       := 0.001
+const RESOLUTION_DELAY    := 0.2   # pause after combat or AI chain play so human can register it
 
 const DECK_ALLIANCE_MOONSHADOW  := "alliance_moonshadow_test"
 const DECK_ALLIANCE_TIMMO       := "alliance_timmo_test"
@@ -26,6 +27,7 @@ const DECK_ALLIANCE_BORIS       := "alliance_boris_test"
 const DECK_HORDE_TAZO          := "horde_tazo_test"
 const DECK_HORDE_GRENNAN       := "horde_grennan_test"
 const DECK_HORDE_OMEDUS        := "horde_omedus_test"
+const DECK_HORDE_RADAK         := "horde_radak_test"
 const DECK_RANDOM              := "random"
 
 var _state:  GameState
@@ -34,6 +36,7 @@ var _gm:     GameManager
 var _renderer: BoardRenderer
 var _router: InputRouter
 var _ai_timer:   Timer
+var _draining: bool = false  # true while _drain_passes is running
 
 # Per-player type + AI instance (null = human).
 var _p1_type: String = "human"
@@ -99,10 +102,10 @@ func _ready() -> void:
 # ── Scene construction ─────────────────────────────────────────────────────────
 
 func _build_scene() -> void:
-	# Scene is 1600×1050: board occupies y=0..850, UI strip y=900..1050.
+	# Scene is 1920×1080: board occupies y=0..950, UI strip y=960..1080.
 	var bg := ColorRect.new()
 	bg.color = Color(0.10, 0.13, 0.16)
-	bg.size  = Vector2(1600, 1120)
+	bg.size  = Vector2(1920, 1080)
 	add_child(bg)
 
 	# ── Game log panel (left gutter, replaces zone labels) ────────────────────────
@@ -120,44 +123,46 @@ func _build_scene() -> void:
 	_log.add_theme_font_size_override("normal_font_size", 10)
 	add_child(_log)
 
-	# ── Right column labels (graveyard x=1130, deck/hero x=1280) ─────────────────
-	_add_label("P2 grave",  Vector2(1130,  52), 11, Color(0.5, 0.4, 0.4))
-	_add_label("P2 deck",   Vector2(1280,  52), 11, Color(0.4, 0.4, 0.5))
-	_add_label("P2 hero",   Vector2(1280, 182), 11, Color(0.5, 0.4, 0.5))
-	_add_label("P1 grave",  Vector2(1130, 832), 11, Color(0.4, 0.5, 0.4))
-	_add_label("P1 hero",   Vector2(1280, 702), 11, Color(0.4, 0.5, 0.45))
-	_add_label("P1 deck",   Vector2(1280, 832), 11, Color(0.4, 0.4, 0.5))
+	# ── Right column labels (graveyard x=1590, deck/hero x=1750) ─────────────────
+	_add_label("P2 grave",  Vector2(1590,  52), 11, Color(0.5, 0.4, 0.4))
+	_add_label("P2 deck",   Vector2(1750,  52), 11, Color(0.4, 0.4, 0.5))
+	_add_label("P2 hero",   Vector2(1750, 182), 11, Color(0.5, 0.4, 0.5))
+	_add_label("P1 grave",  Vector2(1590, 832), 11, Color(0.4, 0.5, 0.4))
+	_add_label("P1 hero",   Vector2(1750, 702), 11, Color(0.4, 0.5, 0.45))
+	_add_label("P1 deck",   Vector2(1750, 832), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
-	_status = _add_label("", Vector2(20, 1025), 18, Color(0.5, 0.8, 0.5))
+	_status = _add_label("", Vector2(20, 1040), 18, Color(0.5, 0.8, 0.5))
 
 	# Renderer
 	_renderer = BoardRenderer.new()
 	add_child(_renderer)
 
 	# Zone anchors.
-	# Board rows (centre x=700): p2_hand → p2_resource → p2_ally → chain → p1_ally → p1_resource → p1_hand
-	# Right column (x=1350): p2_deck at top, p2_hero just below; p1_deck at bottom, p1_hero just above.
-	# Graveyard at x=1200, same y as the player's hand.
-	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(700,  65)))
-	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(700, 195)))
-	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(700, 325)))
-	_renderer.register_zone("chain",           _make_anchor(Vector2(700, 455)))
-	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(700, 585)))
-	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(700, 715)))
-	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(700, 845)))
-	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2(1200,  65)))
-	_renderer.register_zone("p2_deck",         _make_anchor(Vector2(1350,  65)))
-	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1350, 195)))
-	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1200, 845)))
-	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1350, 845)))
-	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1350, 715)))
+	# Board rows (centre x=1000): p2_hand → p2_resource → p2_ally → chain → p1_ally → p1_resource → p1_hand
+	# Right column (x=1820): p2_deck at top, p2_hero just below; p1_deck at bottom, p1_hero just above.
+	# Graveyard at x=1640, same y as the player's hand.
+	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(1000,  65)))
+	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(1000, 195)))
+	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(1000, 325)))
+	_renderer.register_zone("chain",           _make_anchor(Vector2(1000, 455)))
+	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(1000, 585)))
+	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 715)))
+	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 845)))
+	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2(1640,  65)))
+	_renderer.register_zone("p2_deck",         _make_anchor(Vector2(1820,  65)))
+	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1820, 195)))
+	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 845)))
+	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 845)))
+	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1820, 715)))
 
 	_renderer.set_status_label(_status)
 
 	# ── Deck slot card-back sprites ────────────────────────────────────────────────
-	_add_deck_back_sprite(Vector2(1350,  65))  # p2 deck
-	_add_deck_back_sprite(Vector2(1350, 845))  # p1 deck
+	for deck_zone in ["p1_deck", "p2_deck"]:
+		var deck_anchor := _renderer.zone_anchors.get(deck_zone) as Node2D
+		if deck_anchor:
+			_add_deck_back_sprite(deck_anchor.global_position)
 
 	_router = InputRouter.new()
 	add_child(_router)
@@ -170,17 +175,17 @@ func _build_scene() -> void:
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_build_x_dialog()
 
-	# ── Control panel (y=895..1050) ───────────────────────────────────────────────
+	# ── Control panel (y=960..1080) ───────────────────────────────────────────────
 	# Panel background — added before labels/buttons so it renders behind them.
 	var ctrl_panel := Panel.new()
 	ctrl_panel.position = Vector2(0, 960)
-	ctrl_panel.size     = Vector2(1600, 160)
+	ctrl_panel.size     = Vector2(1920, 120)
 	add_child(ctrl_panel)
 
 	var sep_line := ColorRect.new()
 	sep_line.color    = Color(0.28, 0.33, 0.38)
 	sep_line.position = Vector2(0, 960)
-	sep_line.size     = Vector2(1600, 2)
+	sep_line.size     = Vector2(1920, 2)
 	add_child(sep_line)
 
 	# ── Left section: Turn / Priority / Announcer ──────────────────────────────
@@ -191,14 +196,14 @@ func _build_scene() -> void:
 	# ── VSep 1 ─────────────────────────────────────────────────────────────────
 	var vsep1 := ColorRect.new()
 	vsep1.color    = Color(0.28, 0.33, 0.38)
-	vsep1.position = Vector2(520, 968)
-	vsep1.size     = Vector2(2, 145)
+	vsep1.position = Vector2(624, 968)
+	vsep1.size     = Vector2(2, 110)
 	add_child(vsep1)
 
 	# ── Centre section: Cancel + Pass ──────────────────────────────────────────
 	_cancel_btn = Button.new()
 	_cancel_btn.text     = "Cancel  [Esc]"
-	_cancel_btn.position = Vector2(540, 981)
+	_cancel_btn.position = Vector2(648, 981)
 	_cancel_btn.size     = Vector2(160, 40)
 	_cancel_btn.visible  = false
 	_cancel_btn.pressed.connect(_on_cancel_btn_pressed)
@@ -206,15 +211,15 @@ func _build_scene() -> void:
 
 	_pass_btn = Button.new()
 	_pass_btn.text     = "Pass Priority  [Space]"
-	_pass_btn.position = Vector2(710, 981)
+	_pass_btn.position = Vector2(845, 981)
 	_pass_btn.size     = Vector2(230, 40)
 	_pass_btn.pressed.connect(_on_pass_btn_pressed)
 	add_child(_pass_btn)
 
 	# ── Mulligan panel (replaces pass area during mulligan phase) ──────────────
 	_mulligan_panel = VBoxContainer.new()
-	_mulligan_panel.position = Vector2(540, 968)
-	_mulligan_panel.custom_minimum_size = Vector2(400, 120)
+	_mulligan_panel.position = Vector2(648, 968)
+	_mulligan_panel.custom_minimum_size = Vector2(400, 110)
 	_mulligan_panel.visible  = false
 	add_child(_mulligan_panel)
 
@@ -236,24 +241,24 @@ func _build_scene() -> void:
 
 	_mulligan_hint_label = _add_label(
 		"Left-click = play/place  ·  Right-click = options  ·  Esc = retract",
-		Vector2(540, 1031), 11, Color(0.38, 0.38, 0.38))
+		Vector2(648, 1040), 11, Color(0.38, 0.38, 0.38))
 	_mulligan_hint_label.visible = false
 
 	# ── VSep 2 ─────────────────────────────────────────────────────────────────
 	var vsep2 := ColorRect.new()
 	vsep2.color    = Color(0.28, 0.33, 0.38)
-	vsep2.position = Vector2(1080, 968)
-	vsep2.size     = Vector2(2, 145)
+	vsep2.position = Vector2(1296, 968)
+	vsep2.size     = Vector2(2, 110)
 	add_child(vsep2)
 
 	# ── Right section: Speed Mode selector ─────────────────────────────────────
-	_add_label("SPEED MODE", Vector2(1110, 971), 10, Color(0.55, 0.55, 0.55))
+	_add_label("SPEED MODE", Vector2(1330, 971), 10, Color(0.55, 0.55, 0.55))
 
 	var mode_group := ButtonGroup.new()
 
 	_turbo_btn = Button.new()
 	_turbo_btn.text          = "Turbo"
-	_turbo_btn.position      = Vector2(1110, 987)
+	_turbo_btn.position      = Vector2(1330, 987)
 	_turbo_btn.size          = Vector2(110, 36)
 	_turbo_btn.toggle_mode   = true
 	_turbo_btn.button_group  = mode_group
@@ -263,7 +268,7 @@ func _build_scene() -> void:
 
 	_tactical_btn = Button.new()
 	_tactical_btn.text         = "Tactical"
-	_tactical_btn.position     = Vector2(1232, 987)
+	_tactical_btn.position     = Vector2(1454, 987)
 	_tactical_btn.size         = Vector2(110, 36)
 	_tactical_btn.toggle_mode  = true
 	_tactical_btn.button_group = mode_group
@@ -271,7 +276,7 @@ func _build_scene() -> void:
 	add_child(_tactical_btn)
 
 	_mode_desc_label = _add_label("Auto-pass all 'no legal play'",
-		Vector2(1110, 1031), 10, Color(0.42, 0.52, 0.42))
+		Vector2(1330, 1055), 10, Color(0.42, 0.52, 0.42))
 
 	_ai_timer = Timer.new()
 	_ai_timer.wait_time = AI_THINK_TIME
@@ -334,7 +339,7 @@ func _build_menu() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	inner.add_child(title)
 
-	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Alliance_test (Dizdemona)", "Alliance_test (Boris)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Horde_test (Omedus)", "Random"]
+	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Alliance_test (Dizdemona)", "Alliance_test (Boris)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Horde_test (Omedus)", "Horde_test (Radak)", "Random"]
 	inner.add_child(_player_row("Player 1", ["Human", "BaseAI", "FullRandomAI"], 0,
 		deck_labels, 4,
 		func(opt): _p1_type_opt = opt, func(opt): _p1_deck_opt = opt))
@@ -396,7 +401,8 @@ func _player_row(label_text: String, type_items: Array, type_default: int,
 
 func _on_quick_start() -> void:
 	var all_decks := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					  DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
+					  DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS,
+					  DECK_HORDE_RADAK]
 	all_decks.shuffle()
 	_launch_game("human", all_decks[0], "fullrandom", all_decks[1])
 
@@ -405,7 +411,8 @@ func _on_start_game() -> void:
 	var p1_types := ["human", "base", "fullrandom"]
 	var p2_types := ["base", "fullrandom"]
 	var deck_ids := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS, DECK_RANDOM]
+					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS,
+					 DECK_HORDE_RADAK, DECK_RANDOM]
 	_launch_game(p1_types[_p1_type_opt.selected], deck_ids[_p1_deck_opt.selected],
 				 p2_types[_p2_type_opt.selected], deck_ids[_p2_deck_opt.selected])
 
@@ -436,7 +443,8 @@ func _make_ai(type: String) -> Object:
 func _resolve_deck(deck_id: String) -> String:
 	if deck_id == DECK_RANDOM:
 		var pool := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS]
+					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS,
+					 DECK_HORDE_RADAK]
 		return pool[randi() % pool.size()]
 	return deck_id
 
@@ -570,6 +578,36 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_179", "azeroth_179",
 	]
 
+	# ── Radak Doombringer deck (60 cards) — horde base + 3× Sarmoth + 1× Grimdron as fuel ──
+	var radak_cards: Array[String] = [
+		# 12× Your Fortune Awaits You
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		# 2× Ka'tali Stonetusk
+		"azeroth_248", "azeroth_248",
+		# 2× Kagra of the Crossroads
+		"azeroth_246", "azeroth_246",
+		# 2× Taz'dingo
+		"azeroth_260", "azeroth_260",
+		# 2× Arnold Flem
+		"azeroth_225", "azeroth_225",
+		# 2× Vanquish
+		"azeroth_171", "azeroth_171",
+		# 3× Sarmoth (cost 3 Pet — main sacrifice fuel)
+		"azeroth_130", "azeroth_130", "azeroth_130",
+		# 1× Grimdron (cost 1 Pet — cheap sacrifice for 1 dmg)
+		"azeroth_125",
+		# Filler
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×8
+		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
+		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×4
+		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×4
+		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×4
+	]
+
 	# ── Omedus deck (60 cards) — horde base with Mias replacing half of Fa'tafi ──
 	# Core (26): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish · 4 Mias
 	# Filler (34): same 5 allies but Fa'tafi trimmed 8→4 to make room
@@ -606,6 +644,7 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		DECK_HORDE_TAZO:          return Deck.make("azeroth_15", horde_cards)
 		DECK_HORDE_GRENNAN:       return Deck.make("azeroth_10", horde_cards)
 		DECK_HORDE_OMEDUS:        return Deck.make("azeroth_12", omedus_cards)
+		DECK_HORDE_RADAK:         return Deck.make("azeroth_13", radak_cards)
 		DECK_ALLIANCE_TIMMO:      return Deck.make("azeroth_7", alliance_cards)
 		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", dizdemona_cards)
 		DECK_ALLIANCE_BORIS:      return Deck.make("azeroth_1", boris_cards)
@@ -670,11 +709,14 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 		if dzone:
 			_renderer.init_deck_count(dz, dzone.card_ids.size())
 
-	# Spawn CardNodes for heroes and starting hands.
-	_spawn_zone_nodes("p1_hero_row", Vector2(1350, 715), Color(0.25, 0.45, 0.75))
-	_spawn_zone_nodes("p2_hero_row", Vector2(1350, 195), Color(0.5, 0.25, 0.25))
-	_spawn_zone_nodes("p1_hand",     Vector2(700,  845), Color(0.25, 0.45, 0.75))
-	_spawn_zone_nodes("p2_hand",     Vector2(700,   65), Color(0.5, 0.25, 0.25))
+	# Spawn CardNodes for all zones that can contain visible cards.
+	for zone_id in ["p1_hero_row", "p1_hand", "p1_ally_row", "p1_resource_row", "p1_graveyard",
+					"p2_hero_row", "p2_hand", "p2_ally_row", "p2_resource_row", "p2_graveyard",
+					"chain"]:
+		var color := Color(0.25, 0.45, 0.75) if zone_id.begins_with("p1") else Color(0.5, 0.25, 0.25)
+		if zone_id == "chain":
+			color = Color(1.0, 1.0, 1.0)
+		_spawn_zone_nodes(zone_id, color)
 
 	# Init hero HP bars at full health.
 	for pid in ["p1", "p2"]:
@@ -702,10 +744,12 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 
 # Spawn CardNode visuals for every card currently in a zone.
 # Cards drawn later will be spawned by _on_game_event("card_moved").
-func _spawn_zone_nodes(zone_id: String, spawn_pos: Vector2, color: Color) -> void:
+func _spawn_zone_nodes(zone_id: String, color: Color) -> void:
 	var zone := _state.zones.get(zone_id) as Zone
 	if not zone:
 		return
+	var anchor := _renderer.zone_anchors.get(zone_id) as Node2D
+	var spawn_pos := anchor.global_position if anchor else Vector2.ZERO
 	for inst_id in zone.card_ids:
 		_spawn_card_node(inst_id, spawn_pos, color)
 
@@ -770,9 +814,12 @@ func _update_pass_btn() -> void:
 	var in_attack  := _state.combat_attack_window
 	var in_defend  := _state.combat_defend_window
 
-	_pass_btn.disabled = not my_turn
+	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1"
 
-	if not my_turn:
+	if _state.pending_pet_sacrifice_player == "p1":
+		_pass_btn.text     = "Sacrifice a pet  [Space]"
+		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
+	elif not my_turn:
 		_pass_btn.text     = "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not has_plays:
@@ -966,18 +1013,15 @@ func _log_event(event: GameEvent) -> void:
 		"attack_window_opened":
 			_set_status("⚔ Attack window — you may respond before protect")
 			_refresh_ui()
-			_schedule_next_turn()
-			_maybe_turbo_pass()
 		"defend_window_opened":
 			_set_status("⚔ Defend window — you may respond before damage")
 			_refresh_ui()
-			_schedule_next_turn()
-			_maybe_turbo_pass()
+			_drain_passes()  # human chose protector; drain the defend window
 		"damage_dealt":
 			var src:    String = _log_card(event.payload.get("source", ""))
 			var tgt:    String = _log_card(event.payload.get("target", ""))
 			var amt:    int    = event.payload.get("amount", 0)
-			_log_entry("[color=#f66]%s deals %d dmg to %s[/color]" % [src, amt, tgt])
+			_log_entry("[color=#f66]%s receives %d dmg from %s[/color]" % [tgt, amt, src])
 		"card_destroyed":
 			var name:   String = _log_card(event.payload.get("card",   ""))
 			var source: String = event.payload.get("source", "")
@@ -1033,14 +1077,17 @@ func _on_game_event(event: GameEvent) -> void:
 			if event.payload.get("player", "") == "p2":
 				_blink_pass_btn()
 			_refresh_ui()
-			_schedule_next_turn()
-			_maybe_turbo_pass()
+			var _in_chain := not _state.pending_actions.is_empty()
+			if _state.combat_attack_window or _state.combat_defend_window or _in_chain:
+				_drain_passes()
+			else:
+				_schedule_next_turn()
+				_maybe_turbo_pass()
 		"action_proposed":
 			if event.payload.get("player") == "p1":
 				_p1_played_this_action_phase = true
 			_refresh_ui()
-			_schedule_next_turn()
-			_maybe_turbo_pass()
+			_drain_passes()
 		"card_moved":
 			# A card drawn from deck needs a fresh CardNode spawned at the hand anchor.
 			var to_zone: String   = event.payload.get("to", "")
@@ -1059,7 +1106,9 @@ func _on_game_event(event: GameEvent) -> void:
 				var card := _state.get_card(moved_id)
 				if card:
 					var is_p1 := card.owner == "p1"
-					var spawn_pos := Vector2(700, 845) if is_p1 else Vector2(700, 65)
+					var hand_zone := "p1_hand" if is_p1 else "p2_hand"
+					var hand_anchor := _renderer.zone_anchors.get(hand_zone) as Node2D
+					var spawn_pos := hand_anchor.global_position if hand_anchor else (Vector2(1000, 845) if is_p1 else Vector2(1000, 65))
 					var color := Color(0.25, 0.45, 0.75) if is_p1 else Color(0.5, 0.25, 0.25)
 					_spawn_card_node(moved_id, spawn_pos, color)
 					# Renderer's _animate_move already ran before this node existed,
@@ -1509,8 +1558,8 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 		if def_def:
 			def_name = def_def.card_name
 
-	# Centre everything on the same axis as the pass button (x=825).
-	const CENTER_X := 825
+	# Centre everything on the same axis as the pass button (x=960).
+	const CENTER_X := 960
 	const BTN_W    := 170
 	const BTN_GAP  := 10
 	const SKIP_W   := 100
@@ -1592,7 +1641,7 @@ func _resolve_protection(protector_id: String) -> void:
 	var events := StackResolver.choose_protector(_state, protector_id, _db)
 	EventBus.emit_events(events)
 	_refresh_ui()
-	_schedule_next_turn()
+	_drain_passes()
 
 
 func _on_card_clicked_scene(instance_id: String) -> void:
@@ -1635,7 +1684,7 @@ func _on_rematch() -> void:
 
 
 func _schedule_next_turn() -> void:
-	if _game_over:
+	if _draining or _game_over:
 		return
 	if _state.pending_discard_count > 0:
 		return  # wait for discard resolution before advancing
@@ -1663,8 +1712,67 @@ func _set_turbo_mode(on: bool) -> void:
 		_maybe_turbo_pass()
 
 
+func _drain_passes() -> void:
+	if _draining:
+		return
+	_draining = true
+	_ai_timer.stop()
+	var had_combat_conclusion  := false
+	var had_ai_chain_play      := false
+	var limit := 30
+	while limit > 0:
+		limit -= 1
+		if _game_over or _state.in_protect_point or _in_protect_mode:
+			break
+		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "":
+			break
+		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
+		var chain_pending := not _state.pending_actions.is_empty()
+		if not in_combat and not chain_pending:
+			break
+		var pid := _state.priority_player
+		var pid_type := _p1_type if pid == "p1" else _p2_type
+		var events: Array[GameEvent] = []
+		if pid_type == "human":
+			if not _turbo_mode or _router.has_any_legal_play():
+				break
+			events = StackResolver.pass_priority(_state, _db)
+		else:
+			var ai: Object = _p1_ai if pid == "p1" else _p2_ai
+			if not ai:
+				break
+			var action: PendingAction = ai.decide_action(_state, _db, pid)
+			if action != null:
+				events = StackResolver.submit_action(_state, action, _db)
+			else:
+				events = StackResolver.pass_priority(_state, _db)
+		if events.is_empty():
+			break
+		EventBus.emit_events(events)
+		_refresh_ui()
+		# Track whether a resolution delay is warranted after the drain.
+		for e: GameEvent in events:
+			if e.event_type == "combat_concluded":
+				had_combat_conclusion = true
+			elif e.event_type == "card_moved" and e.payload.get("from", "") == "chain":
+				var cid: String = e.payload.get("card", "")
+				var moved_card := _state.get_card(cid)
+				if moved_card:
+					var owner_type := _p1_type if moved_card.controller == "p1" else _p2_type
+					if owner_type != "human":
+						had_ai_chain_play = true
+	_draining = false
+	var delay := RESOLUTION_DELAY if (had_combat_conclusion or had_ai_chain_play) else 0.0
+	if delay > 0.0:
+		get_tree().create_timer(delay).timeout.connect(
+			func() -> void: _schedule_next_turn(); _maybe_turbo_pass())
+	else:
+		_schedule_next_turn()
+		_maybe_turbo_pass()
+
+
 func _maybe_turbo_pass() -> void:
-	if not _turbo_mode or not _state or not _router:
+	if _draining or not _turbo_mode or not _state or not _router:
 		return
 	if _in_protect_mode:
 		return
@@ -1675,10 +1783,23 @@ func _maybe_turbo_pass() -> void:
 	if _state.priority_player != "p1" or _p1_type != "human":
 		return
 	var phase := _state.phase
+	# Never auto-pass the human's own main action window (chain empty, no combat):
+	# that pass ends the turn and requires an explicit Wrap Up, even with no legal play.
+	if _is_p1_main_action_window():
+		return
 	# Auto-pass when there's nothing to play, or during ready/draw (instants are
 	# so rare there that Turbo skips them — switch to Tactical to play powers early).
 	if not _router.has_any_legal_play() or phase == "ready" or phase == "draw":
 		call_deferred("_do_turbo_pass")
+
+
+func _is_p1_main_action_window() -> bool:
+	return _state.phase == "action" \
+		and _state.turn_player == "p1" \
+		and _state.pending_actions.is_empty() \
+		and not _state.combat_attack_window \
+		and not _state.combat_defend_window \
+		and not _state.in_protect_point
 
 
 func _do_turbo_pass() -> void:
@@ -1688,6 +1809,8 @@ func _do_turbo_pass() -> void:
 		return
 	var phase := _state.phase
 	# Re-check at fire time — state may have changed since the deferred was scheduled.
+	if _is_p1_main_action_window():
+		return
 	if _router.has_any_legal_play() and phase != "ready" and phase != "draw":
 		return
 	_router.pass_priority_action()

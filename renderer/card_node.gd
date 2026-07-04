@@ -266,10 +266,9 @@ func stop_wiggle(more_seconds: float = 0.0) -> void:
 	if _wiggle_tween:
 		_wiggle_tween.kill()
 		_wiggle_tween = null
+	rotation_degrees = _wiggle_base
 	if more_seconds > 0.0:
 		wiggle_for(more_seconds)
-	else:
-		rotation_degrees = _wiggle_base
 
 
 func _input(event: InputEvent) -> void:

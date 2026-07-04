@@ -20,15 +20,12 @@ extends Node2D
 const AI_THINK_TIME       := 0.001
 const RESOLUTION_DELAY    := 0.2   # pause after combat or AI chain play so human can register it
 
-const DECK_ALLIANCE_MOONSHADOW  := "alliance_moonshadow_test"
-const DECK_ALLIANCE_TIMMO       := "alliance_timmo_test"
-const DECK_ALLIANCE_DIZDEMONA   := "alliance_dizdemona_test"
-const DECK_ALLIANCE_BORIS       := "alliance_boris_test"
-const DECK_HORDE_TAZO          := "horde_tazo_test"
-const DECK_HORDE_GRENNAN       := "horde_grennan_test"
-const DECK_HORDE_OMEDUS        := "horde_omedus_test"
-const DECK_HORDE_RADAK         := "horde_radak_test"
-const DECK_RANDOM              := "random"
+# Deck lists live in res://decks/ and are served by DeckManager — this scene
+# only picks ids.
+const DECK_RANDOM := "random"
+const CAT_ALL         := 0
+const CAT_RECOMMENDED := 1
+const CATEGORY_LABELS := ["All decks", "Recommended for AI"]
 
 var _state:  GameState
 var _db:     CardDatabase
@@ -50,6 +47,12 @@ var _p1_type_opt: OptionButton
 var _p1_deck_opt: OptionButton
 var _p2_type_opt: OptionButton
 var _p2_deck_opt: OptionButton
+var _p1_cat_opt:  OptionButton
+var _p2_cat_opt:  OptionButton
+var _p1_deck_ids: Array[String] = []   # dropdown index -> deck_id (last entry = DECK_RANDOM)
+var _p2_deck_ids: Array[String] = []
+var _avoid_mirror_cb: CheckBox
+var _menu_error_label: Label
 var _status:     Label
 var _priority_label: Label
 var _phase_label:    Label
@@ -340,13 +343,27 @@ func _build_menu() -> void:
 	title.add_theme_font_size_override("font_size", 20)
 	inner.add_child(title)
 
-	var deck_labels := ["Alliance_test (Moonshadow)", "Alliance_test (Timmo)", "Alliance_test (Dizdemona)", "Alliance_test (Boris)", "Horde_test (Ta'zo)", "Horde_test (Grennan)", "Horde_test (Omedus)", "Horde_test (Radak)", "Random"]
-	inner.add_child(_player_row("Player 1", ["Human", "BaseAI", "FullRandomAI"], 0,
-		deck_labels, 4,
-		func(opt): _p1_type_opt = opt, func(opt): _p1_deck_opt = opt))
-	inner.add_child(_player_row("Player 2", ["BaseAI", "FullRandomAI"], 1,
-		deck_labels, 4,
-		func(opt): _p2_type_opt = opt, func(opt): _p2_deck_opt = opt))
+	inner.add_child(_player_row("Player 1", ["Human", "Recommended AI", "BaseAI", "FullRandomAI"], 0,
+		CAT_ALL,
+		func(opt): _p1_type_opt = opt, func(opt): _p1_cat_opt = opt, func(opt): _p1_deck_opt = opt))
+	inner.add_child(_player_row("Player 2", ["Recommended AI", "BaseAI", "FullRandomAI"], 0,
+		CAT_RECOMMENDED,
+		func(opt): _p2_type_opt = opt, func(opt): _p2_cat_opt = opt, func(opt): _p2_deck_opt = opt))
+	_p1_cat_opt.item_selected.connect(func(idx): _repopulate_deck_opt("p1", idx))
+	_p2_cat_opt.item_selected.connect(func(idx): _repopulate_deck_opt("p2", idx))
+	_repopulate_deck_opt("p1", CAT_ALL)
+	_repopulate_deck_opt("p2", CAT_RECOMMENDED)
+
+	_avoid_mirror_cb = CheckBox.new()
+	_avoid_mirror_cb.text = "Avoid mirror matches"
+	_avoid_mirror_cb.button_pressed = true
+	inner.add_child(_avoid_mirror_cb)
+
+	_menu_error_label = Label.new()
+	_menu_error_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	_menu_error_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_menu_error_label.visible = false
+	inner.add_child(_menu_error_label)
 
 	var btn_box := HBoxContainer.new()
 	btn_box.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -367,8 +384,8 @@ func _build_menu() -> void:
 
 
 func _player_row(label_text: String, type_items: Array, type_default: int,
-		deck_items: Array, deck_default: int,
-		type_cb: Callable, deck_cb: Callable) -> HBoxContainer:
+		cat_default: int,
+		type_cb: Callable, cat_cb: Callable, deck_cb: Callable) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 
@@ -385,37 +402,115 @@ func _player_row(label_text: String, type_items: Array, type_default: int,
 	row.add_child(type_opt)
 	type_cb.call(type_opt)
 
+	var cat_opt := OptionButton.new()
+	cat_opt.custom_minimum_size = Vector2(160, 0)
+	for item in CATEGORY_LABELS:
+		cat_opt.add_item(item)
+	cat_opt.selected = cat_default
+	row.add_child(cat_opt)
+	cat_cb.call(cat_opt)
+
 	var dlbl := Label.new()
 	dlbl.text = "Deck:"
 	row.add_child(dlbl)
 
 	var deck_opt := OptionButton.new()
 	deck_opt.custom_minimum_size = Vector2(185, 0)
-	for item in deck_items:
-		deck_opt.add_item(item)
-	deck_opt.selected = deck_default
 	row.add_child(deck_opt)
 	deck_cb.call(deck_opt)
 
 	return row
 
 
+# Deck ids for one category dropdown value ("Random" sentinel not included).
+func _deck_ids_for_category(cat_index: int) -> Array[String]:
+	var index := DeckManager.get_available_decks()
+	if cat_index == CAT_RECOMMENDED:
+		return index.recommended_ai.duplicate()
+	return index.all()
+
+
+func _repopulate_deck_opt(player_key: String, cat_index: int) -> void:
+	var opt := _p1_deck_opt if player_key == "p1" else _p2_deck_opt
+	var stored: Array[String] = []
+	opt.clear()
+	for deck_id in _deck_ids_for_category(cat_index):
+		var deck_def := DeckManager.load_deck(deck_id)
+		if deck_def == null:
+			continue
+		stored.append(deck_id)
+		opt.add_item(deck_def.display_name)
+	stored.append(DECK_RANDOM)
+	opt.add_item("Random")
+	opt.selected = stored.size() - 1   # default to Random
+	if player_key == "p1":
+		_p1_deck_ids = stored
+	else:
+		_p2_deck_ids = stored
+
+
+# Resolve both deck picks, honoring "avoid mirror matches". Returns
+# [p1_deck_id, p2_deck_id], or [] if the matchup is a refused mirror.
+func _resolve_matchup(p1_pick: String, p1_pool: Array[String],
+		p2_pick: String, p2_pool: Array[String], avoid_mirror: bool) -> Array[String]:
+	if p1_pick != DECK_RANDOM and p2_pick != DECK_RANDOM:
+		if avoid_mirror and p1_pick == p2_pick:
+			return []
+		return [p1_pick, p2_pick]
+
+	var r1 := p1_pick
+	if r1 == DECK_RANDOM:
+		var pool := p1_pool.duplicate()
+		pool.erase(DECK_RANDOM)
+		if avoid_mirror and p2_pick != DECK_RANDOM:
+			pool.erase(p2_pick)
+		if pool.is_empty():
+			return []
+		r1 = pool.pick_random()
+
+	var r2 := p2_pick
+	if r2 == DECK_RANDOM:
+		var pool := p2_pool.duplicate()
+		pool.erase(DECK_RANDOM)
+		if avoid_mirror:
+			pool.erase(r1)
+		if pool.is_empty():
+			return []
+		r2 = pool.pick_random()
+
+	return [r1, r2]
+
+
+func _show_menu_error(msg: String) -> void:
+	_menu_error_label.text = msg
+	_menu_error_label.visible = true
+
+
 func _on_quick_start() -> void:
-	var all_decks := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					  DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS,
-					  DECK_HORDE_RADAK]
-	all_decks.shuffle()
-	_launch_game("human", all_decks[0], "fullrandom", all_decks[1])
+	_menu_error_label.visible = false
+	var resolved := _resolve_matchup(
+		DECK_RANDOM, _deck_ids_for_category(CAT_ALL),
+		DECK_RANDOM, _deck_ids_for_category(CAT_RECOMMENDED),
+		_avoid_mirror_cb.button_pressed)
+	if resolved.is_empty():
+		_show_menu_error("No non-mirror matchup possible — uncheck 'Avoid mirror matches'.")
+		return
+	_launch_game("human", resolved[0], "recommended", resolved[1])
 
 
 func _on_start_game() -> void:
-	var p1_types := ["human", "base", "fullrandom"]
-	var p2_types := ["base", "fullrandom"]
-	var deck_ids := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS,
-					 DECK_HORDE_RADAK, DECK_RANDOM]
-	_launch_game(p1_types[_p1_type_opt.selected], deck_ids[_p1_deck_opt.selected],
-				 p2_types[_p2_type_opt.selected], deck_ids[_p2_deck_opt.selected])
+	_menu_error_label.visible = false
+	var p1_types := ["human", "recommended", "base", "fullrandom"]
+	var p2_types := ["recommended", "base", "fullrandom"]
+	var resolved := _resolve_matchup(
+		_p1_deck_ids[_p1_deck_opt.selected], _p1_deck_ids,
+		_p2_deck_ids[_p2_deck_opt.selected], _p2_deck_ids,
+		_avoid_mirror_cb.button_pressed)
+	if resolved.is_empty():
+		_show_menu_error("Mirror match — pick different decks or uncheck 'Avoid mirror matches'.")
+		return
+	_launch_game(p1_types[_p1_type_opt.selected], resolved[0],
+				 p2_types[_p2_type_opt.selected], resolved[1])
 
 
 func _launch_game(p1_type: String, p1_deck_id: String,
@@ -426,243 +521,20 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 	_menu_layer.visible = false
 	_p1_type = p1_type
 	_p2_type = p2_type
-	_p1_ai   = _make_ai(p1_type)
-	_p2_ai   = _make_ai(p2_type)
-	var r_p1 := _resolve_deck(p1_deck_id)
-	var r_p2 := _resolve_deck(p2_deck_id)
-	_last_p1_deck_id = r_p1
-	_last_p2_deck_id = r_p2
-	_setup_game_state(_build_deck_for(r_p1), _build_deck_for(r_p2))
+	_last_p1_deck_id = p1_deck_id
+	_last_p2_deck_id = p2_deck_id
+	_p1_ai   = _make_ai(p1_type, p1_deck_id)
+	_p2_ai   = _make_ai(p2_type, p2_deck_id)
+	_setup_game_state(DeckManager.get_runtime_deck(p1_deck_id),
+					  DeckManager.get_runtime_deck(p2_deck_id))
 
 
-func _make_ai(type: String) -> Object:
+func _make_ai(type: String, deck_id: String) -> Object:
 	match type:
-		"base":       return BaseAI.new()
-		"fullrandom": return FullRandomAI.new()
-		_:            return null   # human
-
-
-func _resolve_deck(deck_id: String) -> String:
-	if deck_id == DECK_RANDOM:
-		var pool := [DECK_ALLIANCE_MOONSHADOW, DECK_ALLIANCE_TIMMO, DECK_ALLIANCE_DIZDEMONA,
-					 DECK_ALLIANCE_BORIS, DECK_HORDE_TAZO, DECK_HORDE_GRENNAN, DECK_HORDE_OMEDUS,
-					 DECK_HORDE_RADAK]
-		return pool[randi() % pool.size()]
-	return deck_id
-
-
-func _build_deck_for(resolved_id: String) -> Deck:
-	# ── Horde test deck (60 cards) ────────────────────────────────────────────────
-	# Core (22): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish
-	# Filler (38): 5 remaining horde allies spread evenly (8/8/8/7/7)
-	var horde_cards: Array[String] = [
-		# 10× Your Fortune Awaits You
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281",
-		# 2× A Donation of Wool
-		"azeroth_351", "azeroth_351",
-		# 2× Ka'tali Stonetusk  (1-cost protector)
-		"azeroth_248", "azeroth_248",
-		# 2× Kagra of the Crossroads  (1-cost offensive / Ferocity)
-		"azeroth_246", "azeroth_246",
-		# 2× Taz'dingo  (3-cost alignment staple)
-		"azeroth_260", "azeroth_260",
-		# 2× Arnold Flem  (on-death AoE)
-		"azeroth_225", "azeroth_225",
-		# 2× Vanquish
-		"azeroth_171", "azeroth_171",
-		# Filler — 38 slots across 6 remaining horde allies
-		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×4
-		"azeroth_230", "azeroth_230", "azeroth_230", "azeroth_230",  # Blood Guard Mal'wani ×4
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
-		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8
-		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
-		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×6
-		"azeroth_228", "azeroth_228",
-		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×4
-		"azeroth_249", "azeroth_249", "azeroth_249", "azeroth_249",  # Kulan Earthguard ×4
-	]
-
-	# ── Alliance test deck (60 cards) ─────────────────────────────────────────────
-	# Core (24): 12 YFA · 2 Teep · 2 Tonarin · 2 Parvink · 2 Adept Breton · 2 Vanquish · 2 Freya
-	# Filler (36): Crazy Igvand ×8, Kor Cindervein ×8, Latro ×4, Anika ×4, Braxiss ×4, Liba ×4, Gallen ×4
-	var alliance_cards: Array[String] = [
-		# 10× Your Fortune Awaits You
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281",
-		# 2× A Donation of Wool
-		"azeroth_351", "azeroth_351",
-		# 2× Apprentice Teep  (1-cost protector)
-		"azeroth_176", "azeroth_176",
-		# 2× Warden Tonarin   (1-cost protector)
-		"azeroth_222", "azeroth_222",
-		# 2× Parvink          (3-cost alignment staple)
-		"azeroth_212", "azeroth_212",
-		# 2× Adept Breton     (activated-power AoE)
-		"azeroth_174", "azeroth_174",
-		# 2× Vanquish
-		"azeroth_171", "azeroth_171",
-		# 2× Freya Lightsworn (activated heal)
-		"azeroth_183", "azeroth_183",
-		# Filler — 36 slots across 7 remaining alliance allies
-		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×8
-		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×4
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×4
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×4
-		"azeroth_200", "azeroth_200", "azeroth_200", "azeroth_200",  # Liba Wobblebonk ×4
-		"azeroth_219", "azeroth_219", "azeroth_219", "azeroth_219",  # Tracker Gallen ×4
-	]
-
-	# ── Dizdemona deck (60 cards) — alliance base + 2× Grimdron (Warlock pet) ──
-	# Same as alliance_cards except: 2 Grimdron replace 2 Crazy Igvand (filler trimmed 8→6).
-	var dizdemona_cards: Array[String] = [
-		# 10× Your Fortune Awaits You
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281",
-		# 2× A Donation of Wool
-		"azeroth_351", "azeroth_351",
-		# 2× Apprentice Teep  (1-cost protector)
-		"azeroth_176", "azeroth_176",
-		# 2× Warden Tonarin   (1-cost protector)
-		"azeroth_222", "azeroth_222",
-		# 2× Parvink          (3-cost alignment staple)
-		"azeroth_212", "azeroth_212",
-		# 2× Adept Breton     (activated-power AoE)
-		"azeroth_174", "azeroth_174",
-		# 2× Vanquish
-		"azeroth_171", "azeroth_171",
-		# 2× Freya Lightsworn (activated heal)
-		"azeroth_183", "azeroth_183",
-		# 2× Grimdron (Warlock pet), 2× Sarmoth (Warlock pet)
-		"azeroth_125", "azeroth_125",
-		"azeroth_130", "azeroth_130",
-		# Filler — Crazy Igvand trimmed 8→4 to make room for pets
-		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×4
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×4
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×4
-		"azeroth_200", "azeroth_200", "azeroth_200", "azeroth_200",  # Liba Wobblebonk ×4
-	]
-
-	# ── Boris Brightbeard deck (60 cards) — alliance base, Priest healer hero ──
-	var boris_cards: Array[String] = [
-		# 10× Your Fortune Awaits You
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281",
-		# 2× A Donation of Wool
-		"azeroth_351", "azeroth_351",
-		# 2× Apprentice Teep  (1-cost protector)
-		"azeroth_176", "azeroth_176",
-		# 2× Warden Tonarin   (1-cost protector)
-		"azeroth_222", "azeroth_222",
-		# 2× Parvink          (3-cost alignment staple)
-		"azeroth_212", "azeroth_212",
-		# 2× Adept Breton     (activated-power AoE)
-		"azeroth_174", "azeroth_174",
-		# 2× Vanquish
-		"azeroth_171", "azeroth_171",
-		# 2× Freya Lightsworn (activated heal)
-		"azeroth_183", "azeroth_183",
-		# Filler
-		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×4
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×7
-		"azeroth_192", "azeroth_192", "azeroth_192",
-		"azeroth_352",                                               # In Dreams      ×1
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×4
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×4
-		"azeroth_200", "azeroth_200", "azeroth_200", "azeroth_200",  # Liba Wobblebonk ×4
-	]
-
-	# ── Radak Doombringer deck (60 cards) — horde base + 3× Sarmoth + 1× Grimdron as fuel ──
-	var radak_cards: Array[String] = [
-		# 10× Your Fortune Awaits You
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281",
-		# 2× A Donation of Wool
-		"azeroth_351", "azeroth_351",
-		# 2× Ka'tali Stonetusk
-		"azeroth_248", "azeroth_248",
-		# 2× Kagra of the Crossroads
-		"azeroth_246", "azeroth_246",
-		# 2× Taz'dingo
-		"azeroth_260", "azeroth_260",
-		# 2× Arnold Flem
-		"azeroth_225", "azeroth_225",
-		# 2× Vanquish
-		"azeroth_171", "azeroth_171",
-		# 3× Sarmoth (cost 3 Pet — main sacrifice fuel)
-		"azeroth_130", "azeroth_130", "azeroth_130",
-		# 1× Grimdron (cost 1 Pet — cheap sacrifice for 1 dmg)
-		"azeroth_125",
-		# Filler
-		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×8
-		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
-		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×4
-		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×4
-		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×4
-	]
-
-	# ── Omedus deck (60 cards) — horde base with Mias replacing half of Fa'tafi ──
-	# Core (26): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish · 4 Mias
-	# Filler (34): same 5 allies but Fa'tafi trimmed 8→4 to make room
-	var omedus_cards: Array[String] = [
-		# 10× Your Fortune Awaits You
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281",
-		# 2× A Donation of Wool
-		"azeroth_351", "azeroth_351",
-		# 2× Ka'tali Stonetusk
-		"azeroth_248", "azeroth_248",
-		# 2× Kagra of the Crossroads
-		"azeroth_246", "azeroth_246",
-		# 2× Taz'dingo
-		"azeroth_260", "azeroth_260",
-		# 2× Arnold Flem
-		"azeroth_225", "azeroth_225",
-		# 2× Vanquish
-		"azeroth_171", "azeroth_171",
-		# 4× Mias the Putrid (hand disruption synergy with Omedus)
-		"azeroth_251", "azeroth_251", "azeroth_251", "azeroth_251",
-		# Filler — Fa'tafi trimmed to 4 (was 8), rest unchanged
-		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×4
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×7
-		"azeroth_262", "azeroth_262", "azeroth_262",
-		"azeroth_352",                                               # In Dreams      ×1
-		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8
-		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
-		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×7
-		"azeroth_228", "azeroth_228", "azeroth_228",
-		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×7
-		"azeroth_252", "azeroth_252", "azeroth_252",
-	]
-
-	match resolved_id:
-		DECK_HORDE_TAZO:          return Deck.make("azeroth_15", horde_cards)
-		DECK_HORDE_GRENNAN:       return Deck.make("azeroth_10", horde_cards)
-		DECK_HORDE_OMEDUS:        return Deck.make("azeroth_12", omedus_cards)
-		DECK_HORDE_RADAK:         return Deck.make("azeroth_13", radak_cards)
-		DECK_ALLIANCE_TIMMO:      return Deck.make("azeroth_7", alliance_cards)
-		DECK_ALLIANCE_DIZDEMONA:  return Deck.make("azeroth_2", dizdemona_cards)
-		DECK_ALLIANCE_BORIS:      return Deck.make("azeroth_1", boris_cards)
-		DECK_ALLIANCE_MOONSHADOW: return Deck.make("azeroth_6", alliance_cards)
-		_:                        return Deck.make("azeroth_6", alliance_cards)
+		"base":        return BaseAI.new()
+		"fullrandom":  return FullRandomAI.new()
+		"recommended": return DeckManager.make_ai_for_deck(deck_id)
+		_:             return null   # human
 
 
 func _add_deck_back_sprite(pos: Vector2) -> void:
@@ -1730,10 +1602,11 @@ func _on_rematch() -> void:
 	_in_protect_mode              = false
 	_protect_nodes                = []
 	_p1_has_mulliganed            = false
-	_p1_ai = _make_ai(_p1_type)
-	_p2_ai = _make_ai(_p2_type)
+	_p1_ai = _make_ai(_p1_type, _last_p1_deck_id)
+	_p2_ai = _make_ai(_p2_type, _last_p2_deck_id)
 	_build_scene()
-	_setup_game_state(_build_deck_for(_last_p1_deck_id), _build_deck_for(_last_p2_deck_id))
+	_setup_game_state(DeckManager.get_runtime_deck(_last_p1_deck_id),
+					  DeckManager.get_runtime_deck(_last_p2_deck_id))
 
 
 func _schedule_next_turn() -> void:
@@ -1878,11 +1751,11 @@ func _set_status(text: String) -> void:
 
 # ── Mock card helper ───────────────────────────────────────────────────────────
 
-static func _make_mock_def(id: String, name: String, atk: int, health: int,
+static func _make_mock_def(id: String, def_name: String, atk: int, health: int,
 		instant: bool, ctype: String) -> CardDef:
 	var d := CardDef.new()
 	d.card_def_id    = id
-	d.card_name      = name
+	d.card_name      = def_name
 	d.printed_atk    = atk
 	d.printed_health = health
 	d.is_instant     = instant

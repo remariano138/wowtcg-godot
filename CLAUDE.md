@@ -18,7 +18,7 @@ Engine lives in: `game_logic/` — see Architecture section below.
 3. Implement: engine actions in `game_logic/stack_resolver.gd`, AI heuristics in `game_logic/ai/base_ai.gd` if needed.
 4. Write headless test scenarios in `game_logic/tests/test_scenarios.gd` covering the new mechanic. User runs these to verify correctness before finalizing.
 5. Update `data/cards.csv`: set `data_status=verified`, `engine_status=implemented`, fill `power_text` and `effects` recipe. Do this last, after tests pass.
-6. **Ask the user whether the newly implemented card should be added to any deck(s)** in `renderer/tests/playtest.gd`. Do not add it unprompted.
+6. **Ask the user whether the newly implemented card should be added to any deck(s)** in `decks/recommended_ai/*.json`. Do not add it unprompted.
 
 ---
 
@@ -145,18 +145,17 @@ Pet capacity is a player attribute (`PlayerState.pet_capacity`, default 1) that 
 
 ---
 
-## Decks in playtest.gd
+## Deck system (spec §9 — implemented)
 
-| Constant | Hero | Notes |
-|---|---|---|
-| `DECK_ALLIANCE_DIZDEMONA` | Dizdemona (azeroth_2, Alliance Warlock) | Uses `dizdemona_cards`: 2× Grimdron, 2× Sarmoth, Freya Lightsworn ×2, Bloodclaw ×4, Mias ×4, Latro Abiectus ×8, Kor Cindervein ×8, Crazy Igvand ×4, Vanquish ×4 |
-| `DECK_HORDE_TAZO` | Ta'zo (azeroth_15, Horde Mage) | Uses `horde_cards` incl. Taz'dingo ×4 |
-| `DECK_HORDE_GRENNAN` | Grennan Stormspeaker (azeroth_10) | Uses `horde_cards` |
-| `DECK_ALLIANCE_BORIS` | Boris Brightbeard (azeroth_1, Alliance Priest) | Uses `boris_cards`: same as alliance base + Freya ×2, no Grimdron/Sarmoth |
-| `DECK_HORDE_OMEDUS` | Omedus the Punisher (azeroth_12) | Uses `omedus_cards` |
-| `DECK_HORDE_RADAK` | Radak Doombringer (azeroth_13, Horde Warlock) | Flip: sacrifice a Pet with cost X → deal X shadow damage to target hero or ally |
-| `DECK_ALLIANCE_TIMMO` | Timmo Shadestep (azeroth_7) | Uses `alliance_cards` |
-| `DECK_ALLIANCE_MOONSHADOW` | Commander Moonshadow (azeroth_6) | Uses `alliance_cards` |
+Deck lists live as JSON files on disk, NOT in playtest.gd. Playtest only picks deck ids.
+
+- `decks/base/`, `decks/recommended_ai/`, `decks/custom/` — one JSON per deck (`deck_id` = filename stem). The 8 demo decks are in `recommended_ai/`.
+- `ai_profiles/*.json` — `AIProfile` (`ai_id`, `ai_class`: "base"|"fullrandom", `strategy_data`). All demo decks recommend `ai_fullrandom`.
+- Classes: `DeckDefinition`/`DeckCardEntry` (game_logic/deck_definition.gd, deck_card_entry.gd), `DeckLibrary`/`DeckLibraryIndex` (scan/categorize, ids only), `DeckManager` (single entry point: `get_available_decks()`, `load_deck()`, `validate_deck()` [hero + ≥60 cards], `get_runtime_deck()` → `Deck`, `load_ai_profile()`, `make_ai_for_deck()`).
+- **Nothing except DeckManager reads deck files or calls DeckLibrary.** Playtest menu builds its dropdown from `get_available_decks()`; "Recommended AI" player type uses `make_ai_for_deck()`.
+- Tests: `game_logic/tests/test_deck_manager.gd`.
+
+Demo decks (all 60 cards): Dizdemona (azeroth_2), Ta'zo (azeroth_15), Grennan (azeroth_10), Boris (azeroth_1), Omedus (azeroth_12), Radak (azeroth_13), Timmo (azeroth_7), Moonshadow (azeroth_6).
 
 ---
 

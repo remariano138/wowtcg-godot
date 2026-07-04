@@ -1,0 +1,26 @@
+{
+  "deck_id": "alliance_dizdemona_test",
+  "display_name": "Alliance_test (Dizdemona)",
+  "hero_card_def_id": "azeroth_2",
+  "card_entries": [
+    { "card_def_id": "azeroth_281", "count": 10 },
+    { "card_def_id": "azeroth_351", "count": 2 },
+    { "card_def_id": "azeroth_176", "count": 2 },
+    { "card_def_id": "azeroth_222", "count": 2 },
+    { "card_def_id": "azeroth_212", "count": 2 },
+    { "card_def_id": "azeroth_174", "count": 2 },
+    { "card_def_id": "azeroth_171", "count": 2 },
+    { "card_def_id": "azeroth_183", "count": 2 },
+    { "card_def_id": "azeroth_125", "count": 2 },
+    { "card_def_id": "azeroth_130", "count": 2 },
+    { "card_def_id": "azeroth_180", "count": 4 },
+    { "card_def_id": "azeroth_192", "count": 8 },
+    { "card_def_id": "azeroth_197", "count": 8 },
+    { "card_def_id": "azeroth_175", "count": 4 },
+    { "card_def_id": "azeroth_179", "count": 4 },
+    { "card_def_id": "azeroth_200", "count": 4 }
+  ],
+  "recommended_ai_id": "ai_fullrandom",
+  "source": "recommended_ai",
+  "metadata": { "author": "playtest", "origin": "migrated from renderer/tests/playtest.gd" }
+}

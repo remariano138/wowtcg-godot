@@ -1,0 +1,24 @@
+{
+  "deck_id": "horde_omedus_test",
+  "display_name": "Horde_test (Omedus)",
+  "hero_card_def_id": "azeroth_12",
+  "card_entries": [
+    { "card_def_id": "azeroth_281", "count": 10 },
+    { "card_def_id": "azeroth_351", "count": 2 },
+    { "card_def_id": "azeroth_248", "count": 2 },
+    { "card_def_id": "azeroth_246", "count": 2 },
+    { "card_def_id": "azeroth_260", "count": 2 },
+    { "card_def_id": "azeroth_225", "count": 2 },
+    { "card_def_id": "azeroth_171", "count": 2 },
+    { "card_def_id": "azeroth_251", "count": 4 },
+    { "card_def_id": "azeroth_236", "count": 4 },
+    { "card_def_id": "azeroth_262", "count": 7 },
+    { "card_def_id": "azeroth_352", "count": 1 },
+    { "card_def_id": "azeroth_264", "count": 8 },
+    { "card_def_id": "azeroth_228", "count": 7 },
+    { "card_def_id": "azeroth_252", "count": 7 }
+  ],
+  "recommended_ai_id": "ai_fullrandom",
+  "source": "recommended_ai",
+  "metadata": { "author": "playtest", "origin": "migrated from renderer/tests/playtest.gd" }
+}

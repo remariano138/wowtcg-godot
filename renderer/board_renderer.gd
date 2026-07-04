@@ -746,7 +746,6 @@ func _ensure_hero_bar(player_id: String) -> void:
 	bg.add_child(fill)
 
 	var lbl := Label.new()
-	lbl.layout_mode = 1
 	lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
@@ -848,8 +847,8 @@ func _number_origin(card_id: String) -> Vector2:
 		var bg := bar.get("bg") as ColorRect
 		if bg:
 			return bg.global_position + Vector2(bg.size.x * 0.5, 0)
-		var cn := card_nodes.get(card_id) as Node2D
-		return cn.global_position + Vector2(-20, -30) if cn else Vector2.ZERO
+		var hero_cn := card_nodes.get(card_id) as Node2D
+		return hero_cn.global_position + Vector2(-20, -30) if hero_cn else Vector2.ZERO
 	var cn := card_nodes.get(card_id) as Node2D
 	return cn.global_position + Vector2(10, -30) if cn else Vector2.ZERO
 

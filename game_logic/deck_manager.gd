@@ -1,19 +1,115 @@
 class_name DeckManager
 extends RefCounted
 
-# Produces Deck objects for GameManager to consume.
+# Single entry point for deck data (spec §9.5). Nothing else reads deck files
+# or calls DeckLibrary directly — validation, loading, AI-profile lookup and
+# DeckDefinition → runtime Deck conversion all live here.
 #
 # Modes:
-#   build_random(db)        — picks 1 hero + fills to TARGET_SIZE cards from
-#                             the implemented pool, no copy-limit enforced yet.
-#   get_named(name, db)     — loads a named premade deck (phase 8+).
+#   get_available_decks()   — categorized index of deck ids on disk.
+#   load_deck(id)           — parse + validate one deck file → DeckDefinition.
+#   get_runtime_deck(id)    — load_deck + expand to a playable Deck.
+#   load_ai_profile(id)     — AIProfile from res://ai_profiles/.
+#   make_ai_for_deck(id)    — AI instance from the deck's recommended profile.
+#   build_random(db)        — legacy: random deck from the implemented pool.
 #
 # Deck composition rules (rule 100):
 #   - Exactly 1 hero (separate from the 60-card deck).
 #   - Minimum TARGET_SIZE cards (60 for Constructed).
-#   - Max 4 copies of any card with the same name (not enforced yet).
+#   - Max 4 copies of any card with the same name (not enforced yet — demo
+#     decks intentionally exceed it while the implemented pool is small).
 
 const TARGET_SIZE := 60
+const AI_PROFILES_ROOT := "res://ai_profiles"
+const GENERIC_AI_PROFILE_ID := "ai_fullrandom"
+
+static var _index: DeckLibraryIndex = null
+
+
+# ── Library index ──────────────────────────────────────────────────────────────
+
+static func get_available_decks(rescan := false) -> DeckLibraryIndex:
+	if _index == null or rescan:
+		_index = DeckLibrary.scan()
+	return _index
+
+
+# ── Loading + validation ───────────────────────────────────────────────────────
+
+static func load_deck(deck_id: String) -> DeckDefinition:
+	var path := _resolve_path(deck_id)
+	if path.is_empty():
+		push_error("DeckManager: unknown deck id '%s'" % deck_id)
+		return null
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if parsed == null or not (parsed is Dictionary):
+		push_error("DeckManager: cannot parse %s" % path)
+		return null
+	var deck := DeckDefinition.from_dict(parsed)
+	var errors := validate_deck(deck)
+	if not errors.is_empty():
+		push_error("DeckManager: invalid deck %s: %s" % [deck_id, errors])
+		return null
+	return deck
+
+
+static func validate_deck(deck: DeckDefinition) -> Array[String]:
+	var errors: Array[String] = []
+	if deck.hero_card_def_id.is_empty():
+		errors.append("Deck has no hero.")
+	var total := deck.total_cards()
+	if total < TARGET_SIZE:
+		errors.append("Deck has %d cards, minimum is %d." % [total, TARGET_SIZE])
+	return errors
+
+
+# ── DeckDefinition → runtime Deck ──────────────────────────────────────────────
+
+static func get_runtime_deck(deck_id: String) -> Deck:
+	var def := load_deck(deck_id)
+	if def == null:
+		return null
+	return Deck.make(def.hero_card_def_id, def.expand_card_ids())
+
+
+# ── AI profiles ────────────────────────────────────────────────────────────────
+
+static func load_ai_profile(ai_id: String) -> AIProfile:
+	var path := "%s/%s.json" % [AI_PROFILES_ROOT, ai_id]
+	if not FileAccess.file_exists(path):
+		push_error("DeckManager: missing AI profile '%s'" % ai_id)
+		return null
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if parsed == null or not (parsed is Dictionary):
+		push_error("DeckManager: cannot parse AI profile %s" % path)
+		return null
+	return AIProfile.from_dict(parsed)
+
+
+# AI instance from the deck's recommended_ai_id, falling back to the generic
+# profile when the deck omits one (e.g. future custom decks).
+static func make_ai_for_deck(deck_id: String) -> Object:
+	var ai_id := GENERIC_AI_PROFILE_ID
+	var def := load_deck(deck_id)
+	if def != null and not def.recommended_ai_id.is_empty():
+		ai_id = def.recommended_ai_id
+	var profile := load_ai_profile(ai_id)
+	if profile == null and ai_id != GENERIC_AI_PROFILE_ID:
+		profile = load_ai_profile(GENERIC_AI_PROFILE_ID)
+	if profile == null:
+		return null
+	return profile.make_ai()
+
+
+static func _resolve_path(deck_id: String) -> String:
+	var index := get_available_decks()
+	if index.base.has(deck_id):
+		return DeckLibrary.path_for(deck_id, "base")
+	if index.recommended_ai.has(deck_id):
+		return DeckLibrary.path_for(deck_id, "recommended_ai")
+	if index.custom.has(deck_id):
+		return DeckLibrary.path_for(deck_id, "custom")
+	return ""
 
 
 # ── Random deck ────────────────────────────────────────────────────────────────

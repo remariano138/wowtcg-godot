@@ -134,11 +134,11 @@ func _decide_resource_placement(state: GameState, db, player_id: String) -> Pend
 	for card in hand:
 		if counts[card.card_def_id] == max_count:
 			candidates.append(card)
-	var pick := candidates[randi() % candidates.size()]
-	var action := PendingAction.make("place_resource", player_id,
-		{"card_id": pick.instance_id, "face_up": false})
-	if StackResolver.can_submit(state, action, db):
-		return action
+	var dup_pick := candidates[randi() % candidates.size()]
+	var dup_action := PendingAction.make("place_resource", player_id,
+		{"card_id": dup_pick.instance_id, "face_up": false})
+	if StackResolver.can_submit(state, dup_action, db):
+		return dup_action
 
 	return null
 

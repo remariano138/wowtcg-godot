@@ -53,21 +53,21 @@ func _ready() -> void:
 var _pass := 0
 var _fail := 0
 
-func ok(condition: bool, name: String) -> void:
+func ok(condition: bool, label: String) -> void:
 	if condition:
 		_pass += 1
-		print("  PASS  %s" % name)
+		print("  PASS  %s" % label)
 	else:
 		_fail += 1
-		print("  FAIL  %s" % name)
+		print("  FAIL  %s" % label)
 
-func eq(a, b, name: String) -> void:
+func eq(a, b, label: String) -> void:
 	if a == b:
 		_pass += 1
-		print("  PASS  %s" % name)
+		print("  PASS  %s" % label)
 	else:
 		_fail += 1
-		print("  FAIL  %s  [got %s, expected %s]" % [name, str(a), str(b)])
+		print("  FAIL  %s  [got %s, expected %s]" % [label, str(a), str(b)])
 
 
 # ── Mock database ──────────────────────────────────────────────────────────────
@@ -858,10 +858,8 @@ func _test_grimdron_ally_power() -> void:
 	# sc10-b: targeting own ally is also technically legal by the rules
 	# (the restriction is a heuristic, not a rule) — but verify targeting
 	# a non-in-play card is rejected.
-	var bad_target := PendingAction.make("use_ally_power", "p1",
-		{"card_id": "grim_inst", "target_id": "p1_hero"})
-	# p1_hero IS in play so this is actually legal; test that an out-of-play
-	# target (deck card) is correctly rejected.
+	# p1_hero IS in play so that would actually be legal; test that an
+	# out-of-play target (deck card) is correctly rejected instead.
 	var deck_card := CardInstance.create("deck_dummy", "dummy_ally_def", "p1", "p1_deck")
 	state.cards["deck_dummy"] = deck_card
 	state.zones["p1_deck"].card_ids.append("deck_dummy")

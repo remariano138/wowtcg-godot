@@ -743,17 +743,17 @@ func _get_hero_power_targets(hero_id: String) -> Array:
 	if _is_radak_power(hero_id):
 		if _targeting_first_target == "":
 			# Phase 1: show owned Pets in ally_row.
-			var result: Array = []
+			var pet_targets: Array = []
 			for card in state.cards_in_zone(local_player + "_ally_row"):
 				var probe := PendingAction.make("activate_power", local_player, {
 					"hero_id": hero_id, "pet_id": card.instance_id, "target_id": "",
 				})
 				if StackResolver.can_submit(state, probe, db):
-					result.append(card.instance_id)
-			return result
+					pet_targets.append(card.instance_id)
+			return pet_targets
 		else:
 			# Phase 2: show all in-play heroes and allies as damage targets.
-			var result: Array = []
+			var dmg_targets: Array = []
 			var pet_card := state.get_card(_targeting_first_target)
 			var pet_def: CardDef = db.get_def(pet_card.card_def_id) if pet_card and db else null
 			var x_val: int = pet_def.cost if pet_def else 0
@@ -765,7 +765,7 @@ func _get_hero_power_targets(hero_id: String) -> Array:
 						"target_id": ps2.hero_instance_id, "x_value": x_val,
 					})
 					if StackResolver.can_submit(state, act, db):
-						result.append(ps2.hero_instance_id)
+						dmg_targets.append(ps2.hero_instance_id)
 				for card in state.cards_in_zone(pid + "_ally_row"):
 					if card.instance_id == _targeting_first_target:
 						continue
@@ -774,25 +774,25 @@ func _get_hero_power_targets(hero_id: String) -> Array:
 						"target_id": card.instance_id, "x_value": x_val,
 					})
 					if StackResolver.can_submit(state, act, db):
-						result.append(card.instance_id)
-			return result
+						dmg_targets.append(card.instance_id)
+			return dmg_targets
 
 	if _is_damage_and_heal_power(hero_id):
 		if _targeting_first_target == "":
 			# Phase 1: show all valid damage targets (those that have at least one valid heal partner).
-			var result: Array = []
+			var valid_dmg_targets: Array = []
 			for pid in state.players:
 				var ps := state.players.get(pid) as PlayerState
 				if ps and ps.hero_instance_id != "":
 					if _any_valid_heal_target(hero_id, ps.hero_instance_id) != "":
-						result.append(ps.hero_instance_id)
+						valid_dmg_targets.append(ps.hero_instance_id)
 				for card in state.cards_in_zone(pid + "_ally_row"):
 					if _any_valid_heal_target(hero_id, card.instance_id) != "":
-						result.append(card.instance_id)
-			return result
+						valid_dmg_targets.append(card.instance_id)
+			return valid_dmg_targets
 		else:
 			# Phase 2: show valid heal targets for the already-chosen damage target.
-			var result: Array = []
+			var heal_targets: Array = []
 			for pid in state.players:
 				var ps := state.players.get(pid) as PlayerState
 				if ps and ps.hero_instance_id != "":
@@ -803,7 +803,7 @@ func _get_hero_power_targets(hero_id: String) -> Array:
 							"heal_target_id": id,
 						})
 						if StackResolver.can_submit(state, act, db):
-							result.append(id)
+							heal_targets.append(id)
 				for card in state.cards_in_zone(pid + "_ally_row"):
 					if card.instance_id != _targeting_first_target:
 						var act := PendingAction.make("activate_power", local_player, {
@@ -811,8 +811,8 @@ func _get_hero_power_targets(hero_id: String) -> Array:
 							"heal_target_id": card.instance_id,
 						})
 						if StackResolver.can_submit(state, act, db):
-							result.append(card.instance_id)
-			return result
+							heal_targets.append(card.instance_id)
+			return heal_targets
 
 	var result: Array = []
 	for pid in state.players:

@@ -78,7 +78,7 @@ static func advance_phase(state: GameState, db = null) -> Array[GameEvent]:
 
 # ── Mulligan phase ─────────────────────────────────────────────────────────────
 
-static func _enter_mulligan(state: GameState, db) -> Array[GameEvent]:
+static func _enter_mulligan(state: GameState, _db) -> Array[GameEvent]:
 	state.phase           = "mulligan"
 	state.mulligan_decided = {}
 	state.mulligan_wants   = {}
@@ -126,7 +126,7 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	return events
 
 
-static func _enter_draw(state: GameState, db) -> Array[GameEvent]:
+static func _enter_draw(state: GameState, _db) -> Array[GameEvent]:
 	state.phase = "draw"
 	var events: Array[GameEvent] = []
 	# Rule 501.2b: first player skips the draw step on the very first turn.
@@ -141,7 +141,7 @@ static func _enter_draw(state: GameState, db) -> Array[GameEvent]:
 	return events
 
 
-static func _enter_action(state: GameState, db) -> Array[GameEvent]:
+static func _enter_action(state: GameState, _db) -> Array[GameEvent]:
 	state.phase = "action"
 	var events: Array[GameEvent] = []
 	events.append(GameEvent.make("phase_changed", {

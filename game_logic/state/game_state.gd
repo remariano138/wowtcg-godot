@@ -141,7 +141,14 @@ func get_atk(instance_id: String, db) -> int:
 	var def: CardDef = db.get_def(inst.card_def_id)
 	if not def:
 		return 0
-	return def.printed_atk + inst.sum_stat("atk")
+	var atk := def.printed_atk + inst.sum_stat("atk")
+	for segment in def.effects.split("|"):
+		var parts := segment.split(":")
+		if parts[0] == "atk_per_ally":
+			var per_ally := int(parts[1]) if parts.size() > 1 else 1
+			var ally_count := cards_in_zone(inst.controller + "_ally_row").size()
+			atk += per_ally * ally_count
+	return atk
 
 func get_max_hp(instance_id: String, db) -> int:
 	var inst := get_card(instance_id)

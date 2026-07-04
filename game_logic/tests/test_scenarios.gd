@@ -34,6 +34,9 @@ func _ready() -> void:
 	_test_radak_pet_sacrifice()
 	_test_radak_no_pets()
 	_test_quest_cant_reuse_while_pending()
+	_test_liba_wobblebonk_enter_play()
+	_test_kulan_earthguard_end_of_turn_ready()
+	_test_tracker_gallen_atk_per_ally()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -99,13 +102,14 @@ class MockDB extends RefCounted:
 		d.card_type      = "Hero"
 		_defs[def_id] = d
 
-	func quest(def_id: String, cost: int = 0) -> void:
+	func quest(def_id: String, cost: int = 0, effects: String = "") -> void:
 		var d := CardDef.new()
 		d.card_def_id    = def_id
 		d.card_name      = def_id
 		d.printed_atk    = 0
 		d.printed_health = 0
 		d.cost           = cost
+		d.effects        = effects
 		d.card_type      = "Quest"
 		_defs[def_id] = d
 
@@ -1253,3 +1257,92 @@ func _test_quest_cant_reuse_while_pending() -> void:
 	var complete_other := PendingAction.make("use_quest", "p1", {"quest_id": "other_inst"})
 	ok(StackResolver.can_submit(state, complete_other, db),
 		"sc18-c: unrelated quest is still legal while YFAY is pending")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 19 — Liba Wobblebonk enters play and draws a card
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_liba_wobblebonk_enter_play() -> void:
+	print("\n-- Scenario 19: Liba Wobblebonk enters play and draws a card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("liba_wobblebonk_def", 3, 4, [], 5, "on_enter:draw:1")
+	db.ally("deck_card_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+
+	var liba := CardInstance.create("liba_inst", "liba_wobblebonk_def", "p1", "p1_hand")
+	state.cards["liba_inst"] = liba
+	state.zones["p1_hand"].card_ids.append("liba_inst")
+
+	var deck_card := CardInstance.create("deck1", "deck_card_def", "p1", "p1_deck")
+	state.cards["deck1"] = deck_card
+	state.zones["p1_deck"].card_ids.append("deck1")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_ally", "p1", {"card_id": "liba_inst"}))
+
+	_drive_turns(state, db, p1_ai, ScriptedAI.new(), 3)
+
+	ok(state.get_card("liba_inst").zone_id == "p1_ally_row", "sc19-a: Liba Wobblebonk in p1_ally_row")
+	ok(state.get_card("deck1").zone_id == "p1_hand",          "sc19-b: deck card drawn into hand")
+	eq(state.cards_in_zone("p1_hand").size(), 1,              "sc19-c: hand has exactly 1 card")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 20 — Kulan Earthguard readies itself at the end of its controller's turn
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_kulan_earthguard_end_of_turn_ready() -> void:
+	print("\n-- Scenario 20: Kulan Earthguard readies itself at end of turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kulan_def", 3, 5, ["protector"], 5, "ready_self_at_turn_end")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	var kulan := CardInstance.create("kulan_inst", "kulan_def", "p1", "p1_ally_row")
+	state.cards["kulan_inst"] = kulan
+	state.zones["p1_ally_row"].card_ids.append("kulan_inst")
+
+	# Exhaust it manually (e.g. as if it had just protected an attack).
+	GameLogic.exhaust_card(state, "kulan_inst")
+	ok(kulan.is_exhausted, "sc20-a: Kulan starts this test exhausted")
+
+	_drive_turns(state, db, ScriptedAI.new(), ScriptedAI.new(), 1)
+
+	ok(not state.get_card("kulan_inst").is_exhausted,
+		"sc20-b: Kulan Earthguard is ready again after p1's turn ends")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 21 — Tracker Gallen: +1 ATK for each ally in party
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_tracker_gallen_atk_per_ally() -> void:
+	print("\n-- Scenario 21: Tracker Gallen gains ATK per ally in party --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("gallen_def", 0, 2, [], 2, "atk_per_ally:1")
+	db.ally("other_ally_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "gallen_inst", "gallen_def", "p1")
+
+	ok(state.get_atk("gallen_inst", db) == 1,
+		"sc21-a: Tracker Gallen alone has 1 ATK (counts itself)")
+
+	_add_ally(state, "other_inst", "other_ally_def", "p1")
+
+	ok(state.get_atk("gallen_inst", db) == 2,
+		"sc21-b: Tracker Gallen gains +1 ATK when a second ally enters play")
+
+	_add_ally(state, "opp_inst", "other_ally_def", "p2")
+
+	ok(state.get_atk("gallen_inst", db) == 2,
+		"sc21-c: Opponent's allies don't count toward Gallen's ATK")

@@ -456,10 +456,12 @@ func _build_deck_for(resolved_id: String) -> Deck:
 	# Core (22): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish
 	# Filler (38): 5 remaining horde allies spread evenly (8/8/8/7/7)
 	var horde_cards: Array[String] = [
-		# 12× Your Fortune Awaits You
+		# 10× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281",
+		# 2× A Donation of Wool
+		"azeroth_351", "azeroth_351",
 		# 2× Ka'tali Stonetusk  (1-cost protector)
 		"azeroth_248", "azeroth_248",
 		# 2× Kagra of the Crossroads  (1-cost offensive / Ferocity)
@@ -477,20 +479,22 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
 		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8
 		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
-		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×7
-		"azeroth_228", "azeroth_228", "azeroth_228",
-		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×7
-		"azeroth_252", "azeroth_252", "azeroth_252",
+		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×6
+		"azeroth_228", "azeroth_228",
+		"azeroth_252", "azeroth_252", "azeroth_252", "azeroth_252",  # Moko           ×4
+		"azeroth_249", "azeroth_249", "azeroth_249", "azeroth_249",  # Kulan Earthguard ×4
 	]
 
 	# ── Alliance test deck (60 cards) ─────────────────────────────────────────────
 	# Core (24): 12 YFA · 2 Teep · 2 Tonarin · 2 Parvink · 2 Adept Breton · 2 Vanquish · 2 Freya
-	# Filler (36): 5 remaining alliance allies spread evenly (8/8/8/6/6)
+	# Filler (36): Crazy Igvand ×8, Kor Cindervein ×8, Latro ×4, Anika ×4, Braxiss ×4, Liba ×4, Gallen ×4
 	var alliance_cards: Array[String] = [
-		# 12× Your Fortune Awaits You
+		# 10× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281",
+		# 2× A Donation of Wool
+		"azeroth_351", "azeroth_351",
 		# 2× Apprentice Teep  (1-cost protector)
 		"azeroth_176", "azeroth_176",
 		# 2× Warden Tonarin   (1-cost protector)
@@ -503,26 +507,27 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_171", "azeroth_171",
 		# 2× Freya Lightsworn (activated heal)
 		"azeroth_183", "azeroth_183",
-		# Filler — 36 slots across 5 remaining alliance allies
+		# Filler — 36 slots across 7 remaining alliance allies
 		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×8
 		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",
 		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
 		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
-		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×6
-		"azeroth_175", "azeroth_175",
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×6
-		"azeroth_179", "azeroth_179",
+		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×4
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×4
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×4
+		"azeroth_200", "azeroth_200", "azeroth_200", "azeroth_200",  # Liba Wobblebonk ×4
+		"azeroth_219", "azeroth_219", "azeroth_219", "azeroth_219",  # Tracker Gallen ×4
 	]
 
 	# ── Dizdemona deck (60 cards) — alliance base + 2× Grimdron (Warlock pet) ──
 	# Same as alliance_cards except: 2 Grimdron replace 2 Crazy Igvand (filler trimmed 8→6).
 	var dizdemona_cards: Array[String] = [
-		# 12× Your Fortune Awaits You
+		# 10× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281",
+		# 2× A Donation of Wool
+		"azeroth_351", "azeroth_351",
 		# 2× Apprentice Teep  (1-cost protector)
 		"azeroth_176", "azeroth_176",
 		# 2× Warden Tonarin   (1-cost protector)
@@ -544,18 +549,19 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
 		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
 		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×6
-		"azeroth_175", "azeroth_175",
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×6
-		"azeroth_179", "azeroth_179",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×4
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×4
+		"azeroth_200", "azeroth_200", "azeroth_200", "azeroth_200",  # Liba Wobblebonk ×4
 	]
 
 	# ── Boris Brightbeard deck (60 cards) — alliance base, Priest healer hero ──
 	var boris_cards: Array[String] = [
-		# 12× Your Fortune Awaits You
+		# 10× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281",
+		# 2× A Donation of Wool
+		"azeroth_351", "azeroth_351",
 		# 2× Apprentice Teep  (1-cost protector)
 		"azeroth_176", "azeroth_176",
 		# 2× Warden Tonarin   (1-cost protector)
@@ -570,22 +576,24 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_183", "azeroth_183",
 		# Filler
 		"azeroth_180", "azeroth_180", "azeroth_180", "azeroth_180",  # Crazy Igvand   ×4
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×8
-		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",
+		"azeroth_192", "azeroth_192", "azeroth_192", "azeroth_192",  # Kor Cindervein ×7
+		"azeroth_192", "azeroth_192", "azeroth_192",
+		"azeroth_352",                                               # In Dreams      ×1
 		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",  # Latro Abiectus ×8
 		"azeroth_197", "azeroth_197", "azeroth_197", "azeroth_197",
-		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×6
-		"azeroth_175", "azeroth_175",
-		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×6
-		"azeroth_179", "azeroth_179",
+		"azeroth_175", "azeroth_175", "azeroth_175", "azeroth_175",  # Anika Berlyn   ×4
+		"azeroth_179", "azeroth_179", "azeroth_179", "azeroth_179",  # Braxiss        ×4
+		"azeroth_200", "azeroth_200", "azeroth_200", "azeroth_200",  # Liba Wobblebonk ×4
 	]
 
 	# ── Radak Doombringer deck (60 cards) — horde base + 3× Sarmoth + 1× Grimdron as fuel ──
 	var radak_cards: Array[String] = [
-		# 12× Your Fortune Awaits You
+		# 10× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281",
+		# 2× A Donation of Wool
+		"azeroth_351", "azeroth_351",
 		# 2× Ka'tali Stonetusk
 		"azeroth_248", "azeroth_248",
 		# 2× Kagra of the Crossroads
@@ -614,10 +622,12 @@ func _build_deck_for(resolved_id: String) -> Deck:
 	# Core (26): 12 YFA · 2 Stonetusk · 2 Kagra · 2 Taz'dingo · 2 Arnold · 2 Vanquish · 4 Mias
 	# Filler (34): same 5 allies but Fa'tafi trimmed 8→4 to make room
 	var omedus_cards: Array[String] = [
-		# 12× Your Fortune Awaits You
+		# 10× Your Fortune Awaits You
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
 		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
-		"azeroth_281", "azeroth_281", "azeroth_281", "azeroth_281",
+		"azeroth_281", "azeroth_281",
+		# 2× A Donation of Wool
+		"azeroth_351", "azeroth_351",
 		# 2× Ka'tali Stonetusk
 		"azeroth_248", "azeroth_248",
 		# 2× Kagra of the Crossroads
@@ -632,8 +642,9 @@ func _build_deck_for(resolved_id: String) -> Deck:
 		"azeroth_251", "azeroth_251", "azeroth_251", "azeroth_251",
 		# Filler — Fa'tafi trimmed to 4 (was 8), rest unchanged
 		"azeroth_236", "azeroth_236", "azeroth_236", "azeroth_236",  # Fa'tafi        ×4
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×8
-		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",
+		"azeroth_262", "azeroth_262", "azeroth_262", "azeroth_262",  # Vaerik         ×7
+		"azeroth_262", "azeroth_262", "azeroth_262",
+		"azeroth_352",                                               # In Dreams      ×1
 		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",  # Vesh'ral       ×8
 		"azeroth_264", "azeroth_264", "azeroth_264", "azeroth_264",
 		"azeroth_228", "azeroth_228", "azeroth_228", "azeroth_228",  # Benethor       ×7

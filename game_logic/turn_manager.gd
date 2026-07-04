@@ -152,9 +152,14 @@ static func _enter_action(state: GameState, db) -> Array[GameEvent]:
 	return events
 
 
-static func _enter_end(state: GameState, _db) -> Array[GameEvent]:
+static func _enter_end(state: GameState, db) -> Array[GameEvent]:
 	state.phase = "end"
 	var events: Array[GameEvent] = []
+
+	# Triggered effects: "at the end of your turn" (only the turn player's chars).
+	for card in state.cards_in_play(state.turn_player):
+		events.append_array(_apply_end_of_turn_effects(state, card, db))
+
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "end", "turn_player": state.turn_player,
 		"turn_number": state.turn_number,
@@ -209,6 +214,22 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 			continue
 		var amount := int(parts[1])
 		events.append_array(GameLogic.heal(state, card.instance_id, amount, db))
+	return events
+
+
+# Parse the effects string and fire any end-of-turn triggers.
+static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return []
+	var events: Array[GameEvent] = []
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() < 1 or parts[0].strip_edges() != "ready_self_at_turn_end":
+			continue
+		events.append_array(GameLogic.ready_card(state, card.instance_id))
 	return events
 
 

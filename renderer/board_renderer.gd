@@ -786,7 +786,7 @@ func _update_hero_bar(player_id: String, card_id: String, new_hp: int, max_hp: i
 
 # ── Deck count labels ──────────────────────────────────────────────────────────
 
-func _create_deck_label(zone_id: String, anchor: Node2D) -> void:
+func _create_deck_label(zone_id: String, _anchor: Node2D) -> void:
 	_deck_counts[zone_id] = 0
 	var lbl := Label.new()
 	lbl.add_theme_font_size_override("font_size", 14)

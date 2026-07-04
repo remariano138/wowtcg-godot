@@ -8,7 +8,6 @@ Hearthstone) since WoW TCG has its own specific rulings.
 Card data lives in: `data/cards.csv`
 Active playtest scene: `renderer/tests/playtest.gd` (human vs AI, full UI)
 Engine lives in: `game_logic/` — see Architecture section below.
-The old `scenes/boards/SandboxTable.gd` / `DuelTable.gd` are legacy, ignore them.
 
 ---
 

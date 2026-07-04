@@ -152,7 +152,7 @@ static func _enter_action(state: GameState, db) -> Array[GameEvent]:
 	return events
 
 
-static func _enter_end(state: GameState, db) -> Array[GameEvent]:
+static func _enter_end(state: GameState, _db) -> Array[GameEvent]:
 	state.phase = "end"
 	var events: Array[GameEvent] = []
 	events.append(GameEvent.make("phase_changed", {

@@ -79,6 +79,7 @@ var _last_p2_deck_id: String = ""
 # ── Game log ───────────────────────────────────────────────────────────────────
 var _log: RichTextLabel
 var _log_in_mulligan: bool = false
+var _pending_exhaust: Dictionary = {}  # player_id -> count of resources exhausted, not yet logged
 
 # ── Control panel ──────────────────────────────────────────────────────────────
 var _turbo_mode: bool = true
@@ -421,6 +422,7 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 		p2_type: String, p2_deck_id: String) -> void:
 	_log.clear()
 	_log_in_mulligan = false
+	_pending_exhaust.clear()
 	_menu_layer.visible = false
 	_p1_type = p1_type
 	_p2_type = p2_type
@@ -955,7 +957,27 @@ func _log_entry(text: String) -> void:
 	_log.scroll_to_line(_log.get_line_count())
 
 
+func _flush_pending_exhaust(skip_player: String = "") -> void:
+	for p in _pending_exhaust.keys().duplicate():
+		if p == skip_player:
+			continue
+		var n: int = _pending_exhaust[p]
+		if n > 0:
+			var col := "#888"
+			_log_entry("[color=%s]%s exhausts %d resource%s[/color]" % [col, _log_player(p), n, ("" if n == 1 else "s")])
+		_pending_exhaust.erase(p)
+
+
 func _log_event(event: GameEvent) -> void:
+	if event.event_type == "card_exhausted":
+		if _state:
+			var ci := _state.get_card(event.payload.get("card", ""))
+			if ci and ci.zone_id.ends_with("_resource_row"):
+				var card_owner: String = ci.owner
+				_pending_exhaust[card_owner] = _pending_exhaust.get(card_owner, 0) + 1
+		return
+	if event.event_type != "card_moved" or _log_in_mulligan:
+		_flush_pending_exhaust()
 	match event.event_type:
 		"turn_changed":
 			var n: int    = event.payload.get("turn", 0)
@@ -983,21 +1005,27 @@ func _log_event(event: GameEvent) -> void:
 			var to_z:   String = event.payload.get("to", "")
 			var cid:    String = event.payload.get("card", "")
 			if from_z.ends_with("_deck") and to_z.ends_with("_hand"):
-				var owner := cid.split("_")[0] if "_" in cid else "p?"
+				var card_owner := cid.split("_")[0] if "_" in cid else "p?"
 				if _state:
 					var ci := _state.get_card(cid)
 					if ci:
-						owner = ci.owner
-				var col := "#7af" if owner == "p1" else "#fa8"
-				_log_entry("[color=%s]%s draws a card[/color]" % [col, _log_player(owner)])
+						card_owner = ci.owner
+				var col := "#7af" if card_owner == "p1" else "#fa8"
+				_log_entry("[color=%s]%s draws a card[/color]" % [col, _log_player(card_owner)])
 			elif from_z.ends_with("_hand") and to_z.ends_with("_ally_row"):
-				var owner := ""
+				var card_owner := ""
 				if _state:
 					var ci := _state.get_card(cid)
 					if ci:
-						owner = ci.owner
-				var col := "#7af" if owner == "p1" else "#fa8"
-				_log_entry("[color=%s]%s plays [b]%s[/b][/color]" % [col, _log_player(owner), _log_card(cid)])
+						card_owner = ci.owner
+				_flush_pending_exhaust(card_owner)
+				var col := "#7af" if card_owner == "p1" else "#fa8"
+				var n: int = _pending_exhaust.get(card_owner, 0)
+				_pending_exhaust.erase(card_owner)
+				if n > 0:
+					_log_entry("[color=%s]%s exhausts %d resource%s to play [b]%s[/b][/color]" % [col, _log_player(card_owner), n, ("" if n == 1 else "s"), _log_card(cid)])
+				else:
+					_log_entry("[color=%s]%s plays [b]%s[/b][/color]" % [col, _log_player(card_owner), _log_card(cid)])
 		"resource_placed":
 			var p:  String = _log_player(event.payload.get("player", ""))
 			var face_up: bool = event.payload.get("face_up", false)
@@ -1023,13 +1051,13 @@ func _log_event(event: GameEvent) -> void:
 			var amt:    int    = event.payload.get("amount", 0)
 			_log_entry("[color=#f66]%s receives %d dmg from %s[/color]" % [tgt, amt, src])
 		"card_destroyed":
-			var name:   String = _log_card(event.payload.get("card",   ""))
+			var card_name: String = _log_card(event.payload.get("card",   ""))
 			var source: String = event.payload.get("source", "")
 			if source != "":
 				var src_name: String = _log_card(source)
-				_log_entry("[color=#f44][b]%s destroyed by %s[/b][/color]" % [name, src_name])
+				_log_entry("[color=#f44][b]%s destroyed by %s[/b][/color]" % [card_name, src_name])
 			else:
-				_log_entry("[color=#f44][b]%s destroyed[/b][/color]" % name)
+				_log_entry("[color=#f44][b]%s destroyed[/b][/color]" % card_name)
 		"hero_power_used":
 			var p: String = _log_player(event.payload.get("player", ""))
 			_log_entry("[color=#aef]%s hero power[/color]" % p)
@@ -1351,7 +1379,7 @@ func _handle_pet_sacrifice(payload: Dictionary) -> void:
 
 # Returns the instance_id the AI wants to KEEP (the others get sacrificed).
 # Strategy: keep highest-cost pet; tie-break by highest current HP; then random.
-func _pick_ai_pet_keep(player_id: String, candidates: Array) -> String:
+func _pick_ai_pet_keep(_player_id: String, candidates: Array) -> String:
 	if candidates.is_empty():
 		return ""
 	var best: String = candidates[0]
@@ -1568,6 +1596,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	# Total row width: protector buttons + gaps between them + gap before skip + skip.
 	var n          := protectors.size()
 	var row_width: int = n * BTN_W + max(n - 1, 0) * BTN_GAP + SKIP_GAP + SKIP_W
+	@warning_ignore("integer_division")
 	var btn_x      := CENTER_X - row_width / 2
 
 	# Header: who is attacking whom — centred over the button row.
@@ -1578,6 +1607,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	header.add_theme_color_override("font_color", Color(0.9, 0.5, 0.2))
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.size     = Vector2(row_width + 100, 20)
+	@warning_ignore("integer_division")
 	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
 	add_child(header)
 	_protect_nodes.append(header)

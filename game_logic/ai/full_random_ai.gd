@@ -13,7 +13,7 @@ var _responded: bool = false
 
 # Pick a random Protector or skip ("") with equal probability per slot.
 # With 3 legal protectors the pool is [p1, p2, p3, ""] → 1/4 chance to skip.
-func choose_protector(state: GameState, db, player_id: String) -> String:
+func choose_protector(state: GameState, db, _player_id: String) -> String:
 	var pool: Array = StackResolver.get_legal_protectors(
 		state, state.combat_attacker, state.combat_defender, db)
 	pool.append("")   # skip option

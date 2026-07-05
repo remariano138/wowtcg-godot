@@ -276,7 +276,7 @@ func _build_scene() -> void:
 	add_child(vsep2)
 
 	# ── Right section: Speed Mode selector ─────────────────────────────────────
-	_add_label("SPEED MODE", Vector2(1330, 971), 10, Color(0.55, 0.55, 0.55))
+	_add_label("SPEED MODE  [T]", Vector2(1330, 971), 10, Color(0.55, 0.55, 0.55))
 
 	var mode_group := ButtonGroup.new()
 
@@ -762,11 +762,11 @@ func _update_pass_btn() -> void:
 		_pass_btn.text     = "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(1.0, 1.0, 1.0)
 	elif in_attack:
-		_pass_btn.text     = "Attack window — Pass  [Space]"
-		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
+		_pass_btn.text     = "Fight on!  [Space]"
+		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif in_defend:
-		_pass_btn.text     = "Defend window — Pass  [Space]"
-		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
+		_pass_btn.text     = "Fight on!  [Space]"
+		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif in_action:
 		_pass_btn.text     = "Wrap Up  [Space]"
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
@@ -812,6 +812,14 @@ func _input(event: InputEvent) -> void:
 			_on_gy_cancel_pressed()
 			get_viewport().set_input_as_handled()
 			return
+	# T toggles Turbo ⇄ Tactical. Chaining multiple instants (e.g. two Quick Strikes
+	# against a 4-HP attacker) needs Tactical, since Turbo auto-passes after each of the
+	# human's own chain links. Toggle to Tactical, play the chain, pass manually, then
+	# toggle back. Ignored while the X-value dialog is open (the user may be typing).
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_T \
+			and not (_x_dialog and _x_dialog.visible):
+		_toggle_speed_mode()
+		get_viewport().set_input_as_handled()
 	# C confirms the graveyard selection (matches the "Confirm (C)" button).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_C \
 			and _gy_dialog and _gy_dialog.visible:
@@ -1922,6 +1930,16 @@ func _schedule_next_turn() -> void:
 
 # ── Speed mode ─────────────────────────────────────────────────────────────────
 
+func _toggle_speed_mode() -> void:
+	# Flip Turbo ⇄ Tactical by driving the toggle buttons. Their `toggled` signals call
+	# _set_turbo_mode (updating the description label and, for Turbo, possibly auto-passing),
+	# and the shared ButtonGroup keeps the pair mutually exclusive, so the UI stays in sync.
+	if _turbo_mode:
+		_tactical_btn.button_pressed = true
+	else:
+		_turbo_btn.button_pressed = true
+
+
 func _set_turbo_mode(on: bool) -> void:
 	_turbo_mode = on
 	if _mode_desc_label:
@@ -1955,7 +1973,10 @@ func _drain_passes() -> void:
 		var pid_type := _p1_type if pid == "p1" else _p2_type
 		var events: Array[GameEvent] = []
 		if pid_type == "human":
-			if not _turbo_mode or _router.has_any_legal_play():
+			# Turbo auto-passes the human's own just-added top chain link even when they
+			# hold a legal instant (LIFO — they'll regain priority if the opponent reacts).
+			var owns_top := _player_owns_top_of_chain(pid)
+			if not _turbo_mode or (_router.has_any_legal_play() and not owns_top):
 				break
 			events = StackResolver.pass_priority(_state, _db)
 		else:
@@ -2008,10 +2029,27 @@ func _maybe_turbo_pass() -> void:
 	# that pass ends the turn and requires an explicit Wrap Up, even with no legal play.
 	if _is_p1_main_action_window():
 		return
-	# Auto-pass when there's nothing to play, or during ready/draw (instants are
-	# so rare there that Turbo skips them — switch to Tactical to play powers early).
-	if not _router.has_any_legal_play() or phase == "ready" or phase == "draw":
+	# Auto-pass when there's nothing to play, during ready/draw (instants are so rare
+	# there that Turbo skips them — switch to Tactical to play powers early), OR when
+	# the human just added the top chain link themselves (see _player_owns_top_of_chain).
+	if not _router.has_any_legal_play() or phase == "ready" or phase == "draw" \
+			or _player_owns_top_of_chain("p1"):
 		call_deferred("_do_turbo_pass")
+
+
+func _player_owns_top_of_chain(pid: String) -> bool:
+	# Turbo: after a player adds a link to the chain (quest/power/instant), rule 410.1
+	# keeps priority with the proposer. There's no reason to respond to your own just-
+	# added link before the opponent gets a chance — if they react, you regain priority
+	# with the opponent's link on top (LIFO) and can respond then. So auto-pass even when
+	# holding a legal instant. This is safe because priority sits at a player with their
+	# own link on top ONLY right after they added it: any later return of priority is
+	# either post-resolution (link gone) or with an opponent link on top. Works on or off
+	# the human's turn, since it keys off who added the top link.
+	if _state.pending_actions.is_empty():
+		return false
+	var top: PendingAction = _state.pending_actions.back()
+	return top != null and top.source_player == pid
 
 
 func _is_p1_main_action_window() -> bool:
@@ -2032,7 +2070,8 @@ func _do_turbo_pass() -> void:
 	# Re-check at fire time — state may have changed since the deferred was scheduled.
 	if _is_p1_main_action_window():
 		return
-	if _router.has_any_legal_play() and phase != "ready" and phase != "draw":
+	if _router.has_any_legal_play() and phase != "ready" and phase != "draw" \
+			and not _player_owns_top_of_chain("p1"):
 		return
 	_router.pass_priority_action()
 	_refresh_ui()

@@ -5,13 +5,18 @@
   "card_entries": [
     {
       "card_def_id": "azeroth_360",
-      "count": 6,
+      "count": 4,
       "_card_name": "Your Fortune Awaits You"
     },
     {
       "card_def_id": "azeroth_340",
       "count": 4,
       "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_347",
+      "count": 2,
+      "_card_name": "Battle of Darrowshire"
     },
     {
       "card_def_id": "azeroth_351",
@@ -30,7 +35,7 @@
     },
     {
       "card_def_id": "azeroth_212",
-      "count": 2,
+      "count": 4,
       "_card_name": "Parvink"
     },
     {
@@ -55,7 +60,7 @@
     },
     {
       "card_def_id": "azeroth_180",
-      "count": 6,
+      "count": 4,
       "_card_name": "Crazy Igvand"
     },
     {

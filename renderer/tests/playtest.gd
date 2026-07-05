@@ -1721,7 +1721,20 @@ func _close_gy_dialog() -> void:
 # defend windows, so the human can see who's fighting and decide whether to
 # respond (e.g. Quick Strike) before protect point / damage. Called again on
 # defend_window_opened since the defender may have swapped to a protector.
+#
+# Deferred one frame: the callers (attack_window_opened / defend_window_opened
+# handlers) call _refresh_ui()/_drain_passes() right after this, which routes
+# through _router.refresh_highlights() -> BoardRenderer._on_highlights_updated,
+# and that unconditionally overwrites every card node's outline — wiping the
+# red outline set here if applied synchronously (same issue protect point
+# works around with _apply_protect_outlines).
 func _set_combat_highlight(attacker_id: String, defender_id: String) -> void:
+	call_deferred("_apply_combat_highlight", attacker_id, defender_id)
+
+
+func _apply_combat_highlight(attacker_id: String, defender_id: String) -> void:
+	if not (_state.combat_attack_window or _state.combat_defend_window):
+		return   # window already closed before this frame fired
 	_clear_combat_highlight()
 	if attacker_id != "":
 		_renderer.set_card_outline(attacker_id, true, Color(1.0, 0.2, 0.2))

@@ -87,6 +87,7 @@ var _gy_selected:      Array = []       # instance_ids currently picked
 var _gy_min:           int = 1
 var _gy_max:           int = 1
 var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
+var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _end_turn_dialog: ConfirmationDialog
 var _p1_played_this_action_phase: bool = false
 var _game_over: bool = false
@@ -196,6 +197,8 @@ func _build_scene() -> void:
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
+	_router.graveyard_peek_requested.connect(_on_graveyard_peek_requested)
+	_router.graveyard_peek_closed.connect(_on_graveyard_peek_closed)
 	_build_x_dialog()
 	_build_graveyard_dialog()
 
@@ -795,7 +798,7 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		# Graveyard browser open: Space must not pass priority underneath the modal.
-		if _gy_dialog and _gy_dialog.visible:
+		if _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
 			get_viewport().set_input_as_handled()
 			return
 		_try_pass()
@@ -809,7 +812,7 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		# Escape: close/cancel the graveyard browser.
-		if _gy_dialog and _gy_dialog.visible:
+		if _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
 			_on_gy_cancel_pressed()
 			get_viewport().set_input_as_handled()
 			return
@@ -823,13 +826,13 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 	# C confirms the graveyard selection (matches the "Confirm (C)" button).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_C \
-			and _gy_dialog and _gy_dialog.visible:
+			and _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
 		if not _gy_view_only and not _gy_confirm_btn.disabled:
 			_on_gy_confirm_pressed()
 		get_viewport().set_input_as_handled()
 	# Right-click outside the graveyard dialog → cancel/close it.
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT \
-			and event.pressed and _gy_dialog and _gy_dialog.visible:
+			and event.pressed and _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
 		if not _gy_dialog.get_global_rect().has_point(get_viewport().get_mouse_position()):
 			_on_gy_cancel_pressed()
 			get_viewport().set_input_as_handled()
@@ -1624,6 +1627,20 @@ func _on_graveyard_examine_requested(graveyard_player: String, card_ids: Array) 
 			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0)
 
 
+# Alt+hover peek: same visual as examine, but non-modal (no dimmer, no buttons)
+# so it can't steal hover away from the graveyard card driving it, and closes
+# the instant Alt is released or the cursor leaves the pile.
+func _on_graveyard_peek_requested(graveyard_player: String, card_ids: Array) -> void:
+	var who := "Your" if graveyard_player == "p1" else "Opponent's"
+	_open_gy_dialog(card_ids, true,
+			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0, false)
+
+
+func _on_graveyard_peek_closed() -> void:
+	if _gy_peek_active:
+		_close_gy_dialog()
+
+
 # Shared open path for both selection and examine modes. Sizes the dialog to
 # the card count: cards wrap at GY_MAX_COLS per row, height is capped and the
 # grid scrolls beyond that.
@@ -1631,9 +1648,10 @@ const GY_MAX_COLS := 9
 const GY_MAX_DIALOG_H := 920
 
 func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
-		min_count: int, max_count: int) -> void:
+		min_count: int, max_count: int, modal: bool = true) -> void:
 	_gy_selected.clear()
 	_gy_view_only = view_only
+	_gy_peek_active = not modal
 	_gy_min = min_count
 	_gy_max = max_count
 	_gy_title.text = title
@@ -1646,8 +1664,12 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 	for cid in card_ids:
 		_gy_card_grid.add_child(_make_gy_card_button(cid as String))
 
-	_gy_confirm_btn.visible = not view_only
+	_gy_confirm_btn.visible = not view_only and modal
+	_gy_cancel_btn.visible = modal
 	_gy_cancel_btn.text = "Close (Esc)" if view_only else "Cancel (Esc)"
+	# Peek mode must never block board input — no dimmer, and the panel itself
+	# lets clicks/hover pass through to the cards underneath.
+	_gy_dialog.mouse_filter = Control.MOUSE_FILTER_STOP if modal else Control.MOUSE_FILTER_IGNORE
 
 	# Size to content: width from columns, height from rows (capped → scrolls).
 	var rows: int = ceili(float(count) / cols)
@@ -1655,7 +1677,7 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 	var content_h: int = rows * int(GY_CARD_SIZE.y + 14) + 140
 	_gy_dialog.size = Vector2(max(content_w, 480), min(content_h, GY_MAX_DIALOG_H))
 	_gy_dialog.position = (Vector2(1920, 1080) - _gy_dialog.size) * 0.5
-	_gy_dimmer.visible = true
+	_gy_dimmer.visible = modal
 	_gy_dialog.visible = true
 	_update_gy_confirm()
 
@@ -1713,6 +1735,7 @@ func _close_gy_dialog() -> void:
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
 	_gy_view_only = false
+	_gy_peek_active = false
 
 
 # ── Combat window highlight ─────────────────────────────────────────────────────

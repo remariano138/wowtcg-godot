@@ -33,6 +33,9 @@ signal graveyard_select_requested(quest_id: String, candidate_ids: Array,
 		min_count: int, max_count: int)
 # Emitted when the player wants to browse a graveyard (view-only, no selection).
 signal graveyard_examine_requested(graveyard_player: String, card_ids: Array)
+# Alt+hover peek over a graveyard pile (view-only, non-modal, closes on its own).
+signal graveyard_peek_requested(graveyard_player: String, card_ids: Array)
+signal graveyard_peek_closed()
 
 var state: GameState
 var db
@@ -830,6 +833,22 @@ func handle_context_action(action: PendingAction) -> void:
 		return
 	EventBus.emit_events(events)
 	refresh_highlights()
+
+
+# Alt+hover peek over a graveyard pile — same data as examine_graveyard, but
+# driven by BoardRenderer's hover tracking rather than a click, and closed via
+# close_graveyard_peek() the instant Alt is released or the hover ends.
+func request_graveyard_peek(gy_player: String) -> void:
+	if not state:
+		return
+	var ids: Array = []
+	for c in state.cards_in_zone(gy_player + "_graveyard"):
+		ids.append(c.instance_id)
+	graveyard_peek_requested.emit(gy_player, ids)
+
+
+func close_graveyard_peek() -> void:
+	graveyard_peek_closed.emit()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

@@ -33,6 +33,10 @@ var _perspective_player: String = ""
 var _inspector: TextureRect = null        # large card image overlay
 var _hovered_card_id: String = ""         # instance_id of card under cursor
 
+# ── Graveyard peek (Alt + hover over a graveyard pile) ──────────────────────────
+var _gy_peek_open: bool = false
+var _gy_peek_zone: String = ""            # zone_id currently driving the peek
+
 # ── Targeting overlay ──────────────────────────────────────────────────────────
 var _targeting_line:      Line2D  = null
 var _targeting_cursor:    Node2D  = null   # icon + amount label that follows the mouse
@@ -159,14 +163,31 @@ func _input(event: InputEvent) -> void:
 				_try_show_inspector()
 			else:
 				_inspector.visible = false
+				_close_graveyard_peek()
 	elif event is InputEventMouseMotion and Input.is_key_pressed(KEY_ALT):
 		_try_show_inspector()
+
+
+# Returns the zone_id currently containing instance_id, or "" if none (matches
+# against the renderer's own _zone_cards bookkeeping — no GameState access needed).
+func _zone_of_card(instance_id: String) -> String:
+	for zone_id in _zone_cards:
+		if instance_id in (_zone_cards[zone_id] as Array):
+			return zone_id
+	return ""
 
 
 func _try_show_inspector() -> void:
 	if _hovered_card_id == "":
 		_inspector.visible = false
+		_close_graveyard_peek()
 		return
+	var zone_id := _zone_of_card(_hovered_card_id)
+	if zone_id.ends_with("_graveyard"):
+		_inspector.visible = false
+		_open_graveyard_peek(zone_id)
+		return
+	_close_graveyard_peek()
 	var cn := card_nodes.get(_hovered_card_id) as CardNode
 	if not cn or not cn._tex_rect or not cn._tex_rect.texture:
 		_inspector.visible = false
@@ -179,6 +200,28 @@ func _try_show_inspector() -> void:
 		clamp(mouse.x + 24, 0.0, vp_size.x - sz.x),
 		clamp(mouse.y - sz.y * 0.5, 0.0, vp_size.y - sz.y))
 	_inspector.visible = true
+
+
+# Alt+hover over any card in a graveyard pile opens the (non-modal) examine
+# screen for that whole pile. Re-entrant-safe: repeated calls while already
+# peeking the same zone are no-ops so the dialog doesn't rebuild every frame.
+func _open_graveyard_peek(zone_id: String) -> void:
+	if _gy_peek_open and _gy_peek_zone == zone_id:
+		return
+	_gy_peek_open = true
+	_gy_peek_zone = zone_id
+	if _input_router:
+		var gy_player := "p1" if zone_id.begins_with("p1") else "p2"
+		_input_router.request_graveyard_peek(gy_player)
+
+
+func _close_graveyard_peek() -> void:
+	if not _gy_peek_open:
+		return
+	_gy_peek_open = false
+	_gy_peek_zone = ""
+	if _input_router:
+		_input_router.close_graveyard_peek()
 
 
 signal card_right_clicked(instance_id: String)
@@ -659,6 +702,7 @@ func _on_card_unhovered(instance_id: String) -> void:
 	if _hovered_card_id == instance_id:
 		_hovered_card_id = ""
 		_inspector.visible = false
+		_close_graveyard_peek()
 
 
 func _on_highlights_updated(playable_ids: Array, color: Color = Color(0.2, 1.0, 0.3)) -> void:

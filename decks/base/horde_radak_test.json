@@ -3,28 +3,112 @@
   "display_name": "Horde_test (Radak)",
   "hero_card_def_id": "azeroth_13",
   "card_entries": [
-    { "card_def_id": "azeroth_298", "count": 1 },
-    { "card_def_id": "azeroth_360", "count": 4 },
-    { "card_def_id": "azeroth_345", "count": 4 },
-    { "card_def_id": "azeroth_347", "count": 2 },
-    { "card_def_id": "azeroth_350", "count": 2 },
-    { "card_def_id": "azeroth_351", "count": 2 },
-    { "card_def_id": "azeroth_248", "count": 4 },
-    { "card_def_id": "azeroth_246", "count": 4 },
-    { "card_def_id": "azeroth_260", "count": 3 },
-    { "card_def_id": "azeroth_225", "count": 2 },
-    { "card_def_id": "azeroth_171", "count": 2 },
-    { "card_def_id": "azeroth_165", "count": 2 },
-    { "card_def_id": "azeroth_130", "count": 3 },
-    { "card_def_id": "azeroth_125", "count": 1 },
-    { "card_def_id": "azeroth_236", "count": 4 },
-    { "card_def_id": "azeroth_262", "count": 4 },
-    { "card_def_id": "azeroth_264", "count": 4 },
-    { "card_def_id": "azeroth_228", "count": 4 },
-    { "card_def_id": "azeroth_252", "count": 4 },
-    { "card_def_id": "azeroth_249", "count": 4 }
+    {
+      "card_def_id": "azeroth_298",
+      "count": 1,
+      "_card_name": "Mooncloth Robe"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 4,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_345",
+      "count": 4,
+      "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "azeroth_347",
+      "count": 2,
+      "_card_name": "Battle of Darrowshire"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 4,
+      "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "azeroth_246",
+      "count": 4,
+      "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_260",
+      "count": 4,
+      "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_225",
+      "count": 2,
+      "_card_name": "Arnold Flem"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_165",
+      "count": 2,
+      "_card_name": "Quick Strike"
+    },
+    {
+      "card_def_id": "azeroth_130",
+      "count": 3,
+      "_card_name": "Sarmoth"
+    },
+    {
+      "card_def_id": "azeroth_125",
+      "count": 1,
+      "_card_name": "Grimdron"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 3,
+      "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "azeroth_262",
+      "count": 4,
+      "_card_name": "Vaerik Proudhoof"
+    },
+    {
+      "card_def_id": "azeroth_264",
+      "count": 4,
+      "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "azeroth_228",
+      "count": 4,
+      "_card_name": "Benethor Draigo"
+    },
+    {
+      "card_def_id": "azeroth_252",
+      "count": 4,
+      "_card_name": "Moko Hunts-at-Dawn"
+    },
+    {
+      "card_def_id": "azeroth_249",
+      "count": 4,
+      "_card_name": "Kulan Earthguard"
+    }
   ],
   "recommended_ai_id": "ai_generic",
   "source": "base",
-  "metadata": { "author": "playtest", "origin": "migrated from renderer/tests/playtest.gd" }
+  "metadata": {
+    "author": "playtest",
+    "origin": "migrated from renderer/tests/playtest.gd"
+  },
+  "_hero_name": "Radak Doombringer"
 }

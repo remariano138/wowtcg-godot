@@ -2872,10 +2872,12 @@ func _test_deacon_johanna_once_per_turn() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Scenario 36 — Acolyte Demia: "Activate, 1, put 1 damage on Acolyte Demia:
-# Demia deals 1 shadow damage to target hero or ally. Use only on your turn."
-# Extra cost is damage PUT on the source (rule 405.3 — not preventable, capped
-# at exactly fatal), on top of the normal exhaust (activate) + resource cost.
+# Scenario 36 — Acolyte Demia: "(1), Put 1 damage on Acolyte Demia -> Demia
+# deals 1 shadow damage to target hero or ally. Use only on your turn."
+# No [Activate] tap symbol on this power (rule 701.3) — it's a plain payment
+# power (701.2), so it never exhausts Demia and isn't gated by summoning
+# sickness; it can be reused any turn as long as the resource + self-damage
+# cost (rule 405.3 — capped at exactly fatal) can be paid.
 # ══════════════════════════════════════════════════════════════════════════════
 
 const DEMIA_EFFECTS := "activated_power:1:deal_damage_to_target:1:shadow:hero_or_ally:put_damage_self:1|on_your_turn"
@@ -2910,8 +2912,11 @@ func _test_acolyte_demia_power() -> void:
 	# ad-c: target hero took 1 shadow damage dealt.
 	eq(state.get_card("p2_hero").damage_taken, 1, "ad-c: p2 hero took 1 shadow damage")
 
-	# ad-d: Demia is exhausted (activate symbol).
-	ok(state.get_card("demia_inst").is_exhausted, "ad-d: Demia exhausted after use")
+	# ad-d: Demia is NOT exhausted (no activate symbol on this power) and can be
+	# used again immediately as long as the resource cost can still be paid.
+	ok(not state.get_card("demia_inst").is_exhausted, "ad-d: Demia not exhausted after use")
+	_add_resources(state, "p1", 1)
+	ok(StackResolver.can_submit(state, use, db), "ad-d2: Demia power reusable immediately")
 
 
 func _test_acolyte_demia_own_turn_only() -> void:

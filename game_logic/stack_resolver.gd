@@ -827,14 +827,19 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# powers (_power_effect_is(def, "on_your_turn")), as a standalone segment.
 	if _power_effect_is(def, "on_your_turn") and state.turn_player != action.source_player:
 		return false
-	var once_per_turn: bool = ap.get("extra_cost", "") == "once_per_turn"
+	var extra_cost_str: String = ap.get("extra_cost", "")
+	var once_per_turn: bool = extra_cost_str == "once_per_turn"
+	# put_damage_self (e.g. Acolyte Demia) has no [Activate] tap symbol either —
+	# its cost is just the resource + self-damage, so it's a plain payment power
+	# (701.2), not an activated power (701.3). No summoning sickness, no exhaust.
+	var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self")
 	if once_per_turn:
 		# No [Activate] tap symbol on this power (rule 701.3/3216): it isn't gated
 		# by summoning sickness or the card's exhausted state, only by its own
 		# printed "once per turn" text.
 		if card.used_this_turn:
 			return false
-	else:
+	elif not no_activate_symbol:
 		# Rule 701.3: summoning sickness applies to activated powers for allies.
 		# Equipment are not characters and never carry summoning sickness, so this
 		# only ever gates allies (equipment never sets just_summoned).
@@ -895,16 +900,21 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		return []
 
 	var events: Array[GameEvent] = []
+	var extra_cost: String = ap.get("extra_cost", "")
 	# Resource cost already paid at submission time (in submit_action).
-	if ap.get("extra_cost", "") == "once_per_turn":
+	if extra_cost == "once_per_turn":
 		# No [Activate] tap symbol on this power — don't exhaust the source,
 		# just mark it used until the once-per-turn flag resets next turn.
 		card.used_this_turn = true
+	elif extra_cost.begins_with("put_damage_self"):
+		# No [Activate] tap symbol on this power either (e.g. Acolyte Demia) —
+		# its only cost is the resource + self-damage below, so the source
+		# never exhausts and can be reused any time it's affordable.
+		pass
 	else:
 		# Exhaust the source at resolution (the activate symbol).
 		events.append_array(GameLogic.exhaust_card(state, card_id))
 	# Pay any extra card-specific cost (e.g. Mooncloth Robe also exhausts the hero).
-	var extra_cost: String = ap.get("extra_cost", "")
 	if extra_cost == "exhaust_hero":
 		var ps := state.players.get(action.source_player) as PlayerState
 		var hero_id: String = ps.hero_instance_id if ps else ""

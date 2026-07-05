@@ -792,9 +792,16 @@ func get_context_actions(instance_id: String) -> Array:
 						# Check affordability only (target chosen after targeting mode starts).
 						# No turn_player restriction — ally powers work on either player's turn
 						# as long as you hold priority (e.g. defending with Grimdron's power).
-						var ap_once_per_turn: bool = ap_data.get("extra_cost", "") == "once_per_turn"
-						var ap_ready_ok: bool = (not card.used_this_turn) if ap_once_per_turn \
-							else (not card.is_exhausted and not card.just_summoned)
+						var ap_extra_cost: String = ap_data.get("extra_cost", "")
+						var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
+						var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self")
+						var ap_ready_ok: bool
+						if ap_once_per_turn:
+							ap_ready_ok = not card.used_this_turn
+						elif ap_no_activate_symbol:
+							ap_ready_ok = true
+						else:
+							ap_ready_ok = not card.is_exhausted and not card.just_summoned
 						ap_enabled = ap_ready_ok \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 							and state.phase == "action" and state.priority_player == local_player \

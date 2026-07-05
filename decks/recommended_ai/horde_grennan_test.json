@@ -24,6 +24,11 @@
       "_card_name": "A Donation of Wool"
     },
     {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
       "card_def_id": "azeroth_248",
       "count": 4,
       "_card_name": "Ka'tali Stonetusk"
@@ -37,6 +42,11 @@
       "card_def_id": "azeroth_260",
       "count": 4,
       "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_230",
+      "count": 4,
+      "_card_name": "Blood Guard Mal'wani"
     },
     {
       "card_def_id": "azeroth_225",
@@ -57,12 +67,7 @@
       "card_def_id": "azeroth_236",
       "count": 4,
       "_card_name": "Fa'tafi"
-    },
-    {
-      "card_def_id": "azeroth_230",
-      "count": 4,
-      "_card_name": "Blood Guard Mal'wani"
-    },
+    },    
     {
       "card_def_id": "azeroth_262",
       "count": 4,
@@ -75,7 +80,7 @@
     },
     {
       "card_def_id": "azeroth_228",
-      "count": 4,
+      "count": 2,
       "_card_name": "Benethor Draigo"
     },
     {

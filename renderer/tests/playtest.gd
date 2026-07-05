@@ -744,6 +744,7 @@ func _update_pass_btn() -> void:
 	var in_action  := _state.phase == "action"
 	var in_attack  := _state.combat_attack_window
 	var in_defend  := _state.combat_defend_window
+	var is_p1_turn := _state.turn_player == "p1"
 
 	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1"
 
@@ -755,23 +756,23 @@ func _update_pass_btn() -> void:
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not has_plays:
 		var _no_play_label := "Wrap Up" if in_action \
-				else ("End Turn" if _state.phase == "end" else "Pass")
+				else (("End Turn" if is_p1_turn else "Take Turn") if _state.phase == "end" else "Pass")
 		_pass_btn.text     = "No legal play — %s  [Space]" % _no_play_label
 		_pass_btn.modulate = Color(1.0, 0.35, 0.35)
 	elif chain_busy:
 		_pass_btn.text     = "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(1.0, 1.0, 1.0)
 	elif in_attack:
-		_pass_btn.text     = "Fight on!  [Space]"
+		_pass_btn.text     = "Attack window : fight on!  [Space]"
 		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif in_defend:
-		_pass_btn.text     = "Fight on!  [Space]"
+		_pass_btn.text     = "Defense window : fight on!  [Space]"
 		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif in_action:
 		_pass_btn.text     = "Wrap Up  [Space]"
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
 	elif _state.phase == "end":
-		_pass_btn.text     = "End Turn  [Space]"
+		_pass_btn.text     = ("End Turn  [Space]" if is_p1_turn else "Take Turn  [Space]")
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
 	else:
 		# Ready/draw phase, chain empty — passing closes a short mandatory window
@@ -2029,6 +2030,12 @@ func _maybe_turbo_pass() -> void:
 	# that pass ends the turn and requires an explicit Wrap Up, even with no legal play.
 	if _is_p1_main_action_window():
 		return
+	# Opponent's action-phase wrap-up window (chain empty, no combat window): always
+	# skip it, legal plays or not — the human still gets the real end-of-turn window
+	# right after, so there's nothing lost by not stopping here too.
+	if _is_opponent_action_window():
+		call_deferred("_do_turbo_pass")
+		return
 	# Auto-pass when there's nothing to play, during ready/draw (instants are so rare
 	# there that Turbo skips them — switch to Tactical to play powers early), OR when
 	# the human just added the top chain link themselves (see _player_owns_top_of_chain).
@@ -2055,6 +2062,15 @@ func _player_owns_top_of_chain(pid: String) -> bool:
 func _is_p1_main_action_window() -> bool:
 	return _state.phase == "action" \
 		and _state.turn_player == "p1" \
+		and _state.pending_actions.is_empty() \
+		and not _state.combat_attack_window \
+		and not _state.combat_defend_window \
+		and not _state.in_protect_point
+
+
+func _is_opponent_action_window() -> bool:
+	return _state.phase == "action" \
+		and _state.turn_player != "p1" \
 		and _state.pending_actions.is_empty() \
 		and not _state.combat_attack_window \
 		and not _state.combat_defend_window \

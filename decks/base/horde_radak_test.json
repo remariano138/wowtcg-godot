@@ -49,6 +49,11 @@
       "_card_name": "Taz'dingo"
     },
     {
+      "card_def_id": "azeroth_230",
+      "count": 4,
+      "_card_name": "Blood Guard Mal'wani"
+    },
+    {
       "card_def_id": "azeroth_225",
       "count": 2,
       "_card_name": "Arnold Flem"
@@ -80,7 +85,7 @@
     },
     {
       "card_def_id": "azeroth_262",
-      "count": 4,
+      "count": 2,
       "_card_name": "Vaerik Proudhoof"
     },
     {
@@ -95,7 +100,7 @@
     },
     {
       "card_def_id": "azeroth_252",
-      "count": 4,
+      "count": 2,
       "_card_name": "Moko Hunts-at-Dawn"
     },
     {

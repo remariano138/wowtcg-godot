@@ -21,6 +21,11 @@ var zone_anchors: Dictionary = {}
 # zone_id (String) -> Array[String] instance_ids currently in that zone (renderer's view)
 var _zone_cards: Dictionary = {}
 
+# player_id -> instance_id of that player's hero card. The hero card is pinned to a
+# fixed "_hero_card" anchor beside the deck; everything else in "_hero_row" (equipment,
+# non-attaching ongoing abilities) uses the normal centre-row spread.
+var _hero_card_ids: Dictionary = {}
+
 
 var _input_router: InputRouter = null
 var _status_label: Label = null
@@ -77,7 +82,10 @@ const SPREAD_ZONES := ["chain",
 # When exhausted, a card's footprint is CardNode.H wide, so add ~20px margin.
 # Hand/chain cards are never rotated, so CardNode.W + ~12px margin is fine there.
 const PLAY_SPREAD_GAP := CardNode.H + 20.0
-const HAND_SPREAD_GAP := CardNode.W + 12.0
+
+# Hand cards render 1.2x larger than table cards for readability.
+const HAND_CARD_SCALE := 1.2
+const HAND_SPREAD_GAP := CardNode.W * HAND_CARD_SCALE + 12.0
 
 const PLAY_ZONES := ["p1_ally_row", "p2_ally_row",
 	"p1_hero_row", "p2_hero_row",
@@ -250,6 +258,8 @@ func register_zone(zone_id: String, anchor: Node2D) -> void:
 		_zone_cards[zone_id] = []
 	if zone_id.ends_with("_deck"):
 		_create_deck_label(zone_id, anchor)
+	if zone_id.ends_with("_hero_row"):
+		_create_row_placeholder(zone_id, anchor)
 
 
 # Tell the renderer that a card starts in a zone (call after register_card for
@@ -266,6 +276,7 @@ func place_card_in_zone(instance_id: String, zone_id: String) -> void:
 			cn.show_card_front()
 		else:
 			cn.show_card_back()
+	_apply_zone_scale(instance_id, zone_id)
 
 
 func set_input_router(router: InputRouter) -> void:
@@ -455,6 +466,7 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 
 	_remove_from_zone(card_id, from_zone)
 	_add_to_zone(card_id, to_zone)
+	_apply_zone_scale(card_id, to_zone)
 
 	# Flip face based on destination zone and perspective.
 	# resource_placed handles face-down resources separately; here we only
@@ -546,6 +558,15 @@ func _animate_attack(attacker_id: String, defender_id: String) -> void:
 
 # ── Zone layout helpers ────────────────────────────────────────────────────────
 
+# Hand cards render bigger than table cards (see HAND_CARD_SCALE) — apply
+# the right scale whenever a card enters or leaves a hand zone.
+func _apply_zone_scale(card_id: String, zone_id: String) -> void:
+	var node := card_nodes.get(card_id) as Node2D
+	if not node:
+		return
+	node.scale = Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if zone_id.ends_with("_hand") else Vector2.ONE
+
+
 func _add_to_zone(card_id: String, zone_id: String) -> void:
 	if not card_nodes.has(card_id):
 		return   # no visual node — don't track in zone layout
@@ -566,7 +587,47 @@ func _spread_gap(zone_id: String) -> float:
 	return PLAY_SPREAD_GAP if zone_id in PLAY_ZONES else HAND_SPREAD_GAP
 
 
+# Tell the renderer which card is a player's hero, so hero_row layout can pin it
+# to the fixed "_hero_card" anchor instead of the centre-row equipment spread.
+# Snaps the node there immediately (no tween) so the hero HP bar, which reads
+# the node's position synchronously, lines up correctly right away.
+func register_hero_card(player_id: String, instance_id: String) -> void:
+	_hero_card_ids[player_id] = instance_id
+	var node := card_nodes.get(instance_id) as Node2D
+	var anchor := zone_anchors.get(player_id + "_hero_card") as Node2D
+	if node and anchor:
+		node.global_position = anchor.global_position
+
+
+# "" unless zone_id is a hero_row with a registered hero card, in which case
+# returns that hero card's instance_id.
+func _hero_card_id_for_zone(zone_id: String) -> String:
+	if not zone_id.ends_with("_hero_row"):
+		return ""
+	var pid := zone_id.substr(0, zone_id.length() - "_hero_row".length())
+	return _hero_card_ids.get(pid, "")
+
+
+# Cards in a hero_row zone, excluding the pinned hero card — used for the spread.
+func _spread_cards(zone_id: String) -> Array:
+	var zc: Array = _zone_cards.get(zone_id, [])
+	var hero_id := _hero_card_id_for_zone(zone_id)
+	if hero_id == "":
+		return zc
+	var out: Array = []
+	for cid in zc:
+		if cid != hero_id:
+			out.append(cid)
+	return out
+
+
 func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
+	var hero_id := _hero_card_id_for_zone(zone_id)
+	if hero_id != "" and card_id == hero_id:
+		var pid := zone_id.substr(0, zone_id.length() - "_hero_row".length())
+		var hero_anchor := zone_anchors.get(pid + "_hero_card") as Node2D
+		return hero_anchor.global_position if hero_anchor else Vector2.ZERO
+
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if not anchor:
 		return Vector2.ZERO
@@ -574,7 +635,7 @@ func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
 		return anchor.global_position
 
 	var gap: float = _spread_gap(zone_id)
-	var zc: Array  = _zone_cards.get(zone_id, [])
+	var zc: Array  = _spread_cards(zone_id)
 	var count := zc.size()
 	var idx   := zc.find(card_id)
 	if idx < 0 or count <= 1:
@@ -616,19 +677,34 @@ func _zone_settled(zone_id: String, ids: Array) -> bool:
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if not anchor:
 		return true
+	var hero_id := _hero_card_id_for_zone(zone_id)
+	var spread_ids: Array = ids
+	if hero_id != "":
+		spread_ids = []
+		for cid in ids:
+			if cid != hero_id:
+				spread_ids.append(cid)
 	var gap: float = _spread_gap(zone_id)
-	var count := ids.size()
+	var count := spread_ids.size()
 	var total := gap * (count - 1)
 	for i in count:
-		var node := card_nodes.get(ids[i]) as Node2D
+		var node := card_nodes.get(spread_ids[i]) as Node2D
 		if not node:
 			continue
-		var t: Tween = _pos_tweens.get(ids[i])
+		var t: Tween = _pos_tweens.get(spread_ids[i])
 		if t and t.is_valid() and t.is_running():
 			continue   # in flight — its tween owns the final position
 		var target := anchor.global_position + Vector2(-total * 0.5 + i * gap, 0.0)
 		if node.global_position.distance_to(target) > 1.0:
 			return false
+	if hero_id != "" and hero_id in ids:
+		var hnode := card_nodes.get(hero_id) as Node2D
+		var t: Tween = _pos_tweens.get(hero_id)
+		if hnode and not (t and t.is_valid() and t.is_running()):
+			var pid := zone_id.substr(0, zone_id.length() - "_hero_row".length())
+			var hero_anchor := zone_anchors.get(pid + "_hero_card") as Node2D
+			if hero_anchor and hnode.global_position.distance_to(hero_anchor.global_position) > 1.0:
+				return false
 	return true
 
 
@@ -638,8 +714,9 @@ func _relayout_zone(zone_id: String) -> void:
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if not anchor:
 		return
+	var hero_id := _hero_card_id_for_zone(zone_id)
 	var gap: float = _spread_gap(zone_id)
-	var zc: Array  = _zone_cards.get(zone_id, [])
+	var zc: Array  = _spread_cards(zone_id)
 	var count := zc.size()
 	for i in count:
 		var cid: String = zc[i]
@@ -653,6 +730,18 @@ func _relayout_zone(zone_id: String) -> void:
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 		tween.tween_property(node, "global_position", target, 0.2)
 		_pos_tweens[cid] = tween
+
+	if hero_id != "" and hero_id in (_zone_cards.get(zone_id, []) as Array):
+		var hnode := card_nodes.get(hero_id) as Node2D
+		if hnode:
+			var pid := zone_id.substr(0, zone_id.length() - "_hero_row".length())
+			var hero_anchor := zone_anchors.get(pid + "_hero_card") as Node2D
+			if hero_anchor:
+				_kill_pos_tween(hero_id)
+				var htween := create_tween()
+				htween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+				htween.tween_property(hnode, "global_position", hero_anchor.global_position, 0.2)
+				_pos_tweens[hero_id] = htween
 
 
 func _kill_pos_tween(card_id: String) -> void:
@@ -874,6 +963,23 @@ func _update_hero_bar(player_id: String, card_id: String, new_hp: int, max_hp: i
 	var fill_h: float = bg.size.y * ratio
 	fill.size     = Vector2(bg.size.x, fill_h)
 	fill.position = Vector2(0.0, bg.size.y - fill_h)
+
+
+# ── Row placeholders ───────────────────────────────────────────────────────────
+# The hero_row (equipment / ongoing abilities) is often empty, which otherwise
+# leaves no visual trace of the zone. Draw a faint, always-visible slot so the
+# player can see where those cards land.
+
+func _create_row_placeholder(zone_id: String, anchor: Node2D) -> void:
+	const PLACEHOLDER_W := CardNode.W * 4.0
+	const PLACEHOLDER_H := CardNode.H
+	var rect := ColorRect.new()
+	rect.color         = Color(1.0, 1.0, 1.0, 0.06)
+	rect.size          = Vector2(PLACEHOLDER_W, PLACEHOLDER_H)
+	rect.position      = anchor.global_position - Vector2(PLACEHOLDER_W * 0.5, PLACEHOLDER_H * 0.5)
+	rect.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+	rect.z_index       = -1
+	add_child(rect)
 
 
 # ── Deck count labels ──────────────────────────────────────────────────────────

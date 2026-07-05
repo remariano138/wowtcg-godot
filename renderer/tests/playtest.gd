@@ -145,12 +145,10 @@ func _build_scene() -> void:
 	_log.add_theme_font_size_override("normal_font_size", 10)
 	add_child(_log)
 
-	# ── Right column labels (graveyard x=1590, deck/hero x=1750) ─────────────────
+	# ── Right column labels (graveyard x=1590, deck x=1750) ──────────────────────
 	_add_label("P2 grave",  Vector2(1590,  52), 11, Color(0.5, 0.4, 0.4))
 	_add_label("P2 deck",   Vector2(1750,  52), 11, Color(0.4, 0.4, 0.5))
-	_add_label("P2 hero",   Vector2(1750, 182), 11, Color(0.5, 0.4, 0.5))
 	_add_label("P1 grave",  Vector2(1590, 832), 11, Color(0.4, 0.5, 0.4))
-	_add_label("P1 hero",   Vector2(1750, 702), 11, Color(0.4, 0.5, 0.45))
 	_add_label("P1 deck",   Vector2(1750, 832), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
@@ -161,22 +159,34 @@ func _build_scene() -> void:
 	add_child(_renderer)
 
 	# Zone anchors.
-	# Board rows (centre x=1000): p2_hand → p2_resource → p2_ally → chain → p1_ally → p1_resource → p1_hand
-	# Right column (x=1820): p2_deck at top, p2_hero just below; p1_deck at bottom, p1_hero just above.
+	# Board rows (centre x=1000): p2_hand → p2_resource → p2_hero → p2_ally → chain
+	#   → p1_ally → p1_hero → p1_resource → p1_hand
+	# hero_row sits between ally_row and resource_row (rule 415.8a: hero card,
+	# equipment, and non-attaching ongoing abilities all live in the hero row).
+	# Right column (x=1820): p2_deck at top; p1_deck at bottom.
 	# Graveyard at x=1640, same y as the player's hand.
-	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(1000,  65)))
-	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(1000, 195)))
-	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(1000, 325)))
+	# Row centres are spaced CardNode.H + 10px apart so full rows never overlap
+	# a neighbouring row, regardless of which rows are empty or filled. Every
+	# row anchor is a fixed constant — no runtime repositioning depends on
+	# another zone's contents.
+	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(1000,  35)))
+	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(1000, 165)))
+	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1000, 280)))
+	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(1000, 395)))
 	_renderer.register_zone("chain",           _make_anchor(Vector2(1000, 455)))
-	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(1000, 585)))
-	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 715)))
-	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 845)))
-	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2(1640,  65)))
-	_renderer.register_zone("p2_deck",         _make_anchor(Vector2(1820,  65)))
-	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1820, 195)))
-	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 845)))
-	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 845)))
-	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1820, 715)))
+	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(1000, 505)))
+	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1000, 620)))
+	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 735)))
+	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 895)))
+	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2(1640,  35)))
+	_renderer.register_zone("p2_deck",         _make_anchor(Vector2(1820,  35)))
+	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 875)))
+	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 875)))
+
+	# Hero card itself stays pinned to the side column, above the deck, at the
+	# same height as its hero_row (equipment / ongoing abilities live there instead).
+	_renderer.register_zone("p2_hero_card",    _make_anchor(Vector2(1820, 280)))
+	_renderer.register_zone("p1_hero_card",    _make_anchor(Vector2(1820, 620)))
 
 	_renderer.set_status_label(_status)
 
@@ -649,6 +659,7 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	for pid in ["p1", "p2"]:
 		var ps := _state.players.get(pid) as PlayerState
 		if ps and ps.hero_instance_id != "":
+			_renderer.register_hero_card(pid, ps.hero_instance_id)
 			var max_hp := _state.get_max_hp(ps.hero_instance_id, _db)
 			_renderer.init_hero_bar(pid, ps.hero_instance_id, max_hp)
 
@@ -1125,7 +1136,7 @@ func _on_game_event(event: GameEvent) -> void:
 					var is_p1 := card.owner == "p1"
 					var hand_zone := "p1_hand" if is_p1 else "p2_hand"
 					var hand_anchor := _renderer.zone_anchors.get(hand_zone) as Node2D
-					var spawn_pos := hand_anchor.global_position if hand_anchor else (Vector2(1000, 845) if is_p1 else Vector2(1000, 65))
+					var spawn_pos := hand_anchor.global_position if hand_anchor else (Vector2(1000, 875) if is_p1 else Vector2(1000, 35))
 					var color := Color(0.25, 0.45, 0.75) if is_p1 else Color(0.5, 0.25, 0.25)
 					_spawn_card_node(moved_id, spawn_pos, color)
 					# Renderer's _animate_move already ran before this node existed,

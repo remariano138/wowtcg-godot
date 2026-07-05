@@ -111,6 +111,9 @@ var _protect_nodes: Array[Node] = []
 var _protect_defender_id: String = ""
 var _protect_attacker_id: String = ""
 
+# ── Combat window highlight (attacker/defender in red during attack/defend windows) ──
+var _combat_highlight_ids: Array = []
+
 
 func _ready() -> void:
 	_build_scene()
@@ -701,6 +704,13 @@ func _refresh_ui() -> void:
 		_router.refresh_highlights()
 	_update_pass_btn()
 	_update_cancel_btn()
+	# Self-healing hand fans: reconcile renderer bookkeeping with game state
+	# (no-op when already correct — see BoardRenderer.sync_zone_with_state).
+	if _state and _renderer:
+		for hand_zone_id in ["p1_hand", "p2_hand"]:
+			var hz := _state.zones.get(hand_zone_id) as Zone
+			if hz:
+				_renderer.sync_zone_with_state(hand_zone_id, hz.card_ids)
 
 
 func _update_phase_label() -> void:
@@ -987,6 +997,7 @@ func _log_event(event: GameEvent) -> void:
 			_log_entry("[color=#fc8][b]%s ⚔ %s[/b][/color]" % [att, def])
 		"attack_window_opened":
 			_set_status("⚔ Attack window — you may respond before protect")
+			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			# The pass that resolved propose_combat may have been the human's, in
 			# which case no priority_passed event follows and nothing else drives
@@ -994,6 +1005,9 @@ func _log_event(event: GameEvent) -> void:
 			_drain_passes()
 		"defend_window_opened":
 			_set_status("⚔ Defend window — you may respond before damage")
+			# Defender may now be a protector that swapped in during protect point,
+			# so re-highlight rather than assume the attack-window pair still holds.
+			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			_drain_passes()  # human chose protector; drain the defend window
 		"damage_dealt":
@@ -1126,6 +1140,7 @@ func _on_game_event(event: GameEvent) -> void:
 		"combat_concluded":
 			if _in_protect_mode:
 				_resolve_protection("")   # safety: clean up any orphaned protect UI
+			_clear_combat_highlight()
 			_set_status("")
 			_refresh_ui()
 			_schedule_next_turn()
@@ -1689,6 +1704,28 @@ func _close_gy_dialog() -> void:
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
 	_gy_view_only = false
+
+
+# ── Combat window highlight ─────────────────────────────────────────────────────
+
+# Red-outlines the attacker + current defender for the duration of the attack/
+# defend windows, so the human can see who's fighting and decide whether to
+# respond (e.g. Quick Strike) before protect point / damage. Called again on
+# defend_window_opened since the defender may have swapped to a protector.
+func _set_combat_highlight(attacker_id: String, defender_id: String) -> void:
+	_clear_combat_highlight()
+	if attacker_id != "":
+		_renderer.set_card_outline(attacker_id, true, Color(1.0, 0.2, 0.2))
+		_combat_highlight_ids.append(attacker_id)
+	if defender_id != "" and defender_id != attacker_id:
+		_renderer.set_card_outline(defender_id, true, Color(1.0, 0.2, 0.2))
+		_combat_highlight_ids.append(defender_id)
+
+
+func _clear_combat_highlight() -> void:
+	for cid in _combat_highlight_ids:
+		_renderer.set_card_outline(cid, false)
+	_combat_highlight_ids.clear()
 
 
 # ── Protect point ──────────────────────────────────────────────────────────────

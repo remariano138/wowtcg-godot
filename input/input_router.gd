@@ -128,9 +128,14 @@ func handle_card_click(instance_id: String) -> void:
 	var action_type := _action_type_for(instance_id)
 	if action_type == "":
 		return
-	# Abilities with targets: enter targeting mode rather than submitting directly.
+	# Abilities/instants with targets: enter targeting mode rather than submitting
+	# directly — targeting is cancellable (Esc) until the target click submits.
 	if action_type == "play_ability" and _ability_needs_target(instance_id):
 		start_targeting(instance_id, "play_ability", _card_dmg_type(instance_id), 0)
+		return
+	if action_type == "play_instant" and _instant_needs_target(instance_id):
+		start_targeting(instance_id, "play_instant",
+			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
 	var action := PendingAction.make(action_type, local_player,
 			_params_for(instance_id, action_type))
@@ -546,6 +551,12 @@ func get_playable_card_ids() -> Array:
 					state, card.instance_id, local_player, db):
 				result.append(card.instance_id)
 			continue
+		# Targeted instants (Quick Strike): same looser probe, instant timing.
+		if atype == "play_instant" and _instant_needs_target(card.instance_id):
+			if StackResolver.can_play_instant_no_target_check(
+					state, card.instance_id, local_player, db):
+				result.append(card.instance_id)
+			continue
 		var hand_action := PendingAction.make(atype, local_player,
 				_params_for(card.instance_id, atype))
 		if StackResolver.can_submit(state, hand_action, db):
@@ -717,6 +728,9 @@ func get_context_actions(instance_id: String) -> Array:
 				# Use no-target probe so the item shows enabled before the target is chosen.
 				enabled = StackResolver.can_play_ability_no_target_check(
 					state, instance_id, local_player, db)
+			elif play_type == "play_instant" and _instant_needs_target(instance_id):
+				enabled = StackResolver.can_play_instant_no_target_check(
+					state, instance_id, local_player, db)
 			else:
 				enabled = StackResolver.can_submit(state, a, db)
 			result.append({"label": "Play %s" % def.card_name,
@@ -748,7 +762,8 @@ func handle_context_action(action: PendingAction) -> void:
 		"play_instant":
 			if _instant_needs_target(action.params.get("card_id", "")):
 				var cid: String = action.params.get("card_id", "")
-				start_targeting(cid, "play_instant", _card_dmg_type(cid), 0)
+				start_targeting(cid, "play_instant",
+					_card_dmg_type(cid), _card_dmg_amount(cid))
 				return
 		"examine_graveyard":
 			var gy_player: String = action.params.get("graveyard_player", "")
@@ -767,9 +782,13 @@ func handle_context_action(action: PendingAction) -> void:
 				var ally_card := state.get_card(cid) if state else null
 				var ally_def := db.get_def(ally_card.card_def_id) as CardDef if ally_card and db else null
 				var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
-				var ap_dmg_type: String = (ally_ap.get("dmg_type", "") as String).to_lower() if ally_ap else ""
-				if ap_dmg_type == "":
+				var ap_dmg_type: String
+				if ally_ap and (ally_ap.get("effect", "") as String) in ["heal_target", "heal_x_from_target"]:
 					ap_dmg_type = "heal"
+				else:
+					ap_dmg_type = (ally_ap.get("dmg_type", "") as String).to_lower() if ally_ap else ""
+					if ap_dmg_type == "":
+						ap_dmg_type = "heal"
 				start_targeting(cid, "use_ally_power", ap_dmg_type, int(ally_ap.get("amount", 0)))
 				return
 		"begin_attack_targeting":
@@ -1060,6 +1079,21 @@ func _card_dmg_type(card_id: String) -> String:
 				if parts.size() > 2: return parts[2].to_lower()
 			"heal_target": return "heal"
 	return ""
+
+
+# Damage amount shown on the targeting cursor for damage effects
+# (deal_damage_to_target:N:TYPE). 0 when the card deals no direct damage.
+func _card_dmg_amount(card_id: String) -> int:
+	if not db: return 0
+	var card := state.get_card(card_id)
+	if not card: return 0
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def: return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "deal_damage_to_target" and parts.size() > 1:
+			return int(parts[1])
+	return 0
 
 
 func _hero_power_dmg_amount(hero_id: String) -> int:

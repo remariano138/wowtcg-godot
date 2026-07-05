@@ -118,7 +118,7 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 			# Safety: can't close the window while an enters-play effect needs a target.
 			if not state.pending_enter_play_effect.is_empty():
 				state.consecutive_passes = 0
-				state.priority_player    = state.turn_player
+				state.priority_player    = _pending_effect_controller(state)
 				return []   # stall — scene must handle enter_play_target_required
 			# Rule 602.1/602.3: combat window transitions take priority over phase advance.
 			state.consecutive_passes = 0
@@ -144,6 +144,13 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 		# before the turn player gets priority post-resolution.
 		events.append_array(_resolve(state, top, db))
 		state.priority_player = state.turn_player
+		# A pending enters-play target choice is a MANDATORY choice belonging to
+		# the effect's controller — hand priority there so the choice can be
+		# submitted (can_submit blocks everything else anyway). Matters when the
+		# effect's controller is NOT the turn player (e.g. a combat instant like
+		# Quick Strike played by the defending player during a combat window).
+		if not state.pending_enter_play_effect.is_empty():
+			state.priority_player = _pending_effect_controller(state)
 		return events
 
 	# Not yet all passed — pass priority clockwise (2-player: flip).
@@ -301,10 +308,28 @@ static func can_play_ability_no_target_check(state: GameState,
 	return true
 
 
+# Timing-only check (no target required) for targeted instants (Quick Strike).
+# Used by the renderer to highlight the card green in hand before the player
+# has chosen a target. Instant timing: any priority window, no phase/turn gate.
+static func can_play_instant_no_target_check(state: GameState,
+		card_id: String, player_id: String, db) -> bool:
+	if state.priority_player != player_id: return false
+	if not state.pending_enter_play_effect.is_empty(): return false
+	if state.pending_pet_sacrifice_player != "": return false
+	var card := state.get_card(card_id)
+	if not card: return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand": return false
+	if card.controller != player_id: return false
+	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
+		return false
+	return true
+
+
 static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target"]:
+		if parts[0] in ["destroy_target", "deal_damage_to_target"]:
 			return true
 	return false
 
@@ -467,6 +492,29 @@ static func _resolve_play_instant(state: GameState,
 						if target_id != "" and state.is_in_play(target_id):
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
+					"deal_damage_to_target":
+						# "Your hero deals N <type> damage to target hero or ally."
+						# (Quick Strike). Target is announced at play time (rule 601-style;
+						# gives humans cancellable targeting). The HERO is the damage
+						# source per the card text, not this ability card. If the target
+						# left play before resolution, the damage fizzles (711.1) and the
+						# card still goes to the graveyard below.
+						var amount := int(parts[1]) if parts.size() > 1 else 0
+						var ps := state.players.get(action.source_player) as PlayerState
+						var hero_id: String = ps.hero_instance_id if ps else ""
+						if hero_id != "" and amount > 0 \
+								and target_id != "" and state.is_in_play(target_id):
+							events.append_array(GameLogic.deal_damage(
+								state, hero_id, target_id, amount, db))
+							var t_card := state.get_card(target_id)
+							if t_card and state.get_current_hp(target_id, db) <= 0:
+								var t_zone := state.zones.get(t_card.zone_id) as Zone
+								if t_zone and t_zone.zone_type == "hero_row":
+									events.append(GameEvent.game_over(
+										_other_player(state, t_card.controller), t_card.controller))
+								else:
+									events.append_array(
+										_check_destroyed_trigger(state, target_id, hero_id, db))
 	# Move used instant to its owner's graveyard (card is currently in chain zone).
 	var card2 := state.get_card(card_id)
 	if card2:
@@ -1565,6 +1613,13 @@ static func _other_player(state: GameState, player_id: String) -> String:
 		if pid != player_id:
 			return pid
 	return player_id
+
+
+# Controller of the source card of the pending enters-play effect.
+# Falls back to the turn player if the source card can't be resolved.
+static func _pending_effect_controller(state: GameState) -> String:
+	var src := state.get_card(state.pending_enter_play_effect.get("card_id", ""))
+	return src.controller if src else state.turn_player
 
 
 # Fire any "on_destroyed" effects declared in the card's effects string.

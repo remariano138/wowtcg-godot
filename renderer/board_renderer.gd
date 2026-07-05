@@ -547,6 +547,48 @@ func relayout_zone(zone_id: String) -> void:
 	_relayout_zone(zone_id)
 
 
+# Self-healing layout: reconcile the renderer's private zone bookkeeping with
+# the game state's true card list. Event-order edge cases (mulligan redraw
+# races, nested event emission) can leave _zone_cards drifted from reality —
+# symptoms are overlapping or half-slot-offset fans. Called by the scene on UI
+# refresh; cheap no-op when the zone is already correct AND settled.
+func sync_zone_with_state(zone_id: String, true_ids: Array) -> void:
+	if not (zone_id in SPREAD_ZONES):
+		return
+	# Only ids with a visual node participate in the fan.
+	var filtered: Array = []
+	for cid in true_ids:
+		if card_nodes.has(cid):
+			filtered.append(cid)
+	var current: Array = _zone_cards.get(zone_id, [])
+	if filtered == current and _zone_settled(zone_id, filtered):
+		return
+	_zone_cards[zone_id] = filtered
+	_relayout_zone(zone_id)
+
+
+# True when every node in the fan that is NOT mid-tween sits on its slot.
+# Catches stale positions left by killed tweens even when the list matches.
+func _zone_settled(zone_id: String, ids: Array) -> bool:
+	var anchor := zone_anchors.get(zone_id) as Node2D
+	if not anchor:
+		return true
+	var gap: float = _spread_gap(zone_id)
+	var count := ids.size()
+	var total := gap * (count - 1)
+	for i in count:
+		var node := card_nodes.get(ids[i]) as Node2D
+		if not node:
+			continue
+		var t: Tween = _pos_tweens.get(ids[i])
+		if t and t.is_valid() and t.is_running():
+			continue   # in flight — its tween owns the final position
+		var target := anchor.global_position + Vector2(-total * 0.5 + i * gap, 0.0)
+		if node.global_position.distance_to(target) > 1.0:
+			return false
+	return true
+
+
 func _relayout_zone(zone_id: String) -> void:
 	if not (zone_id in SPREAD_ZONES):
 		return

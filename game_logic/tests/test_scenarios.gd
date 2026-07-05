@@ -24,6 +24,7 @@ func _ready() -> void:
 	_test_tazdingo_enter_play()
 	_test_parvink_enter_play()
 	_test_vanquish()
+	_test_quick_strike()
 	_test_pet_uniqueness()
 	_test_grimdron_ally_power()
 	_test_sarmoth_taunt_forces_attacker()
@@ -49,6 +50,7 @@ func _ready() -> void:
 	_test_generic_ai_safe_kill_flow()
 	_test_generic_ai_value_choices()
 	_test_ally_heal_power_targets_friendlies()
+	_test_combat_instant_ambush()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -719,6 +721,89 @@ func _test_vanquish() -> void:
 	var bad_action := PendingAction.make("play_instant", "p1",
 		{"card_id": "vanquish_inst", "target_id": p2_hero_id})
 	ok(not StackResolver.can_submit(state, bad_action, db), "sc8-c: Vanquish cannot target a hero")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 8b — Quick Strike: instant, hero deals 2 melee to announced target
+#
+# Quick Strike is an Instant Ability whose target is ANNOUNCED at play time
+# (like Vanquish — gives humans cancellable targeting). The damage SOURCE is
+# the controller's hero ("Your hero deals 2 melee damage"), not the ability
+# card (which goes to the graveyard on resolution).
+#
+# Assertions:
+#   sc8b-a  submission WITHOUT a target is rejected
+#   sc8b-b  exactly 2 total damage dealt to the announced target
+#   sc8b-c  the damage source is the controller's HERO
+#   sc8b-d  Quick Strike itself is in the graveyard
+#   sc8b-e  the target carries the damage (4 HP ally at 2 damage, survives)
+#   sc8b-f  instant is legal DURING a combat window (instant timing)
+#   sc8b-g  a non-instant ally is NOT legal in that same window (contrast)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_quick_strike() -> void:
+	print("\n-- Scenario 8b: Quick Strike — hero deals 2 melee to announced target --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_ally_def", 2, 4, [], 3)
+	db.ally("dummy_ally_def", 1, 1, [], 1)
+	db.instant("quickstrike_def", 3, "deal_damage_to_target:2:melee")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var qs := CardInstance.create("qs_inst", "quickstrike_def", "p1", "p1_hand")
+	state.cards["qs_inst"] = qs
+	state.zones["p1_hand"].card_ids.append("qs_inst")
+
+	# The opposing ally that will be targeted.
+	var enemy := CardInstance.create("enemy_ally", "target_ally_def", "p2", "p2_ally_row")
+	state.cards["enemy_ally"] = enemy
+	state.zones["p2_ally_row"].card_ids.append("enemy_ally")
+
+	# Target is required at submission.
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_instant", "p1", {"card_id": "qs_inst"}), db),
+		"sc8b-a: submission without a target is rejected")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_instant", "p1",
+		{"card_id": "qs_inst", "target_id": "enemy_ally"}))
+
+	var all_events := _drive_turns(state, db, p1_ai, ScriptedAI.new(), 3)
+
+	var total_dmg := 0
+	var dmg_source := ""
+	for e in all_events:
+		if e.event_type == "damage_dealt":
+			total_dmg += int(e.payload.get("amount", 0))
+			dmg_source = e.payload.get("source", dmg_source)
+	eq(total_dmg, 2, "sc8b-b: exactly 2 total damage dealt")
+	var p1_hero_id := (state.players.get("p1") as PlayerState).hero_instance_id
+	eq(dmg_source, p1_hero_id, "sc8b-c: damage source is the controller's hero")
+	ok(state.get_card("qs_inst").zone_id == "p1_graveyard", "sc8b-d: Quick Strike in graveyard")
+	eq(state.get_card("enemy_ally").damage_taken, 2,
+		"sc8b-e: announced target carries the 2 damage (survives at 4 HP)")
+
+	# ── Instant timing: legal during a combat window; a non-instant is not. ──
+	var tstate := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(tstate, "p1", 3)
+	tstate.combat_attack_window = true
+	var qs2 := CardInstance.create("qs2", "quickstrike_def", "p1", "p1_hand")
+	tstate.cards["qs2"] = qs2
+	tstate.zones["p1_hand"].card_ids.append("qs2")
+	var dummy := CardInstance.create("dummy_ally", "dummy_ally_def", "p1", "p1_hand")
+	tstate.cards["dummy_ally"] = dummy
+	tstate.zones["p1_hand"].card_ids.append("dummy_ally")
+	var p2_hero_id := (tstate.players.get("p2") as PlayerState).hero_instance_id
+	ok(StackResolver.can_submit(tstate,
+		PendingAction.make("play_instant", "p1",
+			{"card_id": "qs2", "target_id": p2_hero_id}), db),
+		"sc8b-f: Quick Strike (instant) is legal during a combat window")
+	ok(not StackResolver.can_submit(tstate,
+		PendingAction.make("play_ally", "p1", {"card_id": "dummy_ally"}), db),
+		"sc8b-g: a non-instant ally is NOT legal in that same window")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1980,3 +2065,144 @@ func _test_ally_heal_power_targets_friendlies() -> void:
 	actions = ai._get_ally_power_actions(state, db, "p1")
 	eq(actions.size(), 0,
 		"sc33-c: no damaged friendly → heal power not offered (enemy never healed)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 34 — Combat instant (Quick Strike): AI holds it, ambushes in combat
+#
+# BaseAI.COMBAT_INSTANT_TAGS marks Quick Strike (azeroth_165) as a card to HOLD:
+# never blind-played on the AI's own action window, only played via
+# combat_instant_action() when the AI is being attacked.
+#
+#   Attack window:  attacker_hp <= dmg  AND  attacker_cost >= card_cost
+#   Defend window:  attacker_hp <= defender_atk + dmg
+#                   AND attacker_hp > defender_atk
+#                   AND attacker_cost >= card_cost
+#
+# Assertions:
+#   sc34-a  attack window: 2 HP / cost-4 attacker → play
+#   sc34-b  attack window: cheap bait (cost 1) → hold
+#   sc34-c  attack window: 5 HP attacker survives the 2 dmg → hold
+#   sc34-d  the ATTACKING player never plays it on its own combat
+#   sc34-e  defend window: 5 HP attacker vs 4 ATK defender + 2 dmg → play
+#   sc34-f  defend window: attacker already dies to defender alone → hold
+#   sc34-g  defend window: attacker out of reach (7 HP vs 4+2) → hold
+#   sc34-h  outside combat: get_legal_actions never blind-plays it
+#   sc34-i/j/k  integration: BaseAI defender kills the attacker during the
+#               attack window — attacker dead, zero combat damage, QS in grave
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_combat_instant_ambush() -> void:
+	print("\n-- Scenario 34: combat instant — AI holds Quick Strike, ambushes attacker --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Registered under its REAL def id so BaseAI.COMBAT_INSTANT_TAGS matches.
+	db.instant("azeroth_165", 3, "deal_damage_to_target:2:melee")
+	db.ally("atk_worthy_def", 3, 2, [], 4)   # cost 4, 2 HP — dies to QS, worth it
+	db.ally("atk_cheap_def",  3, 2, [], 1)   # cost 1 — bait, never worth QS
+	db.ally("atk_fat_def",    3, 5, [], 6)   # cost 6, 5 HP — survives QS alone
+	db.ally("atk_huge_def",   3, 7, [], 6)   # cost 6, 7 HP — out of combined reach
+	db.ally("blocker_def",    4, 6, [], 3)   # 4 ATK defender for defend-window math
+
+	var ai := BaseAI.new()
+
+	# ── Attack-window matrix (p2 attacks p1's hero) ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.turn_player     = "p2"
+	st.priority_player = "p1"
+	_add_resources(st, "p1", 3)
+	var qs := CardInstance.create("qs_p1", "azeroth_165", "p1", "p1_hand")
+	st.cards["qs_p1"] = qs
+	st.zones["p1_hand"].card_ids.append("qs_p1")
+	_add_ally(st, "atk_worthy", "atk_worthy_def", "p2")
+	_add_ally(st, "atk_cheap",  "atk_cheap_def",  "p2")
+	_add_ally(st, "atk_fat",    "atk_fat_def",    "p2")
+	st.combat_attack_window = true
+	st.combat_defender = "p1_hero"
+
+	st.combat_attacker = "atk_worthy"
+	var act := ai.combat_instant_action(st, db, "p1")
+	ok(act != null and act.params.get("card_id") == "qs_p1"
+			and act.params.get("target_id") == "atk_worthy",
+		"sc34-a: attack window — 2 HP / cost-4 attacker → play QS targeting it")
+
+	st.combat_attacker = "atk_cheap"
+	ok(ai.combat_instant_action(st, db, "p1") == null,
+		"sc34-b: attack window — cheap bait (cost 1 < QS cost 3) → hold")
+
+	st.combat_attacker = "atk_fat"
+	ok(ai.combat_instant_action(st, db, "p1") == null,
+		"sc34-c: attack window — 5 HP attacker survives 2 dmg → hold")
+
+	# The attacking side never ambushes its own combat.
+	st.combat_attacker = "atk_worthy"
+	st.priority_player = "p2"
+	var qs2 := CardInstance.create("qs_p2", "azeroth_165", "p2", "p2_hand")
+	st.cards["qs_p2"] = qs2
+	st.zones["p2_hand"].card_ids.append("qs_p2")
+	_add_resources(st, "p2", 3)
+	ok(ai.combat_instant_action(st, db, "p2") == null,
+		"sc34-d: attacking player never plays the combat instant")
+
+	# ── Defend-window matrix (p1's 4 ATK blocker defends) ──
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	st2.turn_player     = "p2"
+	st2.priority_player = "p1"
+	_add_resources(st2, "p1", 3)
+	var qsb := CardInstance.create("qs_b", "azeroth_165", "p1", "p1_hand")
+	st2.cards["qs_b"] = qsb
+	st2.zones["p1_hand"].card_ids.append("qs_b")
+	_add_ally(st2, "blocker",     "blocker_def",    "p1")
+	_add_ally(st2, "atk_fat2",    "atk_fat_def",    "p2")
+	_add_ally(st2, "atk_worthy2", "atk_worthy_def", "p2")
+	_add_ally(st2, "atk_huge2",   "atk_huge_def",   "p2")
+	st2.combat_defend_window = true
+	st2.combat_defender = "blocker"
+
+	st2.combat_attacker = "atk_fat2"   # hp 5: 5 <= 4+2 AND 5 > 4 → play
+	var act2 := ai.combat_instant_action(st2, db, "p1")
+	ok(act2 != null and act2.params.get("card_id") == "qs_b"
+			and act2.params.get("target_id") == "atk_fat2",
+		"sc34-e: defend window — QS finishes what the defender can't → play")
+
+	st2.combat_attacker = "atk_worthy2"   # hp 2: already dies to 4 ATK alone
+	ok(ai.combat_instant_action(st2, db, "p1") == null,
+		"sc34-f: defend window — attacker already dying to defender → hold")
+
+	st2.combat_attacker = "atk_huge2"   # hp 7 > 4+2
+	ok(ai.combat_instant_action(st2, db, "p1") == null,
+		"sc34-g: defend window — attacker out of combined reach → hold")
+
+	# ── Hold outside combat: never a blind play on own action window ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 3)
+	var qs3 := CardInstance.create("qs_hold", "azeroth_165", "p1", "p1_hand")
+	st3.cards["qs_hold"] = qs3
+	st3.zones["p1_hand"].card_ids.append("qs_hold")
+	var blind := false
+	for a in ai.get_legal_actions(st3, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "qs_hold":
+			blind = true
+	ok(not blind, "sc34-h: get_legal_actions never blind-plays a held combat instant")
+
+	# ── Integration: p1 attacks, BaseAI p2 ambushes during the attack window ──
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st4, "raider", "atk_worthy_def", "p1")   # cost 4, 2 HP, 3 ATK
+	_add_resources(st4, "p2", 3)
+	var qs4 := CardInstance.create("qs_ambush", "azeroth_165", "p2", "p2_hand")
+	st4.cards["qs_ambush"] = qs4
+	st4.zones["p2_hand"].card_ids.append("qs_ambush")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}))
+
+	_drive_turns(st4, db, p1_ai, BaseAI.new(), 3)
+
+	ok(st4.get_card("raider").zone_id == "p1_graveyard",
+		"sc34-i: attacker killed by Quick Strike during the attack window")
+	eq(st4.get_card("p2_hero").damage_taken, 0,
+		"sc34-j: p2 hero took no combat damage (attacker died pre-conclusion)")
+	ok(st4.get_card("qs_ambush").zone_id == "p2_graveyard",
+		"sc34-k: Quick Strike in graveyard after the ambush")

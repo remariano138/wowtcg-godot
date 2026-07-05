@@ -7,10 +7,92 @@ extends RefCounted
 # get_legal_actions() is a shared utility all subclasses can call.
 
 
+# ── Combat instants (held cards) ───────────────────────────────────────────────
+# Cards tagged here are HELD in hand — get_legal_actions never blind-plays them
+# on the AI's own action window. They only come out through
+# combat_instant_action() during combat attack/defend windows. Keyed by
+# card_def_id. Tags:
+#   "combat_instant_dmg" — instant dealing targeted damage
+#       (effects: deal_damage_to_target:N:TYPE). Played on the ATTACKING
+#       character when the AI is being attacked and the math works out.
+const COMBAT_INSTANT_TAGS: Dictionary = {
+	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
+}
+
+
 # Return a PendingAction to submit, or null to pass priority.
 # Called once each time this player has priority.
-func decide_action(_state: GameState, _db, _player_id: String) -> PendingAction:
+# Even the base AI plays combat instants — the ambush behavior is universal.
+func decide_action(state: GameState, db, player_id: String) -> PendingAction:
+	return combat_instant_action(state, db, player_id)
+
+
+# Ambush logic — only the player being ATTACKED (controller of combat_defender)
+# plays combat instants, on an open combat window with an empty chain:
+#
+#   Attack window:  attacker_hp <= dmg  AND  attacker_cost >= card_cost
+#     ("kill the attacker before it even forces a protect, unless it's a cheap
+#      bait not worth the card")
+#   Defend window:  attacker_hp <= defender_atk + dmg
+#                   AND attacker_hp > defender_atk
+#                   AND attacker_cost >= card_cost
+#     ("only if it finishes something the defender alone wouldn't kill")
+#
+# The target is announced at submission: always state.combat_attacker.
+func combat_instant_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not (state.combat_attack_window or state.combat_defend_window):
+		return null
+	if not state.pending_actions.is_empty():
+		return null   # respond on the window floor, after any chained effects resolve
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only the attacked side ambushes
+
+	var attacker_hp := state.get_current_hp(attacker_id, db)
+	var atk_def := db.get_def(state.get_card(attacker_id).card_def_id) as CardDef
+	var attacker_cost: int = atk_def.cost if atk_def else 0
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var dmg := _combat_instant_dmg(def)
+		if dmg <= 0:
+			continue
+		if attacker_cost < def.cost:
+			continue   # cheap bait — not worth the card
+		var play := false
+		if state.combat_attack_window:
+			play = attacker_hp <= dmg
+		else:
+			var defender_atk := state.get_atk(defender_id, db)
+			play = attacker_hp <= defender_atk + dmg and attacker_hp > defender_atk
+		if not play:
+			continue
+		var act := PendingAction.make("play_instant", player_id,
+			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
 	return null
+
+
+# Damage amount of a combat_instant_dmg card (deal_damage_to_target:N:TYPE).
+static func _combat_instant_dmg(def: CardDef) -> int:
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "deal_damage_to_target" and parts.size() > 1:
+			return int(parts[1])
+	return 0
 
 
 # Return true if this AI wants to mulligan its opening hand.
@@ -33,6 +115,8 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 
 	# Hand card plays.
 	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.has(card.card_def_id):
+			continue   # held for combat windows — see combat_instant_action()
 		var action_type := _action_type_for(card, db)
 		if action_type == "":
 			continue

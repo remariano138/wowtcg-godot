@@ -142,6 +142,8 @@ Pet capacity is a player attribute (`PlayerState.pet_capacity`, default 1) that 
   - `_handle_enter_play_target` in `playtest.gd` — same: `opp` only
   - `_get_ally_power_actions` — already enemy-only
 - `_destroy_is_worth_it(state, db, player_id, target_id, spell_cost)` — AI only plays destroy spells when target cost ≥ spell cost AND no friendly ally can solo-kill the target in combat.
+- **Combat instants (held cards / ambush):** `BaseAI.COMBAT_INSTANT_TAGS` tags cards (by `card_def_id`) the AI must HOLD — `get_legal_actions` never blind-plays them; `combat_instant_action()` plays them only when the AI is **being attacked**, during attack/defend windows (see `ai_functions.md` for the exact math). Quick Strike (`azeroth_165`) is tagged `combat_instant_dmg`. The AI announces `target_id = state.combat_attacker` at submission. All AI classes inherit the behavior (BaseAI.decide_action; FullRandomAI checks it before random play).
+- **Targeted instants announce their target at play time** (`_instant_needs_target` covers `destroy_target` AND `deal_damage_to_target`) — humans get the standard cancellable (Esc) targeting flow via `start_targeting`, highlighted with the looser `can_play_instant_no_target_check` probe. There is no deferred target pick for instants.
 
 ---
 
@@ -210,6 +212,6 @@ Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non
 
 - **Grimdron hero-targeting bug (unconfirmed):** User reported Grimdron's power couldn't target opponent's hero when no enemy allies were in play. All code paths appear correct — hero IS included in `_get_ally_power_targets`. Suspected cause: visual (hero not highlighted?) or runtime state issue. Needs more investigation with actual play. Suggested: add temp `print("ally_power_targets:", result)` in `_get_ally_power_targets` to confirm.
 - **Sarmoth** playtested and working. Watch for edge cases with taunt + Elusive attackers.
-- **Combat window AI:** AI currently passes during attack/defend windows (returns empty actions for non-turn player). This is acceptable but means AI never uses Grimdron to counter-attack during enemy combats. Future: extend `get_all_legal_actions` to return useful defensive plays for non-turn player during combat windows.
+- **Combat window AI:** the non-turn AI now plays tagged **combat instants** (Quick Strike) during attack/defend windows via `BaseAI.combat_instant_action` — see AI conventions above. It still never uses ally activated powers (e.g. Grimdron) to counter-attack during enemy combats. Future: extend the window logic to defensive ally-power plays.
 - **Next cards to implement:** Check `data/cards.csv` for candidates.
 - **`logic/BasicAI_behavior.txt` is legacy** and may be stale — actual AI is fully in `game_logic/ai/base_ai.gd`.

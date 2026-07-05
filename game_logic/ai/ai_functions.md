@@ -126,3 +126,45 @@ playtest.gd all commit to `ranked[0]`.
 (`_targeted_instant_actions` still enumerates all targets), destroy effects
 (lethality-by-damage doesn't apply), and Dizdemona's `deal_x_damage_to_ally`
 (ally-only by card text; has its own lethal-first sort).
+
+---
+
+## `BaseAI.COMBAT_INSTANT_TAGS` + `combat_instant_action(state, db, player_id) -> PendingAction`
+
+**Held cards / ambush system.** `COMBAT_INSTANT_TAGS` is a dict keyed by
+`card_def_id` tagging cards the AI must **hold in hand** instead of
+blind-playing on its own action window (`get_legal_actions` skips them).
+Current tags:
+
+- `"combat_instant_dmg"` — instant dealing targeted damage
+  (`deal_damage_to_target:N:TYPE`), e.g. **Quick Strike** (`azeroth_165`,
+  cost 3, 2 melee). The card's value is the *surprise* during an opponent's
+  combat, not tempo damage on your own turn.
+
+`combat_instant_action` implements when to spring the ambush. It returns a
+`play_instant` action with `target_id = state.combat_attacker` announced at
+submission, or `null`. Gates:
+
+- A combat **attack or defend window** is open, chain empty, no pending
+  enter-play choice.
+- Only the player **being attacked** (controller of `state.combat_defender`)
+  ever plays it — the attacking side never ambushes its own combat.
+- **Attack window:** `attacker_hp <= dmg` **and** `attacker_cost >= card_cost`
+  — kill the attacker before it even forces a protect, unless it's a cheap
+  bait not worth the card.
+- **Defend window:** `attacker_hp <= defender_atk + dmg` **and**
+  `attacker_hp > defender_atk` **and** `attacker_cost >= card_cost` — only
+  if it finishes something the defender alone wouldn't kill.
+
+**Targeting:** announced at play time, like all targeted instants — the AI
+always targets `state.combat_attacker`; humans use the standard cancellable
+targeting flow (`input_router.start_targeting`).
+
+**Call sites:**
+
+| Where | Use |
+|---|---|
+| `base_ai.gd` → `decide_action` | The base AI's only proactive play — every subclass inherits the ambush. |
+| `full_random_ai.gd` → `decide_action` | Checked FIRST, before any random pick — the ambush is deterministic, never left to the dice. GenericAI inherits via `super`. |
+
+Tests: scenario 34 in `game_logic/tests/test_scenarios.gd`.

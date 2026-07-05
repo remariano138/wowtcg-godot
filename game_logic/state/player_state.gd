@@ -33,6 +33,11 @@ var pet_capacity: int = 1
 # when the priority window closes, and at the start of each turn.
 var damage_prevention: int = 0
 
+# Rule-condition tracking for quests like Torek's Assault: whether this
+# player's hero was dealt damage by an opposing ally this turn. Reset at the
+# start of each turn.
+var hero_damaged_by_ally_this_turn: bool = false
+
 
 static func make(p_player_id: String) -> PlayerState:
 	var ps := PlayerState.new()

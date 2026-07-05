@@ -49,7 +49,7 @@ func load_csv(path: String) -> void:
 
 		var cols := _split_csv_line(line)
 		if cols.size() != headers.size():
-			push_warning("CardDatabase: column count mismatch on line %d" % (i + 1))
+			push_warning("CardDatabase: column count mismatch on line %d (got %d cols, expected %d) — card skipped: %s" % [i + 1, cols.size(), headers.size(), line.substr(0, 60)])
 			continue
 
 		var row: Dictionary = {}

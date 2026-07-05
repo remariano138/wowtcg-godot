@@ -1273,6 +1273,29 @@ static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
 	return {}
 
 
+# Minimum ally-row party size required to complete a quest (e.g. The Defias
+# Brotherhood: "require_ally_count:4"). Returns 0 if the quest has no such gate.
+static func get_quest_ally_count_requirement(def: CardDef) -> int:
+	if not def or def.effects == "":
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() >= 2 and parts[0].strip_edges() == "require_ally_count":
+			return int(parts[1])
+	return 0
+
+
+# Torek's Assault-style condition: an opposing hero must have been dealt
+# damage this turn by an ally in the quest controller's party.
+static func quest_requires_hero_damaged_by_ally(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges() == "require_hero_damaged_by_ally":
+			return true
+	return false
+
+
 # All graveyard cards matching a requirement, from player_id's point of view.
 static func get_graveyard_search_candidates(state: GameState, player_id: String,
 		req: Dictionary, db) -> Array[String]:
@@ -1341,6 +1364,16 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	var resource_cost: int = max(def.cost, 0)
 	if resource_cost > state.get_available_resources(action.source_player):
 		return false
+	# Party-size gating condition (e.g. The Defias Brotherhood: 4+ allies).
+	var ally_req := get_quest_ally_count_requirement(def)
+	if ally_req > 0 \
+			and state.cards_in_zone(action.source_player + "_ally_row").size() < ally_req:
+		return false
+	# Torek's Assault-style condition: opposing hero damaged by our ally this turn.
+	if quest_requires_hero_damaged_by_ally(def):
+		var opp_ps := state.players.get(_other_player(state, action.source_player)) as PlayerState
+		if not opp_ps or not opp_ps.hero_damaged_by_ally_this_turn:
+			return false
 	# Graveyard-target rewards: targets are announced with the completion (rule 601-style
 	# targeting) and must be legal now. Blocked entirely when too few candidates exist.
 	var gy_req := get_graveyard_search_requirement(def)

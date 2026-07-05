@@ -700,10 +700,13 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 	if not card:
 		return
 	var def := _db.get_def(card.card_def_id) as CardDef
+	var node: CardNode
 	if not def:
-		return
-	var stats := "%d/%d" % [def.printed_atk, def.printed_health]
-	var node  := CardNode.create(inst_id, def.card_name, stats, color, def.image_path)
+		push_warning("_spawn_card_node: no CardDef for '%s' (card_def_id=%s) — showing placeholder" % [inst_id, card.card_def_id])
+		node = CardNode.create(inst_id, "?? " + card.card_def_id, "MISSING DEF", Color(0.4, 0.4, 0.4))
+	else:
+		var stats := "%d/%d" % [def.printed_atk, def.printed_health]
+		node = CardNode.create(inst_id, def.card_name, stats, color, def.image_path)
 	node.global_position = spawn_pos
 	add_child(node)
 	_renderer.register_card(inst_id, node)

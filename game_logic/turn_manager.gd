@@ -109,6 +109,7 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		var p := state.players[pid] as PlayerState
 		if p:
 			p.damage_prevention = 0
+			p.hero_damaged_by_ally_this_turn = false
 
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):

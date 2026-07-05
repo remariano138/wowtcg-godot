@@ -111,6 +111,14 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		if amount <= 0:
 			return events
 
+	# Torek's Assault condition: track when a hero is damaged by an opposing ally.
+	if target_ps and target_ps.hero_instance_id == target_id:
+		var source_card := state.get_card(source_id)
+		if source_card and source_card.controller != target.controller:
+			var source_zone := state.zones.get(source_card.zone_id) as Zone
+			if source_zone and source_zone.zone_type == "ally_row":
+				target_ps.hero_damaged_by_ally_this_turn = true
+
 	var old_hp := state.get_current_hp(target_id, db)
 
 	# Rule 405.3: excess damage beyond fatal is lost, not placed.

@@ -51,6 +51,8 @@ func _ready() -> void:
 	_test_chasing_ame_blocked_and_filtered()
 	_test_darrowshire_rfg_three_allies()
 	_test_darrowshire_blocked_with_too_few_allies()
+	_test_defias_brotherhood_requires_four_allies()
+	_test_toreks_assault_requires_hero_damaged_by_ally()
 	_test_find_lethal()
 	_test_find_lethal_baseline_in_ai_actions()
 	_test_sort_valuable_cards()
@@ -2144,6 +2146,123 @@ func _test_darrowshire_blocked_with_too_few_allies() -> void:
 			{"quest_id": "dar_inst", "target_ids": ["dead_0", "dead_1"]})
 	ok(not StackResolver.can_submit(state, forced, db),
 		"sc26-b: forced submission with 2 targets rejected")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 26b — The Defias Brotherhood: needs 4+ allies in play, pay 1, draw 2
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_defias_brotherhood_requires_four_allies() -> void:
+	print("\n-- Scenario 26b: The Defias Brotherhood needs 4+ allies in party --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("defias_def", 1, "require_ally_count:4|draw:2")
+	db.ally("filler_ally_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+
+	var quest := CardInstance.create("defias_inst", "defias_def", "p1", "p1_resource_row")
+	state.cards["defias_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("defias_inst")
+
+	eq(StackResolver.get_quest_ally_count_requirement(db.get_def("defias_def")), 4,
+		"sc26b-a: parsed requirement is 4")
+
+	# Only 3 allies in play — one short.
+	for i in 3:
+		_add_ally(state, "ally_%d" % i, "filler_ally_def", "p1")
+	ok(not StackResolver.can_use_quest_no_target_check(state, "defias_inst", "p1", db),
+		"sc26b-b: probe fails with only 3 allies in play")
+
+	# Add a 4th ally — now legal.
+	_add_ally(state, "ally_3", "filler_ally_def", "p1")
+	ok(StackResolver.can_use_quest_no_target_check(state, "defias_inst", "p1", db),
+		"sc26b-c: probe succeeds with 4 allies in play")
+
+	for i in 20:
+		var did := "deck_%d" % i
+		var dc := CardInstance.create(did, "filler_ally_def", "p1", "p1_deck")
+		state.cards[did] = dc
+		state.zones["p1_deck"].card_ids.append(did)
+
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "defias_inst"})
+	var events := StackResolver.submit_action(state, complete, db)
+	ok(not events.is_empty(), "sc26b-d: completion submits with 4 allies in play")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before + 2,
+		"sc26b-e: reward drew exactly two cards")
+	ok(state.get_card("defias_inst").face_down,
+		"sc26b-f: quest flipped face-down after completion")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 26c — Torek's Assault: needs opposing hero damaged by our ally this turn
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
+	print("\n-- Scenario 26c: Torek's Assault requires opposing hero damaged by our ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("torek_def", 1, "require_hero_damaged_by_ally|draw:1")
+	db.ally("filler_ally_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+
+	var quest := CardInstance.create("torek_inst", "torek_def", "p1", "p1_resource_row")
+	state.cards["torek_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("torek_inst")
+
+	_add_ally(state, "p1_ally", "filler_ally_def", "p1")
+	_add_ally(state, "p2_ally", "filler_ally_def", "p2")
+
+	ok(not StackResolver.can_use_quest_no_target_check(state, "torek_inst", "p1", db),
+		"sc26c-a: probe fails before any hero has taken damage")
+
+	# Our ally damaging OUR OWN hero must not satisfy the condition.
+	GameLogic.deal_damage(state, "p1_ally", "p1_hero", 1, db)
+	ok(not StackResolver.can_use_quest_no_target_check(state, "torek_inst", "p1", db),
+		"sc26c-b: probe still fails when our own hero is damaged by our ally")
+
+	# The opposing ally damaging the opposing hero must not satisfy the condition either.
+	GameLogic.deal_damage(state, "p2_ally", "p2_hero", 1, db)
+	ok(not StackResolver.can_use_quest_no_target_check(state, "torek_inst", "p1", db),
+		"sc26c-c: probe still fails when opposing hero is damaged by their own ally")
+
+	# Our ally damaging the OPPOSING hero satisfies the condition.
+	GameLogic.deal_damage(state, "p1_ally", "p2_hero", 1, db)
+	ok(StackResolver.can_use_quest_no_target_check(state, "torek_inst", "p1", db),
+		"sc26c-d: probe succeeds once our ally damages the opposing hero")
+
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+	for i in 5:
+		var did := "deck_%d" % i
+		var dc := CardInstance.create(did, "filler_ally_def", "p1", "p1_deck")
+		state.cards[did] = dc
+		state.zones["p1_deck"].card_ids.append(did)
+
+	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "torek_inst"})
+	var events := StackResolver.submit_action(state, complete, db)
+	ok(not events.is_empty(), "sc26c-e: completion submits once condition is met")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before + 1,
+		"sc26c-f: reward drew exactly one card")
+	ok(state.get_card("torek_inst").face_down,
+		"sc26c-g: quest flipped face-down after completion")
+
+	# Flag resets at the start of a new turn (action -> end -> next turn's ready).
+	TurnManager.advance_phase(state, db)
+	TurnManager.advance_phase(state, db)
+	ok(not state.players["p2"].hero_damaged_by_ally_this_turn,
+		"sc26c-h: hero_damaged_by_ally_this_turn resets at next turn start")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -4,7 +4,7 @@
   "hero_card_def_id": "azeroth_15",
   "card_entries": [
     { "card_def_id": "azeroth_298", "count": 1 },
-    { "card_def_id": "azeroth_281", "count": 8 },
+    { "card_def_id": "azeroth_360", "count": 8 },
     { "card_def_id": "azeroth_347", "count": 2 },
     { "card_def_id": "azeroth_351", "count": 2 },
     { "card_def_id": "azeroth_248", "count": 2 },

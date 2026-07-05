@@ -10,8 +10,8 @@ signal card_right_clicked(instance_id: String)
 signal card_hovered(instance_id: String)
 signal card_unhovered(instance_id: String)
 
-const W := 80.0
-const H := 110.0
+const W := 75.0
+const H := 105.0
 
 const CARD_BACK_PATH := "res://assets/card_backs/wowTCGdefaultback.jpg"
 

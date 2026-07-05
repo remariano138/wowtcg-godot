@@ -74,10 +74,10 @@ const SPREAD_ZONES := ["chain",
 	"p1_resource_row", "p2_resource_row"]
 
 # In-play zones need wider spacing so exhausted (rotated 90°) cards don't overlap.
-# A card is W=80 H=110; when exhausted its footprint is 110px wide, so 130px gives ~10px margin.
-# Hand/chain cards are never rotated, so 92px (6px margin at W=80) is fine there.
-const PLAY_SPREAD_GAP := 130.0
-const HAND_SPREAD_GAP :=  92.0
+# When exhausted, a card's footprint is CardNode.H wide, so add ~20px margin.
+# Hand/chain cards are never rotated, so CardNode.W + ~12px margin is fine there.
+const PLAY_SPREAD_GAP := CardNode.H + 20.0
+const HAND_SPREAD_GAP := CardNode.W + 12.0
 
 const PLAY_ZONES := ["p1_ally_row", "p2_ally_row",
 	"p1_hero_row", "p2_hero_row",
@@ -148,7 +148,7 @@ func _build_inspector() -> void:
 	_inspector = TextureRect.new()
 	_inspector.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	_inspector.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
-	_inspector.size         = Vector2(320, 440)   # ~4× the 80×110 card node
+	_inspector.size         = Vector2(CardNode.W * 4, CardNode.H * 4)   # ~4× the card node
 	_inspector.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_inspector.visible      = false
 	_inspector.z_index      = 100

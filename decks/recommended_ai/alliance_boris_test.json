@@ -9,9 +9,19 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
+    },
+    {
       "card_def_id": "azeroth_360",
-      "count": 6,
+      "count": 4,
       "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_347",
+      "count": 2,
+      "_card_name": "Battle of Darrowshire"
     },
     {
       "card_def_id": "azeroth_340",
@@ -22,6 +32,11 @@
       "card_def_id": "azeroth_351",
       "count": 2,
       "_card_name": "A Donation of Wool"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
     },
     {
       "card_def_id": "azeroth_176",
@@ -67,15 +82,10 @@
       "card_def_id": "azeroth_192",
       "count": 4,
       "_card_name": "Kor Cindervein"
-    },
-    {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
-    },
+    },    
     {
       "card_def_id": "azeroth_197",
-      "count": 6,
+      "count": 4,
       "_card_name": "Latro Abiectus"
     },
     {

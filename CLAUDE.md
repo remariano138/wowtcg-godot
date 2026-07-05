@@ -188,7 +188,7 @@ Dizdemona, Ta'zo, Grennan, Boris Brightbeard, Omedus, Sarmoth (ally), Radak Doom
 
 ## Equipment (rules 300.1, 303/304, 414.3)
 
-First equipment implemented: **Mooncloth Robe** (`azeroth_298`, Armor—Cloth, Chest, DEF 0).
+Equipment implemented: **Mooncloth Robe** (`azeroth_298`, Armor—Cloth, Chest, DEF 0) and **Pads of the Dread Wolf** (`dark_portal_260`, Armor—Leather, Feet, DEF 1 — first card with functional DEF).
 
 - **Play flow:** `play_equipment` action (mirrors `play_ally`'s action-phase timing) → `_resolve_play_equipment` moves the card to the controller's `hero_row` (rule 304.1). Card type is `Equipment`; the recipe carries an `equipment:SLOT:DEF` segment.
 - **Activated powers reuse the ally-power path** (`use_ally_power` / `_can_use_ally_power` / `_resolve_use_ally_power`), now generalized to accept a source in `ally_row` OR `hero_row`. Equipment has no summoning sickness. A power's optional 7th recipe field is an `EXTRACOST` token; `exhaust_hero` (Mooncloth Robe) requires a ready hero at validation and exhausts it at resolution alongside the activate (exhaust-self). New `draw` effect draws `AMOUNT` cards.
@@ -196,6 +196,18 @@ First equipment implemented: **Mooncloth Robe** (`azeroth_298`, Armor—Cloth, C
 - **UI:** `input_router` `_action_type_for` maps Equipment → `play_equipment`; the context-menu "Activate Power" entry now covers hero_row equipment; equipment-sacrifice mode mirrors pet-sacrifice mode (red highlight, `start_equipment_sacrifice_mode`). `playtest.gd` handles `equipment_sacrifice_required` (AI keeps highest-cost) and the pass button shows "Destroy equipment". Hero_row rendering already spreads non-hero cards, so equipment displays with no renderer changes.
 - **AI:** BaseAI now generates `play_equipment` (via `_action_type_for`) and equipment activated powers (`_get_ally_power_actions` scans hero_row too). The `draw` power is skipped when the hand is already full. This is simple-heuristic level (FullRandomAI picks among legal actions; GenericAI still prioritizes safe kills first) — the AI plays the robe and may draw with it, but doesn't reason about hero-exhaust tempo. Covered by `_test_ai_plays_equipment`.
 - Tests: `_test_mooncloth_robe_power`, `_test_mooncloth_robe_hero_exhausted`, `_test_equipment_slot_uniqueness` in `test_scenarios.gd`.
+
+### Armor damage prevention (rule 304.3) — "block"
+
+Block is committed BEFORE damage resolves (declared-pool model), not as an interrupt:
+
+- **Action `use_armor_prevention`** (`{card_id}`): exhaust a ready armor with DEF > 0 (hero_row, no summoning sickness). Exhaust happens at **submission** (cost); resolution adds DEF to `PlayerState.damage_prevention` ("current block") and emits `armor_prevention_used`.
+- **Legality** (`_can_use_armor_prevention`): priority + damage actually incoming — a combat window / protect point is open OR the chain is non-empty (responding to a damage effect like Quick Strike). Armor prevents effect damage too.
+- **Consumption:** `GameLogic.deal_damage` — if the target is the controller's **hero** (allies are never protected), the pool absorbs first (`damage_prevented` event), remainder is placed.
+- **Expiry:** `_clear_damage_prevention` at combat conclusion (both branches), at `priority_window_closed`, and at turn start (`_enter_ready`) — unspent block never carries over.
+- **AI heuristic** (`BaseAI.armor_prevention_action`, runs before combat-instant ambush in all AIs): `incoming = damage aimed at our hero − current pool` (combat: attacker ATK when our hero is `combat_defender`; chain: opposing damage actions targeting our hero). Exhaust the highest-DEF ready armor for which `incoming >= DEF − 1` (avoids wasting big armor on chip damage); one armor per priority pass, re-evaluated each time (6 incoming vs DEF 3 + DEF 1 → uses both).
+- **UI:** armor highlights green when block is legal; left-click submits the block directly; context menu shows "Exhaust to prevent N damage".
+- Tests: `_test_pads_block_combat`, `_test_pads_block_instant`, `_test_pads_overblock_expires`, `_test_ai_armor_block_heuristic`.
 
 ---
 

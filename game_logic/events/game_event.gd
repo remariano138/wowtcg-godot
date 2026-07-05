@@ -105,6 +105,22 @@ static func pet_sacrifice_required(player_id: String, candidate_ids: Array[Strin
 static func equipment_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
 	return make("equipment_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
 
+static func armor_prevention_used(player_id: String, card_id: String,
+		def_value: int, total_prevention: int) -> GameEvent:
+	return make("armor_prevention_used", {
+		"player":     player_id,
+		"card_id":    card_id,
+		"def":        def_value,
+		"prevention": total_prevention,   # pool total after adding this armor's DEF
+	})
+
+static func damage_prevented(target_id: String, amount: int, remaining: int) -> GameEvent:
+	return make("damage_prevented", {
+		"target_id": target_id,
+		"amount":    amount,      # damage points absorbed by the pool
+		"remaining": remaining,   # pool left after absorbing
+	})
+
 static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
 	return make("hero_power_used", {"player": player_id, "hero_id": hero_id})
 

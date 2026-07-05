@@ -20,7 +20,8 @@
     { "card_def_id": "azeroth_352", "count": 1 },
     { "card_def_id": "azeroth_264", "count": 8 },
     { "card_def_id": "azeroth_228", "count": 7 },
-    { "card_def_id": "azeroth_252", "count": 6 }
+    { "card_def_id": "azeroth_252", "count": 4 },
+    { "card_def_id": "azeroth_234", "count": 2 }
   ],
   "recommended_ai_id": "ai_generic",
   "source": "recommended_ai",

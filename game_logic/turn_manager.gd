@@ -103,12 +103,25 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		# has_used_hero_power intentionally NOT reset here — using the hero power
 		# "flips" the hero for the rest of the game; it cannot be reused.
 
+	# Safety: leftover armor block never survives into a new turn (rule 304.3
+	# block is scoped to the window/combat it was declared in).
+	for pid in state.players:
+		var p := state.players[pid] as PlayerState
+		if p:
+			p.damage_prevention = 0
+
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):
 		card.just_summoned = false
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
 	for card in state.cards_in_zone(state.turn_player + "_resource_row"):
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
+
+	# Reset once-per-turn power gates for every in-play card (both players' —
+	# these powers aren't turn-restricted, e.g. Deacon Johanna).
+	for pid in state.players:
+		for card in state.cards_in_play(pid):
+			card.used_this_turn = false
 
 	# Triggered effects: "at the start of each turn" (all players' in-play chars).
 	for pid in state.players:

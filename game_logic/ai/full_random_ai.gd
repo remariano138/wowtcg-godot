@@ -31,6 +31,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	# Don't act during ready or draw phases — pass and let the phase advance.
 	if state.phase in ["ready", "draw"]:
 		return null
+	# Armor block (BaseAI) — deterministic, never left to the dice.
+	var block := armor_prevention_action(state, db, player_id)
+	if block != null:
+		return block
 	# Combat-instant ambush (BaseAI) — deterministic, never left to the dice.
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:

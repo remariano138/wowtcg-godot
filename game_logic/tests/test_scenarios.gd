@@ -30,6 +30,10 @@ func _ready() -> void:
 	_test_mooncloth_robe_hero_exhausted()
 	_test_equipment_slot_uniqueness()
 	_test_ai_plays_equipment()
+	_test_pads_block_combat()
+	_test_pads_block_instant()
+	_test_pads_overblock_expires()
+	_test_ai_armor_block_heuristic()
 	_test_grimdron_ally_power()
 	_test_sarmoth_taunt_forces_attacker()
 	_test_sarmoth_taunt_multiple_attackers()
@@ -55,6 +59,10 @@ func _ready() -> void:
 	_test_generic_ai_value_choices()
 	_test_ally_heal_power_targets_friendlies()
 	_test_combat_instant_ambush()
+	_test_deacon_johanna_once_per_turn()
+	_test_acolyte_demia_power()
+	_test_acolyte_demia_own_turn_only()
+	_test_acolyte_demia_self_destroys()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -1151,6 +1159,228 @@ func _test_ai_plays_equipment() -> void:
 		if a.action_type == "use_ally_power" and a.params.get("card_id") == "robe2":
 			still_power = true
 	ok(not still_power, "ai-eq-c: AI skips the draw power when hand is full")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pads of the Dread Wolf — armor damage prevention (rule 304.3)
+#
+# Cost 1, Armor—Leather, Feet, 1 DEF. No powers — its whole job is
+# "exhaust to prevent 1 damage to your hero".
+# ══════════════════════════════════════════════════════════════════════════════
+
+const PADS_EFFECTS := "equipment:feet:1"
+
+func _test_pads_block_combat() -> void:
+	print("\n-- Pads of the Dread Wolf: block combat damage to hero --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.ally("smasher", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_ally(state, "smasher_inst", "smasher", "p2")
+	var pads := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
+	state.cards["pads_inst"] = pads
+	state.zones["p1_hero_row"].card_ids.append("pads_inst")
+
+	# pb-a: no incoming damage → block is illegal (empty chain, no combat).
+	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "pads_inst"})
+	state.priority_player = "p1"
+	ok(not StackResolver.can_submit(state, block, db),
+		"pb-a: block illegal outside combat with empty chain")
+	state.priority_player = "p2"
+
+	# p2 attacks p1's hero.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "smasher_inst", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → combat starts, attack window
+
+	# Block is a last-moment decision — not legal yet during the attack window
+	# (a Protector could still take the hit instead).
+	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1
+	ok(not StackResolver.can_submit(state, block, db),
+		"pb-a2: block still illegal during the attack window")
+
+	# Close the attack window (no protectors) → defend window opens.
+	StackResolver.pass_priority(state, db)   # p1 passes → attack window closes, defend window opens
+
+	# pb-b: defend window open, p2 has priority — pass to p1, block now legal.
+	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1
+	ok(StackResolver.can_submit(state, block, db),
+		"pb-b: block legal during the defend window")
+
+	# p1 exhausts the pads.
+	StackResolver.submit_action(state, block, db)
+	StackResolver.pass_priority(state, db)   # p1 passes
+	StackResolver.pass_priority(state, db)   # p2 passes → block resolves
+
+	# pb-c: block resolved — pool is 1, pads exhausted.
+	eq(state.players["p1"].damage_prevention, 1, "pb-c: prevention pool at 1")
+	ok(state.get_card("pads_inst").is_exhausted, "pb-c2: pads exhausted at submission")
+
+	# Close defend window → conclusion.
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window closes → damage
+
+	# pb-d: hero took 2 − 1 = 1 damage.
+	eq(state.get_card("p1_hero").damage_taken, 1, "pb-d: hero took 1 (2 ATK − 1 blocked)")
+
+	# pb-e: pool cleared after combat.
+	eq(state.players["p1"].damage_prevention, 0, "pb-e: pool cleared after combat")
+
+
+func _test_pads_block_instant() -> void:
+	print("\n-- Pads of the Dread Wolf: block effect damage (chain response) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.instant("zap_def", 1, "deal_damage_to_target:2:melee")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 1)
+	var pads := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
+	state.cards["pads_inst"] = pads
+	state.zones["p1_hero_row"].card_ids.append("pads_inst")
+	var zap := CardInstance.create("zap_inst", "zap_def", "p2", "p2_hand")
+	state.cards["zap_inst"] = zap
+	state.zones["p2_hand"].card_ids.append("zap_inst")
+
+	# p2 plays the damage instant at p1's hero.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "zap_inst", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1, chain non-empty
+
+	# pi-a: block legal as a chain response.
+	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "pads_inst"})
+	ok(StackResolver.can_submit(state, block, db),
+		"pi-a: block legal while opposing damage effect is on the chain")
+
+	StackResolver.submit_action(state, block, db)
+	StackResolver.pass_priority(state, db)   # p1 passes
+	StackResolver.pass_priority(state, db)   # p2 passes → block resolves (pool 1)
+	StackResolver.pass_priority(state, db)   # p2 passes (turn player got priority)
+	StackResolver.pass_priority(state, db)   # p1 passes → zap resolves
+
+	# pi-b: hero took 2 − 1 = 1 damage; pool fully consumed.
+	eq(state.get_card("p1_hero").damage_taken, 1, "pi-b: hero took 1 (2 dmg − 1 blocked)")
+	eq(state.players["p1"].damage_prevention, 0, "pi-c: pool consumed to 0")
+
+
+func _test_pads_overblock_expires() -> void:
+	print("\n-- Armor block: leftover block expires after combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("plate_def", 3, "equipment:chest:3", "Plate")
+	db.ally("poker", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_ally(state, "poker_inst", "poker", "p2")
+	var plate := CardInstance.create("plate_inst", "plate_def", "p1", "p1_hero_row")
+	state.cards["plate_inst"] = plate
+	state.zones["p1_hero_row"].card_ids.append("plate_inst")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "poker_inst", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window
+	StackResolver.pass_priority(state, db)   # p2 passes → p1 priority (block still illegal here)
+	StackResolver.pass_priority(state, db)   # p1 passes → attack window closes, defend window opens
+	StackResolver.pass_priority(state, db)   # p2 passes → p1 priority
+	StackResolver.submit_action(state, PendingAction.make("use_armor_prevention", "p1",
+		{"card_id": "plate_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # block resolves (pool 3)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window closes → conclusion
+
+	# ob-a: hero took 0 (2 ATK fully blocked by DEF 3).
+	eq(state.get_card("p1_hero").damage_taken, 0, "ob-a: hero took 0 (fully blocked)")
+	# ob-b: leftover 1 block expired with the combat.
+	eq(state.players["p1"].damage_prevention, 0, "ob-b: leftover block cleared after combat")
+
+
+func _test_ai_armor_block_heuristic() -> void:
+	print("\n-- AI armor block heuristic: highest DEF first, no wasted potential --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("plate3_def", 3, "equipment:chest:3", "Plate")
+	db.equipment("pads1_def", 1, PADS_EFFECTS, "Leather")
+	db.equipment("shield6_def", 5, "equipment:back:6", "Plate")
+	db.ally("bruiser", 6, 6)
+	db.ally("rat", 1, 1)
+	var ai := BaseAI.new()
+
+	# Case 1: 6 incoming vs DEF 3 + DEF 1 → picks the 3 first, then the 1.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.turn_player = "p2"
+	_add_ally(s1, "bruiser_inst", "bruiser", "p2")
+	for pair in [["plate_inst", "plate3_def"], ["pads_inst", "pads1_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_hero_row")
+		s1.cards[pair[0]] = c
+		s1.zones["p1_hero_row"].card_ids.append(pair[0])
+	s1.combat_defend_window = true
+	s1.combat_attacker = "bruiser_inst"
+	s1.combat_defender = "p1_hero"
+	s1.priority_player = "p1"
+
+	var a1 := ai.armor_prevention_action(s1, db, "p1")
+	ok(a1 != null and a1.params.get("card_id") == "plate_inst",
+		"hb-a: 6 incoming → highest DEF (3) armor chosen first")
+	StackResolver.submit_action(s1, a1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # block resolves → pool 3
+
+	s1.priority_player = "p1"
+	var a2 := ai.armor_prevention_action(s1, db, "p1")
+	ok(a2 != null and a2.params.get("card_id") == "pads_inst",
+		"hb-b: 3 incoming left → DEF 1 armor also committed (3 >= 0)")
+	StackResolver.submit_action(s1, a2, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # pool 4
+
+	s1.priority_player = "p1"
+	eq(ai.armor_prevention_action(s1, db, "p1"), null,
+		"hb-c: nothing ready left → AI stops blocking")
+
+	# Case 2: 1 incoming vs DEF 6 → wasted potential (1 < 5), AI holds the armor.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player = "p2"
+	_add_ally(s2, "rat_inst", "rat", "p2")
+	var sh := CardInstance.create("shield_inst", "shield6_def", "p1", "p1_hero_row")
+	s2.cards["shield_inst"] = sh
+	s2.zones["p1_hero_row"].card_ids.append("shield_inst")
+	s2.combat_defend_window = true
+	s2.combat_attacker = "rat_inst"
+	s2.combat_defender = "p1_hero"
+	s2.priority_player = "p1"
+	eq(ai.armor_prevention_action(s2, db, "p1"), null,
+		"hb-d: 1 incoming vs DEF 6 → armor held (wasted potential)")
+
+	# Case 3: ally (not hero) is the defender → armor never blocks for allies.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.turn_player = "p2"
+	_add_ally(s3, "bruiser_inst3", "bruiser", "p2")
+	_add_ally(s3, "rat_p1", "rat", "p1")
+	var sh3 := CardInstance.create("shield3_inst", "shield6_def", "p1", "p1_hero_row")
+	s3.cards["shield3_inst"] = sh3
+	s3.zones["p1_hero_row"].card_ids.append("shield3_inst")
+	s3.combat_defend_window = true
+	s3.combat_attacker = "bruiser_inst3"
+	s3.combat_defender = "rat_p1"
+	s3.priority_player = "p1"
+	eq(ai.armor_prevention_action(s3, db, "p1"), null,
+		"hb-e: ally under attack → no armor block (heroes only)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2455,3 +2685,165 @@ func _test_combat_instant_ambush() -> void:
 		"sc34-j: p2 hero took no combat damage (attacker died pre-conclusion)")
 	ok(st4.get_card("qs_ambush").zone_id == "p2_graveyard",
 		"sc34-k: Quick Strike in graveyard after the ambush")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 35 — Deacon Johanna: no-exhaust payment power, gated once per turn
+#
+# Deacon Johanna's power has NO [Activate] tap symbol on the card — just a
+# resource cost ("2") — so per rule 701.3/3216 it isn't gated by summoning
+# sickness or the card's exhausted state, only by its own printed
+# "once per turn" restriction (CardInstance.used_this_turn, reset each turn).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_deacon_johanna_once_per_turn() -> void:
+	print("\n-- Scenario 35: Deacon Johanna — once-per-turn heal, no exhaust cost --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("johanna_def", 2, 2, [], 2,
+			"activated_power:2:heal_target:2:holy:hero_or_ally:once_per_turn")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_ally(state, "johanna", "johanna_def", "p1")
+	# Simulate a freshly-summoned, already-exhausted Johanna — the power still
+	# has to work since it isn't an [Activate] power.
+	state.get_card("johanna").just_summoned = true
+	state.get_card("johanna").is_exhausted  = true
+	state.get_card("p1_hero").damage_taken  = 5
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "johanna", "target_id": "p1_hero"})
+
+	# dj-a: usable despite summoning sickness and being exhausted.
+	ok(StackResolver.can_submit(state, use, db),
+		"dj-a: power usable while summoning-sick and exhausted (no tap symbol)")
+
+	# Ready Johanna to prove the power itself never exhausts her (no tap cost).
+	state.get_card("johanna").is_exhausted = false
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# dj-b: heal applied.
+	eq(state.get_card("p1_hero").damage_taken, 3, "dj-b: healed 2 damage from hero")
+
+	# dj-c: Johanna is still ready — the power carries no exhaust cost.
+	ok(not state.get_card("johanna").is_exhausted,
+		"dj-c: Johanna remains ready after using her power")
+
+	# dj-d: can't reuse this turn (once-per-turn gate).
+	ok(not StackResolver.can_submit(state, use, db),
+		"dj-d: power not usable again same turn")
+
+	# Advance deterministically through the rest of p1's turn, all of p2's turn,
+	# and into p1's next action phase (action->end->[next_turn/ready]->draw->action,
+	# twice) — avoids relying on how many priority-pass steps that takes.
+	for _i in 8:
+		TurnManager.advance_phase(state, db)
+	eq(state.turn_player, "p1", "dj-e-setup: back to p1's turn")
+	eq(state.phase, "action", "dj-e-setup: in p1's action phase")
+
+	# dj-e: once-per-turn gate reset for the new turn.
+	state.get_card("p1_hero").damage_taken = 5
+	ok(StackResolver.can_submit(state, use, db),
+		"dj-e: power usable again on a new turn")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Scenario 36 — Acolyte Demia: "Activate, 1, put 1 damage on Acolyte Demia:
+# Demia deals 1 shadow damage to target hero or ally. Use only on your turn."
+# Extra cost is damage PUT on the source (rule 405.3 — not preventable, capped
+# at exactly fatal), on top of the normal exhaust (activate) + resource cost.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const DEMIA_EFFECTS := "activated_power:1:deal_damage_to_target:1:shadow:hero_or_ally:put_damage_self:1|on_your_turn"
+
+func _test_acolyte_demia_power() -> void:
+	print("\n-- Scenario 36: Acolyte Demia — activate, put 1 damage on self, deal 1 shadow --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("demia_def", 3, 6, [], 6, DEMIA_EFFECTS)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var demia := _add_ally(state, "demia_inst", "demia_def", "p1")
+	demia.just_summoned = false
+	demia.is_exhausted  = false
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "demia_inst", "target_id": "p2_hero"})
+
+	# ad-a: legal on Demia's controller's own turn.
+	ok(StackResolver.can_submit(state, use, db), "ad-a: Demia power legal on p1's turn")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# ad-b: Demia took 1 damage (put, as her own cost).
+	eq(state.get_card("demia_inst").damage_taken, 1, "ad-b: Demia has 1 damage put on herself")
+
+	# ad-c: target hero took 1 shadow damage dealt.
+	eq(state.get_card("p2_hero").damage_taken, 1, "ad-c: p2 hero took 1 shadow damage")
+
+	# ad-d: Demia is exhausted (activate symbol).
+	ok(state.get_card("demia_inst").is_exhausted, "ad-d: Demia exhausted after use")
+
+
+func _test_acolyte_demia_own_turn_only() -> void:
+	print("\n-- Scenario 36b: Acolyte Demia — use only on your turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("demia_def", 3, 6, [], 6, DEMIA_EFFECTS)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# Demia controlled by p2, but it's p1's turn.
+	var demia := _add_ally(state, "demia_inst", "demia_def", "p2")
+	demia.just_summoned = false
+	demia.is_exhausted  = false
+	_add_resources(state, "p2", 1)
+	state.priority_player = "p2"
+
+	var use := PendingAction.make("use_ally_power", "p2",
+		{"card_id": "demia_inst", "target_id": "p1_hero"})
+
+	# ad-e: illegal off her controller's turn, even with priority and resources.
+	ok(not StackResolver.can_submit(state, use, db),
+		"ad-e: Demia power illegal outside her controller's own turn")
+
+
+func _test_acolyte_demia_self_destroys() -> void:
+	print("\n-- Scenario 36c: Acolyte Demia — self-damage can be exactly fatal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("demia_def", 3, 6, [], 6, DEMIA_EFFECTS)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var demia := _add_ally(state, "demia_inst", "demia_def", "p1")
+	demia.just_summoned = false
+	demia.is_exhausted  = false
+	demia.damage_taken  = 5   # 1 more damage is exactly fatal (6 health).
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "demia_inst", "target_id": "p2_hero"})
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# ad-f: the effect still resolves even though the cost was fatal to Demia.
+	eq(state.get_card("p2_hero").damage_taken, 1,
+		"ad-f: damage effect still resolves after fatal self-cost")
+
+	# ad-g: Demia was destroyed and moved to the graveyard.
+	eq(state.get_card("demia_inst").zone_id, "p1_graveyard",
+		"ad-g: Demia destroyed by her own put-damage cost")

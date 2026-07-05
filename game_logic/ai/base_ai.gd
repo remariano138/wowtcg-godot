@@ -24,7 +24,81 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 # Called once each time this player has priority.
 # Even the base AI plays combat instants — the ambush behavior is universal.
 func decide_action(state: GameState, db, player_id: String) -> PendingAction:
+	var block := armor_prevention_action(state, db, player_id)
+	if block != null:
+		return block
 	return combat_instant_action(state, db, player_id)
+
+
+# ── Armor damage prevention (rule 304.3) ──────────────────────────────────────
+# Exhaust armor to block incoming hero damage. Heuristic:
+#   incoming = damage being dealt to our hero − current block (damage_prevention)
+#   Check armors from highest DEF down; exhaust one when incoming >= DEF − 1
+#   (avoids wasting a big armor on chip damage). One armor per decide call —
+#   the proposer keeps priority, so we re-evaluate with the new block each time
+#   priority comes back (e.g. 6 incoming vs DEF 3 + DEF 1 → both get used).
+func armor_prevention_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var incoming := _incoming_hero_damage(state, db, player_id)
+	if incoming <= 0:
+		return null
+	var best_id := ""
+	var best_def := 0
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Equipment":
+			continue
+		var dv := int(StackResolver._equipment_info(def).get("def", 0))
+		if dv <= 0 or dv <= best_def:
+			continue
+		if incoming >= dv - 1:   # worth exhausting — little wasted potential
+			best_def = dv
+			best_id  = card.instance_id
+	if best_id == "":
+		return null
+	var act := PendingAction.make("use_armor_prevention", player_id,
+		{"card_id": best_id})
+	if StackResolver.can_submit(state, act, db):
+		return act
+	return null
+
+
+# Damage currently heading at player_id's hero, minus block already declared.
+# Two sources:
+#   • Combat — Defend Window open with our hero as the final defender (not the
+#     Attack Window or protect point — a Protector could still take the hit).
+#   • Chain  — an opposing damage effect on pending_actions targets our hero
+#     (e.g. Quick Strike, Grimdron's power). Armor prevents effect damage too.
+func _incoming_hero_damage(state: GameState, db, player_id: String) -> int:
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return 0
+	var hero_id := ps.hero_instance_id
+	var incoming := 0
+	if state.combat_defend_window \
+			and state.combat_defender == hero_id \
+			and state.is_in_play(state.combat_attacker):
+		incoming += state.get_atk(state.combat_attacker, db)
+	for act in state.pending_actions:
+		if act.source_player == player_id:
+			continue
+		if act.params.get("target_id", "") != hero_id:
+			continue
+		var src := state.get_card(act.params.get("card_id", ""))
+		var def := db.get_def(src.card_def_id) as CardDef if src else null
+		if not def:
+			continue
+		match act.action_type:
+			"play_instant", "play_ability":
+				incoming += _combat_instant_dmg(def)
+			"use_ally_power":
+				var ap := StackResolver._ally_activated_power(def)
+				if (ap.get("effect", "") as String) == "deal_damage_to_target":
+					incoming += int(ap.get("amount", 0))
+	return incoming - ps.damage_prevention
 
 
 # Ambush logic — only the player being ATTACKED (controller of combat_defender)
@@ -269,8 +343,6 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 	power_sources.append_array(state.cards_in_zone(player_id + "_ally_row"))
 	power_sources.append_array(state.cards_in_zone(player_id + "_hero_row"))
 	for card in power_sources:
-		if card.is_exhausted or card.just_summoned:
-			continue
 		if not db:
 			continue
 		var def := db.get_def(card.card_def_id) as CardDef
@@ -278,6 +350,12 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			continue
 		var ap := StackResolver._ally_activated_power(def)
 		if ap.is_empty():
+			continue
+		var once_per_turn: bool = ap.get("extra_cost", "") == "once_per_turn"
+		if once_per_turn:
+			if card.used_this_turn:
+				continue
+		elif card.is_exhausted or card.just_summoned:
 			continue
 		# Don't draw into a full hand (the card would just be discarded at wrap-up).
 		if ap.get("effect", "") == "draw":

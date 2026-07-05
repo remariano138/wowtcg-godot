@@ -96,6 +96,21 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		return []
 
 	var events: Array[GameEvent] = []
+
+	# Rule 304.3: exhausted armor prevents damage dealt to the controller's HERO.
+	# The prevention pool (PlayerState.damage_prevention) was built up in advance
+	# via use_armor_prevention; consume it before any damage is placed.
+	var target_ps := state.players.get(target.controller) as PlayerState
+	if target_ps and target_ps.hero_instance_id == target_id \
+			and target_ps.damage_prevention > 0:
+		var prevented: int = min(amount, target_ps.damage_prevention)
+		target_ps.damage_prevention -= prevented
+		amount -= prevented
+		events.append(GameEvent.damage_prevented(
+			target_id, prevented, target_ps.damage_prevention))
+		if amount <= 0:
+			return events
+
 	var old_hp := state.get_current_hp(target_id, db)
 
 	# Rule 405.3: excess damage beyond fatal is lost, not placed.
@@ -110,6 +125,32 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))
 
 	return events
+
+
+# ── put_damage ─────────────────────────────────────────────────────────────────
+# Rule 405.3: damage "put on" a character (as opposed to "dealt") can't be
+# prevented or replaced, and can never exceed the target's remaining health
+# (if it would put more than fatal damage, put exactly fatal damage instead).
+# Used for self-inflicted activated-power costs (e.g. Acolyte Demia).
+static func put_damage(state: GameState, target_id: String, amount: int, db) -> Array[GameEvent]:
+	if amount <= 0:
+		return []
+	var target := state.get_card(target_id)
+	if not target or not state.is_in_play(target_id):
+		return []
+
+	var old_hp := state.get_current_hp(target_id, db)
+	var actual: int = min(amount, old_hp)
+	if actual <= 0:
+		return []
+	target.damage_taken += actual
+	var new_hp := state.get_current_hp(target_id, db)
+	var max_hp := state.get_max_hp(target_id, db)
+
+	return [
+		GameEvent.damage_dealt(target_id, target_id, actual),
+		GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp),
+	]
 
 
 # ── check_destroyed ────────────────────────────────────────────────────────────

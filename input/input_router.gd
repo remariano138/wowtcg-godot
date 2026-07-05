@@ -123,6 +123,17 @@ func handle_card_click(instance_id: String) -> void:
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
 		if zone and zone.zone_type in ["ally_row", "hero_row"]:
+			# Armor block (rule 304.3): left-click a ready armor while damage is
+			# incoming exhausts it for its DEF — same as the context-menu entry.
+			var block_action := PendingAction.make("use_armor_prevention",
+				local_player, {"card_id": instance_id})
+			if StackResolver.can_submit(state, block_action, db):
+				var block_events := StackResolver.submit_action(state, block_action, db)
+				if not block_events.is_empty():
+					EventBus.emit_events(block_events)
+					_pass_own_proposal(block_action)
+					refresh_highlights()
+				return
 			# Only enter targeting if combat can actually be proposed right now (rule 601.1).
 			var can_propose := state.phase == "action" \
 				and state.turn_player == local_player \
@@ -627,6 +638,50 @@ func get_playable_card_ids() -> Array:
 		# No-target probe: graveyard-target quests light up before targets are chosen.
 		if StackResolver.can_use_quest_no_target_check(state, card.instance_id, local_player, db):
 			result.append(card.instance_id)
+	# In-play cards with a usable activated power (allies in ally row, equipment in
+	# hero row) and hero powers. Light up green like attackers/quests, mirroring the
+	# enabled logic in get_context_actions. Legal on either player's turn (rule 701.2).
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(local_player + zone_suffix):
+			if card.controller != local_player:
+				continue
+			var def: CardDef = db.get_def(card.card_def_id) if db else null
+			if not def:
+				continue
+			# Hero power (hero in the hero row).
+			var ps := state.players.get(local_player) as PlayerState
+			if zone_suffix == "_hero_row" and ps and ps.hero_instance_id == card.instance_id:
+				var power_check := PendingAction.make("activate_power", local_player,
+					{"hero_id": card.instance_id, "target_id": ""})
+				if StackResolver.can_submit(state, power_check, db):
+					result.append(card.instance_id)
+				continue
+			# Armor block (rule 304.3): green when exhaust-to-prevent is legal.
+			var block_action := PendingAction.make("use_armor_prevention",
+				local_player, {"card_id": card.instance_id})
+			if StackResolver.can_submit(state, block_action, db):
+				result.append(card.instance_id)
+				continue
+			# Activated power (ally / equipment).
+			var ap_data := StackResolver._ally_activated_power(def)
+			if ap_data == {}:
+				continue
+			var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally"]
+			if ap_needs_target:
+				# Affordability only — target chosen after targeting mode starts.
+				var ap_once_per_turn: bool = ap_data.get("extra_cost", "") == "once_per_turn"
+				var ap_ready_ok: bool = (not card.used_this_turn) if ap_once_per_turn \
+					else (not card.is_exhausted and not card.just_summoned)
+				if ap_ready_ok \
+						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
+						and state.phase == "action" and state.priority_player == local_player \
+						and state.pending_actions.is_empty():
+					result.append(card.instance_id)
+			else:
+				var ap_action := PendingAction.make("use_ally_power", local_player,
+					{"card_id": card.instance_id})
+				if StackResolver.can_submit(state, ap_action, db):
+					result.append(card.instance_id)
 	return result
 
 
@@ -737,7 +792,10 @@ func get_context_actions(instance_id: String) -> Array:
 						# Check affordability only (target chosen after targeting mode starts).
 						# No turn_player restriction — ally powers work on either player's turn
 						# as long as you hold priority (e.g. defending with Grimdron's power).
-						ap_enabled = not card.is_exhausted and not card.just_summoned \
+						var ap_once_per_turn: bool = ap_data.get("extra_cost", "") == "once_per_turn"
+						var ap_ready_ok: bool = (not card.used_this_turn) if ap_once_per_turn \
+							else (not card.is_exhausted and not card.just_summoned)
+						ap_enabled = ap_ready_ok \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 							and state.phase == "action" and state.priority_player == local_player \
 							and state.pending_actions.is_empty()
@@ -749,6 +807,17 @@ func get_context_actions(instance_id: String) -> Array:
 						"action": PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id, "_needs_target": ap_needs_target}),
 						"enabled": ap_enabled})
+
+			# Armor block (rule 304.3): equipment with DEF > 0 in the hero row.
+			if zone.zone_type == "hero_row" and def.card_type == "Equipment":
+				var eq_def := int(StackResolver._equipment_info(def).get("def", 0))
+				if eq_def > 0:
+					var block_a := PendingAction.make("use_armor_prevention",
+						local_player, {"card_id": instance_id})
+					char_actions.append({
+						"label": "Exhaust to prevent %d damage" % eq_def,
+						"action": block_a,
+						"enabled": StackResolver.can_submit(state, block_a, db)})
 
 			# Hero power entry (heroes only, controlled by local player).
 			if zone.zone_type == "hero_row" and card.controller == local_player:

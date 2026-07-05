@@ -56,6 +56,12 @@ static func submit_action(state: GameState, action: PendingAction,
 					var def := db.get_def(q_card.card_def_id) as CardDef
 					if def:
 						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0) as int))
+		"use_armor_prevention":
+			# Cost is exhausting the armor — paid at submission (rule 304.3),
+			# so the same armor can't be committed twice while on the chain.
+			var armor_id: String = action.params.get("card_id", "")
+			if armor_id != "":
+				events.append_array(GameLogic.exhaust_card(state, armor_id))
 		"use_ally_power":
 			# Pay the ally power's resource cost at submission time, same as play_ally.
 			var ap_card_id: String = action.params.get("card_id", "")
@@ -132,6 +138,7 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 				events.append_array(_do_combat_conclusion(state, db))
 				return events
 			# Rule 410.4b: chain empty → window closes, phase advances.
+			_clear_damage_prevention(state)   # window over — unspent block expires
 			events.append(GameEvent.make("priority_window_closed", {
 				"phase": state.phase,
 			}))
@@ -202,6 +209,8 @@ static func can_submit(state: GameState, action: PendingAction,
 			return _can_activate_power(state, action, db)
 		"use_ally_power":
 			return _can_use_ally_power(state, action, db)
+		"use_armor_prevention":
+			return _can_use_armor_prevention(state, action, db)
 		"choose_enter_play_target":
 			return _can_choose_enter_play_target(state, action, db)
 
@@ -438,6 +447,8 @@ static func _resolve(state: GameState, action: PendingAction,
 			return _resolve_activate_power(state, action, db)
 		"use_ally_power":
 			return _resolve_use_ally_power(state, action, db)
+		"use_armor_prevention":
+			return _resolve_use_armor_prevention(state, action, db)
 		"choose_enter_play_target":
 			return _resolve_choose_enter_play_target(state, action, db)
 
@@ -650,13 +661,16 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 	for segment in def.effects.split("|"):
 		var parts := segment.split(":")
 		if parts[0] == "activated_power":
+			# extra_cost may itself carry a colon-separated amount (e.g.
+			# "put_damage_self:1"), so rejoin everything past field 6.
+			var extra_parts := parts.slice(6) if parts.size() > 6 else PackedStringArray()
 			return {
 				"resource_cost": int(parts[1]) if parts.size() > 1 else 0,
 				"effect":        parts[2] if parts.size() > 2 else "",
 				"amount":        int(parts[3]) if parts.size() > 3 else 0,
 				"dmg_type":      parts[4] if parts.size() > 4 else "",
 				"targets":       parts[5] if parts.size() > 5 else "",
-				"extra_cost":    parts[6] if parts.size() > 6 else "",
+				"extra_cost":    ":".join(extra_parts) if extra_parts.size() > 0 else "",
 			}
 	return {}
 
@@ -672,6 +686,111 @@ static func _equipment_info(def: CardDef) -> Dictionary:
 				"def":  int(parts[2]) if parts.size() > 2 else 0,
 			}
 	return {}
+
+
+# ── Armor damage prevention (rule 304.3) ──────────────────────────────────────
+#
+# Exhaust a ready armor with DEF > 0 to add its DEF to the controller's
+# damage_prevention pool ("current block"). Block is committed BEFORE damage
+# resolves: legal only while damage is actually incoming — during combat
+# windows / the protect point, or while a chain is pending (responding to a
+# damage effect like Quick Strike). No summoning-sickness check ("regardless
+# of how long it's been under your control").
+
+# Is player_id's hero actually the target of incoming damage right now?
+# Two sources (rule 304.3 — armor only blocks damage aimed at the hero):
+#   • Combat — the Defend Window is open with our hero as the final combat_defender.
+#     Not the Attack Window or protect point: until the protect point resolves,
+#     a Protector could still take the hit instead of the hero, so blocking
+#     earlier would be premature (and isn't legal).
+#   • Chain  — an opposing damage effect on pending_actions targets our hero
+#     (e.g. Quick Strike, Grimdron's power) — legal any time, combat or not.
+static func has_incoming_hero_damage(state: GameState, db, player_id: String) -> bool:
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return false
+	var hero_id := ps.hero_instance_id
+	if state.combat_defend_window \
+			and state.combat_defender == hero_id \
+			and state.is_in_play(state.combat_attacker):
+		return true
+	for act in state.pending_actions:
+		if act.source_player == player_id:
+			continue
+		if act.params.get("target_id", "") != hero_id:
+			continue
+		if not db:
+			continue
+		var src := state.get_card(act.params.get("card_id", ""))
+		var def := db.get_def(src.card_def_id) as CardDef if src else null
+		if not def:
+			continue
+		match act.action_type:
+			"play_instant", "play_ability":
+				if _has_effect_flag_prefix(def, "deal_damage_to_target"):
+					return true
+			"use_ally_power":
+				var ap := _ally_activated_power(def)
+				if (ap.get("effect", "") as String) == "deal_damage_to_target":
+					return true
+	return false
+
+
+static func _has_effect_flag_prefix(def: CardDef, prefix: String) -> bool:
+	for segment in def.effects.split("|"):
+		if segment.strip_edges().split(":")[0] == prefix:
+			return true
+	return false
+
+
+static func _can_use_armor_prevention(state: GameState, action: PendingAction,
+		db = null) -> bool:
+	if state.priority_player != action.source_player:
+		return false
+	# Only meaningful while our hero is actually the target of incoming damage.
+	if not has_incoming_hero_damage(state, db, action.source_player):
+		return false
+	var card_id: String = action.params.get("card_id", "")
+	var card := state.get_card(card_id)
+	if not card or card.controller != action.source_player:
+		return false
+	if card.is_exhausted:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hero_row":
+		return false
+	if not db:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.card_type != "Equipment":
+		return false
+	return int(_equipment_info(def).get("def", 0)) > 0
+
+
+static func _resolve_use_armor_prevention(state: GameState, action: PendingAction,
+		db = null) -> Array[GameEvent]:
+	var card_id: String = action.params.get("card_id", "")
+	var card := state.get_card(card_id)
+	if not card or not db:
+		return [GameEvent.make("action_fizzled",
+			{"action_type": "use_armor_prevention", "reason": "card_not_found"})]
+	var def := db.get_def(card.card_def_id) as CardDef
+	var def_value := int(_equipment_info(def).get("def", 0)) if def else 0
+	var ps := state.players.get(action.source_player) as PlayerState
+	if not ps or def_value <= 0:
+		return [GameEvent.make("action_fizzled",
+			{"action_type": "use_armor_prevention", "reason": "no_defense_value"})]
+	ps.damage_prevention += def_value
+	return [GameEvent.armor_prevention_used(
+		action.source_player, card_id, def_value, ps.damage_prevention)]
+
+
+# Unspent block expires when the threat it was declared against is gone.
+static func _clear_damage_prevention(state: GameState) -> void:
+	for pid in state.players:
+		var ps := state.players[pid] as PlayerState
+		if ps:
+			ps.damage_prevention = 0
 
 
 # ── Ally activated power — validation ─────────────────────────────────────────
@@ -696,13 +815,6 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# from the hero row. Both are validated through this same path.
 	if not zone or not (zone.zone_type in ["ally_row", "hero_row"]):
 		return false
-	# Rule 701.3: summoning sickness applies to activated powers for allies.
-	# Equipment are not characters and never carry summoning sickness, so this
-	# only ever gates allies (equipment never sets just_summoned).
-	if card.just_summoned:
-		return false
-	if card.is_exhausted:
-		return false
 	if not db:
 		return false
 	var def := db.get_def(card.card_def_id) as CardDef
@@ -711,6 +823,25 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	var ap := _ally_activated_power(def)
 	if ap.is_empty():
 		return false
+	# "Use only on your turn" (e.g. Acolyte Demia) — same convention as hero
+	# powers (_power_effect_is(def, "on_your_turn")), as a standalone segment.
+	if _power_effect_is(def, "on_your_turn") and state.turn_player != action.source_player:
+		return false
+	var once_per_turn: bool = ap.get("extra_cost", "") == "once_per_turn"
+	if once_per_turn:
+		# No [Activate] tap symbol on this power (rule 701.3/3216): it isn't gated
+		# by summoning sickness or the card's exhausted state, only by its own
+		# printed "once per turn" text.
+		if card.used_this_turn:
+			return false
+	else:
+		# Rule 701.3: summoning sickness applies to activated powers for allies.
+		# Equipment are not characters and never carry summoning sickness, so this
+		# only ever gates allies (equipment never sets just_summoned).
+		if card.just_summoned:
+			return false
+		if card.is_exhausted:
+			return false
 	if state.get_available_resources(action.source_player) < int(ap.get("resource_cost", 0)):
 		return false
 	# Extra, card-specific costs baked into the power (e.g. Mooncloth Robe also
@@ -728,7 +859,8 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 # Whether a power's extra cost token can currently be paid.
 static func _can_pay_extra_power_cost(state: GameState, player_id: String,
 		extra_cost: String) -> bool:
-	match extra_cost:
+	var token := extra_cost.split(":")[0] if extra_cost != "" else ""
+	match token:
 		"", null:
 			return true
 		"exhaust_hero":
@@ -738,6 +870,11 @@ static func _can_pay_extra_power_cost(state: GameState, player_id: String,
 				return false
 			var hero := state.get_card(hero_id)
 			return hero != null and not hero.is_exhausted
+		"put_damage_self":
+			# Rule 405.3: damage put on a character can't exceed its remaining
+			# health, but it CAN be exactly fatal — always payable while the
+			# source is in play (checked by the caller).
+			return true
 	return true
 
 
@@ -759,14 +896,27 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 
 	var events: Array[GameEvent] = []
 	# Resource cost already paid at submission time (in submit_action).
-	# Exhaust the source at resolution (the activate symbol).
-	events.append_array(GameLogic.exhaust_card(state, card_id))
+	if ap.get("extra_cost", "") == "once_per_turn":
+		# No [Activate] tap symbol on this power — don't exhaust the source,
+		# just mark it used until the once-per-turn flag resets next turn.
+		card.used_this_turn = true
+	else:
+		# Exhaust the source at resolution (the activate symbol).
+		events.append_array(GameLogic.exhaust_card(state, card_id))
 	# Pay any extra card-specific cost (e.g. Mooncloth Robe also exhausts the hero).
-	if ap.get("extra_cost", "") == "exhaust_hero":
+	var extra_cost: String = ap.get("extra_cost", "")
+	if extra_cost == "exhaust_hero":
 		var ps := state.players.get(action.source_player) as PlayerState
 		var hero_id: String = ps.hero_instance_id if ps else ""
 		if hero_id != "":
 			events.append_array(GameLogic.exhaust_card(state, hero_id))
+	elif extra_cost.begins_with("put_damage_self"):
+		# Rule 405.3: put (not deal) damage on the source itself, e.g. Acolyte
+		# Demia. Can be exactly fatal — check destruction after paying it.
+		var put_parts := extra_cost.split(":")
+		var put_amount: int = int(put_parts[1]) if put_parts.size() > 1 else 1
+		events.append_array(GameLogic.put_damage(state, card_id, put_amount, db))
+		events.append_array(_check_destroyed_trigger(state, card_id, card_id, db))
 	events.append(GameEvent.make("ally_power_used",
 		{"ally_id": card_id, "player": action.source_player}))
 
@@ -1061,6 +1211,7 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 			or not state.is_in_play(attacker_id) \
 			or not state.is_in_play(defender_id):
 		events.append(GameEvent.combat_concluded(attacker_id, defender_id, 0, 0))
+		_clear_damage_prevention(state)   # threat gone — unspent block expires
 		return events
 
 	# Rule 603.1: both deal damage simultaneously.
@@ -1073,6 +1224,7 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	# then check fatalities on both after — true simultaneity.
 	events.append_array(GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db))
 	events.append_array(GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db))
+	_clear_damage_prevention(state)   # combat over — unspent block expires
 
 	# PPP: state-based destruction check after both packets have landed.
 	for cid in [defender_id, attacker_id]:

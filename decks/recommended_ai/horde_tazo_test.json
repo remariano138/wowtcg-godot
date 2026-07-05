@@ -3,6 +3,7 @@
   "display_name": "Horde_test (Ta'zo)",
   "hero_card_def_id": "azeroth_15",
   "card_entries": [
+    { "card_def_id": "azeroth_298", "count": 1 },
     { "card_def_id": "azeroth_281", "count": 8 },
     { "card_def_id": "azeroth_347", "count": 2 },
     { "card_def_id": "azeroth_351", "count": 2 },
@@ -14,7 +15,7 @@
     { "card_def_id": "azeroth_165", "count": 2 },
     { "card_def_id": "azeroth_236", "count": 4 },
     { "card_def_id": "azeroth_230", "count": 4 },
-    { "card_def_id": "azeroth_262", "count": 6 },
+    { "card_def_id": "azeroth_262", "count": 5 },
     { "card_def_id": "azeroth_264", "count": 8 },
     { "card_def_id": "azeroth_228", "count": 6 },
     { "card_def_id": "azeroth_252", "count": 4 },

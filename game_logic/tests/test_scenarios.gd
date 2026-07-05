@@ -26,6 +26,10 @@ func _ready() -> void:
 	_test_vanquish()
 	_test_quick_strike()
 	_test_pet_uniqueness()
+	_test_mooncloth_robe_power()
+	_test_mooncloth_robe_hero_exhausted()
+	_test_equipment_slot_uniqueness()
+	_test_ai_plays_equipment()
 	_test_grimdron_ally_power()
 	_test_sarmoth_taunt_forces_attacker()
 	_test_sarmoth_taunt_multiple_attackers()
@@ -104,6 +108,16 @@ class MockDB extends RefCounted:
 	func pet(def_id: String, atk: int, health: int, kw: Array[String] = [], cost: int = 0, effects: String = "") -> void:
 		ally(def_id, atk, health, kw, cost, effects)
 		(_defs[def_id] as CardDef).card_subtype = "Pet"
+
+	func equipment(def_id: String, cost: int, effects: String, subtype: String = "") -> void:
+		var d := CardDef.new()
+		d.card_def_id    = def_id
+		d.card_name      = def_id
+		d.cost           = cost
+		d.effects        = effects
+		d.card_type      = "Equipment"
+		d.card_subtype   = subtype
+		_defs[def_id] = d
 
 	func hero(def_id: String, health: int, power_cost: int = 0, power_effects: String = "") -> void:
 		var d := CardDef.new()
@@ -285,6 +299,8 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int) -> Array[G
 				all_events.append_array(_headless_discard(state, e, db))
 			elif e.event_type == "pet_sacrifice_required":
 				all_events.append_array(_headless_pet_sacrifice(state, e, db))
+			elif e.event_type == "equipment_sacrifice_required":
+				all_events.append_array(_headless_equipment_sacrifice(state, e, db))
 			elif e.event_type == "enter_play_target_required":
 				all_events.append_array(_headless_enter_play_target(state, e, db))
 			elif e.event_type == "protect_point_opened":
@@ -350,6 +366,27 @@ func _headless_pet_sacrifice(state: GameState, event: GameEvent, db) -> Array[Ga
 				events.append_array(_headless_pet_sacrifice(state, e, db))
 		break   # one sacrifice per call; re-check happens in the event loop
 
+	return events
+
+
+# ── Headless equipment sacrifice helper ───────────────────────────────────────
+# Destroys same-slot equipment one by one until only one remains. Sacrifices the
+# first candidate in the list.
+
+func _headless_equipment_sacrifice(state: GameState, event: GameEvent, db) -> Array[GameEvent]:
+	var candidates: Array = event.payload.get("candidates", [])
+	var events: Array[GameEvent] = []
+	for cid in candidates:
+		if state.pending_equip_sacrifice_player == "":
+			break
+		var sub := StackResolver.choose_equipment_sacrifice(state, cid as String, db)
+		if sub.is_empty():
+			continue
+		events.append_array(sub)
+		for e in sub:
+			if e.event_type == "equipment_sacrifice_required":
+				events.append_array(_headless_equipment_sacrifice(state, e, db))
+		break
 	return events
 
 
@@ -902,6 +939,218 @@ func _test_pet_uniqueness() -> void:
 
 	# sc9-g: pending sacrifice state is cleared.
 	eq(state.pending_pet_sacrifice_player, "", "sc9-g: pending_pet_sacrifice_player cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Mooncloth Robe — equipment play + activated power (draw a card)
+#
+# Power: (2), Exhaust this, Exhaust your hero >>> Draw a card.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const ROBE_EFFECTS := "equipment:chest:0|activated_power:2:draw:1:::exhaust_hero"
+
+func _test_mooncloth_robe_power() -> void:
+	print("\n-- Mooncloth Robe: play from hand + draw power --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("robe_def", 4, ROBE_EFFECTS, "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	# 6 ready resources: 4 to play the robe, 2 for the power.
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Robe in hand.
+	var robe := CardInstance.create("robe_inst", "robe_def", "p1", "p1_hand")
+	state.cards["robe_inst"] = robe
+	state.zones["p1_hand"].card_ids.append("robe_inst")
+
+	# One card in deck to be drawn by the power.
+	var deck_card := CardInstance.create("deck_card", "robe_def", "p1", "p1_deck")
+	state.cards["deck_card"] = deck_card
+	state.zones["p1_deck"].card_ids.append("deck_card")
+
+	# mr-a: playing the equipment is legal.
+	var play := PendingAction.make("play_equipment", "p1", {"card_id": "robe_inst"})
+	ok(StackResolver.can_submit(state, play, db), "mr-a: play_equipment is legal")
+
+	# Resolve the play (submit + both pass).
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# mr-b: robe entered the hero row.
+	eq(state.get_card("robe_inst").zone_id, "p1_hero_row",
+		"mr-b: robe enters play in the hero row")
+
+	# mr-c: the power is usable this same turn (equipment has no summoning sickness).
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "robe_inst"})
+	ok(StackResolver.can_submit(state, use, db),
+		"mr-c: robe power usable the turn it entered play")
+
+	# Resolve the power.
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# mr-d: the deck card was drawn into hand.
+	eq(state.get_card("deck_card").zone_id, "p1_hand",
+		"mr-d: robe power drew a card")
+
+	# mr-e: robe is exhausted (activate symbol).
+	ok(state.get_card("robe_inst").is_exhausted, "mr-e: robe exhausted after use")
+
+	# mr-f: hero is exhausted (extra cost).
+	ok(state.get_card("p1_hero").is_exhausted, "mr-f: hero exhausted by robe power")
+
+	# mr-g: all 6 resources are now exhausted (4 play + 2 power).
+	var ready_res := 0
+	for r in state.cards_in_zone("p1_resource_row"):
+		if not r.is_exhausted:
+			ready_res += 1
+	eq(ready_res, 0, "mr-g: 6 resources spent (4 play + 2 power)")
+
+	# mr-h: power can't be used again (robe now exhausted).
+	ok(not StackResolver.can_submit(state, use, db),
+		"mr-h: robe power not reusable while exhausted")
+
+
+func _test_mooncloth_robe_hero_exhausted() -> void:
+	print("\n-- Mooncloth Robe: cannot use with exhausted hero / too few resources --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("robe_def", 4, ROBE_EFFECTS, "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	var deck_card := CardInstance.create("deck_card", "robe_def", "p1", "p1_deck")
+	state.cards["deck_card"] = deck_card
+	state.zones["p1_deck"].card_ids.append("deck_card")
+
+	# Robe already in play (ready).
+	var robe := CardInstance.create("robe_inst", "robe_def", "p1", "p1_hero_row")
+	state.cards["robe_inst"] = robe
+	state.zones["p1_hero_row"].card_ids.append("robe_inst")
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "robe_inst"})
+
+	# me-a: with a ready hero and 2 resources, legal.
+	ok(StackResolver.can_submit(state, use, db),
+		"me-a: robe power legal with ready hero + 2 resources")
+
+	# me-b: exhausted hero → cannot pay the exhaust-hero cost.
+	state.get_card("p1_hero").is_exhausted = true
+	ok(not StackResolver.can_submit(state, use, db),
+		"me-b: robe power illegal when hero already exhausted")
+	state.get_card("p1_hero").is_exhausted = false
+
+	# me-c: only 1 ready resource → cannot pay the 2 cost.
+	state.cards_in_zone("p1_resource_row")[0].is_exhausted = true
+	ok(not StackResolver.can_submit(state, use, db),
+		"me-c: robe power illegal with only 1 ready resource")
+
+
+func _test_equipment_slot_uniqueness() -> void:
+	print("\n-- Equipment slot uniqueness: only 1 Chest allowed --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("robe_def", 4, ROBE_EFFECTS, "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 8)   # 4 + 4 to play both
+	state.players["p1"].resource_placed_this_turn = true
+
+	for i in range(2):
+		var inst_id := "robe_hand_%d" % i
+		var card := CardInstance.create(inst_id, "robe_def", "p1", "p1_hand")
+		state.cards[inst_id] = card
+		state.zones["p1_hand"].card_ids.append(inst_id)
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_equipment", "p1", {"card_id": "robe_hand_0"}))
+	p1_ai.queue_action(PendingAction.make("play_equipment", "p1", {"card_id": "robe_hand_1"}))
+
+	var all_events := _drive_turns(state, db, p1_ai, ScriptedAI.new(), 4)
+
+	# eu-a: exactly 1 Chest equipment remains in the hero row.
+	var chest_in_play := 0
+	for card in state.cards_in_zone("p1_hero_row"):
+		var d := db.get_def(card.card_def_id) as CardDef
+		if d and d.card_type == "Equipment":
+			chest_in_play += 1
+	eq(chest_in_play, 1, "eu-a: exactly 1 Chest equipment in hero_row after playing 2")
+
+	# eu-b: sacrifice event fired exactly once.
+	var sac := 0
+	for e in all_events:
+		if e.event_type == "equipment_sacrifice_required":
+			sac += 1
+	eq(sac, 1, "eu-b: equipment_sacrifice_required fired exactly once")
+
+	# eu-c: one robe was destroyed to the graveyard.
+	var in_grave := 0
+	for cid in ["robe_hand_0", "robe_hand_1"]:
+		if state.get_card(cid).zone_id == "p1_graveyard":
+			in_grave += 1
+	eq(in_grave, 1, "eu-c: exactly 1 robe destroyed to graveyard")
+
+	# eu-d: pending state cleared.
+	eq(state.pending_equip_sacrifice_player, "", "eu-d: pending_equip_sacrifice_player cleared")
+
+
+func _test_ai_plays_equipment() -> void:
+	print("\n-- AI generates equipment play + draw-power actions --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("robe_def", 4, ROBE_EFFECTS, "Cloth")
+	var ai := BaseAI.new()
+
+	# Case 1: robe in hand, affordable → AI offers play_equipment.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	s1.players["p1"].resource_placed_this_turn = true
+	var robe := CardInstance.create("robe_inst", "robe_def", "p1", "p1_hand")
+	s1.cards["robe_inst"] = robe
+	s1.zones["p1_hand"].card_ids.append("robe_inst")
+	var has_play := false
+	for a in ai.get_legal_actions(s1, db, "p1"):
+		if a.action_type == "play_equipment" and a.params.get("card_id") == "robe_inst":
+			has_play = true
+	ok(has_play, "ai-eq-a: AI offers play_equipment for a robe in hand")
+
+	# Case 2: robe in play, ready hero, deck card, 2 resources → AI offers the draw power.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 2)
+	s2.players["p1"].resource_placed_this_turn = true
+	var robe2 := CardInstance.create("robe2", "robe_def", "p1", "p1_hero_row")
+	s2.cards["robe2"] = robe2
+	s2.zones["p1_hero_row"].card_ids.append("robe2")
+	var deck2 := CardInstance.create("deck2", "robe_def", "p1", "p1_deck")
+	s2.cards["deck2"] = deck2
+	s2.zones["p1_deck"].card_ids.append("deck2")
+	var has_power := false
+	for a in ai.get_legal_actions(s2, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id") == "robe2":
+			has_power = true
+	ok(has_power, "ai-eq-b: AI offers the robe draw power from the hero row")
+
+	# Case 3: same as case 2 but hand is full → AI skips the draw power.
+	for i in range(7):
+		var hid := "fill_%d" % i
+		var c := CardInstance.create(hid, "robe_def", "p1", "p1_hand")
+		s2.cards[hid] = c
+		s2.zones["p1_hand"].card_ids.append(hid)
+	var still_power := false
+	for a in ai.get_legal_actions(s2, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id") == "robe2":
+			still_power = true
+	ok(not still_power, "ai-eq-c: AI skips the draw power when hand is full")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

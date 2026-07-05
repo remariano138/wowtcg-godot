@@ -204,6 +204,7 @@ func _build_scene() -> void:
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
+	_router.equipment_sacrifice_mode_ended.connect(_on_equipment_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
@@ -760,10 +761,14 @@ func _update_pass_btn() -> void:
 	var in_defend  := _state.combat_defend_window
 	var is_p1_turn := _state.turn_player == "p1"
 
-	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1"
+	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1" \
+		or _state.pending_equip_sacrifice_player == "p1"
 
 	if _state.pending_pet_sacrifice_player == "p1":
 		_pass_btn.text     = "Sacrifice a pet  [Space]"
+		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
+	elif _state.pending_equip_sacrifice_player == "p1":
+		_pass_btn.text     = "Destroy equipment  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not my_turn:
 		_pass_btn.text     = "Pass Priority  [Space]"
@@ -1173,6 +1178,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_discard_choice(event.payload)
 		"pet_sacrifice_required":
 			_handle_pet_sacrifice(event.payload)
+		"equipment_sacrifice_required":
+			_handle_equipment_sacrifice(event.payload)
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)
 		"mulligan_phase_started":
@@ -1308,6 +1315,50 @@ func _on_pet_sacrifice_mode_ended() -> void:
 	_refresh_ui()
 	_schedule_next_turn()
 	_maybe_turbo_pass()
+
+
+func _on_equipment_sacrifice_mode_ended() -> void:
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
+
+
+func _handle_equipment_sacrifice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var candidates: Array = payload.get("candidates", [])
+	var player_type := _p1_type if player == "p1" else _p2_type
+	if player_type != "human":
+		# AI: keep the highest-cost equipment, destroy the rest.
+		var keep_id := _pick_ai_equipment_keep(player, candidates)
+		for cid: String in candidates:
+			if cid == keep_id:
+				continue
+			var events := StackResolver.choose_equipment_sacrifice(_state, cid, _db)
+			if not events.is_empty():
+				EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: highlight all same-slot equipment; click one to destroy it.
+		_router.start_equipment_sacrifice_mode(candidates)
+		_set_status("Slot limit exceeded — click a highlighted equipment to destroy it")
+		_refresh_ui()
+
+
+# Returns the instance_id the AI wants to KEEP (the others get destroyed).
+# Strategy: keep highest-cost equipment; tie-break by first in list.
+func _pick_ai_equipment_keep(_player_id: String, candidates: Array) -> String:
+	var best_id: String = candidates[0] if not candidates.is_empty() else ""
+	var best_cost := -1
+	for cid: String in candidates:
+		var c := _state.get_card(cid)
+		var def := _db.get_def(c.card_def_id) as CardDef if c and _db else null
+		var cost := def.cost if def else 0
+		if cost > best_cost:
+			best_cost = cost
+			best_id = cid
+	return best_id
 
 
 func _handle_discard_choice(payload: Dictionary) -> void:
@@ -1967,6 +2018,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for discard resolution before advancing
 	if _state.pending_pet_sacrifice_player != "":
 		return  # wait for pet sacrifice before advancing
+	if _state.pending_equip_sacrifice_player != "":
+		return  # wait for equipment sacrifice before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	if pid_type != "human" \
@@ -2011,7 +2064,8 @@ func _drain_passes() -> void:
 		limit -= 1
 		if _game_over or _state.in_protect_point or _in_protect_mode:
 			break
-		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "":
+		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
+				or _state.pending_equip_sacrifice_player != "":
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
 		var chain_pending := not _state.pending_actions.is_empty()

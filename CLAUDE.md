@@ -1,7 +1,7 @@
-# Project context
+﻿# Project context
 
 This is a digital implementation of a simplified WoW TCG ruleset.
-Always check `References/wow_rules.txt` before implementing any
+Always check the rules in `References/wow_rules.txt` before implementing any
 keyword or card effect — do not rely on general CCG knowledge (Magic,
 Hearthstone) since WoW TCG has its own specific rulings.
 
@@ -99,7 +99,8 @@ power_text, data_status, engine_status, effects, image_path
 
 | Segment | Meaning |
 |---|---|
-| `activated_power:COST:EFFECT:AMOUNT:DMG_TYPE:TARGETS` | Ally activated power |
+| `activated_power:COST:EFFECT:AMOUNT:DMG_TYPE:TARGETS:EXTRACOST` | Ally/equipment activated power. `EFFECT` includes `draw`. `EXTRACOST` (optional 7th field) is a card-specific extra cost paid alongside resources+activate, e.g. `exhaust_hero` (Mooncloth Robe) |
+| `equipment:SLOT:DEF` | Marks an Equipment card: `SLOT` (chest/back/neck/…) drives slot uniqueness (rule 414.3); `DEF` is defense (0 = no damage prevention). Equipment enters the hero row |
 | `on_enter:EFFECT:AMOUNT:DMG_TYPE` | Enter-play triggered effect |
 | `destroy_target:ally` | Destroy a target ally (Vanquish-style) |
 | `sarmoth_taunt` | Opposing characters that can attack this must attack only this |
@@ -176,11 +177,25 @@ Notable implemented mechanics:
 - **sarmoth_taunt** — Sarmoth (opposing characters that can attack Sarmoth must only target Sarmoth)
 - **destroy_target:ally** — Vanquish
 - **Pet uniqueness** — pet_capacity enforced with immediate sacrifice choice
+- **Equipment** — Mooncloth Robe (first equipment). Plays via `play_equipment` into the hero row; `activated_power` with `draw` effect + `exhaust_hero` extra cost. Slot uniqueness (rule 414.3) enforced with an immediate destroy choice mirroring Pet uniqueness (`pending_equip_sacrifice_*`, `choose_equipment_sacrifice`, `equipment_sacrifice_required`). See "Equipment" section below.
 - **Hero powers**: Ta'zo flip (deal_damage_to_target:3:fire), Dizdemona (deal_x_damage_to_ally), Omedus (deal_damage_aoe), Grennan (heal), Boris Brightbeard (heal_x_from_target — pay X resources, heal X from any hero or ally), Radak Doombringer (radak_pet_sacrifice — flip: sacrifice Pet with cost X, deal X shadow dmg to target)
 - **Quest cards** — basic cost-based quest completion
 
 ### Playtested heroes (confirmed working)
 Dizdemona, Ta'zo, Grennan, Boris Brightbeard, Omedus, Sarmoth (ally), Radak Doombringer
+
+---
+
+## Equipment (rules 300.1, 303/304, 414.3)
+
+First equipment implemented: **Mooncloth Robe** (`azeroth_298`, Armor—Cloth, Chest, DEF 0).
+
+- **Play flow:** `play_equipment` action (mirrors `play_ally`'s action-phase timing) → `_resolve_play_equipment` moves the card to the controller's `hero_row` (rule 304.1). Card type is `Equipment`; the recipe carries an `equipment:SLOT:DEF` segment.
+- **Activated powers reuse the ally-power path** (`use_ally_power` / `_can_use_ally_power` / `_resolve_use_ally_power`), now generalized to accept a source in `ally_row` OR `hero_row`. Equipment has no summoning sickness. A power's optional 7th recipe field is an `EXTRACOST` token; `exhaust_hero` (Mooncloth Robe) requires a ready hero at validation and exhausts it at resolution alongside the activate (exhaust-self). New `draw` effect draws `AMOUNT` cards.
+- **Slot uniqueness (414.3):** at most one equipment per slot. `_check_equipment_uniqueness` fires after an equipment enters play; a second same-slot equipment sets `pending_equip_sacrifice_player`/`_ids` and emits `equipment_sacrifice_required`. Resolve via `StackResolver.choose_equipment_sacrifice()` (called directly, not through the stack — same pattern as pet sacrifice). `can_submit` blocks everything else while pending. Note: with only one Chest card in the pool this can't yet trigger in a real game — it's covered by a headless test.
+- **UI:** `input_router` `_action_type_for` maps Equipment → `play_equipment`; the context-menu "Activate Power" entry now covers hero_row equipment; equipment-sacrifice mode mirrors pet-sacrifice mode (red highlight, `start_equipment_sacrifice_mode`). `playtest.gd` handles `equipment_sacrifice_required` (AI keeps highest-cost) and the pass button shows "Destroy equipment". Hero_row rendering already spreads non-hero cards, so equipment displays with no renderer changes.
+- **AI:** BaseAI now generates `play_equipment` (via `_action_type_for`) and equipment activated powers (`_get_ally_power_actions` scans hero_row too). The `draw` power is skipped when the hand is already full. This is simple-heuristic level (FullRandomAI picks among legal actions; GenericAI still prioritizes safe kills first) — the AI plays the robe and may draw with it, but doesn't reason about hero-exhaust tempo. Covered by `_test_ai_plays_equipment`.
+- Tests: `_test_mooncloth_robe_power`, `_test_mooncloth_robe_hero_exhausted`, `_test_equipment_slot_uniqueness` in `test_scenarios.gd`.
 
 ---
 
@@ -210,8 +225,6 @@ Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non
 
 ## Known open issues / next work
 
-- **Grimdron hero-targeting bug (unconfirmed):** User reported Grimdron's power couldn't target opponent's hero when no enemy allies were in play. All code paths appear correct — hero IS included in `_get_ally_power_targets`. Suspected cause: visual (hero not highlighted?) or runtime state issue. Needs more investigation with actual play. Suggested: add temp `print("ally_power_targets:", result)` in `_get_ally_power_targets` to confirm.
-- **Sarmoth** playtested and working. Watch for edge cases with taunt + Elusive attackers.
 - **Combat window AI:** the non-turn AI now plays tagged **combat instants** (Quick Strike) during attack/defend windows via `BaseAI.combat_instant_action` — see AI conventions above. It still never uses ally activated powers (e.g. Grimdron) to counter-attack during enemy combats. Future: extend the window logic to defensive ally-power plays.
 - **Next cards to implement:** Check `data/cards.csv` for candidates.
 - **`logic/BasicAI_behavior.txt` is legacy** and may be stale — actual AI is fully in `game_logic/ai/base_ai.gd`.

@@ -23,6 +23,8 @@ signal discard_mode_started(count: int)
 signal discard_mode_ended()
 signal pet_sacrifice_mode_started(candidate_ids: Array)
 signal pet_sacrifice_mode_ended()
+signal equipment_sacrifice_mode_started(candidate_ids: Array)
+signal equipment_sacrifice_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
@@ -47,6 +49,8 @@ var _targeting_action_type: String = ""   # "propose_combat" or "activate_power"
 var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for crosshair)
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
 var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet to sacrifice
+var _in_equip_sacrifice_mode: bool = false  # true while player must choose equipment to destroy
+var _equip_sacrifice_candidates: Array[String] = []
 var _pet_sacrifice_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
@@ -92,6 +96,11 @@ func handle_card_click(instance_id: String) -> void:
 	# ── Pet sacrifice mode: click sacrifices the chosen pet ──────────────────
 	if _in_pet_sacrifice_mode:
 		_handle_pet_sacrifice_click(instance_id)
+		return
+
+	# ── Equipment sacrifice mode: click destroys the chosen equipment ────────
+	if _in_equip_sacrifice_mode:
+		_handle_equip_sacrifice_click(instance_id)
 		return
 
 	# ── Discard mode: click discards the chosen hand card ─────────────────────
@@ -247,6 +256,37 @@ func _handle_pet_sacrifice_click(instance_id: String) -> void:
 		_pet_sacrifice_candidates.clear()
 		for cid: String in state.pending_pet_sacrifice_ids:
 			_pet_sacrifice_candidates.append(cid)
+	refresh_highlights()
+
+
+# ── Equipment sacrifice mode ────────────────────────────────────────────────────
+
+func start_equipment_sacrifice_mode(candidate_ids: Array) -> void:
+	_in_equip_sacrifice_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)  # red — mandatory equipment sacrifice
+	_equip_sacrifice_candidates.clear()
+	for cid in candidate_ids:
+		_equip_sacrifice_candidates.append(cid as String)
+	refresh_highlights()
+	equipment_sacrifice_mode_started.emit(candidate_ids)
+
+
+func _handle_equip_sacrifice_click(instance_id: String) -> void:
+	if instance_id not in _equip_sacrifice_candidates:
+		return
+	var events := StackResolver.choose_equipment_sacrifice(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	if state.pending_equip_sacrifice_player == "":
+		_in_equip_sacrifice_mode = false
+		_highlight_color = Color(0.2, 1.0, 0.3)
+		_equip_sacrifice_candidates.clear()
+		equipment_sacrifice_mode_ended.emit()
+	else:
+		_equip_sacrifice_candidates.clear()
+		for cid: String in state.pending_equip_sacrifice_ids:
+			_equip_sacrifice_candidates.append(cid)
 	refresh_highlights()
 
 
@@ -512,6 +552,13 @@ func get_playable_card_ids() -> Array:
 			sacrifice_ids.append(cid)
 		return sacrifice_ids
 
+	# Equipment sacrifice mode: highlight the candidate equipment.
+	if _in_equip_sacrifice_mode and state.pending_equip_sacrifice_player == local_player:
+		var equip_ids: Array = []
+		for cid: String in _equip_sacrifice_candidates:
+			equip_ids.append(cid)
+		return equip_ids
+
 	# Discard mode: all local hand cards are valid discard choices.
 	if _in_discard_mode and state.pending_discard_player == local_player:
 		var discard_ids: Array = []
@@ -611,12 +658,14 @@ func has_any_legal_play() -> bool:
 		fd_action_template.params["card_id"] = card.instance_id
 		if StackResolver.can_submit(state, fd_action_template, db):
 			return true
-	# Check ally activated powers — legal on either player's turn (rule 701.2).
-	for card in state.cards_in_zone(local_player + "_ally_row"):
-		var ap_action := PendingAction.make("use_ally_power", local_player,
-			{"card_id": card.instance_id})
-		if StackResolver.can_submit(state, ap_action, db):
-			return true
+	# Check activated powers — allies (ally row) and equipment (hero row).
+	# Legal on either player's turn (rule 701.2).
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(local_player + zone_suffix):
+			var ap_action := PendingAction.make("use_ally_power", local_player,
+				{"card_id": card.instance_id})
+			if StackResolver.can_submit(state, ap_action, db):
+				return true
 	return false
 
 
@@ -678,8 +727,8 @@ func get_context_actions(instance_id: String) -> Array:
 					local_player, {"attacker_id": instance_id}),
 				"enabled": can_attack})
 
-			# Ally activated power (if the ally has one).
-			if zone.zone_type == "ally_row" and card.controller == local_player:
+			# Activated power (allies in the ally row; equipment in the hero row).
+			if zone.zone_type in ["ally_row", "hero_row"] and card.controller == local_player:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
 					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally"]
@@ -1141,11 +1190,13 @@ func _action_type_for(instance_id: String) -> String:
 		return "place_resource"
 	if def.card_type == "Ally":
 		return "play_ally"
+	if def.card_type == "Equipment":
+		return "play_equipment"
 	if def.is_instant:
 		return "play_instant"
 	if def.card_type == "Ability":
 		return "play_ability"
-	return ""   # Equipment and other unimplemented types
+	return ""   # other unimplemented types
 
 
 func _ability_needs_target(card_id: String) -> bool:

@@ -102,6 +102,9 @@ static func discard_choice_opened(player_id: String, count: int, reason: String 
 static func pet_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
 	return make("pet_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
 
+static func equipment_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
+	return make("equipment_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
+
 static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
 	return make("hero_power_used", {"player": player_id, "hero_id": hero_id})
 

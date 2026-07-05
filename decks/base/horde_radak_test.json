@@ -3,6 +3,7 @@
   "display_name": "Horde_test (Radak)",
   "hero_card_def_id": "azeroth_13",
   "card_entries": [
+    { "card_def_id": "azeroth_298", "count": 1 },
     { "card_def_id": "azeroth_281", "count": 6 },
     { "card_def_id": "azeroth_347", "count": 2 },
     { "card_def_id": "azeroth_350", "count": 2 },
@@ -15,7 +16,7 @@
     { "card_def_id": "azeroth_165", "count": 2 },
     { "card_def_id": "azeroth_130", "count": 3 },
     { "card_def_id": "azeroth_125", "count": 1 },
-    { "card_def_id": "azeroth_236", "count": 8 },
+    { "card_def_id": "azeroth_236", "count": 7 },
     { "card_def_id": "azeroth_262", "count": 6 },
     { "card_def_id": "azeroth_264", "count": 6 },
     { "card_def_id": "azeroth_228", "count": 4 },

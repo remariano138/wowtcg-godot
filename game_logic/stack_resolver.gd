@@ -34,7 +34,7 @@ static func submit_action(state: GameState, action: PendingAction,
 	# Rule 409.1 / 412.1a: card moves from hand to chain on submission.
 	# Resource costs are paid at submission time (before chain), not at resolution.
 	match action.action_type:
-		"play_ally", "play_instant", "play_ability":
+		"play_ally", "play_instant", "play_ability", "play_equipment":
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":
 				events.append_array(GameLogic.move_card(state, card_id, "chain"))
@@ -178,9 +178,16 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_pet_sacrifice_player != "":
 		return false
 
+	# Equipment slot uniqueness violation blocks everything until resolved via
+	# choose_equipment_sacrifice().
+	if state.pending_equip_sacrifice_player != "":
+		return false
+
 	match action.action_type:
 		"play_ally":
 			return _can_play_non_instant(state, action, db)
+		"play_equipment":
+			return _can_play_equipment(state, action, db)
 		"play_ability":
 			return _can_play_ability(state, action, db)
 		"play_instant":
@@ -226,6 +233,38 @@ static func _can_play_non_instant(state: GameState, action: PendingAction,
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def and def.card_type != "Ally":
+			return false
+	# Rule 412.2: player must be able to afford the cost.
+	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
+		return false
+	return true
+
+
+# Equipment (armor/item/weapon) — same action-phase timing as an ally, but the
+# card type must be Equipment and it enters the hero row (rule 304.1 / 303.1).
+static func _can_play_equipment(state: GameState, action: PendingAction,
+		db = null) -> bool:
+	var card_id: String = action.params.get("card_id", "")
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand":
+		return false
+	if card.controller != action.source_player:
+		return false
+	# Rule 502.1 / 1199: only the non-combat action phase, chain empty, your turn.
+	if state.phase != "action":
+		return false
+	if state.combat_attack_window or state.combat_defend_window:
+		return false
+	if state.turn_player != action.source_player:
+		return false
+	if not state.pending_actions.is_empty():
+		return false
+	if db:
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Equipment":
 			return false
 	# Rule 412.2: player must be able to afford the cost.
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
@@ -316,6 +355,7 @@ static func can_play_instant_no_target_check(state: GameState,
 	if state.priority_player != player_id: return false
 	if not state.pending_enter_play_effect.is_empty(): return false
 	if state.pending_pet_sacrifice_player != "": return false
+	if state.pending_equip_sacrifice_player != "": return false
 	var card := state.get_card(card_id)
 	if not card: return false
 	var zone := state.zones.get(card.zone_id) as Zone
@@ -382,6 +422,8 @@ static func _resolve(state: GameState, action: PendingAction,
 	match action.action_type:
 		"play_ally":
 			return _resolve_play_ally(state, action, db)
+		"play_equipment":
+			return _resolve_play_equipment(state, action, db)
 		"play_ability":
 			return _resolve_play_instant(state, action, db)   # same: apply effect → graveyard
 		"play_instant":
@@ -468,6 +510,35 @@ static func _resolve_play_ally(state: GameState,
 
 	# Check pet uniqueness (414.3b) — must happen after the card is in play.
 	events.append_array(_check_pet_uniqueness(state, card_id, db))
+
+	return events
+
+
+static func _resolve_play_equipment(state: GameState,
+		action: PendingAction, db = null) -> Array[GameEvent]:
+	var card_id: String = action.params.get("card_id", "")
+	var card := state.get_card(card_id)
+	if not card:
+		return [GameEvent.make("action_fizzled", {
+			"action_type": "play_equipment", "reason": "card_not_found",
+		})]
+	# Re-validate: card must still be on the chain (711.1); otherwise it fizzles.
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "chain":
+		var fizzle_events: Array[GameEvent] = []
+		fizzle_events.append(GameEvent.make("action_fizzled", {
+			"action_type": "play_equipment", "reason": "card_left_chain",
+		}))
+		if zone and zone.zone_type != "graveyard":
+			fizzle_events.append_array(GameLogic.move_card(state, card_id, card.owner + "_graveyard"))
+		return fizzle_events
+
+	var events: Array[GameEvent] = []
+	# Rule 304.1 / 303.1: equipment enters play in its controller's hero row.
+	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
+
+	# Check equipment slot uniqueness (414.3) — must happen after it's in play.
+	events.append_array(_check_equipment_uniqueness(state, card_id, db))
 
 	return events
 
@@ -585,6 +656,20 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 				"amount":        int(parts[3]) if parts.size() > 3 else 0,
 				"dmg_type":      parts[4] if parts.size() > 4 else "",
 				"targets":       parts[5] if parts.size() > 5 else "",
+				"extra_cost":    parts[6] if parts.size() > 6 else "",
+			}
+	return {}
+
+
+# Parse the "equipment:SLOT:DEF" segment from a CardDef's effects string.
+# Returns {} if the card isn't equipment (per its recipe).
+static func _equipment_info(def: CardDef) -> Dictionary:
+	for segment in def.effects.split("|"):
+		var parts := segment.split(":")
+		if parts[0] == "equipment":
+			return {
+				"slot": (parts[1].strip_edges() if parts.size() > 1 else "").to_lower(),
+				"def":  int(parts[2]) if parts.size() > 2 else 0,
 			}
 	return {}
 
@@ -607,9 +692,13 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	if not card or card.controller != action.source_player:
 		return false
 	var zone := state.zones.get(card.zone_id) as Zone
-	if not zone or zone.zone_type != "ally_row":
+	# Allies use their power from the ally row; equipment (e.g. Mooncloth Robe)
+	# from the hero row. Both are validated through this same path.
+	if not zone or not (zone.zone_type in ["ally_row", "hero_row"]):
 		return false
 	# Rule 701.3: summoning sickness applies to activated powers for allies.
+	# Equipment are not characters and never carry summoning sickness, so this
+	# only ever gates allies (equipment never sets just_summoned).
 	if card.just_summoned:
 		return false
 	if card.is_exhausted:
@@ -624,11 +713,31 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		return false
 	if state.get_available_resources(action.source_player) < int(ap.get("resource_cost", 0)):
 		return false
+	# Extra, card-specific costs baked into the power (e.g. Mooncloth Robe also
+	# exhausts your hero). If the hero can't pay, the power can't be used.
+	if not _can_pay_extra_power_cost(state, action.source_player, ap.get("extra_cost", "")):
+		return false
 	# Targeted effects require a valid in-play target.
 	if ap.get("targets", "") in ["hero_or_ally"]:
 		var target_id: String = action.params.get("target_id", "")
 		if target_id == "" or not state.is_in_play(target_id):
 			return false
+	return true
+
+
+# Whether a power's extra cost token can currently be paid.
+static func _can_pay_extra_power_cost(state: GameState, player_id: String,
+		extra_cost: String) -> bool:
+	match extra_cost:
+		"", null:
+			return true
+		"exhaust_hero":
+			var ps := state.players.get(player_id) as PlayerState
+			var hero_id: String = ps.hero_instance_id if ps else ""
+			if hero_id == "":
+				return false
+			var hero := state.get_card(hero_id)
+			return hero != null and not hero.is_exhausted
 	return true
 
 
@@ -650,12 +759,22 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 
 	var events: Array[GameEvent] = []
 	# Resource cost already paid at submission time (in submit_action).
-	# Just exhaust the ally at resolution (the activate symbol).
+	# Exhaust the source at resolution (the activate symbol).
 	events.append_array(GameLogic.exhaust_card(state, card_id))
+	# Pay any extra card-specific cost (e.g. Mooncloth Robe also exhausts the hero).
+	if ap.get("extra_cost", "") == "exhaust_hero":
+		var ps := state.players.get(action.source_player) as PlayerState
+		var hero_id: String = ps.hero_instance_id if ps else ""
+		if hero_id != "":
+			events.append_array(GameLogic.exhaust_card(state, hero_id))
 	events.append(GameEvent.make("ally_power_used",
 		{"ally_id": card_id, "player": action.source_player}))
 
 	match ap.get("effect", ""):
+		"draw":
+			var n: int = int(ap.get("amount", 1))
+			for _i in n:
+				events.append_array(_draw_one(state, card.controller))
 		"deal_damage_aoe":
 			var amount: int = int(ap.get("amount", 0))
 			var opp := _other_player(state, card.controller)
@@ -1748,4 +1867,69 @@ static func _resolve_choose_pet_sacrifice(state: GameState, action: PendingActio
 		typed_ids.assign(surviving_pets)
 		events.append(GameEvent.pet_sacrifice_required(
 			state.pending_pet_sacrifice_player, typed_ids))
+	return events
+
+
+# ── Equipment slot uniqueness (rule 414.3) ────────────────────────────────────
+# Only one equipment may occupy a given slot (Chest, Back, Neck, …). When a
+# second same-slot equipment enters play, the controller must destroy equipment
+# until only one remains — mirrors the Pet uniqueness immediate-choice flow.
+
+static func _check_equipment_uniqueness(state: GameState, card_id: String, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var card := state.get_card(card_id)
+	if not card:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return []
+	var info := _equipment_info(def)
+	var slot: String = info.get("slot", "")
+	if slot == "":
+		return []
+	# Gather all equipment in the controller's hero row sharing this slot.
+	var same_slot_ids: Array[String] = []
+	for c in state.cards_in_zone(card.controller + "_hero_row"):
+		var d := db.get_def(c.card_def_id) as CardDef
+		if not d or d.card_type != "Equipment":
+			continue
+		if _equipment_info(d).get("slot", "") == slot:
+			same_slot_ids.append(c.instance_id)
+	if same_slot_ids.size() <= 1:
+		return []
+	state.pending_equip_sacrifice_player = card.controller
+	state.pending_equip_sacrifice_ids.assign(same_slot_ids)
+	var typed_ids: Array[String] = []
+	typed_ids.assign(same_slot_ids)
+	return [GameEvent.equipment_sacrifice_required(card.controller, typed_ids)]
+
+
+# Called directly by the scene (not via submit_action), like choose_pet_sacrifice.
+static func choose_equipment_sacrifice(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_equip_sacrifice_player == "":
+		return []
+	if card_id not in state.pending_equip_sacrifice_ids:
+		return []
+	var card := state.get_card(card_id)
+	if not card or card.controller != state.pending_equip_sacrifice_player:
+		return []
+	var events: Array[GameEvent] = []
+	events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
+	state.pending_equip_sacrifice_ids.erase(card_id)
+	# Re-check: still a violation if more than one same-slot equipment remains.
+	var surviving: Array[String] = []
+	for cid in state.pending_equip_sacrifice_ids:
+		if state.is_in_play(cid):
+			surviving.append(cid)
+	if surviving.size() <= 1:
+		state.pending_equip_sacrifice_player = ""
+		state.pending_equip_sacrifice_ids.clear()
+	else:
+		state.pending_equip_sacrifice_ids.assign(surviving)
+		var typed_ids: Array[String] = []
+		typed_ids.assign(surviving)
+		events.append(GameEvent.equipment_sacrifice_required(
+			state.pending_equip_sacrifice_player, typed_ids))
 	return events

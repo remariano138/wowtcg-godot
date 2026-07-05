@@ -52,6 +52,10 @@ var pending_enter_play_effect: Dictionary = {}
 # Pet uniqueness: player must sacrifice pets until at most 1 remains in play.
 var pending_pet_sacrifice_player: String = ""
 var pending_pet_sacrifice_ids: Array[String] = []  # instance_ids of ALL pets currently in play for that player
+# Equipment slot uniqueness (rule 414.3): player must destroy equipment until at
+# most one occupies the conflicting slot.
+var pending_equip_sacrifice_player: String = ""
+var pending_equip_sacrifice_ids: Array[String] = []  # instance_ids of same-slot equipment in play
 
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.

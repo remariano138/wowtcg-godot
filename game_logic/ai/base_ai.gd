@@ -264,7 +264,11 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		return result
 	if not state.pending_actions.is_empty():
 		return result
-	for card in state.cards_in_zone(player_id + "_ally_row"):
+	# Activated powers come from allies (ally row) and equipment (hero row).
+	var power_sources: Array[CardInstance] = []
+	power_sources.append_array(state.cards_in_zone(player_id + "_ally_row"))
+	power_sources.append_array(state.cards_in_zone(player_id + "_hero_row"))
+	for card in power_sources:
 		if card.is_exhausted or card.just_summoned:
 			continue
 		if not db:
@@ -275,6 +279,12 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		var ap := StackResolver._ally_activated_power(def)
 		if ap.is_empty():
 			continue
+		# Don't draw into a full hand (the card would just be discarded at wrap-up).
+		if ap.get("effect", "") == "draw":
+			var ps_hand := state.players.get(player_id) as PlayerState
+			var max_hand: int = ps_hand.max_hand_size if ps_hand else 7
+			if state.cards_in_zone(player_id + "_hand").size() >= max_hand:
+				continue
 		if ap.get("targets", "") in ["hero_or_ally"]:
 			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []
@@ -976,6 +986,8 @@ func _action_type_for(card: CardInstance, db) -> String:
 		return ""   # go to resource row via place_resource
 	if def.card_type == "Ally":
 		return "play_ally"
+	if def.card_type == "Equipment":
+		return "play_equipment"
 	if def.is_instant:
 		return "play_instant"
 	if def.card_type == "Ability":

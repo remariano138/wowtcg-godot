@@ -146,6 +146,24 @@ func handle_card_click(instance_id: String) -> void:
 				if instance_id in legal:
 					start_attack_targeting(instance_id)
 			return
+		# ── Face-up quest in resource row left-click → complete quest ───────────
+		if zone and zone.zone_type == "resource_row" and not card.face_down:
+			var qdef: CardDef = db.get_def(card.card_def_id) if db else null
+			if qdef and qdef.card_type == "Quest" \
+					and StackResolver.can_use_quest_no_target_check(
+						state, instance_id, local_player, db):
+				var needs_gy := not StackResolver.get_graveyard_search_requirement(qdef).is_empty()
+				if needs_gy:
+					start_graveyard_selection(instance_id)
+					return
+				var quest_action := PendingAction.make("use_quest", local_player,
+					{"quest_id": instance_id})
+				var quest_events := StackResolver.submit_action(state, quest_action, db)
+				if not quest_events.is_empty():
+					EventBus.emit_events(quest_events)
+					_pass_own_proposal(quest_action)
+					refresh_highlights()
+			return
 
 	# ── Hand card left-click → play / place ───────────────────────────────────
 	var action_type := _action_type_for(instance_id)

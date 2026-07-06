@@ -325,7 +325,11 @@ func start_attack_targeting(attacker_id: String) -> void:
 			if def and def.dmg_type != "":
 				dmg_type = def.dmg_type.to_lower()
 	if state:
-		dmg_amount = state.get_atk(attacker_id, db)
+		# Preview the ATK this attacker will actually deal once combat is
+		# proposed (rule 601 — it isn't "attacking" yet during target
+		# selection, so plain get_atk would omit "while attacking" bonuses
+		# like Zorm / Rayder / For the Horde! here).
+		dmg_amount = state.get_atk_if_attacking(attacker_id, db)
 	start_targeting(attacker_id, "propose_combat", dmg_type, dmg_amount)
 
 
@@ -666,7 +670,7 @@ func get_playable_card_ids() -> Array:
 			var ap_data := StackResolver._ally_activated_power(def)
 			if ap_data == {}:
 				continue
-			var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally"]
+			var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally"]
 			if ap_needs_target:
 				# Affordability only — target chosen after targeting mode starts.
 				var ap_once_per_turn: bool = ap_data.get("extra_cost", "") == "once_per_turn"
@@ -786,7 +790,7 @@ func get_context_actions(instance_id: String) -> Array:
 			if zone.zone_type in ["ally_row", "hero_row"] and card.controller == local_player:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
-					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally"]
+					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally"]
 					var ap_enabled: bool
 					if ap_needs_target:
 						# Check affordability only (target chosen after targeting mode starts).

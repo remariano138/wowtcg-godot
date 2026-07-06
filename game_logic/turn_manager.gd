@@ -174,6 +174,13 @@ static func _enter_end(state: GameState, db) -> Array[GameEvent]:
 	for card in state.cards_in_play(state.turn_player):
 		events.append_array(_apply_end_of_turn_effects(state, card, db))
 
+	# Expire "this turn" buffs (duration_type == "turns"). Sweep every card in
+	# play for both players — a "this turn" modifier ends at end of turn no
+	# matter whose card it sits on.
+	for pid in state.players:
+		for card in state.cards_in_play(pid):
+			card.decrement_turn_buffs()
+
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "end", "turn_player": state.turn_player,
 		"turn_number": state.turn_number,

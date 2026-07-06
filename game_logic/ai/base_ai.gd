@@ -409,6 +409,21 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 					break
+		elif ap.get("targets", "") == "ally":
+			# Friendly buff powers (Elder Moorf): target our own highest-ATK ally
+			# so the +ATK swing lands where it matters most. Never buffs the enemy.
+			var best_ally := ""
+			var best_atk := -1
+			for ally in state.cards_in_zone(player_id + "_ally_row"):
+				var a := state.get_atk(ally.instance_id, db)
+				if a > best_atk:
+					best_atk = a
+					best_ally = ally.instance_id
+			if best_ally != "":
+				var act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_ally})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
 		else:
 			var action := PendingAction.make("use_ally_power", player_id,
 				{"card_id": card.instance_id})

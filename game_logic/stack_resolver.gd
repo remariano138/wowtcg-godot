@@ -854,11 +854,24 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	if not _can_pay_extra_power_cost(state, action.source_player, ap.get("extra_cost", "")):
 		return false
 	# Targeted effects require a valid in-play target.
-	if ap.get("targets", "") in ["hero_or_ally"]:
+	var targets_kind: String = ap.get("targets", "")
+	if targets_kind in ["hero_or_ally", "ally"]:
 		var target_id: String = action.params.get("target_id", "")
 		if target_id == "" or not state.is_in_play(target_id):
 			return false
+		# "ally" powers (e.g. Elder Moorf) may only target allies, not heroes.
+		if targets_kind == "ally" and not _is_ally(state, target_id):
+			return false
 	return true
+
+
+# Whether an in-play card sits in an ally row (i.e. is an ally on the board).
+static func _is_ally(state: GameState, card_id: String) -> bool:
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	return zone != null and zone.zone_type == "ally_row"
 
 
 # Whether a power's extra cost token can currently be paid.
@@ -972,6 +985,22 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var target_id: String = action.params.get("target_id", "")
 			if target_id != "" and state.is_in_play(target_id):
 				events.append_array(GameLogic.heal(state, target_id, amount, db, card_id))
+		"buff_atk_target":
+			# Elder Moorf: "Target ally has +X ATK this turn."
+			var amount: int = int(ap.get("amount", 0))
+			var target_id: String = action.params.get("target_id", "")
+			var target := state.get_card(target_id)
+			if target and state.is_in_play(target_id) \
+					and _is_ally(state, target_id):
+				var buff := Buff.make("moorf_atk", card_id, "atk", amount, "turns", 1)
+				events.append_array(GameLogic.add_buff(state, target_id, buff))
+		"party_buff_atk_attacking":
+			# Rayder: "Allies in your party have +X ATK while attacking this turn."
+			var amount: int = int(ap.get("amount", 0))
+			for ally in state.cards_in_zone(card.controller + "_ally_row"):
+				var buff := Buff.make("rayder_atk", card_id, "atk", amount,
+						"turns", 1, "while_attacking")
+				events.append_array(GameLogic.add_buff(state, ally.instance_id, buff))
 
 	return events
 
@@ -1210,8 +1239,6 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	var events: Array[GameEvent] = []
 	var attacker_id := state.combat_attacker
 	var defender_id := state.combat_defender
-	state.combat_attacker = ""
-	state.combat_defender = ""
 
 	var attacker := state.get_card(attacker_id) if attacker_id != "" else null
 	var defender := state.get_card(defender_id) if defender_id != "" else null
@@ -1220,14 +1247,21 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	if not attacker or not defender \
 			or not state.is_in_play(attacker_id) \
 			or not state.is_in_play(defender_id):
+		state.combat_attacker = ""
+		state.combat_defender = ""
 		events.append(GameEvent.combat_concluded(attacker_id, defender_id, 0, 0))
 		_clear_damage_prevention(state)   # threat gone — unspent block expires
 		return events
 
 	# Rule 603.1: both deal damage simultaneously.
-	# Capture ATK values BEFORE applying any damage to either side.
+	# Capture ATK values BEFORE applying any damage to either side, and before
+	# clearing combat_attacker below — "while attacking" modifiers (Zorm,
+	# Rayder, For the Horde!) key off state.combat_attacker in get_atk, so it
+	# must still be set while these are computed.
 	var atk_dmg := state.get_atk(attacker_id, db)   # to defender
 	var def_dmg := state.get_atk(defender_id, db)   # to attacker (0 for heroes, per 205.1)
+	state.combat_attacker = ""
+	state.combat_defender = ""
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
 	# Apply both damage packets first (deal_damage no longer auto-destroys),
@@ -1435,7 +1469,7 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 # Effects that require player input (discard_from_hand) set pending state and emit
 # a choice event; the caller must handle that event before continuing.
 static func _apply_quest_reward(state: GameState, player_id: String,
-		effects_str: String, _db, target_ids: Array = []) -> Array[GameEvent]:
+		effects_str: String, db, target_ids: Array = []) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	if effects_str == "":
 		return events
@@ -1444,6 +1478,18 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 		if parts.size() < 2:
 			continue
 		match parts[0].strip_edges():
+			"party_buff_atk_attacking":
+				# For the Horde!: "Horde allies in your party have +X ATK while
+				# attacking this turn." Snapshot the current Horde allies; the
+				# "while attacking" gate lives on the buff (see get_atk).
+				var amount := int(parts[1])
+				for ally in state.cards_in_zone(player_id + "_ally_row"):
+					var adef := db.get_def(ally.card_def_id) as CardDef
+					if not adef or adef.alignment != "Horde":
+						continue
+					var buff := Buff.make("for_the_horde_atk", "", "atk", amount,
+							"turns", 1, "while_attacking")
+					events.append_array(GameLogic.add_buff(state, ally.instance_id, buff))
 			"draw":
 				var n := int(parts[1])
 				for _i in n:

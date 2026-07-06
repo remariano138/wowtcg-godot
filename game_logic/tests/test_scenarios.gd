@@ -47,6 +47,14 @@ func _ready() -> void:
 	_test_kulan_earthguard_end_of_turn_ready()
 	_test_tracker_gallen_atk_per_ally()
 	_test_malwani_atk_per_damage_self()
+	_test_zorm_party_atk_while_attacking()
+	_test_elder_moorf_buff_target()
+	_test_rayder_party_buff_while_attacking()
+	_test_for_the_horde_quest_buff()
+	_test_turn_buff_expires_at_end_of_turn()
+	_test_zorm_bonus_applies_to_real_combat_damage()
+	_test_get_atk_if_attacking_preview()
+	_test_moorf_buff_applies_to_real_defense_damage()
 	_test_chasing_ame_graveyard_to_hand()
 	_test_chasing_ame_blocked_and_filtered()
 	_test_darrowshire_rfg_three_allies()
@@ -2971,3 +2979,296 @@ func _test_acolyte_demia_self_destroys() -> void:
 	# ad-g: Demia was destroyed and moved to the graveyard.
 	eq(state.get_card("demia_inst").zone_id, "p1_graveyard",
 		"ad-g: Demia destroyed by her own put-damage cost")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 24 — Zorm Stonefury: party aura "+1 ATK while attacking"
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_zorm_party_atk_while_attacking() -> void:
+	print("\n-- Scenario 24: Zorm Stonefury party '+1 ATK while attacking' aura --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zorm_def", 1, 1, [], 2, "party_atk_while_attacking:1")
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "zorm_inst", "zorm_def", "p1")
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+	_add_ally(state, "opp_inst", "grunt_def", "p2")
+
+	# Nobody attacking → no bonus anywhere.
+	eq(state.get_atk("grunt_inst", db), 2, "sc24-a: no bonus while not attacking")
+	eq(state.get_atk("zorm_inst", db), 1, "sc24-b: Zorm itself unbuffed while idle")
+
+	# Grunt attacks → +1 from Zorm's aura.
+	state.combat_attacker = "grunt_inst"
+	eq(state.get_atk("grunt_inst", db), 3, "sc24-c: attacking ally gets +1")
+	eq(state.get_atk("zorm_inst", db), 1, "sc24-d: non-attacking Zorm still unbuffed")
+
+	# Zorm attacks → buffs itself (it's an ally in your party).
+	state.combat_attacker = "zorm_inst"
+	eq(state.get_atk("zorm_inst", db), 2, "sc24-e: Zorm buffs itself while attacking")
+
+	# Opponent's attacker gets nothing from p1's Zorm.
+	state.combat_attacker = "opp_inst"
+	eq(state.get_atk("opp_inst", db), 2, "sc24-f: enemy attacker unaffected by your Zorm")
+
+	# Two Zorms stack.
+	_add_ally(state, "zorm2_inst", "zorm_def", "p1")
+	state.combat_attacker = "grunt_inst"
+	eq(state.get_atk("grunt_inst", db), 4, "sc24-g: two Zorms stack (+2)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 25 — Elder Moorf: "[1],[activate] Target ally has +2 ATK this turn"
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_elder_moorf_buff_target() -> void:
+	print("\n-- Scenario 25: Elder Moorf +2 ATK to target ally this turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("moorf_def", 1, 1, [], 1, "activated_power:1:buff_atk_target:2::ally:once_per_turn")
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var moorf := _add_ally(state, "moorf_inst", "moorf_def", "p1")
+	moorf.just_summoned = false
+	moorf.is_exhausted  = false
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+	# Two resources so sc25-f isolates the once-per-turn gate (1 stays available).
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Heroes are not legal targets for an "ally"-only power.
+	var at_hero := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "moorf_inst", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"sc25-a: Moorf cannot target a hero")
+
+	# A friendly ally is a legal target.
+	var at_ally := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "moorf_inst", "target_id": "grunt_inst"})
+	ok(StackResolver.can_submit(state, at_ally, db),
+		"sc25-b: Moorf can target an ally")
+
+	StackResolver.submit_action(state, at_ally, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# Buff is unconditional — applies even when not attacking.
+	eq(state.get_atk("grunt_inst", db), 4, "sc25-c: target ally at +2 ATK (2 -> 4)")
+	# Non-tap "once per turn" power: Moorf stays ready but can't be used again.
+	ok(not state.get_card("moorf_inst").is_exhausted, "sc25-d: Moorf not exhausted (non-tap power)")
+	ok(state.get_card("moorf_inst").used_this_turn, "sc25-e: Moorf flagged used_this_turn")
+	ok(not StackResolver.can_submit(state, at_ally, db),
+		"sc25-f: Moorf power can't be used a second time this turn")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 26 — Rayder: "[activate] Your allies +2 ATK while attacking this turn"
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_rayder_party_buff_while_attacking() -> void:
+	print("\n-- Scenario 26: Rayder party '+2 ATK while attacking this turn' --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rayder_def", 2, 2, [], 2, "activated_power:0:party_buff_atk_attacking:2")
+	db.ally("grunt_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var rayder := _add_ally(state, "rayder_inst", "rayder_def", "p1")
+	rayder.just_summoned = false
+	rayder.is_exhausted  = false
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "rayder_inst"})
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# Conditional buff: nothing while idle.
+	eq(state.get_atk("grunt_inst", db), 1, "sc26-a: no bonus while grunt idle")
+
+	# Grunt attacks → +2.
+	state.combat_attacker = "grunt_inst"
+	eq(state.get_atk("grunt_inst", db), 3, "sc26-b: grunt +2 while attacking")
+
+	# Rayder itself is in its own party → buffed while attacking.
+	state.combat_attacker = "rayder_inst"
+	eq(state.get_atk("rayder_inst", db), 4, "sc26-c: Rayder +2 while attacking")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 27 — For the Horde!: quest reward buffs only Horde allies
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_for_the_horde_quest_buff() -> void:
+	print("\n-- Scenario 27: For the Horde! buffs only Horde allies while attacking --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("fth_def", 1, "party_buff_atk_attacking:1")
+	db.ally("horde_def", 2, 2)
+	db.ally("neutral_def", 2, 2)
+	db.get_def("horde_def").alignment = "Horde"
+	db.get_def("neutral_def").alignment = ""
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "horde_inst", "horde_def", "p1")
+	_add_ally(state, "neutral_inst", "neutral_def", "p1")
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var quest := CardInstance.create("fth_inst", "fth_def", "p1", "p1_resource_row")
+	state.cards["fth_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("fth_inst")
+
+	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "fth_inst"})
+	StackResolver.submit_action(state, complete, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# Horde ally gains the while-attacking buff; neutral ally does not.
+	state.combat_attacker = "horde_inst"
+	eq(state.get_atk("horde_inst", db), 3, "sc27-a: Horde ally +1 while attacking")
+	state.combat_attacker = "neutral_inst"
+	eq(state.get_atk("neutral_inst", db), 2, "sc27-b: non-Horde ally unbuffed")
+
+	# Buff is gated on attacking.
+	state.combat_attacker = ""
+	eq(state.get_atk("horde_inst", db), 2, "sc27-c: no bonus while Horde ally idle")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 28 — "this turn" buffs expire at end of turn
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_turn_buff_expires_at_end_of_turn() -> void:
+	print("\n-- Scenario 28: 'this turn' buffs are swept at end of turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+	state.get_card("grunt_inst").active_buffs.append(
+		Buff.make("test_turn_buff", "src", "atk", 3, "turns", 1))
+
+	eq(state.get_atk("grunt_inst", db), 5, "sc28-a: turn buff applies (2 + 3)")
+
+	TurnManager._enter_end(state, db)
+
+	eq(state.get_atk("grunt_inst", db), 2, "sc28-b: turn buff swept at end of turn")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 29 — Regression: "while attacking" bonuses must apply to REAL combat
+# damage, not just to get_atk queried mid-window. (Bug: _do_combat_conclusion
+# used to clear state.combat_attacker before computing atk_dmg, so Zorm/Rayder/
+# For the Horde! bonuses never reached the actual damage dealt.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_zorm_bonus_applies_to_real_combat_damage() -> void:
+	print("\n-- Scenario 29: Zorm's +1 ATK while attacking lands in real combat damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zorm_def", 1, 1, [], 2, "party_atk_while_attacking:1")
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "zorm_inst", "zorm_def", "p1")
+	var grunt := _add_ally(state, "grunt_inst", "grunt_def", "p1")
+	grunt.just_summoned = false
+	state.players["p1"].resource_placed_this_turn = true
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "grunt_inst", "defender_id": "p2_hero"}))
+	var p2_ai := ScriptedAI.new()
+
+	_drive(state, db, p1_ai, p2_ai)
+
+	# Grunt is printed 2 ATK; with Zorm's aura it should deal 3, not 2.
+	eq(state.get_card("p2_hero").damage_taken, 3,
+		"sc29: real combat damage includes Zorm's +1 ATK while attacking")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 30 — get_atk_if_attacking: targeting-cursor preview helper
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_get_atk_if_attacking_preview() -> void:
+	print("\n-- Scenario 30: get_atk_if_attacking previews attack ATK without mutating state --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zorm_def", 1, 1, [], 2, "party_atk_while_attacking:1")
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "zorm_inst", "zorm_def", "p1")
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+
+	# Before any combat is proposed: plain get_atk correctly omits the bonus
+	# (rule 601 — not attacking yet), but the preview helper shows what it
+	# WOULD be, for the targeting cursor.
+	eq(state.get_atk("grunt_inst", db), 2,
+		"sc30-a: plain get_atk shows base ATK before combat is proposed")
+	eq(state.get_atk_if_attacking("grunt_inst", db), 3,
+		"sc30-b: preview helper shows the buffed ATK")
+
+	# The preview call must not mutate real state.
+	eq(state.combat_attacker, "",
+		"sc30-c: preview helper leaves combat_attacker untouched")
+	eq(state.get_atk("grunt_inst", db), 2,
+		"sc30-d: plain get_atk is unaffected by the preview call")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 31 — Regression: Elder Moorf's buff must land on REAL defense damage
+# when activated by the (non-turn) defending player mid-combat, exactly as in
+# a live game: p1's ally attacks p2's ally; p2 uses Moorf's power on the
+# defender during the Defend Window before combat concludes.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_moorf_buff_applies_to_real_defense_damage() -> void:
+	print("\n-- Scenario 31: Elder Moorf's buff lands on real combat damage while defending --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 2, 10)
+	db.ally("grunt_def", 2, 2)
+	db.ally("moorf_def", 1, 1, [], 1, "activated_power:1:buff_atk_target:2::ally:once_per_turn")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player = "p1"
+	var attacker := _add_ally(state, "attacker_inst", "attacker_def", "p1")
+	attacker.just_summoned = false
+	var grunt := _add_ally(state, "grunt_inst", "grunt_def", "p2")
+	grunt.just_summoned = false
+	var moorf := _add_ally(state, "moorf_inst", "moorf_def", "p2")
+	moorf.just_summoned = false
+	_add_resources(state, "p2", 1)
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "attacker_inst", "defender_id": "grunt_inst"}))
+	var p2_ai := ScriptedAI.new()
+	# Fires as soon as p2 has priority and the action is legal — i.e. during the
+	# Defend Window, exactly like a human activating it mid-combat.
+	p2_ai.queue_action(PendingAction.make("use_ally_power", "p2",
+		{"card_id": "moorf_inst", "target_id": "grunt_inst"}))
+
+	_drive(state, db, p1_ai, p2_ai)
+
+	# Grunt is printed 2 ATK; Moorf's +2 buff should make it deal 4 back.
+	eq(state.get_card("attacker_inst").damage_taken, 4,
+		"sc31: attacker takes buffed (2+2=4) counter-damage from the defending ally")
+	ok(state.get_card("moorf_inst").used_this_turn,
+		"sc31: Moorf's once-per-turn power was actually used")

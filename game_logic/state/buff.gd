@@ -26,6 +26,13 @@ var amount: int            # magnitude; negative = penalty; for restrictions, 1 
 var duration_type: String  # "turns" | "while_source_in_play" | "permanent"
 var turns_remaining: int   # only meaningful when duration_type == "turns"
 
+# Optional gate on when the buff's amount actually applies. The buff always
+# exists (and expires) per its duration; condition only affects whether the
+# rules engine counts it in a derived stat at query time.
+#   ""                — always applies (default)
+#   "while_attacking" — applies only while the buffed card is the combat attacker
+var condition: String = ""
+
 
 static func make(
 		p_buff_id: String,
@@ -33,7 +40,8 @@ static func make(
 		p_stat: String,
 		p_amount: int,
 		p_duration_type: String,
-		p_turns_remaining: int = 0) -> Buff:
+		p_turns_remaining: int = 0,
+		p_condition: String = "") -> Buff:
 	var b := Buff.new()
 	b.buff_id          = p_buff_id
 	b.source_id        = p_source_id
@@ -41,6 +49,7 @@ static func make(
 	b.amount           = p_amount
 	b.duration_type    = p_duration_type
 	b.turns_remaining  = p_turns_remaining
+	b.condition        = p_condition
 	return b
 
 
@@ -52,6 +61,7 @@ func to_dict() -> Dictionary:
 		"amount":          amount,
 		"duration_type":   duration_type,
 		"turns_remaining": turns_remaining,
+		"condition":       condition,
 	}
 
 static func from_dict(d: Dictionary) -> Buff:
@@ -61,5 +71,6 @@ static func from_dict(d: Dictionary) -> Buff:
 		d["stat"],
 		d["amount"],
 		d["duration_type"],
-		d.get("turns_remaining", 0)
+		d.get("turns_remaining", 0),
+		d.get("condition", "")
 	)

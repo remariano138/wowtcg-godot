@@ -138,14 +138,24 @@ func get_attachments(host_instance_id: String) -> Array[CardInstance]:
 # Passing db as a parameter keeps GameState free of Godot node dependencies
 # and allows headless unit testing with a mock database.
 
-func get_atk(instance_id: String, db) -> int:
+func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 	var inst := get_card(instance_id)
 	if not inst:
 		return 0
 	var def: CardDef = db.get_def(inst.card_def_id)
 	if not def:
 		return 0
-	var atk := def.printed_atk + inst.sum_stat("atk")
+	var is_attacking := assume_attacking or (instance_id != "" and instance_id == combat_attacker)
+	# (1) Direct buffs placed on this card. Conditional buffs (e.g. "while
+	# attacking", from Rayder / For the Horde!) only count when their gate is met.
+	var atk := def.printed_atk
+	for b in inst.active_buffs:
+		if b.stat != "atk":
+			continue
+		if b.condition == "while_attacking" and not is_attacking:
+			continue
+		atk += b.amount
+	# (2) This card's own printed continuous self-modifiers.
 	for segment in def.effects.split("|"):
 		var parts := segment.split(":")
 		if parts[0] == "atk_per_ally":
@@ -155,7 +165,41 @@ func get_atk(instance_id: String, db) -> int:
 		elif parts[0] == "atk_per_damage_self":
 			var per_damage := int(parts[1]) if parts.size() > 1 else 1
 			atk += per_damage * inst.damage_taken
+	# (3) Party auras granted by other cards in play (e.g. Zorm Stonefury).
+	atk += _aura_atk_mods(inst, is_attacking, db)
 	return atk
+
+
+# Preview helper: what would this card's ATK be if it were the combat attacker
+# right now? Used by the UI to show the true damage number on the attack
+# targeting cursor before propose_combat actually runs (rule 601 — a card isn't
+# "attacking" until combat is proposed, so plain get_atk correctly omits
+# "while attacking" bonuses like Zorm/Rayder/For the Horde! during target
+# selection). Never use this for anything but display — it doesn't reflect
+# real game state and must not influence rules decisions.
+func get_atk_if_attacking(instance_id: String, db) -> int:
+	return get_atk(instance_id, db, true)
+
+
+# Sum of ATK bonuses this card receives from static "aura" sources in its
+# controller's party — continuous modifiers that live on another card in play
+# and affect a dynamic set, so they can't be pre-placed as buffs (the source may
+# outlive, or predate, the cards it buffs). New party auras add a match arm here.
+func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
+	var bonus := 0
+	for source in cards_in_zone(inst.controller + "_ally_row"):
+		var src_def: CardDef = db.get_def(source.card_def_id)
+		if not src_def:
+			continue
+		for seg in src_def.effects.split("|"):
+			var p := seg.split(":")
+			match p[0]:
+				"party_atk_while_attacking":
+					# Zorm Stonefury: "+X ATK while attacking" to your allies
+					# (including the source itself). Stacks with multiple copies.
+					if is_attacking:
+						bonus += int(p[1]) if p.size() > 1 else 1
+	return bonus
 
 func get_max_hp(instance_id: String, db) -> int:
 	var inst := get_card(instance_id)

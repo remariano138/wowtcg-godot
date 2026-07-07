@@ -26,6 +26,9 @@ var _damage_badge: Label = null
 var _power_used_badge: Label = null
 var _sick_badge: Label = null
 var _outline: ColorRect = null
+var _atk_badge_bg: Panel = null
+var _atk_badge_lbl: Label = null
+var _stats_lbl: Label = null
 
 # ── Wiggle state ───────────────────────────────────────────────────────────────
 var _wiggle_tween: Tween = null
@@ -92,6 +95,34 @@ static func create(inst_id: String, card_name: String,
 	stats_lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.3))
 	stats_lbl.position = Vector2(-18, H * 0.5 - 26)
 	node.add_child(stats_lbl)
+	node._stats_lbl = stats_lbl
+
+	# ATK-buff badge — white number in a green circle, bottom-left corner.
+	# Hidden by default; shown (replacing the printed ATK) while a buff is active.
+	const BADGE_D := 22.0
+	var atk_bg := Panel.new()
+	var atk_style := StyleBoxFlat.new()
+	atk_style.bg_color = Color(0.15, 0.75, 0.2)
+	atk_style.set_corner_radius_all(int(BADGE_D * 0.5))
+	atk_bg.add_theme_stylebox_override("panel", atk_style)
+	atk_bg.size     = Vector2(BADGE_D, BADGE_D)
+	atk_bg.position = Vector2(-W * 0.5 + 2, H * 0.5 - BADGE_D - 2)
+	atk_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	atk_bg.visible  = false
+	node.add_child(atk_bg)
+	node._atk_badge_bg = atk_bg
+
+	var atk_lbl := Label.new()
+	atk_lbl.add_theme_font_size_override("font_size", 13)
+	atk_lbl.add_theme_color_override("font_color", Color.WHITE)
+	atk_lbl.size     = Vector2(BADGE_D, BADGE_D)
+	atk_lbl.position = atk_bg.position
+	atk_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	atk_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	atk_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	atk_lbl.visible  = false
+	node.add_child(atk_lbl)
+	node._atk_badge_lbl = atk_lbl
 
 	# Damage badge — centered on card, shown when damage_taken > 0.
 	var badge := Label.new()
@@ -143,6 +174,8 @@ static func create(inst_id: String, card_name: String,
 			node._front_texture = texture
 			node._show_texture(texture)
 
+	node._atk_badge_bg.visible  = false
+	node._atk_badge_lbl.visible = false
 	return node
 
 
@@ -156,6 +189,20 @@ func update_damage(damage_taken: int) -> void:
 	else:
 		_damage_badge.text    = "-%d" % damage_taken
 		_damage_badge.visible = true
+
+
+# Show/hide the ATK-buff badge. When the card's current ATK differs from its
+# printed value, the badge (white number in a green circle, bottom-left) is
+# shown in place of the printed ATK; otherwise it's hidden and the printed
+# ATK/HP text (set at creation) is the only thing visible.
+func update_atk(current_atk: int, printed_atk: int) -> void:
+	if not _atk_badge_bg or not _atk_badge_lbl:
+		return
+	var buffed := current_atk != printed_atk
+	_atk_badge_bg.visible  = buffed
+	_atk_badge_lbl.visible = buffed
+	if buffed:
+		_atk_badge_lbl.text = str(current_atk)
 
 
 func show_card_back() -> void:

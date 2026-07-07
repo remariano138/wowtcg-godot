@@ -1072,7 +1072,11 @@ func _log_event(event: GameEvent) -> void:
 		"ally_power_used":
 			var p: String   = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("ally_id", "")
-			_log_entry("[color=#aef]%s activates [b]%s[/b][/color]" % [p, _log_card(cid)])
+			var target_id: String = event.payload.get("target_id", "")
+			if target_id != "":
+				_log_entry("[color=#aef]%s activated [b]%s[/b] on %s[/color]" % [p, _log_card(cid), _log_card(target_id)])
+			else:
+				_log_entry("[color=#aef]%s activated [b]%s[/b][/color]" % [p, _log_card(cid)])
 		"quest_completed":
 			var p:  String = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("quest_id", "")
@@ -1196,6 +1200,26 @@ func _on_game_event(event: GameEvent) -> void:
 			_mulligan_hint_label.visible = true
 		"game_over":
 			_handle_game_over(event.payload)
+	_refresh_atk_badges()
+
+
+# Recompute the current ATK of every in-play ally/hero and show/hide the
+# buff badge on its CardNode accordingly. Called after every event since
+# buffs can appear, disappear, or gate on combat state ("while_attacking")
+# without a dedicated event of their own.
+func _refresh_atk_badges() -> void:
+	if not _state or not _db:
+		return
+	for pid in _state.players:
+		for zone_suffix in ["_ally_row", "_hero_row"]:
+			for card in _state.cards_in_zone(pid + zone_suffix):
+				var cn := _renderer.card_nodes.get(card.instance_id) as CardNode
+				if not cn:
+					continue
+				var def := _db.get_def(card.card_def_id) as CardDef
+				if not def:
+					continue
+				cn.update_atk(_state.get_atk(card.instance_id, _db), def.printed_atk)
 
 
 func _on_window_closed() -> void:

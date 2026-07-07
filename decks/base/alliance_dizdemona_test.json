@@ -44,6 +44,11 @@
       "_card_name": "Warden Tonarin"
     },
     {
+      "card_def_id": "azeroth_219",
+      "count": 2,
+      "_card_name": "Tracker Gallen"
+    },
+    {
       "card_def_id": "azeroth_212",
       "count": 4,
       "_card_name": "Parvink"
@@ -80,18 +85,23 @@
     },
     {
       "card_def_id": "azeroth_180",
-      "count": 4,
+      "count": 2,
       "_card_name": "Crazy Igvand"
     },
     {
       "card_def_id": "azeroth_192",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kor Cindervein"
     },
     {
       "card_def_id": "azeroth_197",
       "count": 4,
       "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
     },
     {
       "card_def_id": "azeroth_173",

@@ -58,6 +58,7 @@ var _targeting_first_target: String = ""  # "" = first pick pending; non-empty =
 var _targeting_x_value: int = 0
 # Quest awaiting graveyard-target selection; "" = no browser open.
 var _gy_select_quest_id: String = ""
+var _gy_select_hero_id: String = ""
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 
@@ -90,7 +91,7 @@ func handle_card_click(instance_id: String) -> void:
 		return
 
 	# ── Graveyard browser open: board clicks are ignored (modal owns input) ──
-	if _gy_select_quest_id != "":
+	if _gy_select_quest_id != "" or _gy_select_hero_id != "":
 		return
 
 	# ── Pet sacrifice mode: click sacrifices the chosen pet ──────────────────
@@ -236,24 +237,59 @@ func start_graveyard_selection(quest_id: String) -> void:
 			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
 
 
-# UI confirmed a selection: submit the quest completion with announced targets.
-func confirm_graveyard_selection(selected_ids: Array) -> void:
-	if _gy_select_quest_id == "":
+# Open the browser for a hero power whose effect needs a graveyard target
+# (e.g. Sen'zir Beastwalker: "Put a Pet card from your graveyard into your hand").
+func start_hero_graveyard_selection(hero_id: String) -> void:
+	if not state or state.priority_player != local_player:
 		return
-	var quest_id := _gy_select_quest_id
-	_gy_select_quest_id = ""
-	var action := PendingAction.make("use_quest", local_player,
-			{"quest_id": quest_id, "target_ids": selected_ids})
-	var events := StackResolver.submit_action(state, action, db)
-	if events.is_empty():
+	var hero := state.get_card(hero_id)
+	var def := db.get_def(hero.card_def_id) as CardDef if hero and db else null
+	var req := StackResolver.get_graveyard_search_requirement(def)
+	if req.is_empty():
+		return
+	var candidates := StackResolver.get_graveyard_search_candidates(
+			state, local_player, req, db)
+	if candidates.size() < int(req.get("min_count", 1)):
+		return
+	_gy_select_hero_id = hero_id
+	graveyard_select_requested.emit(hero_id, candidates,
+			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
+
+
+# UI confirmed a selection: submit the quest completion (or hero power) with
+# the announced targets.
+func confirm_graveyard_selection(selected_ids: Array) -> void:
+	if _gy_select_quest_id != "":
+		var quest_id := _gy_select_quest_id
+		_gy_select_quest_id = ""
+		var action := PendingAction.make("use_quest", local_player,
+				{"quest_id": quest_id, "target_ids": selected_ids})
+		var events := StackResolver.submit_action(state, action, db)
+		if events.is_empty():
+			refresh_highlights()
+			return
+		EventBus.emit_events(events)
 		refresh_highlights()
 		return
-	EventBus.emit_events(events)
-	refresh_highlights()
+	if _gy_select_hero_id != "":
+		var hero_id := _gy_select_hero_id
+		_gy_select_hero_id = ""
+		var target_id: String = selected_ids[0] if not selected_ids.is_empty() else ""
+		var action := PendingAction.make("activate_power", local_player,
+				{"hero_id": hero_id, "target_id": target_id})
+		var events := StackResolver.submit_action(state, action, db)
+		if events.is_empty():
+			refresh_highlights()
+			return
+		EventBus.emit_events(events)
+		_pass_own_proposal(action)
+		refresh_highlights()
+		return
 
 
 func cancel_graveyard_selection() -> void:
 	_gy_select_quest_id = ""
+	_gy_select_hero_id = ""
 	refresh_highlights()
 
 
@@ -948,7 +984,9 @@ func handle_context_action(action: PendingAction) -> void:
 		"begin_power_targeting":
 			if state.priority_player == local_player:
 				var hero_id: String = action.params.get("hero_id", "")
-				if _hero_power_needs_x(hero_id):
+				if _hero_power_needs_gy_target(hero_id):
+					start_hero_graveyard_selection(hero_id)
+				elif _hero_power_needs_x(hero_id):
 					# X-select flow: emit signal so the UI shows the number input dialog.
 					var hero := state.get_card(hero_id)
 					var max_x := state.get_available_resources(local_player) \
@@ -1201,9 +1239,18 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand"]:
 			return true
 	return false
+
+
+func _hero_power_needs_gy_target(hero_id: String) -> bool:
+	if not db: return false
+	var hero := state.get_card(hero_id)
+	if not hero: return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	if not def: return false
+	return StackResolver._power_effect_is(def, "graveyard_to_hand")
 
 
 func _hero_power_dmg_type(hero_id: String) -> String:

@@ -153,14 +153,14 @@ Pet capacity is a player attribute (`PlayerState.pet_capacity`, default 1) that 
 Deck lists live as JSON files on disk, NOT in playtest.gd. Playtest only picks deck ids.
 
 - `decks/base/`, `decks/recommended_ai/`, `decks/custom/` — one JSON per deck (`deck_id` = filename stem).
-  - `recommended_ai/` (6 decks): simple-heuristic-friendly decks AI plays reasonably well — Ta'zo, Grennan, Omedus, Timmo, Moonshadow, Boris.
-  - `base/` (2 decks): Dizdemona and Radak — both Warlock pet-sacrifice decks (Grimdron/Sarmoth) that need situational judgment (which pet to sacrifice, when) beyond what FullRandomAI/BaseAI handle well, so they're excluded from the "Recommended for AI" category. Still human-playable, and still findable under "All decks" — can be slotted onto an AI player from there if wanted, just expect weaker AI performance. `recommended_ai_id` is still set (`ai_generic`), since that remains the correct AI to use if one is forced onto the deck.
+  - `recommended_ai/` (6 decks): simple-heuristic-friendly decks AI plays reasonably well — Ta'zo, Grennan, Omedus, Timmo, Boris, Sen'zir.
+  - `base/` (3 decks): Dizdemona, Radak, Moonshadow — decks that need situational judgment beyond what FullRandomAI/BaseAI handle well, excluded from "Recommended for AI". Still human-playable and findable under "All decks" — can be slotted onto an AI player, just expect weaker AI performance. `recommended_ai_id` is still set (`ai_generic`), the correct AI to use if one is forced onto the deck.
 - `ai_profiles/*.json` — `AIProfile` (`ai_id`, `ai_class`: "base"|"fullrandom"|"generic", `strategy_data`). All 8 demo decks specify `ai_generic` (GenericAI — see `game_logic/ai/ai_roster.md` and `ai_functions.md`).
 - Classes: `DeckDefinition`/`DeckCardEntry` (game_logic/deck_definition.gd, deck_card_entry.gd), `DeckLibrary`/`DeckLibraryIndex` (scan/categorize, ids only), `DeckManager` (single entry point: `get_available_decks()`, `load_deck()`, `validate_deck()` [hero + ≥60 cards], `get_runtime_deck()` → `Deck`, `load_ai_profile()`, `make_ai_for_deck()`).
 - **Nothing except DeckManager reads deck files or calls DeckLibrary.** Playtest menu has a category dropdown per player ("All decks" vs "Recommended for AI") that filters the deck dropdown via `get_available_decks()`; "Recommended AI" player type uses `make_ai_for_deck()`. An "Avoid mirror matches" checkbox (default on) excludes the other player's fixed deck from a random pick, or refuses to start on a fixed mirror.
 - Tests: `game_logic/tests/test_deck_manager.gd`.
 
-Demo decks (all 60 cards): Dizdemona (azeroth_2, base), Ta'zo (azeroth_15, recommended_ai), Grennan (azeroth_10, recommended_ai), Boris (azeroth_1, recommended_ai), Omedus (azeroth_12, recommended_ai), Radak (azeroth_13, base), Timmo (azeroth_7, recommended_ai), Moonshadow (azeroth_6, recommended_ai).
+Demo decks (all 60 cards): Dizdemona (azeroth_2, base), Ta'zo (azeroth_15, recommended_ai), Grennan (azeroth_10, recommended_ai), Boris (azeroth_1, recommended_ai), Omedus (azeroth_12, recommended_ai), Radak (azeroth_13, base), Timmo (azeroth_7, recommended_ai), Moonshadow (azeroth_6, base), Sen'zir (azeroth_14, recommended_ai).
 
 ---
 

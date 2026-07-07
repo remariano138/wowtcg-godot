@@ -55,6 +55,7 @@ func _ready() -> void:
 	_test_zorm_bonus_applies_to_real_combat_damage()
 	_test_get_atk_if_attacking_preview()
 	_test_moorf_buff_applies_to_real_defense_damage()
+	_test_ryn_dreamstrider_buff_target_attacking()
 	_test_chasing_ame_graveyard_to_hand()
 	_test_chasing_ame_blocked_and_filtered()
 	_test_darrowshire_rfg_three_allies()
@@ -73,6 +74,13 @@ func _ready() -> void:
 	_test_acolyte_demia_power()
 	_test_acolyte_demia_own_turn_only()
 	_test_acolyte_demia_self_destroys()
+	_test_senzir_beastwalker_power()
+	_test_senzir_beastwalker_no_pet_in_graveyard()
+	_test_ai_senzir_picks_most_valuable_pet()
+	_test_bloodclaw_no_horde_bonus()
+	_test_old_bones_protects_hero_only()
+	_test_arcane_shot()
+	_test_arcane_shot_combat_instant_tag()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -3272,3 +3280,412 @@ func _test_moorf_buff_applies_to_real_defense_damage() -> void:
 		"sc31: attacker takes buffed (2+2=4) counter-damage from the defending ally")
 	ok(state.get_card("moorf_inst").used_this_turn,
 		"sc31: Moorf's once-per-turn power was actually used")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 32 — Ryn Dreamstrider: "[activate] Target hero or ally +2 ATK while
+# attacking this turn"
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ryn_dreamstrider_buff_target_attacking() -> void:
+	print("\n-- Scenario 32: Ryn Dreamstrider targeted 'while attacking' buff --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ryn_def", 2, 2, [], 4, "activated_power:0:buff_atk_target_attacking:2::hero_or_ally")
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var ryn := _add_ally(state, "ryn_inst", "ryn_def", "p1")
+	ryn.just_summoned = false
+	ryn.is_exhausted  = false
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+
+	# Can target a friendly ally, a hero, and (per printed text) an enemy character.
+	var at_own_hero := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ryn_inst", "target_id": "p1_hero"})
+	ok(StackResolver.can_submit(state, at_own_hero, db),
+		"sc32-a: Ryn can target a hero")
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ryn_inst", "target_id": "grunt_inst"})
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# Conditional buff: nothing while idle.
+	eq(state.get_atk("grunt_inst", db), 2, "sc32-b: no bonus while grunt idle")
+	state.combat_attacker = "grunt_inst"
+	eq(state.get_atk("grunt_inst", db), 4, "sc32-c: grunt +2 while attacking")
+
+	# Exhausts (has an [Activate] tap symbol, unlike Moorf).
+	ok(state.get_card("ryn_inst").is_exhausted, "sc32-d: Ryn exhausted after using power")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 34 — Sen'zir Beastwalker: "3, Flip -> Put a Pet card from your
+# graveyard into your hand."
+#
+# Assertions:
+#   sc34-a  candidates from get_graveyard_search_candidates: only own Pet
+#   sc34-b  no-target probe passes with a valid Pet candidate
+#   sc34-c  completion without an announced target is rejected
+#   sc34-d  targeting the non-Pet ally in the graveyard is illegal
+#   sc34-e  targeting an opponent's graveyard Pet is illegal (owner=own)
+#   sc34-f  full action with the correct Pet target is legal and costs 3
+#   sc34-g  Pet moves to p1 hand after resolution
+#   sc34-h  card_returned_from_graveyard event fired
+#   sc34-i  hero_power_used event fired (once-per-turn gate engaged)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_senzir_beastwalker_power() -> void:
+	print("\n-- Scenario 34: Sen'zir Beastwalker returns a Pet from graveyard to hand --")
+	var db := MockDB.new()
+	db.hero("senzir_def", 28, 3, "graveyard_to_hand:Pet:1:1:own")
+	db.hero("p2_hero", 30)
+	db.pet("pet_def", 1, 3, [], 2)
+	db.ally("nonpet_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "senzir_def", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	for pair in [["dead_pet", "pet_def"], ["dead_nonpet", "nonpet_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+	var opp_pet := CardInstance.create("opp_dead_pet", "pet_def", "p2", "p2_graveyard")
+	state.cards["opp_dead_pet"] = opp_pet
+	state.zones["p2_graveyard"].card_ids.append("opp_dead_pet")
+
+	var def := db.get_def("senzir_def")
+	var req := StackResolver.get_graveyard_search_requirement(def)
+	var cands := StackResolver.get_graveyard_search_candidates(state, "p1", req, db)
+	eq(cands, ["dead_pet"], "sc34-a: only own graveyard Pet is a candidate")
+
+	var probe := PendingAction.make("activate_power", "p1",
+		{"hero_id": "senzir_def", "target_id": ""})
+	ok(StackResolver.can_submit(state, probe, db),
+		"sc34-b: no-target probe passes with a valid Pet candidate")
+
+	var no_target := PendingAction.make("activate_power", "p1", {"hero_id": "senzir_def"})
+	ok(StackResolver.can_submit(state, no_target, db),
+		"sc34-c: pre-target probe (empty target_id) still passes — full resolution needs a real target")
+
+	var bad_nonpet := PendingAction.make("activate_power", "p1",
+		{"hero_id": "senzir_def", "target_id": "dead_nonpet"})
+	ok(not StackResolver.can_submit(state, bad_nonpet, db),
+		"sc34-d: non-Pet graveyard card is an illegal target")
+
+	var bad_opp := PendingAction.make("activate_power", "p1",
+		{"hero_id": "senzir_def", "target_id": "opp_dead_pet"})
+	ok(not StackResolver.can_submit(state, bad_opp, db),
+		"sc34-e: opponent's graveyard Pet is an illegal target (owner=own)")
+
+	var good := PendingAction.make("activate_power", "p1",
+		{"hero_id": "senzir_def", "target_id": "dead_pet"})
+	ok(StackResolver.can_submit(state, good, db),
+		"sc34-f: full action with the correct Pet target is legal")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(state, good, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	ok(state.get_card("dead_pet").zone_id == "p1_hand",
+		"sc34-g: Pet moved to p1 hand")
+	eq(state.get_available_resources("p1"), 0,
+		"sc34-f2: 3 resources spent for the power")
+
+	var saw_return := false
+	var saw_power_used := false
+	for e in events:
+		if e.event_type == "card_returned_from_graveyard" \
+				and e.payload.get("card_id", "") == "dead_pet":
+			saw_return = true
+		if e.event_type == "hero_power_used":
+			saw_power_used = true
+	ok(saw_return, "sc34-h: card_returned_from_graveyard event fired")
+	ok(saw_power_used, "sc34-i: hero_power_used event fired")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 35 — Sen'zir: blocked when no Pet is in the graveyard
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_senzir_beastwalker_no_pet_in_graveyard() -> void:
+	print("\n-- Scenario 35: Sen'zir power blocked with no Pet in graveyard --")
+	var db := MockDB.new()
+	db.hero("senzir_def", 28, 3, "graveyard_to_hand:Pet:1:1:own")
+	db.hero("p2_hero", 30)
+	db.ally("nonpet_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "senzir_def", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var c := CardInstance.create("dead_nonpet", "nonpet_def", "p1", "p1_graveyard")
+	state.cards["dead_nonpet"] = c
+	state.zones["p1_graveyard"].card_ids.append("dead_nonpet")
+
+	var probe := PendingAction.make("activate_power", "p1",
+		{"hero_id": "senzir_def", "target_id": ""})
+	ok(not StackResolver.can_submit(state, probe, db),
+		"sc35-a: probe rejected — no Pet in graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 36 — AI (GenericAI) picks the MOST valuable Pet when using
+# Sen'zir Beastwalker's power with several candidates in the graveyard.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_senzir_picks_most_valuable_pet() -> void:
+	print("\n-- Scenario 36: AI picks the most valuable Pet for Sen'zir's power --")
+	var db := MockDB.new()
+	db.hero("senzir_def", 28, 3, "graveyard_to_hand:Pet:1:1:own")
+	db.hero("p2_hero", 30)
+	db.pet("gem_pet_def",  3, 3, [], 5)   # valuable
+	db.pet("junk_pet_def", 1, 1, [], 0)   # least valuable
+
+	var state := _base_state(db, "senzir_def", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var ai := GenericAI.new()
+
+	for pair in [["dead_gem_pet", "gem_pet_def"], ["dead_junk_pet", "junk_pet_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+
+	var actions := ai._graveyard_to_hand_hero_actions(state, db, "p1", "senzir_def")
+	eq(actions.size(), 1, "sc36-a: exactly one action produced")
+	eq(actions[0].params.get("target_id", ""), "dead_gem_pet",
+		"sc36-b: AI picks the most valuable Pet (gem, not junk)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 37 — Bloodclaw: vanilla neutral Pet (3/1, cost 1) — no Horde
+# alignment, so "For the Horde!" must not buff it.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_bloodclaw_no_horde_bonus() -> void:
+	print("\n-- Scenario 37: Bloodclaw (neutral Pet) gets no For the Horde! bonus --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("fth_def", 1, "party_buff_atk_attacking:1")
+	db.pet("bloodclaw_def", 3, 1, [], 1)
+	db.get_def("bloodclaw_def").alignment = ""   # neutral — no faction printed
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bloodclaw := _add_ally(state, "bloodclaw_inst", "bloodclaw_def", "p1")
+	bloodclaw.just_summoned = false
+
+	eq(state.get_atk("bloodclaw_inst", db), 3, "sc37-a: Bloodclaw is 3 ATK / 1 HP as printed")
+
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	var quest := CardInstance.create("fth_inst", "fth_def", "p1", "p1_resource_row")
+	state.cards["fth_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("fth_inst")
+
+	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "fth_inst"})
+	StackResolver.submit_action(state, complete, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	state.combat_attacker = "bloodclaw_inst"
+	eq(state.get_atk("bloodclaw_inst", db), 3,
+		"sc37-b: Bloodclaw unbuffed while attacking (neutral, not Horde)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 38 — Old Bones: "can protect your hero" — a restricted, non-keyword
+# grant of protection that only applies when the HERO is the proposed defender.
+#
+# Assertions:
+#   sc38-a  Old Bones IS a legal protector when the hero is the proposed defender
+#   sc38-b  Old Bones is NOT a legal protector when an ally is the proposed defender
+#   sc38-c  end-to-end: Old Bones intercepts an attack on the hero (0 dmg to hero)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_old_bones_protects_hero_only() -> void:
+	print("\n-- Scenario 38: Old Bones can protect your hero (restricted, not full Protector) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 3, 4)
+	db.ally("target_ally_def", 2, 5)
+	db.pet("old_bones_def", 4, 4, [], 4, "protect_hero_only")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "attacker_inst", "attacker_def", "p1")
+	var target_ally := _add_ally(state, "target_ally_inst", "target_ally_def", "p2")
+	var old_bones := _add_ally(state, "old_bones_inst", "old_bones_def", "p2")
+	old_bones.just_summoned = false
+	old_bones.is_exhausted  = false
+
+	# sc38-a: hero is the proposed defender — Old Bones is offered.
+	var protectors_vs_hero := StackResolver.get_legal_protectors(state, "attacker_inst", "p2_hero", db)
+	ok("old_bones_inst" in protectors_vs_hero,
+		"sc38-a: Old Bones can protect when hero is the proposed defender")
+
+	# sc38-b: an ally is the proposed defender — Old Bones is NOT offered.
+	var protectors_vs_ally := StackResolver.get_legal_protectors(
+			state, "attacker_inst", "target_ally_inst", db)
+	ok(not ("old_bones_inst" in protectors_vs_ally),
+		"sc38-b: Old Bones cannot protect an ally (no printed Protector keyword)")
+
+	# sc38-c: end-to-end — Old Bones actually intercepts an attack on the hero.
+	state.players["p1"].resource_placed_this_turn = true
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "attacker_inst", "defender_id": "p2_hero"}))
+	var p2_ai := ScriptedAI.new()
+	p2_ai.queue_protect("old_bones_inst")
+
+	_drive(state, db, p1_ai, p2_ai)
+
+	var p2_hero := state.get_card("p2_hero")
+	eq(p2_hero.damage_taken, 0, "sc38-c: P2 hero took 0 damage (Old Bones intercepted)")
+	eq(old_bones.damage_taken, 3, "sc38-d: Old Bones took the 3 combat damage instead")
+	ok(old_bones.is_exhausted, "sc38-e: Old Bones exhausted after protecting")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 39 — Arcane Shot: like Quick Strike (hero deals damage to an
+# announced target), plus "Draw a card."
+#
+# Assertions:
+#   sc39-a  submission WITHOUT a target is rejected (same as Quick Strike)
+#   sc39-b  1 arcane damage dealt to the announced target, sourced from the hero
+#   sc39-c  a card is drawn
+#   sc39-d  Arcane Shot itself ends up in the graveyard
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_arcane_shot() -> void:
+	print("\n-- Scenario 39: Arcane Shot — hero deals 1 arcane dmg + draw a card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_ally_def", 2, 4, [], 3)
+	db.ally("filler_def", 1, 1, [], 1)
+	db.instant("arcane_shot_def", 2, "deal_damage_to_target:1:arcane|draw:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+
+	var shot := CardInstance.create("shot_inst", "arcane_shot_def", "p1", "p1_hand")
+	state.cards["shot_inst"] = shot
+	state.zones["p1_hand"].card_ids.append("shot_inst")
+
+	var enemy := CardInstance.create("enemy_ally", "target_ally_def", "p2", "p2_ally_row")
+	state.cards["enemy_ally"] = enemy
+	state.zones["p2_ally_row"].card_ids.append("enemy_ally")
+
+	# A card to draw, at the top of p1's deck.
+	var draw_card := CardInstance.create("draw_card_inst", "filler_def", "p1", "p1_deck")
+	state.cards["draw_card_inst"] = draw_card
+	state.zones["p1_deck"].card_ids.append("draw_card_inst")
+
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_instant", "p1", {"card_id": "shot_inst"}), db),
+		"sc39-a: submission without a target is rejected")
+
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": "shot_inst", "target_id": "enemy_ally"})
+	ok(StackResolver.can_submit(state, act, db), "sc39-a2: full action is legal")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(state, act, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(enemy.damage_taken, 1, "sc39-b: enemy ally took 1 arcane damage")
+	var saw_dmg_from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "enemy_ally":
+			saw_dmg_from_hero = true
+	ok(saw_dmg_from_hero, "sc39-b2: damage sourced from p1's hero")
+
+	ok(state.get_card("draw_card_inst").zone_id == "p1_hand",
+		"sc39-c: a card was drawn into p1's hand")
+
+	ok(state.get_card("shot_inst").zone_id == "p1_graveyard",
+		"sc39-d: Arcane Shot itself is in the graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40 — Arcane Shot is tagged as a combat instant (design-only AI tag,
+# not a rules concept): held in hand, only played to ambush an attacker.
+#
+# Assertions:
+#   sc40-a  get_legal_actions never blind-plays it outside combat
+#   sc40-b  attack window — 1 HP / cost-matching attacker → play targeting it
+#   sc40-c  attack window — attacker survives 1 dmg → hold
+#   sc40-d  integration: attacker killed by Arcane Shot during the attack window
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_arcane_shot_combat_instant_tag() -> void:
+	print("\n-- Scenario 40: Arcane Shot tagged as a combat instant (held, ambush-only) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Registered under its REAL def id so BaseAI.COMBAT_INSTANT_TAGS matches.
+	db.instant("azeroth_33", 2, "deal_damage_to_target:1:arcane|draw:1")
+	db.ally("atk_worthy_def", 3, 1, [], 4)   # cost 4, 1 HP — dies to Arcane Shot
+	db.ally("atk_fat_def",    3, 5, [], 4)   # cost 4, 5 HP — survives 1 dmg
+
+	var ai := BaseAI.new()
+
+	# ── Hold outside combat: never a blind play on own action window ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 2)
+	var shot_hold := CardInstance.create("shot_hold", "azeroth_33", "p1", "p1_hand")
+	st3.cards["shot_hold"] = shot_hold
+	st3.zones["p1_hand"].card_ids.append("shot_hold")
+	var blind := false
+	for a in ai.get_legal_actions(st3, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "shot_hold":
+			blind = true
+	ok(not blind, "sc40-a: get_legal_actions never blind-plays a held combat instant")
+
+	# ── Attack-window ambush matrix ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.turn_player     = "p2"
+	st.priority_player = "p1"
+	_add_resources(st, "p1", 2)
+	var shot := CardInstance.create("shot_p1", "azeroth_33", "p1", "p1_hand")
+	st.cards["shot_p1"] = shot
+	st.zones["p1_hand"].card_ids.append("shot_p1")
+	_add_ally(st, "atk_worthy", "atk_worthy_def", "p2")
+	_add_ally(st, "atk_fat",    "atk_fat_def",    "p2")
+	st.combat_attack_window = true
+	st.combat_defender = "p1_hero"
+
+	st.combat_attacker = "atk_worthy"
+	var act := ai.combat_instant_action(st, db, "p1")
+	ok(act != null and act.params.get("card_id") == "shot_p1"
+			and act.params.get("target_id") == "atk_worthy",
+		"sc40-b: attack window — 1 HP attacker dies to Arcane Shot → play targeting it")
+
+	st.combat_attacker = "atk_fat"
+	ok(ai.combat_instant_action(st, db, "p1") == null,
+		"sc40-c: attack window — 5 HP attacker survives 1 dmg → hold")
+
+	# ── Integration: p1 attacks, BaseAI p2 ambushes during the attack window ──
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st4, "raider", "atk_worthy_def", "p1")   # cost 4, 1 HP, 3 ATK
+	_add_resources(st4, "p2", 2)
+	var shot4 := CardInstance.create("shot_ambush", "azeroth_33", "p2", "p2_hand")
+	st4.cards["shot_ambush"] = shot4
+	st4.zones["p2_hand"].card_ids.append("shot_ambush")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}))
+
+	_drive_turns(st4, db, p1_ai, BaseAI.new(), 3)
+
+	ok(st4.get_card("raider").zone_id == "p1_graveyard",
+		"sc40-d: attacker killed by Arcane Shot during the attack window")
+	eq(st4.get_card("p2_hero").damage_taken, 0,
+		"sc40-e: p2 hero took no combat damage (attacker died pre-conclusion)")
+	ok(st4.get_card("shot_ambush").zone_id == "p2_graveyard",
+		"sc40-f: Arcane Shot in graveyard after the ambush")

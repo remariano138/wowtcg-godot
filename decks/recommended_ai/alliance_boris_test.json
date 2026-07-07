@@ -49,6 +49,11 @@
       "_card_name": "Warden Tonarin"
     },
     {
+      "card_def_id": "azeroth_219",
+      "count": 4,
+      "_card_name": "Tracker Gallen"
+    },
+    {
       "card_def_id": "azeroth_212",
       "count": 2,
       "_card_name": "Parvink"
@@ -100,18 +105,18 @@
     },
     {
       "card_def_id": "azeroth_179",
-      "count": 4,
+      "count": 2,
       "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
     },
     {
       "card_def_id": "azeroth_200",
       "count": 4,
       "_card_name": "Liba Wobblebonk"
-    },
-    {
-      "card_def_id": "azeroth_219",
-      "count": 4,
-      "_card_name": "Tracker Gallen"
     }
   ],
   "recommended_ai_id": "ai_generic",

@@ -1,0 +1,129 @@
+{
+  "deck_id": "horde_senzir_test",
+  "display_name": "Horde_test (Sen'zir)",
+  "hero_card_def_id": "azeroth_14",
+  "card_entries": [
+    {
+      "card_def_id": "azeroth_360",
+      "count": 4,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_345",
+      "count": 4,
+      "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_36",
+      "count": 3,
+      "_card_name": "Bloodclaw"
+    },
+    {
+      "card_def_id": "azeroth_38",
+      "count": 1,
+      "_card_name": "Fury"
+    },
+    {
+      "card_def_id": "azeroth_45",
+      "count": 1,
+      "_card_name": "Rayder"
+    },
+    {
+      "card_def_id": "azeroth_42",
+      "count": 1,
+      "_card_name": "Old Bones"
+    },
+    {
+      "card_def_id": "azeroth_33",
+      "count": 2,
+      "_card_name": "Arcane Shot"
+    },
+    {
+      "card_def_id": "dark_portal_260",
+      "count": 2,
+      "_card_name": "Pads of the Dread Wolf"
+    },
+    {
+      "card_def_id": "azeroth_165",
+      "count": 2,
+      "_card_name": "Quick Strike"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_225",
+      "count": 2,
+      "_card_name": "Arnold Flem"
+    },
+    {
+      "card_def_id": "azeroth_260",
+      "count": 4,
+      "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_230",
+      "count": 4,
+      "_card_name": "Blood Guard Mal'wani"
+    },
+    {
+      "card_def_id": "azeroth_264",
+      "count": 4,
+      "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 4,
+      "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 4,
+      "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "azeroth_274",
+      "count": 2,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "azeroth_246",
+      "count": 4,
+      "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_235",
+      "count": 1,
+      "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_262",
+      "count": 1,
+      "_card_name": "Vaerik Proudhoof"
+    },
+    {
+      "card_def_id": "azeroth_249",
+      "count": 4,
+      "_card_name": "Kulan Earthguard"
+    }
+  ],
+  "recommended_ai_id": "ai_generic",
+  "source": "recommended_ai",
+  "metadata": {
+    "author": "playtest",
+    "origin": "user deck list, 2026-07-08"
+  },
+  "_hero_name": "Sen'zir Beastwalker"
+}

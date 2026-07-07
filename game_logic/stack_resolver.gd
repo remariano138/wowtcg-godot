@@ -597,6 +597,11 @@ static func _resolve_play_instant(state: GameState,
 								else:
 									events.append_array(
 										_check_destroyed_trigger(state, target_id, hero_id, db))
+					"draw":
+						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
+						var draw_n := int(parts[1]) if parts.size() > 1 else 1
+						for _i in draw_n:
+							events.append_array(_draw_one(state, action.source_player))
 	# Move used instant to its owner's graveyard (card is currently in chain zone).
 	var card2 := state.get_card(card_id)
 	if card2:
@@ -941,7 +946,8 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		events.append_array(GameLogic.put_damage(state, card_id, put_amount, db))
 		events.append_array(_check_destroyed_trigger(state, card_id, card_id, db))
 	events.append(GameEvent.make("ally_power_used",
-		{"ally_id": card_id, "player": action.source_player}))
+		{"ally_id": card_id, "player": action.source_player,
+			"target_id": action.params.get("target_id", "")}))
 
 	match ap.get("effect", ""):
 		"draw":
@@ -1001,6 +1007,14 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				var buff := Buff.make("rayder_atk", card_id, "atk", amount,
 						"turns", 1, "while_attacking")
 				events.append_array(GameLogic.add_buff(state, ally.instance_id, buff))
+		"buff_atk_target_attacking":
+			# Ryn Dreamstrider: "Target hero or ally has +X ATK while attacking this turn."
+			var amount: int = int(ap.get("amount", 0))
+			var target_id: String = action.params.get("target_id", "")
+			if target_id != "" and state.is_in_play(target_id):
+				var buff := Buff.make("ryn_atk", card_id, "atk", amount,
+						"turns", 1, "while_attacking")
+				events.append_array(GameLogic.add_buff(state, target_id, buff))
 
 	return events
 
@@ -1113,6 +1127,8 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 	if not defender:
 		return []
 	var defending_player := defender.controller
+	var defender_zone := state.zones.get(defender.zone_id) as Zone
+	var defender_is_hero := defender_zone and defender_zone.zone_type == "hero_row"
 	var result: Array[String] = []
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(defending_player + zone_suffix):
@@ -1122,6 +1138,13 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 				continue  # must be ready (will be exhausted when it protects)
 			if _has_keyword(card, "protector", db):
 				result.append(card.instance_id)
+				continue
+			# Old Bones-style restricted grant: "can protect your hero" — only
+			# usable when the hero is the proposed defender, not for allies.
+			if defender_is_hero and db:
+				var cdef := db.get_def(card.card_def_id) as CardDef
+				if cdef and _has_effect_flag(cdef, "protect_hero_only"):
+					result.append(card.instance_id)
 	return result
 
 
@@ -1359,7 +1382,8 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 			var def := db.get_def(card.card_def_id) as CardDef
 			if not def:
 				continue
-			if type_filter != "any" and type_filter != "" and def.card_type != type_filter:
+			if type_filter != "any" and type_filter != "" \
+					and def.card_type != type_filter and def.card_subtype != type_filter:
 				continue
 			if max_cost >= 0 and def.cost > max_cost:
 				continue
@@ -1688,8 +1712,18 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 		return false
 	# If this power targets something, the target must be valid.
 	var target_id: String = action.params.get("target_id", "")
-	if target_id != "":
+	var is_gy_power := _power_effect_is(def, "graveyard_to_hand")
+	if target_id != "" and not is_gy_power:
 		if not state.is_in_play(target_id):
+			return false
+	if is_gy_power:
+		var gy_req := get_graveyard_search_requirement(def)
+		if gy_req.is_empty():
+			return false
+		var gy_candidates := get_graveyard_search_candidates(state, action.source_player, gy_req, db)
+		if gy_candidates.size() < int(gy_req.get("min_count", 1)):
+			return false
+		if target_id != "" and target_id not in gy_candidates:
 			return false
 		# destroy_exhausted_ally: target must be an exhausted ally (not a hero).
 		if _power_effect_is(def, "destroy_exhausted_ally"):
@@ -1875,6 +1909,16 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
 					events.append_array(GameLogic.heal(state, target_id, x_value, db, hero_id))
+			"graveyard_to_hand":
+				# Format: graveyard_to_hand:TYPE:MIN:MAX:OWNER[:MAX_COST] (hero-power use).
+				# Re-check the target is still in a graveyard at resolution.
+				if target_id != "":
+					var gy_card := state.get_card(target_id)
+					if gy_card:
+						var gy_zone := state.zones.get(gy_card.zone_id) as Zone
+						if gy_zone and gy_zone.zone_type == "graveyard":
+							events.append_array(GameLogic.move_card(state, target_id, action.source_player + "_hand"))
+							events.append(GameEvent.card_returned_from_graveyard(target_id, action.source_player))
 			"radak_pet_sacrifice":
 				# Pet already destroyed at submission. Deal x_value shadow damage to target.
 				var x_value: int = action.params.get("x_value", 0)

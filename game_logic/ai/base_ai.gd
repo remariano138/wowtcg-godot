@@ -17,6 +17,7 @@ extends RefCounted
 #       character when the AI is being attacked and the math works out.
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
+	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
 }
 
 
@@ -198,7 +199,7 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			var def := db.get_def(card.card_def_id) as CardDef
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
-				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id))
+				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
 				continue
 		var action := PendingAction.make(action_type, player_id,
 				{"card_id": card.instance_id})
@@ -363,7 +364,32 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			var max_hand: int = ps_hand.max_hand_size if ps_hand else 7
 			if state.cards_in_zone(player_id + "_hand").size() >= max_hand:
 				continue
-		if ap.get("targets", "") in ["hero_or_ally"]:
+		if ap.get("effect", "") == "buff_atk_target_attacking":
+			# Ryn Dreamstrider: friendly +ATK buff — never target the enemy.
+			# Pick our own highest-ATK ready attacker (ally or hero).
+			var best_id := ""
+			var best_atk := -1
+			for ally in state.cards_in_zone(player_id + "_ally_row"):
+				if ally.is_exhausted or ally.just_summoned:
+					continue
+				var a := state.get_atk(ally.instance_id, db)
+				if a > best_atk:
+					best_atk = a
+					best_id = ally.instance_id
+			var ps_own := state.players.get(player_id) as PlayerState
+			if ps_own and ps_own.hero_instance_id != "":
+				var hero_card := state.get_card(ps_own.hero_instance_id)
+				if hero_card and not hero_card.is_exhausted:
+					var ha := state.get_atk(ps_own.hero_instance_id, db)
+					if ha > best_atk:
+						best_atk = ha
+						best_id = ps_own.hero_instance_id
+			if best_id != "":
+				var act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_id})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
+		elif ap.get("targets", "") in ["hero_or_ally"]:
 			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []
 			if is_heal:
@@ -462,6 +488,8 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 			result.append_array(_x_heal_actions(state, db, player_id, hero_id))
 		elif _hero_power_is(state, db, hero_id, "radak_pet_sacrifice"):
 			result.append_array(_radak_sacrifice_actions(state, db, player_id, hero_id))
+		elif _hero_power_is(state, db, hero_id, "graveyard_to_hand"):
+			result.append_array(_graveyard_to_hand_hero_actions(state, db, player_id, hero_id))
 		# deal_damage_and_heal needs two distinct targets — enumerate all valid pairs.
 		elif _hero_power_is(state, db, hero_id, "deal_damage_and_heal"):
 			result.append_array(_damage_and_heal_actions(state, db, player_id, hero_id))
@@ -644,6 +672,35 @@ func _radak_sacrifice_actions(state: GameState, db, player_id: String,
 		if StackResolver.can_submit(state, act, db):
 			result.append(act)
 	return result
+
+
+# graveyard_to_hand hero powers (e.g. Sen'zir Beastwalker: "Put a Pet card
+# from your graveyard into your hand"). Skips when the hand is already full
+# (the card would just be discarded at wrap-up). Picks via the overridable
+# _choose_graveyard_targets hook (GenericAI ranks by sort_valuable_cards).
+func _graveyard_to_hand_hero_actions(state: GameState, db, player_id: String,
+		hero_id: String) -> Array[PendingAction]:
+	var ps := state.players.get(player_id) as PlayerState
+	var max_hand: int = ps.max_hand_size if ps else 7
+	if state.cards_in_zone(player_id + "_hand").size() >= max_hand:
+		return []
+	var def := _card_def(state, db, hero_id)
+	if not def:
+		return []
+	var gy_req := StackResolver.get_graveyard_search_requirement(def)
+	if gy_req.is_empty():
+		return []
+	var candidates := StackResolver.get_graveyard_search_candidates(state, player_id, gy_req, db)
+	if candidates.size() < int(gy_req.get("min_count", 1)):
+		return []
+	var picks := _choose_graveyard_targets(state, db, player_id, gy_req, candidates)
+	if picks.is_empty():
+		return []
+	var act := PendingAction.make("activate_power", player_id,
+		{"hero_id": hero_id, "target_id": picks[0]})
+	if StackResolver.can_submit(state, act, db):
+		return [act]
+	return []
 
 
 # Use the targeted-damage and targeted-heal heuristics to pick the single best
@@ -995,14 +1052,14 @@ func _other_player_id(state: GameState, player_id: String) -> String:
 
 
 func _targeted_instant_actions(state: GameState, db, player_id: String,
-		card_id: String) -> Array[PendingAction]:
+		card_id: String, action_type: String = "play_instant") -> Array[PendingAction]:
 	var result: Array[PendingAction] = []
 	var spell_card := state.get_card(card_id)
 	var spell_def  := db.get_def(spell_card.card_def_id) as CardDef if spell_card else null
 
 	var opp := "p2" if player_id == "p1" else "p1"
 	for ally in state.cards_in_zone(opp + "_ally_row"):
-		var act := PendingAction.make("play_instant", player_id,
+		var act := PendingAction.make(action_type, player_id,
 			{"card_id": card_id, "target_id": ally.instance_id})
 		if not StackResolver.can_submit(state, act, db):
 			continue
@@ -1014,7 +1071,7 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 	if spell_def and not _effect_is_destroy_ally(spell_def):
 		var ps_opp := state.players.get(opp) as PlayerState
 		if ps_opp and ps_opp.hero_instance_id != "":
-			var act := PendingAction.make("play_instant", player_id,
+			var act := PendingAction.make(action_type, player_id,
 				{"card_id": card_id, "target_id": ps_opp.hero_instance_id})
 			if StackResolver.can_submit(state, act, db):
 				result.append(act)

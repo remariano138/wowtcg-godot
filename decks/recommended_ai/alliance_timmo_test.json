@@ -35,7 +35,7 @@
     },
     {
       "card_def_id": "azeroth_222",
-      "count": 2,
+      "count": 4,
       "_card_name": "Warden Tonarin"
     },
     {
@@ -89,13 +89,18 @@
       "_card_name": "Latro Abiectus"
     },
     {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
+    },
+    {
       "card_def_id": "azeroth_175",
-      "count": 4,
+      "count": 2,
       "_card_name": "Anika Berlyn"
     },
     {
       "card_def_id": "azeroth_179",
-      "count": 4,
+      "count": 2,
       "_card_name": "Braxiss the Sleeper"
     },
     {

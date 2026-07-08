@@ -1,29 +1,318 @@
 class_name GenericAI
 extends FullRandomAI
 
-# Deck-agnostic heuristic AI — "less random than FullRandom".
+# Deck-agnostic heuristic AI — fully deterministic, NO random fallback.
 #
-# On its own action window it first looks for SAFE KILLS (kill and survive,
-# see BaseAI.find_safe_lethals / ai_functions.md):
-#   list 1 — legal attackers on board + Ferocity allies in hand (a hand
-#            Ferocity ally with a safe kill is played NOW so it can attack)
-#   list 2 — all enemy allies on board
-# Attackers with safe kills are ranked with sort_valuable_cards and committed
-# LEAST valuable first — the cheap attacker goes in first to bait removal and
-# counterplays; if uninterrupted the kill still lands. (Later, attacking
-# heroes will rank most valuable and naturally attack last.) When the chosen
-# attacker has several safe kills, the MOST valuable target dies.
+# On its own action window decide_action runs a fixed priority pipeline and
+# returns ONE action; the engine resolves it and calls again ("rinse and
+# repeat"), so a whole turn plays out one step at a time:
+#   1. hero lethal    — win now (any attacker/Ferocity-in-hand that kills hero)
+#   2. safe lethal     — kill an enemy ally and survive (find_safe_lethals)
+#   3. good trade      — 'both die' trade, but only value-even-or-up
+#   4. develop         — improve the board (allies, gated powers/removal, ramp)
+#   5. hero chip       — poke the enemy hero with leftover attackers
+#   6. null            — nothing constructive left → end the turn
 #
-# The whole scan re-runs every time this AI gets priority ("rinse and
-# repeat"), so it chains safe kills one at a time. When no safe kill exists,
-# behaviour falls back to FullRandomAI.
+# Because every action consumes a finite per-turn resource (a ready attacker's
+# readiness, a hand card, resources, or the once-per-turn resource flag) and
+# never restores one, the option set strictly shrinks and the pipeline is
+# guaranteed to reach step 6 — no infinite loop. Combat is re-checked from the
+# top after every develop, so a freshly played (Ferocity) attacker or buff can
+# open a new fight on the very next call.
+#
+# See BaseAI.find_safe_lethals / combat_trade_value / ai_functions.md.
+# Protector choice (choose_protector) also uses combat_trade_value — see below.
 
 
+# Enemy hero HP at or below this → "all out": chip with Protectors too, since
+# racing to lethal beats holding blockers back.
+const HERO_ALL_OUT_HP := 10
+
+# Develop-step priority per action type (higher = played first). This is the
+# main tuning surface for non-combat play; see _develop_action.
+const _DEVELOP_RANK := {
+	"place_resource":  100,   # ramp first — more resources unlock more plays
+	"play_ally":        60,   # develop board presence
+	"use_ally_power":   40,
+	"use_hero_power":   40,
+	"play_equipment":   30,
+	"use_quest":        20,
+}
+
+
+# Fully deterministic pipeline — GenericAI has NO random fallback. Each call the
+# engine hands us priority, we return the single best action, it resolves, and
+# we are called again ("rinse and repeat"). The offense steps run top-to-bottom;
+# because every action we take consumes a finite per-turn resource (a ready
+# attacker's readiness, a hand card, resources, or the once-per-turn resource
+# flag) and never restores one, the option set strictly shrinks and the loop is
+# guaranteed to reach the final `return null` (end of turn) — no infinite loop.
+#
+# The "combat → develop → combat" cycle emerges for free: a develop play may put
+# a new (Ferocity) attacker or buff on board, and the next call re-checks combat
+# from the top before developing again.
 func decide_action(state: GameState, db, player_id: String) -> PendingAction:
+	# Defensive, deterministic — legal at any priority incl. the opponent's turn.
+	var block := armor_prevention_action(state, db, player_id)
+	if block != null:
+		return block
+	var ambush := combat_instant_action(state, db, player_id)
+	if ambush != null:
+		return ambush
+
+	# Everything below is our own action window only. Outside it (opponent's
+	# turn / a pending chain we don't want to answer), we simply pass — no random
+	# responses anymore.
+	if state.phase != "action" or state.turn_player != player_id \
+			or not state.pending_actions.is_empty():
+		return null
+
+	# 1. Win now.
+	var hero_kill := _hero_lethal_action(state, db, player_id)
+	if hero_kill != null:
+		return hero_kill
+	# 2. Free kills (kill and survive).
 	var safe := _safe_lethal_action(state, db, player_id)
 	if safe != null:
 		return safe
-	return super.decide_action(state, db, player_id)
+	# 3. Good even/up trades (both die, our card no more valuable than theirs).
+	var trade := _trade_action(state, db, player_id)
+	if trade != null:
+		return trade
+	# 4. Improve the board (play allies, gated powers/removal, ramp, quests).
+	var develop := _develop_action(state, db, player_id)
+	if develop != null:
+		return develop
+	# 5. Poke the enemy hero with leftover attackers.
+	var chip := _hero_chip_action(state, db, player_id)
+	if chip != null:
+		return chip
+	# Nothing constructive left — end the turn.
+	return null
+
+
+# Step 3 — trade a board attacker into an enemy ally where BOTH die, but only
+# when the ally we give up is no more valuable than the one we kill (never trade
+# a bomb for a chump). Among accepted trades: kill the most valuable target,
+# giving up the least valuable attacker.
+func _trade_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var opp := "p2" if player_id == "p1" else "p1"
+	var best: PendingAction = null
+	var best_key: Array = []
+	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+		if state.get_atk(aid, db, true) <= 0:
+			continue
+		for did in StackResolver.get_legal_defenders(state, aid, db):
+			# Enemy allies only — the hero is handled by _hero_chip_action.
+			var dcard := state.get_card(did)
+			if not dcard or dcard.zone_id != opp + "_ally_row":
+				continue
+			if BaseAI.combat_trade_value(state, db, aid, did) != "both":
+				continue
+			# Value-even-or-up only: our attacker must be <= the target's value.
+			var a_val := BaseAI._card_value_key(state, db, aid)
+			var d_val := BaseAI._card_value_key(state, db, did)
+			if a_val > d_val:
+				continue
+			var act := PendingAction.make("propose_combat", player_id,
+					{"attacker_id": aid, "defender_id": did})
+			if not StackResolver.can_submit(state, act, db):
+				continue
+			# Rank: most valuable target first, then least valuable attacker.
+			var key := [d_val, _negated_key(a_val)]
+			if best == null or key > best_key:
+				best = act
+				best_key = key
+	return best
+
+
+# Step 4 — the best board-improving non-combat play. Reuses BaseAI.get_legal_actions
+# (which already gates powers to good targets, removal via _destroy_is_worth_it,
+# draw-into-full-hand, and smart resource placement), drops every combat proposal,
+# and picks by _DEVELOP_RANK then card value. GenericAI has no random fallback, so
+# this is where "improve the game state until your options get better" lives.
+func _develop_action(state: GameState, db, player_id: String) -> PendingAction:
+	var best: PendingAction = null
+	var best_key: Array = []
+	for act in get_legal_actions(state, db, player_id):
+		if act.action_type == "propose_combat":
+			continue
+		var rank: int = _DEVELOP_RANK.get(act.action_type, 10)
+		# Within a rank, prefer the more valuable card involved (bigger ally,
+		# pricier removal target, …).
+		var cid: String = act.params.get("card_id",
+				act.params.get("quest_id", act.params.get("target_id", "")))
+		var key := [rank, BaseAI._card_value_key(state, db, cid) if cid != "" else []]
+		if best == null or key > best_key:
+			best = act
+			best_key = key
+	return best
+
+
+# Step 5 — attack the enemy hero with leftover ready attackers (ATK > 0 only;
+# a 0-ATK attacker can never help). Hold Protectors back to defend UNLESS the
+# enemy hero is at/under HERO_ALL_OUT_HP, in which case we go all out to race
+# for lethal. Chip with the LEAST valuable eligible attacker first, keeping the
+# better cards free to respond.
+func _hero_chip_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var opp := "p2" if player_id == "p1" else "p1"
+	var ps_opp := state.players.get(opp) as PlayerState
+	if not ps_opp or ps_opp.hero_instance_id == "" \
+			or not state.is_in_play(ps_opp.hero_instance_id):
+		return null
+	var hero_id := ps_opp.hero_instance_id
+	var all_out: bool = state.get_current_hp(hero_id, db) <= HERO_ALL_OUT_HP
+
+	var best: String = ""
+	var best_val: Array = []
+	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+		if state.get_atk(aid, db, true) <= 0:
+			continue
+		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
+			continue
+		var card := state.get_card(aid)
+		if not all_out and card and StackResolver._has_keyword(card, "protector", db):
+			continue   # save Protectors to protect
+		var val := BaseAI._card_value_key(state, db, aid)
+		# Least valuable first → best_val is the current minimum.
+		if best == "" or val < best_val:
+			best = aid
+			best_val = val
+	if best == "":
+		return null
+	var act := PendingAction.make("propose_combat", player_id,
+			{"attacker_id": best, "defender_id": hero_id})
+	return act if StackResolver.can_submit(state, act, db) else null
+
+
+# Protector choice (defending) — decided from the PROPOSED fight (the incoming
+# attacker vs. the character it actually declared against), not the protector in
+# isolation. Protecting exhausts the protector, so we only step in when it pays:
+#
+#   If the proposed defender would SURVIVE the hit:
+#     • the attacker would die to the defender → do NOT protect (we already win
+#       this fight for free — let the attacker throw itself away);
+#     • otherwise, protect only if a protector would KILL the attacker and live
+#       (safe_lethal for the protector); else take the hit.
+#   If the proposed defender would DIE:
+#     • the hero (losing it loses the game) → always interpose the cheapest body;
+#     • an ally → interpose only a protector worth LESS than that ally (spend
+#       cheap fodder to save something more valuable; never the reverse).
+#
+# Within a chosen bucket the LEAST valuable eligible protector is used. A 0-ATK
+# attacker is never worth protecting. "While attacking" bonuses land on the
+# attacker (it is the attacker) via get_atk(..., true) / combat_trade_value.
+func choose_protector(state: GameState, db, player_id: String) -> String:
+	var attacker := state.combat_attacker
+	var defender := state.combat_defender
+	if attacker == "" or defender == "":
+		return ""
+	var pool := StackResolver.get_legal_protectors(state, attacker, defender, db)
+	if pool.is_empty():
+		return ""
+	var a_atk := state.get_atk(attacker, db, true)   # attacker's "while attacking" ATK
+	if a_atk <= 0:
+		return ""   # attacker deals no damage — nothing to prevent
+	var a_hp  := state.get_current_hp(attacker, db)
+	var d_hp  := state.get_current_hp(defender, db)
+	var d_atk := state.get_atk(defender, db)          # the defender isn't attacking
+
+	var defender_dies := a_atk >= d_hp
+	var attacker_dies_to_defender := d_atk >= a_hp
+
+	var candidates: Array[String] = []
+	if not defender_dies:
+		if attacker_dies_to_defender:
+			return ""   # the attacker dies to the defender for free — let it happen
+		# Neither would die: only worth protecting to KILL the attacker with a
+		# protector that survives (safe_lethal from the protector's view).
+		for p in pool:
+			if BaseAI.combat_trade_value(state, db, p, attacker, false) == "safe_lethal":
+				candidates.append(p)
+	else:
+		var ps := state.players.get(player_id) as PlayerState
+		if ps != null and defender == ps.hero_instance_id:
+			candidates = pool          # lethal on the hero → interpose anything
+		else:
+			# Save a dying ally only with a protector worth less than it.
+			var d_val := BaseAI._card_value_key(state, db, defender)
+			for p in pool:
+				if BaseAI._card_value_key(state, db, p) < d_val:
+					candidates.append(p)
+
+	# Use the least valuable eligible protector.
+	var best := ""
+	var best_val: Array = []
+	for p in candidates:
+		var pval := BaseAI._card_value_key(state, db, p)
+		if best == "" or pval < best_val:
+			best = p
+			best_val = pval
+	return best
+
+
+# Negates each element of a value key so ascending sorts (least valuable first)
+# can be expressed with the same `>` comparison used everywhere else.
+func _negated_key(key: Array) -> Array:
+	var out: Array = []
+	for v in key:
+		out.append(-v if (v is int or v is float) else v)
+	return out
+
+
+# Highest priority of all: if any legal attacker — already on board, or a
+# Ferocity ally playable from hand this turn — can deal lethal damage to the
+# enemy hero right now, attack it. Winning the game outranks safe kills,
+# survival math, and the random fallback entirely; unlike _safe_lethal_action
+# this does NOT require the attacker to survive the swing.
+func _hero_lethal_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if state.phase != "action" or state.turn_player != player_id:
+		return null
+	if not state.pending_actions.is_empty():
+		return null
+	if state.combat_attack_window or state.combat_defend_window:
+		return null
+
+	var opp := "p2" if player_id == "p1" else "p1"
+	var ps_opp := state.players.get(opp) as PlayerState
+	if not ps_opp or ps_opp.hero_instance_id == "" \
+			or not state.is_in_play(ps_opp.hero_instance_id):
+		return null
+	var hero_id := ps_opp.hero_instance_id
+	var hero_hp := state.get_current_hp(hero_id, db)
+
+	# Board attackers that can already swing this turn (forecast "while
+	# attacking" bonuses — they apply the moment combat is proposed).
+	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+		if state.get_atk(aid, db, true) < hero_hp:
+			continue
+		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
+			continue
+		var act := PendingAction.make("propose_combat", player_id,
+				{"attacker_id": aid, "defender_id": hero_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+
+	# Ferocity allies in hand: play now so they can swing this same turn.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Ally":
+			continue
+		if not _has_keyword(def, "ferocity"):
+			continue
+		if def.printed_atk < hero_hp:
+			continue
+		var play := PendingAction.make("play_ally", player_id,
+				{"card_id": card.instance_id})
+		if StackResolver.can_submit(state, play, db):
+			return play
+	return null
 
 
 # Returns the next safe-kill action (play a hand Ferocity ally, or propose
@@ -50,7 +339,7 @@ func _safe_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 	var attackers: Array[String] = []
 	var from_hand: Dictionary = {}
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		if state.get_atk(aid, db) > 0:
+		if state.get_atk(aid, db, true) > 0:
 			attackers.append(aid)
 	for card in state.cards_in_zone(player_id + "_hand"):
 		var def := db.get_def(card.card_def_id) as CardDef

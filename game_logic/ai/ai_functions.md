@@ -107,6 +107,73 @@ allies in hand to be scanned as potential attackers.
 
 ---
 
+## `BaseAI.combat_trade_value(state, db, c1, c2) -> String`
+
+*Static — callable without a BaseAI instance.*
+
+Classifies a would-be combat from **c1's** point of view, pure ATK/HP math
+(symmetric damage, no Ranged/Long-Range or legality check — same contract as
+`find_safe_lethals`). `c1 kills c2 = c1.atk >= c2.hp`; `c1 survives =
+c1.hp > c2.atk`. Returns one of:
+
+- `"safe_lethal"` — c2 dies, c1 survives
+- `"both"` — both die
+- `"suicide"` — only c1 dies
+- `"no_one"` — neither dies (this is also what attacking a 0-retaliation hero
+  returns, which is why hero attacks are a *separate* acceptance rule, not a
+  trade outcome)
+
+`c1_is_attacker` (default `true`) marks which side is the attacker, so "while
+attacking" bonuses (Zorm / Rayder / For the Horde!) are forecast onto the right
+side only — exactly one side attacks, and the defender never gets them. This
+matters during **planning** (before `propose_combat`), where `combat_attacker`
+is unset so plain `get_atk` would omit the bonus and the AI would under-rate its
+own attackers. On offense `c1` is our attacker (default). For a Protector, `c1`
+is our defending protector and `c2` the incoming attacker → pass
+`c1_is_attacker=false`. `find_safe_lethals` applies the same forecast to its
+attacker side.
+
+Otherwise ownership-agnostic.
+
+**Call sites:** `GenericAI._trade_action` (accepts `"both"` only, on offense);
+`GenericAI.choose_protector` (used only in the "proposed defender survives,
+neither dies" branch, to protect solely with a `safe_lethal` protector — see
+ai_roster.md for the full proposed-fight decision).
+
+---
+
+## `GenericAI.decide_action` pipeline *(no random fallback)*
+
+GenericAI is fully deterministic — it does **not** fall through to
+FullRandomAI. `decide_action` returns ONE action per priority call; the engine
+resolves it and calls again, so a turn plays out step by step. Order:
+
+1. `armor_prevention_action` / `combat_instant_action` — inherited defensive
+   plays, legal even on the opponent's turn.
+2. (own action window only, else `null` — no random responses)
+3. `_hero_lethal_action` — win now.
+4. `_safe_lethal_action` — kill an ally and survive.
+5. `_trade_action` — a `"both"` trade, but only **value-even-or-up**
+   (`_card_value_key(attacker) <= _card_value_key(target)`); never trades a
+   bomb for a chump. Picks the most valuable target, gives up the least
+   valuable attacker. Enemy allies only (hero handled below).
+6. `_develop_action` — best board-improving non-combat play: reuses
+   `get_legal_actions` (which already gates powers/removal/draw/resource) minus
+   every `propose_combat`, ranked by `_DEVELOP_RANK` then card value.
+7. `_hero_chip_action` — poke the enemy hero with leftover ready attackers
+   (ATK > 0 only). Holds **Protectors** back to defend unless the enemy hero is
+   at/under `HERO_ALL_OUT_HP` (10), then goes all out. Chips least-valuable
+   attacker first.
+8. `null` — end the turn.
+
+**Termination:** every action consumes a finite per-turn resource (attacker
+readiness, a hand card, resources, the once-per-turn resource flag) and never
+restores one, so the option set strictly shrinks to step 8 — no infinite loop.
+Combat is re-checked from the top after each develop, so a freshly played
+Ferocity attacker or buff can open a new fight on the next call.
+
+---
+
 ## `rank_lethal_targets(state, db, lethal) -> Array[String]` *(instance hook)*
 
 Called wherever a `find_lethal` pool is about to be consumed, letting each AI
@@ -165,6 +232,7 @@ targeting flow (`input_router.start_targeting`).
 | Where | Use |
 |---|---|
 | `base_ai.gd` → `decide_action` | The base AI's only proactive play — every subclass inherits the ambush. |
-| `full_random_ai.gd` → `decide_action` | Checked FIRST, before any random pick — the ambush is deterministic, never left to the dice. GenericAI inherits via `super`. |
+| `full_random_ai.gd` → `decide_action` | Checked FIRST, before any random pick — the ambush is deterministic, never left to the dice. |
+| `generic_ai.gd` → `decide_action` | Also checked first (step 1 of its pipeline); GenericAI calls `armor_prevention_action`/`combat_instant_action` directly, not via `super` — it has no random fallback. |
 
 Tests: scenario 34 in `game_logic/tests/test_scenarios.gd`.

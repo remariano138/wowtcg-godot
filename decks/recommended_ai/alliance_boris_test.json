@@ -95,7 +95,7 @@
     },
     {
       "card_def_id": "azeroth_173",
-      "count": 2,
+      "count": 1,
       "_card_name": "Acolyte Demia"
     },
     {
@@ -105,8 +105,13 @@
     },
     {
       "card_def_id": "azeroth_179",
-      "count": 2,
+      "count": 1,
       "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
     },
     {
       "card_def_id": "azeroth_214",

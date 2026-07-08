@@ -288,24 +288,57 @@ func _decide_resource_placement(state: GameState, db, player_id: String) -> Pend
 		if StackResolver.can_submit(state, action, db):
 			return action
 
-	# Priority 2: if hand > 1, place most-duplicated card face-down.
-	if hand.size() <= 1:
+	# Priority 2: if hand > 1 and resources aren't already plentiful, place a card
+	# face-down. Not worth ramping past 9 resources if there's nothing in hand to
+	# spend them on.
+	var resource_count := state.cards_in_zone(player_id + "_resource_row").size()
+	if hand.size() <= 1 or resource_count >= 9:
 		return null
 
-	var counts: Dictionary = {}
-	for card in hand:
-		counts[card.card_def_id] = counts.get(card.card_def_id, 0) + 1
-	var max_count: int = 0
-	for did in counts:
-		if (counts[did] as int) > max_count:
-			max_count = counts[did]
+	# Rank by distance from the resource total we'd have after this placement —
+	# this keeps cheap, currently-playable cards in hand and cards near-future-
+	# playable, while pushing out-of-reach expensive cards (or already-affordable
+	# cheap ones) toward the resource row first.
+	var next_total := resource_count + 1
+	var best_dist: int = -1
 	var candidates: Array[CardInstance] = []
 	for card in hand:
-		if counts[card.card_def_id] == max_count:
+		var dist := absi(_def_cost(state, db, card.instance_id) - next_total)
+		if dist > best_dist:
+			best_dist = dist
+			candidates = [card]
+		elif dist == best_dist:
 			candidates.append(card)
-	var dup_pick := candidates[randi() % candidates.size()]
+
+	if candidates.size() > 1:
+		# Tiebreak 1: most duplicates in hand.
+		var counts: Dictionary = {}
+		for card in hand:
+			counts[card.card_def_id] = counts.get(card.card_def_id, 0) + 1
+		var max_count: int = 0
+		for card in candidates:
+			var c: int = counts[card.card_def_id]
+			if c > max_count:
+				max_count = c
+		var dup_candidates: Array[CardInstance] = []
+		for card in candidates:
+			if counts[card.card_def_id] == max_count:
+				dup_candidates.append(card)
+		candidates = dup_candidates
+
+	var pick: CardInstance
+	if candidates.size() > 1:
+		# Tiebreak 2: least valuable card (sort_valuable_cards → most valuable first).
+		var ids: Array[String] = []
+		for card in candidates:
+			ids.append(card.instance_id)
+		var least_valuable_id: String = sort_valuable_cards(state, db, ids).back()
+		pick = state.get_card(least_valuable_id) as CardInstance
+	else:
+		pick = candidates[0]
+
 	var dup_action := PendingAction.make("place_resource", player_id,
-		{"card_id": dup_pick.instance_id, "face_up": false})
+		{"card_id": pick.instance_id, "face_up": false})
 	if StackResolver.can_submit(state, dup_action, db):
 		return dup_action
 
@@ -747,12 +780,17 @@ func _damage_and_heal_actions(state: GameState, db, player_id: String,
 		return []
 
 	# Find valid heal targets for the chosen damage target — friendly only.
+	# Require the target to actually be damaged: healing a full-HP character
+	# is legal (no overheal) but wastes the heal half of the power, so the AI
+	# holds the power for later rather than using it for damage alone.
 	var valid_heal: Array[String] = []
 	for heal_id in all_ids:
 		if heal_id == best_dmg:
 			continue
 		var heal_card := state.get_card(heal_id)
 		if not heal_card or heal_card.controller != player_id:
+			continue
+		if state.get_current_hp(heal_id, db) >= state.get_max_hp(heal_id, db):
 			continue
 		var act := PendingAction.make("activate_power", player_id,
 			{"hero_id": hero_id, "target_id": best_dmg, "heal_target_id": heal_id})
@@ -920,13 +958,45 @@ static func find_safe_lethals(state: GameState, db, attackers: Array[String],
 		defenders: Array[String]) -> Array:
 	var result: Array = []
 	for a in attackers:
-		var a_atk := state.get_atk(a, db)
+		var a_atk := state.get_atk(a, db, true)   # forecast "while attacking" bonuses
 		var a_hp  := state.get_current_hp(a, db)
 		for d in defenders:
 			if a_atk >= state.get_current_hp(d, db) \
-					and a_hp > state.get_atk(d, db):
+					and a_hp > state.get_atk(d, db):   # defender isn't attacking → plain
 				result.append([a, d])
 	return result
+
+
+# ── combat_trade_value ───────────────────────────────────────────────────────
+# Evaluates a would-be combat between two characters from c1's point of view.
+# Pure ATK/HP math (like find_safe_lethals) — no combat-legality or Ranged /
+# Long-Range check; callers gate with can_submit / get_legal_defenders. Damage
+# is treated as symmetric (each deals its ATK to the other), so the function is
+# reusable for future defensive choices too (e.g. picking a Protector: call with
+# your protector as c1, the attacker as c2).
+#   c1 kills c2  = c1.atk >= c2.hp
+#   c1 survives  = c1.hp  >  c2.atk
+# Returns:
+#   "safe_lethal" — c2 dies, c1 survives
+#   "both"        — both die
+#   "suicide"     — only c1 dies
+#   "no_one"      — neither dies
+# `c1_is_attacker` (default true) marks which side is the ATTACKER, so "while
+# attacking" bonuses (Zorm/Rayder/For the Horde!) are forecast onto the right
+# side only — exactly one side attacks; the defender never gets them. On offense
+# c1 is our attacker. For a Protector, c1 is our defending protector and c2 is
+# the incoming attacker → pass c1_is_attacker=false.
+static func combat_trade_value(state: GameState, db, c1: String, c2: String,
+		c1_is_attacker: bool = true) -> String:
+	var c2_dies := state.get_atk(c1, db, c1_is_attacker) >= state.get_current_hp(c2, db)
+	var c1_dies := state.get_atk(c2, db, not c1_is_attacker) >= state.get_current_hp(c1, db)
+	if c2_dies and not c1_dies:
+		return "safe_lethal"
+	if c2_dies and c1_dies:
+		return "both"
+	if c1_dies:
+		return "suicide"
+	return "no_one"
 
 
 # ── Targeted damage heuristic ──────────────────────────────────────────────
@@ -1107,7 +1177,9 @@ func _destroy_is_worth_it(state: GameState, db, player_id: String,
 func _has_solo_lethal_attacker(state: GameState, db, player_id: String,
 		target_id: String, target_hp: int) -> bool:
 	for ally in state.cards_in_play(player_id):
-		if state.get_atk(ally.instance_id, db) >= target_hp:
+		# Forecast "while attacking" bonuses — the ally would have them if it
+		# swung, so a spell isn't needed when combat alone already kills.
+		if state.get_atk(ally.instance_id, db, true) >= target_hp:
 			var legal := StackResolver.get_legal_defenders(state, ally.instance_id, db)
 			if target_id in legal:
 				return true

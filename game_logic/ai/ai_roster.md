@@ -49,16 +49,32 @@ heuristic AI never would.
 Deck-agnostic heuristic AI, one notch above FullRandomAI. Profile:
 `ai_profiles/ai_generic.json` (`ai_class: "generic"`).
 
-**decide_action behaviour:**
-- On its own action window, first scans for **safe kills** via
-  `BaseAI.find_safe_lethals` (see `ai_functions.md`): board attackers plus
-  playable Ferocity allies in hand, against all enemy board allies.
-  Commits the least valuable attacker first (bait), against its most
-  valuable safe target; hand Ferocity allies with a safe kill are played
-  immediately so they can attack. Recomputed every priority window, so safe
-  kills chain one at a time.
-- No safe kill → falls back to FullRandomAI behaviour (random legal action,
-  random responses).
+**decide_action behaviour** — a fully deterministic priority pipeline with
+**no random fallback** (see `ai_functions.md` → "GenericAI.decide_action
+pipeline"). Per priority call it returns the single best action in order:
+hero-lethal → safe-lethal → good trade (`both`, value-even-or-up) → develop
+(board-improving non-combat play) → hero-chip (Protectors held unless the
+enemy hero is ≤ 10 HP) → `null` (end turn). The engine re-invokes it after
+each resolution, so a turn plays out one step at a time and combat is
+re-checked after every develop. Termination is guaranteed: every action
+consumes a finite per-turn resource, so the option set strictly shrinks.
+Outside its own action window it makes only the inherited deterministic
+defensive plays (armor block, combat-instant ambush) and otherwise passes —
+no random responses.
+
+**choose_protector behaviour:** decided from the **proposed fight** (incoming
+attacker vs. the character it declared against), not the protector alone:
+- Proposed defender **survives**: if the attacker would die to it → don't
+  protect (free kill, let it happen); otherwise protect only with a protector
+  that would **kill the attacker and live** (`safe_lethal`), else take the hit.
+- Proposed defender **dies**: the **hero** → always interpose the cheapest body
+  (losing it loses the game); an **ally** → interpose only a protector worth
+  **less** than that ally (spend cheap fodder to save something better, never
+  the reverse).
+
+Within a chosen bucket the least valuable eligible protector is used; never
+protects vs. a 0-ATK attacker. "While attacking" bonuses land on the attacker
+via `get_atk(..., true)` / `combat_trade_value`.
 
 **Value-based choices** (all via `BaseAI.sort_valuable_cards`):
 - **Discard** (`choose_discard_card`): discards the LEAST valuable hand card.

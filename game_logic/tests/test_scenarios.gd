@@ -42,6 +42,7 @@ func _ready() -> void:
 	_test_boris_heal_x()
 	_test_radak_pet_sacrifice()
 	_test_radak_no_pets()
+	_test_timmo_destroy_exhausted_ally()
 	_test_quest_cant_reuse_while_pending()
 	_test_liba_wobblebonk_enter_play()
 	_test_kulan_earthguard_end_of_turn_ready()
@@ -68,6 +69,10 @@ func _ready() -> void:
 	_test_find_safe_lethals()
 	_test_generic_ai_safe_kill_flow()
 	_test_generic_ai_value_choices()
+	_test_combat_trade_value()
+	_test_generic_ai_trade_develop_chip()
+	_test_generic_ai_protector_choice()
+	_test_generic_ai_while_attacking_buffs()
 	_test_ally_heal_power_targets_friendlies()
 	_test_combat_instant_ambush()
 	_test_deacon_johanna_once_per_turn()
@@ -81,6 +86,8 @@ func _ready() -> void:
 	_test_old_bones_protects_hero_only()
 	_test_arcane_shot()
 	_test_arcane_shot_combat_instant_tag()
+	_test_nerra_lifeboon_health_aura()
+	_test_master_of_the_hunt_ongoing()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -174,6 +181,17 @@ class MockDB extends RefCounted:
 		d.cost           = cost
 		d.card_type      = "Ability"
 		d.is_instant     = true
+		d.effects        = effects
+		_defs[def_id] = d
+
+	# Non-instant ability, action-phase timing (e.g. Vanquish-speed or ongoing).
+	func ability(def_id: String, cost: int, effects: String) -> void:
+		var d := CardDef.new()
+		d.card_def_id    = def_id
+		d.card_name      = def_id
+		d.cost           = cost
+		d.card_type      = "Ability"
+		d.is_instant     = false
 		d.effects        = effects
 		_defs[def_id] = d
 
@@ -1798,6 +1816,85 @@ func _test_radak_no_pets() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 17b — Timmo Shadestep: destroy_exhausted_ally targeting + hero game_over
+#
+# Bug (all three reported issues):
+#   #1 the power could target an enemy HERO (target validation was misplaced
+#      inside the graveyard-power branch and never ran for Timmo)
+#   #2 it could target a non-exhausted ally
+#   #3 destroying a hero via an explicit destroy effect did not end the game
+#
+# Assertions:
+#   sc17b-a  hero target is rejected
+#   sc17b-b  non-exhausted enemy ally is rejected
+#   sc17b-c  exhausted enemy ally is a legal target
+#   sc17b-d  empty-target probe rejected when no exhausted enemy ally exists
+#   sc17b-e  resolving the power destroys the exhausted ally
+#   sc17b-f  _destroy_card_trigger on a hero emits game_over (loser = controller)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_timmo_destroy_exhausted_ally() -> void:
+	print("\n-- Scenario 17b: Timmo destroys only exhausted allies; hero destroy ends game --")
+	var db := MockDB.new()
+	db.hero("timmo_def", 27, 0, "destroy_exhausted_ally|on_your_turn")
+	db.hero("p2_hero", 30)
+	db.ally("victim_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "timmo_def", "p2_hero")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var victim := _add_ally(state, "victim_inst", "victim_def", "p2")
+	victim.just_summoned = false
+	victim.is_exhausted  = false
+
+	# sc17b-a: hero target rejected.
+	var hit_hero := PendingAction.make("activate_power", "p1",
+		{"hero_id": "timmo_def", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, hit_hero, db),
+		"sc17b-a: enemy hero is NOT a legal target")
+
+	# sc17b-b: non-exhausted ally rejected.
+	var hit_ready := PendingAction.make("activate_power", "p1",
+		{"hero_id": "timmo_def", "target_id": "victim_inst"})
+	ok(not StackResolver.can_submit(state, hit_ready, db),
+		"sc17b-b: non-exhausted enemy ally is NOT a legal target")
+
+	# sc17b-d: probe rejected while no exhausted enemy ally exists.
+	var probe := PendingAction.make("activate_power", "p1",
+		{"hero_id": "timmo_def", "target_id": ""})
+	ok(not StackResolver.can_submit(state, probe, db),
+		"sc17b-d: empty-target probe rejected when no exhausted enemy ally")
+
+	# Now exhaust the ally.
+	victim.is_exhausted = true
+
+	# sc17b-c: exhausted ally is legal.
+	ok(StackResolver.can_submit(state, hit_ready, db),
+		"sc17b-c: exhausted enemy ally IS a legal target")
+	ok(StackResolver.can_submit(state, probe, db),
+		"sc17b-d2: probe passes once an exhausted enemy ally exists")
+
+	# sc17b-e: resolve — ally is destroyed.
+	var events: Array[GameEvent] = StackResolver.submit_action(state, hit_ready, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+	ok(not state.is_in_play("victim_inst"),
+		"sc17b-e: exhausted enemy ally destroyed by Timmo power")
+
+	# sc17b-f: destroying a hero directly ends the game.
+	var go := StackResolver._destroy_card_trigger(state, "p2_hero", "timmo_def", db)
+	var saw_game_over := false
+	for e in go:
+		if e.event_type == "game_over":
+			saw_game_over = true
+			eq(e.payload.get("loser", ""), "p2", "sc17b-f2: loser is the hero's controller")
+			eq(e.payload.get("winner", ""), "p1", "sc17b-f3: opponent wins")
+	ok(saw_game_over, "sc17b-f: destroying a hero emits game_over")
+	ok(state.is_in_play("p2_hero"),
+		"sc17b-f4: hero is NOT moved to the graveyard on destroy")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 18 — Quest completion can't be chained with itself while pending
 #
 # Bug: a quest whose cost (e.g. 3) is less than total available resources (e.g. 6)
@@ -2641,6 +2738,244 @@ func _test_generic_ai_value_choices() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 32b — combat_trade_value: the four outcomes (pure ATK/HP math)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_combat_trade_value() -> void:
+	print("\n-- Scenario 32b: combat_trade_value classifies safe_lethal/both/suicide/no_one --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   3, 4, [], 3)   # atk3 hp4
+	db.ally("even_def",  3, 3, [], 3)   # atk3 hp3
+	db.ally("wall_def",  1, 5, [], 3)   # atk1 hp5
+	db.ally("glass_def", 1, 2, [], 1)   # atk1 hp2
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "big",   "big_def",   "p1")
+	_add_ally(state, "evenA", "even_def",  "p1")
+	_add_ally(state, "evenB", "even_def",  "p2")
+	_add_ally(state, "wall",  "wall_def",  "p2")
+	_add_ally(state, "glass", "glass_def", "p1")
+
+	# big(3/4) → evenB(3/3): kills (3>=3), survives (4>3).
+	eq(BaseAI.combat_trade_value(state, db, "big", "evenB"), "safe_lethal",
+		"sc32b-a: kills and survives → safe_lethal")
+	# evenA(3/3) → evenB(3/3): kills (3>=3), dies (3>=3).
+	eq(BaseAI.combat_trade_value(state, db, "evenA", "evenB"), "both",
+		"sc32b-b: kills and dies → both")
+	# evenA(3/3) → wall(1/5): can't kill (3<5), survives (3<... wall atk1<3).
+	eq(BaseAI.combat_trade_value(state, db, "evenA", "wall"), "no_one",
+		"sc32b-c: can't kill and survives → no_one")
+	# glass(1/2) → big(3/4): can't kill (1<4), dies (big atk3 >= glass hp2).
+	eq(BaseAI.combat_trade_value(state, db, "glass", "big"), "suicide",
+		"sc32b-d: can't kill and dies → suicide")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 32c — GenericAI pipeline: trades, develop, hero-chip, termination
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_trade_develop_chip() -> void:
+	print("\n-- Scenario 32c: GenericAI trades up, develops, chips (holding protectors) --")
+	var ai := GenericAI.new()
+
+	# ── _trade_action: take an even 'both' trade, refuse a value-down one ──
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("even_def",  2, 2, [], 2)   # our attacker
+	db.ally("peer_def",  2, 2, [], 2)   # even trade target
+	db.ally("tough_def", 3, 3, [], 5)   # we can't profitably fight this
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st, "mine",  "even_def",  "p1")
+	_add_ally(st, "peer",  "peer_def",  "p2")
+	_add_ally(st, "tough", "tough_def", "p2")
+	st.players["p1"].resource_placed_this_turn = true
+	st.players["p2"].resource_placed_this_turn = true
+
+	var t := ai._trade_action(st, db, "p1")
+	ok(t != null and t.action_type == "propose_combat"
+			and t.params.get("attacker_id") == "mine"
+			and t.params.get("defender_id") == "peer",
+		"sc32c-a: takes the even 'both' trade, not the doomed fight vs tough")
+
+	# Now make our attacker the valuable one and the only target a chump:
+	# value-down 'both' trade must be refused.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.ally("bomb_def",  5, 5, [], 5)   # valuable attacker
+	db2.ally("chump_def", 5, 5, [], 1)   # both die, but they lose only a 1-drop
+	var st2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_ally(st2, "bomb",  "bomb_def",  "p1")
+	_add_ally(st2, "chump", "chump_def", "p2")
+	st2.players["p1"].resource_placed_this_turn = true
+	st2.players["p2"].resource_placed_this_turn = true
+	ok(ai._trade_action(st2, db2, "p1") == null,
+		"sc32c-b: refuses a value-down 'both' trade (bomb for a chump)")
+
+	# ── _hero_chip_action: hold protectors while hero healthy; never 0-ATK ──
+	var db3 := MockDB.new()
+	db3.hero("p1_hero", 30)
+	db3.hero("p2_hero", 30)
+	db3.ally("prot_def", 2, 5, (["protector"] as Array[String]), 3)
+	db3.ally("zero_def", 0, 4, [], 2)
+	db3.ally("beater_def", 2, 2, [], 1)
+	var st3 := _base_state(db3, "p1_hero", "p2_hero")
+	_add_ally(st3, "prot",   "prot_def",   "p1")
+	_add_ally(st3, "zero",   "zero_def",   "p1")
+	st3.players["p1"].resource_placed_this_turn = true
+
+	ok(ai._hero_chip_action(st3, db3, "p1") == null,
+		"sc32c-c: protector held + 0-ATK never attacks → no chip while hero at 30")
+
+	# Drop the enemy hero to all-out range → protector now chips, 0-ATK still won't.
+	st3.get_card("p2_hero").damage_taken = 20   # 10 HP left
+	var chip := ai._hero_chip_action(st3, db3, "p1")
+	ok(chip != null and chip.action_type == "propose_combat"
+			and chip.params.get("attacker_id") == "prot"
+			and chip.params.get("defender_id") == "p2_hero",
+		"sc32c-d: hero at 10 → all out, protector chips the face")
+
+	# Least valuable non-protector chips first (hero back at full).
+	st3.get_card("p2_hero").damage_taken = 0
+	_add_ally(st3, "beater", "beater_def", "p1")
+	chip = ai._hero_chip_action(st3, db3, "p1")
+	ok(chip != null and chip.params.get("attacker_id") == "beater",
+		"sc32c-e: cheap non-protector chips before the held protector")
+
+	# ── pipeline ordering & terminate-to-null (no random fallback) ──
+	var db4 := MockDB.new()
+	db4.hero("p1_hero", 30)
+	db4.hero("p2_hero", 30)
+	db4.ally("dev_def", 1, 1, [], 1)
+	var st4 := _base_state(db4, "p1_hero", "p2_hero")
+	st4.players["p1"].resource_placed_this_turn = true   # isolate develop = play ally
+	st4.players["p1"].has_used_hero_power = true          # no phantom hero-power play
+	_add_resources(st4, "p1", 1)                          # 1 resource → dev (cost 1) affordable
+
+	# Nothing on board, empty hand, resource placed → the turn simply ends.
+	ok(ai.decide_action(st4, db4, "p1") == null,
+		"sc32c-f: no combat, no develop, no chip → decide_action returns null (turn ends)")
+
+	# One ally in hand → GenericAI develops it (no combat available).
+	var hand := CardInstance.create("dev", "dev_def", "p1", "p1_hand")
+	st4.cards["dev"] = hand
+	st4.zones["p1_hand"].card_ids.append("dev")
+	var d := ai.decide_action(st4, db4, "p1")
+	ok(d != null and d.action_type == "play_ally" and d.params.get("card_id") == "dev",
+		"sc32c-g: with only a develop available, GenericAI plays the ally")
+
+	# Simulate the develop resolving: the ally is now in play but summoning-sick,
+	# so it is not a legal attacker and the turn ends — the loop can't spin.
+	st4.zones["p1_hand"].card_ids.erase("dev")
+	GameLogic.move_card(st4, "dev", "p1_ally_row")
+	st4.get_card("dev").just_summoned = true
+	ok(ai.decide_action(st4, db4, "p1") == null,
+		"sc32c-h: after developing, the summoning-sick ally can't attack → turn ends")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 32d — GenericAI protector choice via combat_trade_value
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_protector_choice() -> void:
+	print("\n-- Scenario 32d: GenericAI protects from the proposed-fight outcome --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("atk3_def",   3, 3, [], 3)                                  # the attacker
+	db.ally("killer_def", 3, 5, (["protector"] as Array[String]), 3)   # kills atk3 & lives
+	db.ally("soak_def",   1, 5, (["protector"] as Array[String]), 2)   # survives, can't kill
+	db.ally("bigdef_def", 3, 4, [], 3)                                 # kills atk3 & lives (defender)
+	db.ally("prize_def",  2, 2, [], 4)                                 # valuable ally, dies to atk3
+	db.ally("fodder_def", 1, 3, (["protector"] as Array[String]), 1)   # cheap protector
+	db.ally("pricey_def", 2, 4, (["protector"] as Array[String]), 6)   # expensive protector
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st, "atk",    "atk3_def",   "p2")
+	_add_ally(st, "killer", "killer_def", "p1")
+	_add_ally(st, "soak",   "soak_def",   "p1")
+	st.combat_attacker = "atk"
+	st.combat_defender = "p1_hero"
+
+	# a: hero survives, a protector can kill the attacker and live → protect.
+	eq(ai.choose_protector(st, db, "p1"), "killer",
+		"sc32d-a: defender survives → protect only to kill the attacker (safe_lethal protector)")
+
+	# b: hero survives, no protector can kill the attacker (soak only) → take the hit.
+	st.get_card("killer").is_exhausted = true
+	eq(ai.choose_protector(st, db, "p1"), "",
+		"sc32d-b: defender survives + no killing protector → don't waste one soaking chip")
+
+	# c: the attacker would DIE to the proposed defender → let the free kill happen.
+	_add_ally(st, "bigdef", "bigdef_def", "p1")   # soak still ready, but irrelevant
+	st.combat_defender = "bigdef"
+	eq(ai.choose_protector(st, db, "p1"), "",
+		"sc32d-c: attacker dies to the defender for free → do not protect")
+
+	# d: a valuable ally would die; a cheaper protector saves it (fodder < prize).
+	_add_ally(st, "prize",  "prize_def",  "p1")
+	_add_ally(st, "fodder", "fodder_def", "p1")
+	st.combat_defender = "prize"
+	eq(ai.choose_protector(st, db, "p1"), "fodder",
+		"sc32d-d: dying ally saved by the least valuable protector worth less than it")
+
+	# e: valuable ally would die but only a pricier protector remains → let it die.
+	st.get_card("fodder").is_exhausted = true
+	st.get_card("soak").is_exhausted = true
+	_add_ally(st, "pricey", "pricey_def", "p1")
+	st.combat_defender = "prize"
+	eq(ai.choose_protector(st, db, "p1"), "",
+		"sc32d-e: only protectors more valuable than the ally → don't over-trade, let it die")
+
+	# f: lethal hit on the hero → always interpose the cheapest available body.
+	st.combat_defender = "p1_hero"
+	st.get_card("p1_hero").damage_taken = 28   # 2 HP left; atk 3 is lethal
+	eq(ai.choose_protector(st, db, "p1"), "pricey",
+		"sc32d-f: lethal on hero → chump with the only ready body regardless of value")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 32e — AI combat evaluation forecasts "while attacking" buffs
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_while_attacking_buffs() -> void:
+	print("\n-- Scenario 32e: AI combat eval honors 'while attacking' buffs (Zorm) --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zorm_def",  1, 1, [], 2, "party_atk_while_attacking:1")
+	db.ally("grunt_def", 2, 2, [], 2)   # 2/2 base → 3/2 while attacking under Zorm
+	db.ally("wall_def",  1, 3, [], 3)   # 1/3 enemy — needs 3 ATK to die
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st, "zorm",  "zorm_def",  "p1")
+	_add_ally(st, "grunt", "grunt_def", "p1")
+	_add_ally(st, "wall",  "wall_def",  "p2")
+	st.players["p1"].resource_placed_this_turn = true
+	st.players["p2"].resource_placed_this_turn = true
+
+	# No combat is live here (combat_attacker == ""), so only the explicit
+	# attacking forecast can reveal the Zorm bonus.
+	eq(BaseAI.combat_trade_value(st, db, "grunt", "wall"), "safe_lethal",
+		"sc32e-a: grunt (→3 ATK while attacking) safe-kills the 1/3 wall")
+	eq(BaseAI.combat_trade_value(st, db, "grunt", "wall", false), "no_one",
+		"sc32e-b: control — scored as non-attacker (2 ATK), the same pair is no_one")
+
+	# The pipeline seizes the safe kill that ONLY exists while attacking.
+	var act := ai.decide_action(st, db, "p1")
+	ok(act != null and act.action_type == "propose_combat"
+			and act.params.get("attacker_id") == "grunt"
+			and act.params.get("defender_id") == "wall",
+		"sc32e-c: GenericAI takes the safe kill enabled by the Zorm aura")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 33 — Ally heal powers (Freya) target FRIENDLY damaged characters only
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -3109,6 +3444,13 @@ func _test_rayder_party_buff_while_attacking() -> void:
 	state.combat_attacker = "rayder_inst"
 	eq(state.get_atk("rayder_inst", db), 4, "sc26-c: Rayder +2 while attacking")
 
+	# An ally that enters play AFTER Rayder's power resolves is still buffed
+	# for the rest of the turn (bug: used to snapshot only allies present
+	# at activation time).
+	_add_ally(state, "latecomer_inst", "grunt_def", "p1")
+	state.combat_attacker = "latecomer_inst"
+	eq(state.get_atk("latecomer_inst", db), 3, "sc26-d: late-summoned ally still +2 while attacking")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 27 — For the Horde!: quest reward buffs only Horde allies
@@ -3149,6 +3491,12 @@ func _test_for_the_horde_quest_buff() -> void:
 	# Buff is gated on attacking.
 	state.combat_attacker = ""
 	eq(state.get_atk("horde_inst", db), 2, "sc27-c: no bonus while Horde ally idle")
+
+	# A Horde ally that enters play AFTER the quest completes is still
+	# buffed for the rest of the turn.
+	_add_ally(state, "late_horde_inst", "horde_def", "p1")
+	state.combat_attacker = "late_horde_inst"
+	eq(state.get_atk("late_horde_inst", db), 3, "sc27-d: late-summoned Horde ally still +1 while attacking")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3689,3 +4037,80 @@ func _test_arcane_shot_combat_instant_tag() -> void:
 		"sc40-e: p2 hero took no combat damage (attacker died pre-conclusion)")
 	ok(st4.get_card("shot_ambush").zone_id == "p2_graveyard",
 		"sc40-f: Arcane Shot in graveyard after the ambush")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 41 — Nerra Lifeboon: "Other allies in your party have +1 health."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_nerra_lifeboon_health_aura() -> void:
+	print("\n-- Scenario 41: Nerra Lifeboon party '+1 health' aura --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("nerra_def", 4, 4, [], 5, "party_health_aura:1")
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "nerra_inst", "nerra_def", "p1")
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+	_add_ally(state, "opp_inst", "grunt_def", "p2")
+
+	eq(state.get_max_hp("grunt_inst", db), 3, "sc41-a: other ally gets +1 max health")
+	eq(state.get_max_hp("nerra_inst", db), 4, "sc41-b: Nerra doesn't buff herself")
+	eq(state.get_max_hp("opp_inst", db), 2, "sc41-c: opponent's ally unaffected by p1's Nerra")
+
+	# Two Nerras stack.
+	_add_ally(state, "nerra2_inst", "nerra_def", "p1")
+	eq(state.get_max_hp("grunt_inst", db), 4, "sc41-d: two Nerras stack (+2)")
+	eq(state.get_max_hp("nerra_inst", db), 5, "sc41-e: each Nerra buffs the other")
+
+	# Nerra leaves play → aura disappears.
+	GameLogic.move_card(state, "nerra_inst", "p1_graveyard")
+	GameLogic.move_card(state, "nerra2_inst", "p1_graveyard")
+	eq(state.get_max_hp("grunt_inst", db), 2, "sc41-f: aura gone once both Nerras leave play")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 42 — Master of the Hunt: "Ongoing: Your Pets have +2 ATK and +2 health."
+#
+# Rule 305.2c: a non-attaching ongoing ability enters play in its controller's
+# hero row and remains there providing its effect until removed — it does NOT
+# resolve-and-graveyard like a non-ongoing ability (e.g. Vanquish).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_master_of_the_hunt_ongoing() -> void:
+	print("\n-- Scenario 42: Master of the Hunt ongoing '+2 ATK / +2 health' pet aura --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("hunt_def", 3, "ongoing|pet_atk_health_aura:2:2")
+	db.pet("pet_def", 2, 2, [], 2)
+	db.ally("grunt_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_ally(state, "pet_inst", "pet_def", "p1")
+	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+	_add_ally(state, "opp_pet_inst", "pet_def", "p2")
+
+	var hunt := CardInstance.create("hunt_inst", "hunt_def", "p1", "p1_hand")
+	state.cards["hunt_inst"] = hunt
+	state.zones["p1_hand"].card_ids.append("hunt_inst")
+
+	var play := PendingAction.make("play_ability", "p1", {"card_id": "hunt_inst"})
+	ok(StackResolver.can_submit(state, play, db), "sc42-a: play_ability is legal")
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("hunt_inst").zone_id, "p1_hero_row",
+		"sc42-b: ongoing ability enters play in the hero row (not the graveyard)")
+	eq(state.get_atk("pet_inst", db), 4, "sc42-c: friendly pet gets +2 ATK")
+	eq(state.get_max_hp("pet_inst", db), 4, "sc42-d: friendly pet gets +2 health")
+	eq(state.get_atk("grunt_inst", db), 2, "sc42-e: non-pet ally unaffected")
+	eq(state.get_atk("opp_pet_inst", db), 2, "sc42-f: opponent's pet unaffected by p1's aura")
+
+	GameLogic.move_card(state, "hunt_inst", "p1_graveyard")
+	eq(state.get_atk("pet_inst", db), 2, "sc42-g: aura gone once the ability leaves play")
+	eq(state.get_max_hp("pet_inst", db), 2, "sc42-h: health aura gone once the ability leaves play")

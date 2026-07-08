@@ -743,12 +743,48 @@ func _update_phase_label() -> void:
 
 
 func _update_priority_label() -> void:
-	var who        := _state.priority_player
-	var chain_size := _state.pending_actions.size()
-	var chain_str  := "chain empty" if chain_size == 0 else "chain: %d" % chain_size
-	_priority_label.text = "Priority: %s   (%s)" % [who, chain_str]
+	var who := _state.priority_player
+	var chain_str: String
+	if _state.pending_actions.is_empty():
+		chain_str = "Chain : empty"
+	else:
+		var items: Array[String] = []
+		for a in _state.pending_actions:
+			items.append(_describe_pending_action(a as PendingAction))
+		chain_str = "Chain : " + ", ".join(items)
+	_priority_label.text = "Priority: %s\n%s" % [who, chain_str]
 	_priority_label.add_theme_color_override("font_color",
 		Color(0.4, 0.9, 0.4) if who == "p1" else Color(0.9, 0.5, 0.4))
+
+
+func _describe_pending_action(action: PendingAction) -> String:
+	var name := _pending_action_card_name(action)
+	match action.action_type:
+		"play_ally":            return "Play %s" % name
+		"play_instant":         return "%s (instant)" % name
+		"play_ability":         return "%s (ability)" % name
+		"play_equipment":       return "Equip %s" % name
+		"place_resource":       return "Resource: %s" % name
+		"use_quest":            return "Quest: %s" % name
+		"use_armor_prevention": return "Block: %s" % name
+		"use_ally_power":       return "%s (power)" % name
+		"activate_power":       return "%s (hero power)" % name
+		_:                      return "%s (%s)" % [name, action.action_type]
+
+
+func _pending_action_card_name(action: PendingAction) -> String:
+	var card_id: String = action.params.get("card_id", "")
+	if card_id == "":
+		card_id = action.params.get("quest_id", "")
+	if card_id == "":
+		card_id = action.params.get("hero_id", "")
+	if card_id == "" or not _db:
+		return action.action_type
+	var card := _state.get_card(card_id)
+	if not card:
+		return action.action_type
+	var def := _db.get_def(card.card_def_id) as CardDef
+	return def.card_name if def else action.action_type
 
 
 func _update_cancel_btn() -> void:

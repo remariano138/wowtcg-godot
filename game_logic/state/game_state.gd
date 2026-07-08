@@ -167,6 +167,17 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 			atk += per_damage * inst.damage_taken
 	# (3) Party auras granted by other cards in play (e.g. Zorm Stonefury).
 	atk += _aura_atk_mods(inst, is_attacking, db)
+	# (4) Party-wide "while attacking this turn" grants (Rayder, For the
+	# Horde!) — tracked per-player, not per-card, so they also cover allies
+	# that entered play after the effect resolved.
+	if is_attacking:
+		var ps := players.get(inst.controller) as PlayerState
+		if ps:
+			for grant in ps.party_atk_buffs_this_turn:
+				var alignment: String = grant.get("alignment", "")
+				if alignment != "" and def.alignment != alignment:
+					continue
+				atk += int(grant.get("amount", 0))
 	return atk
 
 
@@ -187,6 +198,7 @@ func get_atk_if_attacking(instance_id: String, db) -> int:
 # outlive, or predate, the cards it buffs). New party auras add a match arm here.
 func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 	var bonus := 0
+	var def: CardDef = db.get_def(inst.card_def_id)
 	for source in cards_in_zone(inst.controller + "_ally_row"):
 		var src_def: CardDef = db.get_def(source.card_def_id)
 		if not src_def:
@@ -199,6 +211,18 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 					# (including the source itself). Stacks with multiple copies.
 					if is_attacking:
 						bonus += int(p[1]) if p.size() > 1 else 1
+	for source in cards_in_zone(inst.controller + "_hero_row"):
+		var src_def2: CardDef = db.get_def(source.card_def_id)
+		if not src_def2:
+			continue
+		for seg in src_def2.effects.split("|"):
+			var p := seg.split(":")
+			match p[0]:
+				"pet_atk_health_aura":
+					# Master of the Hunt: "Ongoing: Your Pets have +X ATK and
+					# +Y health." Lives in the hero row (rule 305.2c).
+					if def and def.card_subtype == "Pet":
+						bonus += int(p[1]) if p.size() > 1 else 0
 	return bonus
 
 func get_max_hp(instance_id: String, db) -> int:
@@ -208,7 +232,41 @@ func get_max_hp(instance_id: String, db) -> int:
 	var def: CardDef = db.get_def(inst.card_def_id)
 	if not def:
 		return 0
-	return max(def.printed_health + inst.sum_stat("health"), 0)
+	var hp := def.printed_health + inst.sum_stat("health")
+	hp += _aura_health_mods(inst, db)
+	return max(hp, 0)
+
+# Sum of max-health bonuses this card receives from static "aura" sources in
+# its controller's party — continuous modifiers that live on another card in
+# play and affect a dynamic set. New party health auras add a match arm here.
+func _aura_health_mods(inst: CardInstance, db) -> int:
+	var bonus := 0
+	var def: CardDef = db.get_def(inst.card_def_id)
+	for source in cards_in_zone(inst.controller + "_ally_row"):
+		if source.instance_id == inst.instance_id:
+			continue
+		var src_def: CardDef = db.get_def(source.card_def_id)
+		if not src_def:
+			continue
+		for seg in src_def.effects.split("|"):
+			var p := seg.split(":")
+			match p[0]:
+				"party_health_aura":
+					# Nerra Lifeboon: "Other allies in your party have +X health."
+					bonus += int(p[1]) if p.size() > 1 else 1
+	for source in cards_in_zone(inst.controller + "_hero_row"):
+		var src_def2: CardDef = db.get_def(source.card_def_id)
+		if not src_def2:
+			continue
+		for seg in src_def2.effects.split("|"):
+			var p := seg.split(":")
+			match p[0]:
+				"pet_atk_health_aura":
+					# Master of the Hunt: "Ongoing: Your Pets have +X ATK and
+					# +Y health." Lives in the hero row (rule 305.2c).
+					if def and def.card_subtype == "Pet":
+						bonus += int(p[2]) if p.size() > 2 else 0
+	return bonus
 
 func get_current_hp(instance_id: String, db) -> int:
 	var inst := get_card(instance_id)

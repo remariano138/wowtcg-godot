@@ -434,7 +434,9 @@ static func _resolve(state: GameState, action: PendingAction,
 		"play_equipment":
 			return _resolve_play_equipment(state, action, db)
 		"play_ability":
-			return _resolve_play_instant(state, action, db)   # same: apply effect → graveyard
+			if db and _is_ongoing_ability(state, action.params.get("card_id", ""), db):
+				return _resolve_play_ongoing_ability(state, action, db)
+			return _resolve_play_instant(state, action, db)   # non-ongoing: apply effect → graveyard
 		"play_instant":
 			return _resolve_play_instant(state, action, db)
 		"place_resource":
@@ -551,6 +553,48 @@ static func _resolve_play_equipment(state: GameState,
 	# Check equipment slot uniqueness (414.3) — must happen after it's in play.
 	events.append_array(_check_equipment_uniqueness(state, card_id, db))
 
+	return events
+
+
+# Rule 305.2a: an ability is ongoing if the bold word "Ongoing" appears in its
+# text box. We tag that in the effects string with a leading "ongoing" segment.
+static func _is_ongoing_ability(state: GameState, card_id: String, db) -> bool:
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return false
+	for seg in def.effects.split("|"):
+		if seg.strip_edges() == "ongoing":
+			return true
+	return false
+
+
+static func _resolve_play_ongoing_ability(state: GameState,
+		action: PendingAction, db = null) -> Array[GameEvent]:
+	var card_id: String = action.params.get("card_id", "")
+	var card := state.get_card(card_id)
+	if not card:
+		return [GameEvent.make("action_fizzled", {
+			"action_type": "play_ability", "reason": "card_not_found",
+		})]
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "chain":
+		var fizzle_events: Array[GameEvent] = []
+		fizzle_events.append(GameEvent.make("action_fizzled", {
+			"action_type": "play_ability", "reason": "card_left_chain",
+		}))
+		if zone and zone.zone_type != "graveyard":
+			fizzle_events.append_array(GameLogic.move_card(state, card_id, card.owner + "_graveyard"))
+		return fizzle_events
+
+	var events: Array[GameEvent] = []
+	# Rule 305.2c: a non-attaching ongoing ability enters play in its
+	# controller's hero row and remains there (providing its continuous
+	# effect) until removed from play — it does not resolve-and-graveyard
+	# like a non-ongoing ability.
+	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
 	return events
 
 
@@ -1001,12 +1045,14 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				var buff := Buff.make("moorf_atk", card_id, "atk", amount, "turns", 1)
 				events.append_array(GameLogic.add_buff(state, target_id, buff))
 		"party_buff_atk_attacking":
-			# Rayder: "Allies in your party have +X ATK while attacking this turn."
+			# Rayder: "Allies in your party have +X ATK while attacking this
+			# turn." Tracked player-side (not per-card) so it also covers
+			# allies that enter play later this turn.
 			var amount: int = int(ap.get("amount", 0))
-			for ally in state.cards_in_zone(card.controller + "_ally_row"):
-				var buff := Buff.make("rayder_atk", card_id, "atk", amount,
-						"turns", 1, "while_attacking")
-				events.append_array(GameLogic.add_buff(state, ally.instance_id, buff))
+			var ps := state.players.get(card.controller) as PlayerState
+			if ps:
+				ps.party_atk_buffs_this_turn.append({"amount": amount, "alignment": ""})
+				events.append(GameEvent.party_atk_buff_added(card.controller, amount, ""))
 		"buff_atk_target_attacking":
 			# Ryn Dreamstrider: "Target hero or ally has +X ATK while attacking this turn."
 			var amount: int = int(ap.get("amount", 0))
@@ -1503,17 +1549,15 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 			continue
 		match parts[0].strip_edges():
 			"party_buff_atk_attacking":
-				# For the Horde!: "Horde allies in your party have +X ATK while
-				# attacking this turn." Snapshot the current Horde allies; the
-				# "while attacking" gate lives on the buff (see get_atk).
+				# For the Horde!: "Horde allies in your party have +X ATK
+				# while attacking this turn." Tracked player-side (not
+				# per-card) so it also covers Horde allies that enter play
+				# later this turn.
 				var amount := int(parts[1])
-				for ally in state.cards_in_zone(player_id + "_ally_row"):
-					var adef := db.get_def(ally.card_def_id) as CardDef
-					if not adef or adef.alignment != "Horde":
-						continue
-					var buff := Buff.make("for_the_horde_atk", "", "atk", amount,
-							"turns", 1, "while_attacking")
-					events.append_array(GameLogic.add_buff(state, ally.instance_id, buff))
+				var ps := state.players.get(player_id) as PlayerState
+				if ps:
+					ps.party_atk_buffs_this_turn.append({"amount": amount, "alignment": "Horde"})
+					events.append(GameEvent.party_atk_buff_added(player_id, amount, "Horde"))
 			"draw":
 				var n := int(parts[1])
 				for _i in n:
@@ -1725,20 +1769,33 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 			return false
 		if target_id != "" and target_id not in gy_candidates:
 			return false
-		# destroy_exhausted_ally: target must be an exhausted ally (not a hero).
-		if _power_effect_is(def, "destroy_exhausted_ally"):
+	if _power_effect_is(def, "deal_damage_and_heal"):
+		# target_id = damage target, heal_target_id = heal target; both must be in play and different.
+		if target_id != "":
+			var heal_target_id: String = action.params.get("heal_target_id", "")
+			if heal_target_id == "" or not state.is_in_play(heal_target_id):
+				return false
+			if heal_target_id == target_id:
+				return false
+	# destroy_exhausted_ally: target must be an exhausted ally (not a hero).
+	if _power_effect_is(def, "destroy_exhausted_ally"):
+		if target_id == "":
+			# Pre-targeting probe: pass if any exhausted enemy ally exists.
+			var opp3 := "p2" if action.source_player == "p1" else "p1"
+			var has_exhausted_ally := false
+			for tc: CardInstance in state.cards_in_play(opp3):
+				var tz := state.zones.get(tc.zone_id) as Zone
+				if tz and tz.zone_type == "ally_row" and tc.is_exhausted:
+					has_exhausted_ally = true
+					break
+			if not has_exhausted_ally:
+				return false
+		else:
 			var t_card := state.get_card(target_id)
 			if not t_card or not t_card.is_exhausted:
 				return false
 			var t_zone := state.zones.get(t_card.zone_id) as Zone
 			if not t_zone or t_zone.zone_type != "ally_row":
-				return false
-		if _power_effect_is(def, "deal_damage_and_heal"):
-			# target_id = damage target, heal_target_id = heal target; both must be in play and different.
-			var heal_target_id: String = action.params.get("heal_target_id", "")
-			if heal_target_id == "" or not state.is_in_play(heal_target_id):
-				return false
-			if heal_target_id == target_id:
 				return false
 	# deal_7_minus_hand_to_hero: target must be a hero (in hero_row).
 	if _power_effect_is(def, "deal_7_minus_hand_to_hero"):
@@ -2084,8 +2141,17 @@ static func _check_destroyed_trigger(state: GameState, card_id: String,
 
 
 # Wrapper: destroy_card always fires on_destroyed (explicit removal effect).
+# Heroes are a special case — an explicit destroy effect on a hero ends the game
+# (that hero's controller loses) and the hero does NOT move to the graveyard.
 static func _destroy_card_trigger(state: GameState, card_id: String,
 		source_id: String, db) -> Array[GameEvent]:
+	var card := state.get_card(card_id)
+	if card and state.is_in_play(card_id) and db:
+		var cdef := db.get_def(card.card_def_id) as CardDef
+		if cdef and cdef.card_type == "Hero":
+			var loser := card.controller
+			var winner := "p2" if loser == "p1" else "p1"
+			return [GameEvent.game_over(winner, loser)]
 	var events := GameLogic.destroy_card(state, card_id, source_id)
 	if not events.is_empty():
 		events.append_array(_fire_on_destroyed(state, card_id, db))

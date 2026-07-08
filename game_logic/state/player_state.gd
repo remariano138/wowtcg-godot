@@ -38,6 +38,13 @@ var damage_prevention: int = 0
 # start of each turn.
 var hero_damaged_by_ally_this_turn: bool = false
 
+# Party-wide "+X ATK while attacking this turn" grants (Rayder, For the
+# Horde!). Kept here instead of as per-card buffs so they also apply to
+# allies that enter play AFTER the effect resolves, for the rest of the turn.
+# Each entry: {"amount": int, "alignment": String (""=any, else e.g. "Horde")}.
+# Reset at the start of each turn.
+var party_atk_buffs_this_turn: Array = []
+
 
 static func make(p_player_id: String) -> PlayerState:
 	var ps := PlayerState.new()

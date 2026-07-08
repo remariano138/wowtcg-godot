@@ -57,6 +57,12 @@ static func buff_added(card_id: String, buff_id: String) -> GameEvent:
 static func buff_removed(card_id: String, buff_id: String) -> GameEvent:
 	return make("buff_removed", {"card": card_id, "buff_id": buff_id})
 
+# A player-wide "while attacking this turn" ATK buff (Rayder, For the Horde!)
+# that applies to the whole party for the rest of the turn, including allies
+# that enter play afterward — not attached to any specific card instance.
+static func party_atk_buff_added(player_id: String, amount: int, alignment: String) -> GameEvent:
+	return make("party_atk_buff_added", {"player": player_id, "amount": amount, "alignment": alignment})
+
 static func counter_changed(card_id: String, counter_name: String, old_val: int, new_val: int) -> GameEvent:
 	return make("counter_changed", {
 		"card": card_id, "counter": counter_name, "old": old_val, "new": new_val})

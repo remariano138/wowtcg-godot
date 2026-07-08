@@ -28,6 +28,8 @@ var _sick_badge: Label = null
 var _outline: ColorRect = null
 var _atk_badge_bg: Panel = null
 var _atk_badge_lbl: Label = null
+var _hp_badge_bg: Panel = null
+var _hp_badge_lbl: Label = null
 var _stats_lbl: Label = null
 
 # ── Wiggle state ───────────────────────────────────────────────────────────────
@@ -124,6 +126,32 @@ static func create(inst_id: String, card_name: String,
 	node.add_child(atk_lbl)
 	node._atk_badge_lbl = atk_lbl
 
+	# HP-buff badge — white number in a blue circle, bottom-right corner.
+	# Hidden by default; shown (replacing the printed HP) while a buff is active.
+	var hp_bg := Panel.new()
+	var hp_style := StyleBoxFlat.new()
+	hp_style.bg_color = Color(0.2, 0.45, 0.85)
+	hp_style.set_corner_radius_all(int(BADGE_D * 0.5))
+	hp_bg.add_theme_stylebox_override("panel", hp_style)
+	hp_bg.size     = Vector2(BADGE_D, BADGE_D)
+	hp_bg.position = Vector2(W * 0.5 - BADGE_D - 2, H * 0.5 - BADGE_D - 2)
+	hp_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hp_bg.visible  = false
+	node.add_child(hp_bg)
+	node._hp_badge_bg = hp_bg
+
+	var hp_lbl := Label.new()
+	hp_lbl.add_theme_font_size_override("font_size", 13)
+	hp_lbl.add_theme_color_override("font_color", Color.WHITE)
+	hp_lbl.size     = Vector2(BADGE_D, BADGE_D)
+	hp_lbl.position = hp_bg.position
+	hp_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hp_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	hp_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hp_lbl.visible  = false
+	node.add_child(hp_lbl)
+	node._hp_badge_lbl = hp_lbl
+
 	# Damage badge — centered on card, shown when damage_taken > 0.
 	var badge := Label.new()
 	badge.add_theme_font_size_override("font_size", 48)
@@ -176,6 +204,8 @@ static func create(inst_id: String, card_name: String,
 
 	node._atk_badge_bg.visible  = false
 	node._atk_badge_lbl.visible = false
+	node._hp_badge_bg.visible   = false
+	node._hp_badge_lbl.visible  = false
 	return node
 
 
@@ -195,14 +225,38 @@ func update_damage(damage_taken: int) -> void:
 # printed value, the badge (white number in a green circle, bottom-left) is
 # shown in place of the printed ATK; otherwise it's hidden and the printed
 # ATK/HP text (set at creation) is the only thing visible.
-func update_atk(current_atk: int, printed_atk: int) -> void:
+#
+# atk_if_attacking (optional) is the ATK this card would have if it were the
+# combat attacker right now (see GameState.get_atk_if_attacking). "While
+# attacking"-only buffs (Rayder, Zorm, For the Horde!) don't apply outside of
+# combat, so current_atk == printed_atk even though the card carries a
+# conditional buff — in that case we still show the badge with a trailing
+# "*" so the player knows the buff exists but only fires on attack.
+func update_atk(current_atk: int, printed_atk: int, atk_if_attacking: int = -1) -> void:
 	if not _atk_badge_bg or not _atk_badge_lbl:
 		return
+	if atk_if_attacking < 0:
+		atk_if_attacking = current_atk
 	var buffed := current_atk != printed_atk
-	_atk_badge_bg.visible  = buffed
-	_atk_badge_lbl.visible = buffed
+	var attack_only := not buffed and atk_if_attacking != printed_atk
+	_atk_badge_bg.visible  = buffed or attack_only
+	_atk_badge_lbl.visible = buffed or attack_only
 	if buffed:
 		_atk_badge_lbl.text = str(current_atk)
+	elif attack_only:
+		_atk_badge_lbl.text = "%d*" % atk_if_attacking
+
+
+# Show/hide the HP-buff badge, mirroring update_atk but for max health
+# (e.g. Nerra Lifeboon's party health aura). Bottom-right corner, blue circle.
+func update_hp(current_hp: int, printed_hp: int) -> void:
+	if not _hp_badge_bg or not _hp_badge_lbl:
+		return
+	var buffed := current_hp != printed_hp
+	_hp_badge_bg.visible  = buffed
+	_hp_badge_lbl.visible = buffed
+	if buffed:
+		_hp_badge_lbl.text = str(current_hp)
 
 
 func show_card_back() -> void:

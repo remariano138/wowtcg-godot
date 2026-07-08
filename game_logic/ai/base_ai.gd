@@ -403,6 +403,8 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			var best_id := ""
 			var best_atk := -1
 			for ally in state.cards_in_zone(player_id + "_ally_row"):
+				if ally.instance_id == card.instance_id:
+					continue  # Ryn exhausts to buff — buffing himself wastes his own attack
 				if ally.is_exhausted or ally.just_summoned:
 					continue
 				var a := state.get_atk(ally.instance_id, db)

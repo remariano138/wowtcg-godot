@@ -154,7 +154,9 @@ func _develop_action(state: GameState, db, player_id: String) -> PendingAction:
 # Step 5 — attack the enemy hero with leftover ready attackers (ATK > 0 only;
 # a 0-ATK attacker can never help). Hold Protectors back to defend UNLESS the
 # enemy hero is at/under HERO_ALL_OUT_HP, in which case we go all out to race
-# for lethal. Chip with the LEAST valuable eligible attacker first, keeping the
+# for lethal. Protectors that ready at end of turn (ready_self_at_turn_end, e.g.
+# Kulan Earthguard) are exempt from the hold-back — they attack AND stay up to
+# defend. Chip with the LEAST valuable eligible attacker first, keeping the
 # better cards free to respond.
 func _hero_chip_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
@@ -175,8 +177,11 @@ func _hero_chip_action(state: GameState, db, player_id: String) -> PendingAction
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
 			continue
 		var card := state.get_card(aid)
-		if not all_out and card and StackResolver._has_keyword(card, "protector", db):
-			continue   # save Protectors to protect
+		if not all_out and card and StackResolver._has_keyword(card, "protector", db) \
+				and not StackResolver._has_effect_flag(
+					db.get_def(card.card_def_id) as CardDef, "ready_self_at_turn_end"):
+			continue   # save Protectors to protect — unless they ready at end of
+			# turn (e.g. Kulan Earthguard), in which case attacking is free.
 		var val := BaseAI._card_value_key(state, db, aid)
 		# Least valuable first → best_val is the current minimum.
 		if best == "" or val < best_val:

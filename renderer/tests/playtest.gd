@@ -1255,7 +1255,9 @@ func _refresh_atk_badges() -> void:
 				var def := _db.get_def(card.card_def_id) as CardDef
 				if not def:
 					continue
-				cn.update_atk(_state.get_atk(card.instance_id, _db), def.printed_atk)
+				cn.update_atk(_state.get_atk(card.instance_id, _db), def.printed_atk,
+						_state.get_atk_if_attacking(card.instance_id, _db))
+				cn.update_hp(_state.get_max_hp(card.instance_id, _db), def.printed_health)
 
 
 func _on_window_closed() -> void:

@@ -18,7 +18,8 @@ extends Node2D
 #   TurnManager + StackResolver + FullRandomAI all cooperate.
 
 const AI_THINK_TIME       := 0.001
-const RESOLUTION_DELAY    := 0.2   # pause after combat or AI chain play so human can register it
+# Pause durations live in game_logic/timing.gd (GameTiming) so they can all be tuned
+# together via GameTiming.animation_speed.
 
 # Deck lists live in res://decks/ and are served by DeckManager — this scene
 # only picks ids.
@@ -60,6 +61,7 @@ var _priority_label: Label
 var _phase_label:    Label
 var _pass_btn:   Button
 var _cancel_btn: Button
+var _resource_label: Label
 var _mulligan_panel:       VBoxContainer
 var _mulligan_order_label: Label
 var _mulligan_ready_btn:   Button
@@ -96,6 +98,8 @@ var _last_p2_deck_id: String = ""
 
 # ── Game log ───────────────────────────────────────────────────────────────────
 var _log: RichTextLabel
+var _log_bg: ColorRect
+var _log_visible: bool = true  # press L to toggle
 var _log_in_mulligan: bool = false
 var _pending_exhaust: Dictionary = {}  # player_id -> count of resources exhausted, not yet logged
 
@@ -131,11 +135,12 @@ func _build_scene() -> void:
 	add_child(bg)
 
 	# ── Game log panel (left gutter, replaces zone labels) ────────────────────────
-	var log_bg := ColorRect.new()
-	log_bg.color    = Color(0.07, 0.09, 0.12, 0.88)
-	log_bg.position = Vector2(5, 5)
-	log_bg.size     = Vector2(248, 950)
-	add_child(log_bg)
+	_log_bg = ColorRect.new()
+	_log_bg.color    = Color(0.07, 0.09, 0.12, 0.88)
+	_log_bg.position = Vector2(5, 5)
+	_log_bg.size     = Vector2(248, 950)
+	_log_bg.visible  = _log_visible
+	add_child(_log_bg)
 
 	_log = RichTextLabel.new()
 	_log.bbcode_enabled  = true
@@ -143,6 +148,7 @@ func _build_scene() -> void:
 	_log.position        = Vector2(8, 8)
 	_log.size            = Vector2(242, 944)
 	_log.add_theme_font_size_override("normal_font_size", 10)
+	_log.visible         = _log_visible
 	add_child(_log)
 
 	# ── Right column labels (graveyard x=1590, deck x=1750) ──────────────────────
@@ -152,7 +158,10 @@ func _build_scene() -> void:
 	_add_label("P1 deck",   Vector2(1750, 832), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
-	_status = _add_label("", Vector2(20, 1040), 18, Color(0.5, 0.8, 0.5))
+	# Positioned under the pass button (centered) once the control panel is built below.
+	_status = _add_label("", Vector2(760, 1025), 15, Color(0.5, 0.8, 0.5))
+	_status.size = Vector2(400, 40)
+	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	# Renderer
 	_renderer = BoardRenderer.new()
@@ -229,7 +238,8 @@ func _build_scene() -> void:
 	# ── Left section: Turn / Priority / Announcer ──────────────────────────────
 	_phase_label    = _add_label("", Vector2(16, 971), 19, Color(0.9, 0.85, 0.45))
 	_priority_label = _add_label("", Vector2(16, 1003), 15, Color(0.9, 0.85, 0.3))
-	# _status created earlier (needed by renderer); visually lives in left section.
+	# _status now lives under the pass button (centre section) instead of here.
+	_add_label("Log [L]", Vector2(16, 1035), 13, Color(0.55, 0.55, 0.6))
 
 	# ── VSep 1 ─────────────────────────────────────────────────────────────────
 	var vsep1 := ColorRect.new()
@@ -254,6 +264,12 @@ func _build_scene() -> void:
 	_pass_btn.pressed.connect(_on_pass_btn_pressed)
 	add_child(_pass_btn)
 
+	# Resource-placement indicator (aligned with the pass button, to its left).
+	_resource_label = _add_label("", Vector2(648, 981), 15, Color(1.0, 0.3, 0.3))
+	_resource_label.size = Vector2(190, 40)
+	_resource_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_resource_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+
 	# ── Mulligan panel (replaces pass area during mulligan phase) ──────────────
 	_mulligan_panel = VBoxContainer.new()
 	_mulligan_panel.position = Vector2(648, 968)
@@ -277,9 +293,14 @@ func _build_scene() -> void:
 	_mulligan_btn.pressed.connect(func() -> void: _commit_mulligan(true))
 	_mulligan_panel.add_child(_mulligan_btn)
 
+	# Mirrors the resource-placement indicator on the other side of the pass button
+	# (resource label: x=648, same y as the button).
 	_mulligan_hint_label = _add_label(
 		"Left-click = play/place  ·  Right-click = options  ·  Esc = retract",
-		Vector2(648, 1040), 11, Color(0.38, 0.38, 0.38))
+		Vector2(1082, 981), 11, Color(0.38, 0.38, 0.38))
+	_mulligan_hint_label.size = Vector2(190, 60)
+	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	_mulligan_hint_label.visible = false
 
 	# ── VSep 2 ─────────────────────────────────────────────────────────────────
@@ -791,7 +812,24 @@ func _update_cancel_btn() -> void:
 	_cancel_btn.visible = StackResolver.can_retract(_state, "p1")
 
 
+func _update_resource_label() -> void:
+	if not _resource_label:
+		return
+	if _state.turn_player != "p1":
+		_resource_label.text = "not my turn"
+		_resource_label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+		return
+	var ps: PlayerState = _state.players.get("p1")
+	if ps and ps.resource_placed_this_turn:
+		_resource_label.text = "resource placed"
+		_resource_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.35))
+	else:
+		_resource_label.text = "resource to be placed"
+		_resource_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+
+
 func _update_pass_btn() -> void:
+	_update_resource_label()
 	var my_turn    := _state.priority_player == "p1"
 	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
@@ -878,6 +916,13 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_T \
 			and not (_x_dialog and _x_dialog.visible):
 		_toggle_speed_mode()
+		get_viewport().set_input_as_handled()
+	# L toggles the game log panel (hidden by default so it doesn't clutter the board).
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_L \
+			and not (_x_dialog and _x_dialog.visible):
+		_log_visible = not _log_visible
+		_log_bg.visible = _log_visible
+		_log.visible    = _log_visible
 		get_viewport().set_input_as_handled()
 	# C confirms the graveyard selection (matches the "Confirm (C)" button).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_C \
@@ -1036,7 +1081,7 @@ func _log_event(event: GameEvent) -> void:
 						card_owner = ci.owner
 				var col := "#7af" if card_owner == "p1" else "#fa8"
 				_log_entry("[color=%s]%s draws a card[/color]" % [col, _log_player(card_owner)])
-			elif from_z.ends_with("_hand") and to_z.ends_with("_ally_row"):
+			elif from_z.ends_with("_hand") and (to_z.ends_with("_ally_row") or to_z.ends_with("_hero_row")):
 				var card_owner := ""
 				if _state:
 					var ci := _state.get_card(cid)
@@ -1117,6 +1162,15 @@ func _log_event(event: GameEvent) -> void:
 			var p:  String = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("quest_id", "")
 			_log_entry("[color=#af8]%s completes %s[/color]" % [p, _log_card(cid)])
+		"armor_prevention_used":
+			var p:  String = _log_player(event.payload.get("player", ""))
+			var cid: String = event.payload.get("card_id", "")
+			var d:   int    = event.payload.get("def", 0)
+			_log_entry("[color=#9cf]%s exhausts [b]%s[/b] to block %d dmg[/color]" % [p, _log_card(cid), d])
+		"damage_prevented":
+			var tgt: String = _log_card(event.payload.get("target_id", ""))
+			var amt: int    = event.payload.get("amount", 0)
+			_log_entry("[color=#9cf]%s blocks %d dmg[/color]" % [tgt, amt])
 		"game_over":
 			var winner: String = _log_player(event.payload.get("winner", ""))
 			_log_entry("\n[color=#d4af37][b]═══ %s WINS ═══[/b][/color]" % winner)
@@ -1139,7 +1193,7 @@ func _do_ai_turn() -> void:
 		events = StackResolver.submit_action(_state, action, _db)
 	else:
 		events = StackResolver.pass_priority(_state, _db)
-	EventBus.emit_events(events)
+	await EventBus.emit_events(events)
 	_refresh_ui()
 	_schedule_next_turn()
 
@@ -2157,7 +2211,7 @@ func _drain_passes() -> void:
 				events = StackResolver.pass_priority(_state, _db)
 		if events.is_empty():
 			break
-		EventBus.emit_events(events)
+		await EventBus.emit_events(events)
 		_refresh_ui()
 		# Track whether a resolution delay is warranted after the drain.
 		for e: GameEvent in events:
@@ -2171,7 +2225,7 @@ func _drain_passes() -> void:
 					if owner_type != "human":
 						had_ai_chain_play = true
 	_draining = false
-	var delay := RESOLUTION_DELAY if (had_combat_conclusion or had_ai_chain_play) else 0.0
+	var delay := GameTiming.resolution_delay() if (had_combat_conclusion or had_ai_chain_play) else 0.0
 	if delay > 0.0:
 		get_tree().create_timer(delay).timeout.connect(
 			func() -> void: _schedule_next_turn(); _maybe_turbo_pass())

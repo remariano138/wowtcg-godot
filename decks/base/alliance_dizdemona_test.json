@@ -10,8 +10,13 @@
     },
     {
       "card_def_id": "azeroth_360",
-      "count": 4,
+      "count": 2,
       "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 2,
+      "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_347",

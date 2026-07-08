@@ -59,6 +59,7 @@ func _ready() -> void:
 	_test_ryn_dreamstrider_buff_target_attacking()
 	_test_chasing_ame_graveyard_to_hand()
 	_test_chasing_ame_blocked_and_filtered()
+	_test_finkle_einhorn_graveyard_to_play()
 	_test_darrowshire_rfg_three_allies()
 	_test_darrowshire_blocked_with_too_few_allies()
 	_test_defias_brotherhood_requires_four_allies()
@@ -88,6 +89,7 @@ func _ready() -> void:
 	_test_arcane_shot_combat_instant_tag()
 	_test_nerra_lifeboon_health_aura()
 	_test_master_of_the_hunt_ongoing()
+	_test_guardian_steelhorn_cant_attack()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -2163,6 +2165,72 @@ func _test_chasing_ame_blocked_and_filtered() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Finkle Einhorn, At Your Service! — put an ally (cost 2 or less) from the
+# graveyard directly into play; its enter-play triggers fire as if from hand.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_finkle_einhorn_graveyard_to_play() -> void:
+	print("\n-- Finkle Einhorn: put a cost≤2 ally from graveyard into play (triggers fire) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("finkle_def", 3, "graveyard_to_play:Ally:1:1:own:2")
+	# Cost-2 ally with an on_enter draw trigger — proves triggers fire on entry.
+	db.ally("drawbot_def", 1, 1, [], 2, "on_enter:draw:1")
+	# Cost-3 ally — must be filtered out by the max_cost=2 gate.
+	db.ally("big_ally_def", 3, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var quest := CardInstance.create("finkle_inst", "finkle_def", "p1", "p1_resource_row")
+	state.cards["finkle_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("finkle_inst")
+
+	# p1 graveyard: the eligible cost-2 ally and an over-cost ally.
+	for pair in [["drawbot", "drawbot_def"], ["big_ally", "big_ally_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+
+	# A card in the deck so the on_enter draw has something to pull.
+	var dcard := CardInstance.create("deck_card", "drawbot_def", "p1", "p1_deck")
+	state.cards["deck_card"] = dcard
+	state.zones["p1_deck"].card_ids.append("deck_card")
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("finkle_def"))
+	eq(req.get("dest", ""), "play", "finkle-a: requirement parsed with dest=play")
+	eq(int(req.get("max_cost", -1)), 2, "finkle-b: max_cost gate is 2")
+
+	var cands := StackResolver.get_graveyard_search_candidates(state, "p1", req, db)
+	eq(cands, ["drawbot"], "finkle-c: only the cost≤2 ally is a candidate")
+
+	# Over-cost ally is an illegal target.
+	var bad := PendingAction.make("use_quest", "p1",
+			{"quest_id": "finkle_inst", "target_ids": ["big_ally"]})
+	ok(not StackResolver.can_submit(state, bad, db),
+		"finkle-d: cost-3 ally is an illegal target")
+
+	var hand_before := state.cards_in_zone("p1_hand").size()
+
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "finkle_inst", "target_ids": ["drawbot"]})
+	var events := StackResolver.submit_action(state, good, db)
+	ok(not events.is_empty(), "finkle-e: completion with valid target submits")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.get_card("drawbot").zone_id, "p1_ally_row",
+		"finkle-f: ally put into play in p1 ally_row")
+	ok(state.get_card("drawbot").just_summoned,
+		"finkle-g: reinstated ally has summoning sickness (just_summoned)")
+	eq(state.cards_in_zone("p1_hand").size(), hand_before + 1,
+		"finkle-h: on_enter draw trigger fired (hand +1)")
+	ok(state.get_card("finkle_inst").face_down,
+		"finkle-i: quest flipped face-down after completion")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 25 — Battle of Darrowshire: RFG three allies from graveyard, draw a card
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4114,3 +4182,34 @@ func _test_master_of_the_hunt_ongoing() -> void:
 	GameLogic.move_card(state, "hunt_inst", "p1_graveyard")
 	eq(state.get_atk("pet_inst", db), 2, "sc42-g: aura gone once the ability leaves play")
 	eq(state.get_max_hp("pet_inst", db), 2, "sc42-h: health aura gone once the ability leaves play")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 43 — Guardian Steelhorn: "can't attack" (Protector that never attacks)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_guardian_steelhorn_cant_attack() -> void:
+	print("\n-- Scenario 43: Guardian Steelhorn can't attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("steelhorn_def", 3, 3, (["protector", "cant_attack"] as Array[String]))
+	db.ally("plain_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "steel", "steelhorn_def", "p1")
+	_add_ally(state, "plain", "plain_def", "p1")
+	# Both are ready and not summoning-sick.
+	state.get_card("steel").just_summoned = false
+	state.get_card("plain").just_summoned = false
+	state.players["p1"].resource_placed_this_turn = true
+
+	var legal := StackResolver.get_legal_attackers(state, "p1", db)
+	ok("steel" not in legal, "sc43-a: Guardian Steelhorn is NOT a legal attacker")
+	ok("plain" in legal, "sc43-b: a normal ally IS a legal attacker")
+
+	# Direct submission of a combat proposal with Steelhorn must be rejected.
+	var propose := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "steel", "defender_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, propose, db),
+		"sc43-c: propose_combat with Guardian Steelhorn is illegal")

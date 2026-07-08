@@ -482,6 +482,19 @@ static func _resolve_play_ally(state: GameState,
 			fizzle_events.append_array(GameLogic.move_card(state, card_id, card.owner + "_graveyard"))
 		return fizzle_events
 
+	return _bring_ally_into_play(state, card_id, db)
+
+
+# Move an ally into its controller's ally_row and fire its enter-play effects.
+# Shared by normal play (_resolve_play_ally) and effects that put an ally into
+# play from elsewhere (e.g. Finkle Einhorn's graveyard reward) — the on_enter
+# triggers fire identically regardless of where the ally came from.
+static func _bring_ally_into_play(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	var card := state.get_card(card_id)
+	if not card:
+		return []
+
 	var events: Array[GameEvent] = []
 	var target_zone_id: String = card.controller + "_ally_row"
 	events.append_array(GameLogic.move_card(state, card_id, target_zone_id))
@@ -1098,6 +1111,9 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	if att_zone and att_zone.zone_type == "ally_row":
 		if attacker.just_summoned and not _has_keyword(attacker, "ferocity", db):
 			return false
+	# "can't attack" allies (e.g. Guardian Steelhorn) can never propose combat.
+	if _has_keyword(attacker, "cant_attack", db):
+		return false
 	# Defender must be controlled by the opponent.
 	if defender.controller == action.source_player:
 		return false
@@ -1133,6 +1149,9 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 		if card.is_exhausted:
 			continue
 		if card.just_summoned and not _has_keyword(card, "ferocity", db):
+			continue
+		# "can't attack" allies (e.g. Guardian Steelhorn) are never legal attackers.
+		if _has_keyword(card, "cant_attack", db):
 			continue
 		result.append(card.instance_id)
 	return result
@@ -1374,14 +1393,20 @@ static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		var key := parts[0].strip_edges()
-		if parts.size() >= 5 and (key == "graveyard_to_hand" or key == "graveyard_to_rfg"):
+		if parts.size() >= 5 and (key == "graveyard_to_hand" or key == "graveyard_to_rfg" \
+				or key == "graveyard_to_play"):
+			var dest := "hand"
+			if key == "graveyard_to_rfg":
+				dest = "rfg"
+			elif key == "graveyard_to_play":
+				dest = "play"
 			return {
 				"card_type": parts[1].strip_edges(),
 				"min_count": int(parts[2]),
 				"max_count": int(parts[3]),
 				"owner":     parts[4].strip_edges(),
 				"max_cost":  int(parts[5]) if parts.size() >= 6 else -1,
-				"dest":      "rfg" if key == "graveyard_to_rfg" else "hand",
+				"dest":      dest,
 			}
 	return {}
 
@@ -1579,6 +1604,20 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 						continue
 					events.append_array(GameLogic.move_card(state, tid, player_id + "_hand"))
 					events.append(GameEvent.card_returned_from_graveyard(tid, player_id))
+			"graveyard_to_play":
+				# Finkle Einhorn: put a chosen ally from graveyard directly into
+				# play. Re-check each target is still in a graveyard, set its
+				# controller to the completer, then bring it into play so its
+				# enter-play triggers fire exactly as if played from hand.
+				for tid in target_ids:
+					var t_card := state.get_card(tid)
+					if not t_card:
+						continue
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if not t_zone or t_zone.zone_type != "graveyard":
+						continue
+					t_card.controller = player_id
+					events.append_array(_bring_ally_into_play(state, tid, db))
 			"graveyard_to_rfg":
 				# Same re-check as graveyard_to_hand; cards go to their owner's
 				# RFG zone (rule 415.7a) instead of the hand.

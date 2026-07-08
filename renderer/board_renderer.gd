@@ -27,6 +27,11 @@ var _zone_cards: Dictionary = {}
 var _hero_card_ids: Dictionary = {}
 
 
+# card_id -> Tween of an in-flight death overlay fade. card_moved defers the
+# move-to-graveyard animation until this finishes, so the card doesn't slide
+# away while still covered in red.
+var _death_tweens: Dictionary = {}
+
 var _input_router: InputRouter = null
 var _status_label: Label = null
 
@@ -316,7 +321,13 @@ func _on_game_event(event: GameEvent) -> void:
 		"card_moved":
 			var from_z: String = event.payload["from"]
 			var to_z:   String = event.payload["to"]
-			await _animate_move(event.payload["card"], from_z, to_z)
+			var moved_card: String = event.payload["card"]
+			if to_z.ends_with("_graveyard") and _death_tweens.has(moved_card):
+				var death_tw: Tween = _death_tweens[moved_card]
+				if is_instance_valid(death_tw):
+					await death_tw.finished
+				_death_tweens.erase(moved_card)
+			await _animate_move(moved_card, from_z, to_z)
 			if from_z.ends_with("_deck"):
 				_deck_counts[from_z] = max(0, _deck_counts.get(from_z, 0) - 1)
 				_refresh_deck_label(from_z)
@@ -349,7 +360,7 @@ func _on_game_event(event: GameEvent) -> void:
 			else:
 				cn.update_damage(max_hp - new_hp)
 		"card_destroyed":
-			pass  # card_moved to graveyard handles the visual
+			_play_death_animation(event.payload.get("card", ""))
 		"card_revealed":
 			var cn := card_nodes.get(event.payload.get("card", "")) as CardNode
 			if cn:
@@ -458,6 +469,30 @@ func _on_game_event(event: GameEvent) -> void:
 
 
 # ── Animations ─────────────────────────────────────────────────────────────────
+
+# Covers the destroyed card with an opaque red rectangle that fades away over
+# 1 second, revealing the card underneath (matches the emit_events() sim pause
+# in event_bus.gd, which holds the simulation still for the same duration).
+# Attached as a child of the CardNode so it travels along with any concurrent
+# move-to-graveyard tween instead of being left behind.
+func _play_death_animation(card_id: String) -> void:
+	var cn := card_nodes.get(card_id) as CardNode
+	if not cn:
+		return
+	var overlay := ColorRect.new()
+	overlay.color        = Color(0.8, 0.05, 0.05, 1.0)
+	overlay.size          = Vector2(CardNode.W, CardNode.H)
+	overlay.position      = Vector2(-CardNode.W * 0.5, -CardNode.H * 0.5)
+	overlay.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+	overlay.z_index       = 50
+	cn.add_child(overlay)
+	var tw := create_tween()
+	_death_tweens[card_id] = tw
+	tw.tween_property(overlay, "color:a", 0.0, GameTiming.death_animation())
+	tw.finished.connect(func() -> void:
+		if is_instance_valid(overlay):
+			overlay.queue_free())
+
 
 func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	var card_node := card_nodes.get(card_id) as Node2D

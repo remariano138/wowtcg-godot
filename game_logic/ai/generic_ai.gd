@@ -243,11 +243,20 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 		if ps != null and defender == ps.hero_instance_id:
 			candidates = pool          # lethal on the hero → interpose anything
 		else:
-			# Save a dying ally only with a protector worth less than it.
-			var d_val := BaseAI._card_value_key(state, db, defender)
+			# First choice: a protector that KILLS the attacker and SURVIVES the
+			# block (safe_lethal). That's strictly better than the default trade —
+			# we save the dying ally, kill the attacker, and lose nothing — so it
+			# wins regardless of relative card value.
 			for p in pool:
-				if BaseAI._card_value_key(state, db, p) < d_val:
+				if BaseAI.combat_trade_value(state, db, p, attacker, false) == "safe_lethal":
 					candidates.append(p)
+			# Fallback: no free block available — save a dying ally only by
+			# spending fodder worth less than it.
+			if candidates.is_empty():
+				var d_val := BaseAI._card_value_key(state, db, defender)
+				for p in pool:
+					if BaseAI._card_value_key(state, db, p) < d_val:
+						candidates.append(p)
 
 	# Use the least valuable eligible protector.
 	var best := ""

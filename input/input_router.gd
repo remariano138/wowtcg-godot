@@ -54,6 +54,9 @@ var _equip_sacrifice_candidates: Array[String] = []
 var _pet_sacrifice_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
+# Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
+# The player can stop after 1 or 2 picks via pass_priority_action() (Space / pass button).
+var _chain_lightning_picked: Array[String] = []
 # Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
 var _targeting_x_value: int = 0
 # Quest awaiting graveyard-target selection; "" = no browser open.
@@ -399,6 +402,7 @@ func cancel_targeting() -> void:
 	_targeting_dmg_type     = ""
 	_targeting_first_target = ""
 	_targeting_x_value      = 0
+	_chain_lightning_picked = []
 	refresh_highlights()
 	targeting_cancelled.emit()
 
@@ -449,6 +453,11 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 
 
 func _handle_ability_targeting_click(instance_id: String) -> void:
+	# Chain Lightning: up to 3 targets, one click per wave — see
+	# _handle_chain_lightning_click / _submit_chain_lightning below.
+	if _is_chain_lightning(_targeting_source):
+		_handle_chain_lightning_click(instance_id)
+		return
 	var action := PendingAction.make("play_ability", local_player, {
 		"card_id": _targeting_source, "target_id": instance_id,
 	})
@@ -462,6 +471,66 @@ func _handle_ability_targeting_click(instance_id: String) -> void:
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
+
+
+# ── Chain Lightning (azeroth_106) — up to 3 announced targets ─────────────────
+#
+# 1st target: mandatory. 2nd/3rd: optional "may" targets — the player stops
+# early by pressing Space / the pass button (pass_priority_action() checks
+# _chain_lightning_picked and submits instead of passing, mirroring the
+# "Sacrifice a pet [Space]" pass-button-repurposing pattern). Clicking the
+# source card again before any target is picked cancels, same as other
+# targeting modes.
+
+func _is_chain_lightning(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null and StackResolver._has_effect_flag_prefix(def, "chain_lightning")
+
+
+func _chain_lightning_params(extra_target_id: String = "") -> Dictionary:
+	var params := {"card_id": _targeting_source}
+	var keys := ["target_id", "target_id_2", "target_id_3"]
+	for i in _chain_lightning_picked.size():
+		params[keys[i]] = _chain_lightning_picked[i]
+	if extra_target_id != "" and _chain_lightning_picked.size() < 3:
+		params[keys[_chain_lightning_picked.size()]] = extra_target_id
+	return params
+
+
+func _handle_chain_lightning_click(instance_id: String) -> void:
+	if instance_id == _targeting_source and _chain_lightning_picked.is_empty():
+		cancel_targeting()
+		return
+	if _chain_lightning_picked.size() >= 3 or instance_id in _chain_lightning_picked:
+		return
+	var probe := PendingAction.make("play_ability", local_player,
+		_chain_lightning_params(instance_id))
+	if not StackResolver.can_submit(state, probe, db):
+		return
+	_chain_lightning_picked.append(instance_id)
+	if _chain_lightning_picked.size() >= 3:
+		_submit_chain_lightning()
+	else:
+		# Re-emit to refresh the cursor/status text and re-highlight remaining targets.
+		targeting_started.emit(_targeting_source, _targeting_dmg_type, 0)
+		refresh_highlights()
+
+
+func _submit_chain_lightning() -> void:
+	var action := PendingAction.make("play_ability", local_player,
+		_chain_lightning_params())
+	_targeting_source       = ""
+	_chain_lightning_picked = []
+	targeting_cancelled.emit()
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
 
 
 func _handle_instant_targeting_click(instance_id: String) -> void:
@@ -600,6 +669,13 @@ func _pass_own_proposal(action: PendingAction) -> void:
 
 func pass_priority_action() -> void:
 	if not state or state.priority_player != local_player:
+		return
+	# Chain Lightning: Space / the pass button stops taking optional "may"
+	# targets early and submits with whatever has been picked so far (1 or 2
+	# targets), instead of passing priority. Only meaningful once at least the
+	# mandatory 1st target has been chosen.
+	if _targeting_source != "" and not _chain_lightning_picked.is_empty():
+		_submit_chain_lightning()
 		return
 	var events := StackResolver.pass_priority(state, db)
 	EventBus.emit_events(events)
@@ -1186,6 +1262,8 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 
 
 func _get_ability_targets(card_id: String) -> Array:
+	if _is_chain_lightning(card_id):
+		return _get_chain_lightning_targets(card_id)
 	var result: Array = []
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
@@ -1198,6 +1276,27 @@ func _get_ability_targets(card_id: String) -> Array:
 			var act := PendingAction.make("play_ability", local_player,
 				{"card_id": card_id, "target_id": ps.hero_instance_id})
 			if StackResolver.can_submit(state, act, db):
+				result.append(ps.hero_instance_id)
+	return result
+
+
+# Remaining legal candidates for the current Chain Lightning wave, given
+# targets already picked this cast (_chain_lightning_picked). can_submit
+# (via StackResolver._can_play_chain_lightning) naturally excludes Untargetable
+# candidates on the 1st wave only, and excludes already-picked candidates.
+func _get_chain_lightning_targets(card_id: String) -> Array:
+	var result: Array = []
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var probe := PendingAction.make("play_ability", local_player,
+				_chain_lightning_params(card.instance_id))
+			if StackResolver.can_submit(state, probe, db):
+				result.append(card.instance_id)
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			var probe := PendingAction.make("play_ability", local_player,
+				_chain_lightning_params(ps.hero_instance_id))
+			if StackResolver.can_submit(state, probe, db):
 				result.append(ps.hero_instance_id)
 	return result
 
@@ -1290,6 +1389,9 @@ func _card_dmg_type(card_id: String) -> String:
 			"deal_damage_to_target", "deal_damage_and_heal":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 2: return parts[2].to_lower()
+			"chain_lightning":
+				var parts := entry.strip_edges().split(":")
+				if parts.size() > 4: return parts[4].to_lower()
 			"heal_target": return "heal"
 	return ""
 
@@ -1345,6 +1447,8 @@ func _action_type_for(instance_id: String) -> String:
 
 
 func _ability_needs_target(card_id: String) -> bool:
+	if _is_chain_lightning(card_id):
+		return true
 	return _instant_needs_target(card_id)
 
 

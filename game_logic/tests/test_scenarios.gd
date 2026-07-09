@@ -95,6 +95,8 @@ func _ready() -> void:
 	_test_guardian_steelhorn_cant_attack()
 	_test_starfire()
 	_test_flamestrike()
+	_test_chain_lightning()
+	_test_untargetable_keyword()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -4610,3 +4612,317 @@ func _test_flamestrike() -> void:
 
 	ok(state.get_card("flamestrike_inst").zone_id == "p1_graveyard",
 		"sc45-g: Flamestrike itself is in the graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 46 — Chain Lightning: 3 waves (3/2/1 nature), each an optional "may"
+# after the mandatory 1st target. Card-specific targeting rule: the 1st target
+# may NOT be Untargetable, but the 2nd/3rd targets CAN be (override of the
+# normal Untargetable rule — see CLAUDE.md).
+#
+# Assertions:
+#   sc46-a  no target at all → illegal submission
+#   sc46-b  1-target cast: only 3 dmg dealt, to target_id, from p1's hero
+#   sc46-c  2-target cast: 3 dmg + 2 dmg dealt to the two announced targets
+#   sc46-d  3-target cast: 3+2+1 dmg dealt to the three announced targets
+#   sc46-e  target_id_3 without target_id_2 is illegal (can't skip "another")
+#   sc46-f  a repeated target (not distinct) is illegal
+#   sc46-g  a target that dies to wave 1 doesn't block wave 2/3 from resolving
+#           against the other announced targets (each wave is independent)
+#   sc46-h  Untargetable card CANNOT be chosen as target_id (1st)
+#   sc46-i  the SAME Untargetable card CAN be chosen as target_id_2 (2nd)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_chain_lightning() -> void:
+	print("\n-- Scenario 46: Chain Lightning — up to 3 waves, 3/2/1 nature --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("victim_a_def", 2, 6, [], 3)
+	db.ally("victim_b_def", 2, 6, [], 3)
+	db.ally("victim_c_def", 2, 6, [], 3)
+	db.ally("frail_def",    2, 2, [], 1)   # dies to 3 nature (wave 1)
+	db.ally("untargetable_def", 0, 6, (["untargetable"] as Array[String]), 2)
+	db.ability("chainlightning_def", 5, "chain_lightning:3:2:1:nature")
+
+	# sc46-a: no target at all → illegal.
+	var state0 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state0, "p1", 5)
+	var cl0 := CardInstance.create("cl0", "chainlightning_def", "p1", "p1_hand")
+	state0.cards["cl0"] = cl0
+	state0.zones["p1_hand"].card_ids.append("cl0")
+	ok(not StackResolver.can_submit(state0,
+		PendingAction.make("play_ability", "p1", {"card_id": "cl0"}), db),
+		"sc46-a: no target at all is illegal")
+
+	# sc46-b: single-target cast — only 3 dmg, from p1's hero.
+	var state1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state1, "p1", 5)
+	var cl1 := CardInstance.create("cl1", "chainlightning_def", "p1", "p1_hand")
+	state1.cards["cl1"] = cl1
+	state1.zones["p1_hand"].card_ids.append("cl1")
+	_add_ally(state1, "va1", "victim_a_def", "p2")
+
+	var p1_ai1 := ScriptedAI.new()
+	p1_ai1.queue_action(PendingAction.make("play_ability", "p1",
+		{"card_id": "cl1", "target_id": "va1"}))
+	var events1 := _drive_turns(state1, db, p1_ai1, ScriptedAI.new(), 3)
+	eq(state1.get_card("va1").damage_taken, 3, "sc46-b: single-target cast deals exactly 3 dmg")
+	var dmg_source1 := ""
+	for e in events1:
+		if e.event_type == "damage_dealt":
+			dmg_source1 = e.payload.get("source", dmg_source1)
+	eq(dmg_source1, "p1_hero", "sc46-b2: damage source is p1's hero")
+	ok(state1.get_card("cl1").zone_id == "p1_graveyard", "sc46-b3: Chain Lightning in graveyard")
+
+	# sc46-c: two-target cast — 3 dmg + 2 dmg.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 5)
+	var cl2 := CardInstance.create("cl2", "chainlightning_def", "p1", "p1_hand")
+	state2.cards["cl2"] = cl2
+	state2.zones["p1_hand"].card_ids.append("cl2")
+	_add_ally(state2, "va2", "victim_a_def", "p2")
+	_add_ally(state2, "vb2", "victim_b_def", "p2")
+
+	var p1_ai2 := ScriptedAI.new()
+	p1_ai2.queue_action(PendingAction.make("play_ability", "p1",
+		{"card_id": "cl2", "target_id": "va2", "target_id_2": "vb2"}))
+	_drive_turns(state2, db, p1_ai2, ScriptedAI.new(), 3)
+	eq(state2.get_card("va2").damage_taken, 3, "sc46-c: 1st target took 3 dmg")
+	eq(state2.get_card("vb2").damage_taken, 2, "sc46-c2: 2nd target took 2 dmg")
+
+	# sc46-d: three-target cast — 3 + 2 + 1.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 5)
+	var cl3 := CardInstance.create("cl3", "chainlightning_def", "p1", "p1_hand")
+	state3.cards["cl3"] = cl3
+	state3.zones["p1_hand"].card_ids.append("cl3")
+	_add_ally(state3, "va3", "victim_a_def", "p2")
+	_add_ally(state3, "vb3", "victim_b_def", "p2")
+	_add_ally(state3, "vc3", "victim_c_def", "p2")
+
+	var p1_ai3 := ScriptedAI.new()
+	p1_ai3.queue_action(PendingAction.make("play_ability", "p1",
+		{"card_id": "cl3", "target_id": "va3", "target_id_2": "vb3", "target_id_3": "vc3"}))
+	_drive_turns(state3, db, p1_ai3, ScriptedAI.new(), 3)
+	eq(state3.get_card("va3").damage_taken, 3, "sc46-d: 1st target took 3 dmg")
+	eq(state3.get_card("vb3").damage_taken, 2, "sc46-d2: 2nd target took 2 dmg")
+	eq(state3.get_card("vc3").damage_taken, 1, "sc46-d3: 3rd target took 1 dmg")
+
+	# sc46-e / sc46-f: illegal target combinations.
+	var state4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state4, "p1", 5)
+	var cl4 := CardInstance.create("cl4", "chainlightning_def", "p1", "p1_hand")
+	state4.cards["cl4"] = cl4
+	state4.zones["p1_hand"].card_ids.append("cl4")
+	_add_ally(state4, "va4", "victim_a_def", "p2")
+	_add_ally(state4, "vb4", "victim_b_def", "p2")
+	ok(not StackResolver.can_submit(state4, PendingAction.make("play_ability", "p1",
+		{"card_id": "cl4", "target_id": "va4", "target_id_3": "vb4"}), db),
+		"sc46-e: target_id_3 without target_id_2 is illegal")
+	ok(not StackResolver.can_submit(state4, PendingAction.make("play_ability", "p1",
+		{"card_id": "cl4", "target_id": "va4", "target_id_2": "va4"}), db),
+		"sc46-f: repeated (non-distinct) target is illegal")
+
+	# sc46-g: a target that dies to wave 1 doesn't block waves 2/3 from resolving
+	# against the OTHER announced targets (each wave targets a different card).
+	var state5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state5, "p1", 5)
+	var cl5 := CardInstance.create("cl5", "chainlightning_def", "p1", "p1_hand")
+	state5.cards["cl5"] = cl5
+	state5.zones["p1_hand"].card_ids.append("cl5")
+	_add_ally(state5, "frail5", "frail_def",   "p2")   # 2 HP — dies to wave-1's 3 dmg
+	_add_ally(state5, "vb5",    "victim_b_def", "p2")  # 6 HP — survives wave-2's 2 dmg
+
+	var p1_ai5 := ScriptedAI.new()
+	p1_ai5.queue_action(PendingAction.make("play_ability", "p1",
+		{"card_id": "cl5", "target_id": "frail5", "target_id_2": "vb5"}))
+	_drive_turns(state5, db, p1_ai5, ScriptedAI.new(), 3)
+	ok(state5.get_card("frail5").zone_id == "p2_graveyard",
+		"sc46-g: 1st target destroyed by wave-1's 3 dmg")
+	eq(state5.get_card("vb5").damage_taken, 2,
+		"sc46-g2: 2nd target still took wave-2's 2 dmg despite the 1st target dying first")
+
+	# sc46-h / sc46-i: Untargetable — card-specific override of the normal
+	# Untargetable rule (References/wow_rules.txt ~line 4215): CANNOT be the
+	# 1st target, but CAN be the 2nd (or 3rd) target of Chain Lightning only.
+	var state6 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state6, "p1", 5)
+	var cl6 := CardInstance.create("cl6", "chainlightning_def", "p1", "p1_hand")
+	state6.cards["cl6"] = cl6
+	state6.zones["p1_hand"].card_ids.append("cl6")
+	_add_ally(state6, "ut6", "untargetable_def", "p2")
+	_add_ally(state6, "va6", "victim_a_def",     "p2")
+
+	ok(not StackResolver.can_submit(state6, PendingAction.make("play_ability", "p1",
+		{"card_id": "cl6", "target_id": "ut6"}), db),
+		"sc46-h: Untargetable card cannot be the 1st (mandatory) target")
+	ok(StackResolver.can_submit(state6, PendingAction.make("play_ability", "p1",
+		{"card_id": "cl6", "target_id": "va6", "target_id_2": "ut6"}), db),
+		"sc46-i: the SAME Untargetable card CAN be the 2nd target")
+
+	var p1_ai6 := ScriptedAI.new()
+	p1_ai6.queue_action(PendingAction.make("play_ability", "p1",
+		{"card_id": "cl6", "target_id": "va6", "target_id_2": "ut6"}))
+	_drive_turns(state6, db, p1_ai6, ScriptedAI.new(), 3)
+	eq(state6.get_card("va6").damage_taken, 3, "sc46-j: 1st (non-Untargetable) target took 3 dmg")
+	eq(state6.get_card("ut6").damage_taken, 2,
+		"sc46-k: Untargetable 2nd target still took wave-2's 2 dmg")
+
+	# sc46-l: AI wave assignment, case 1 — targets with 3/2/1 HP (+4 HP, +hero):
+	# each wave kills the matching target (3→3hp, 2→2hp, 1→1hp).
+	db.ally("hp4_def", 1, 4, [], 2)
+	db.ally("hp3_def", 1, 3, [], 2)
+	db.ally("hp2_def", 1, 2, [], 1)
+	db.ally("hp1_def", 1, 1, [], 1)
+	var state7 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state7, "p1", 5)
+	var cl7 := CardInstance.create("cl7", "chainlightning_def", "p1", "p1_hand")
+	state7.cards["cl7"] = cl7
+	state7.zones["p1_hand"].card_ids.append("cl7")
+	_add_ally(state7, "a4", "hp4_def", "p2")
+	_add_ally(state7, "a3", "hp3_def", "p2")
+	_add_ally(state7, "a2", "hp2_def", "p2")
+	_add_ally(state7, "a1", "hp1_def", "p2")
+
+	var ai7 := BaseAI.new()
+	var act7 := ai7._chain_lightning_action(state7, db, "p1", "cl7", "play_ability")
+	ok(act7 != null, "sc46-l: AI produced a Chain Lightning action")
+	if act7:
+		eq(act7.params.get("target_id", ""),   "a3", "sc46-l2: wave 1 (3 dmg) kills the 3-HP ally")
+		eq(act7.params.get("target_id_2", ""), "a2", "sc46-l3: wave 2 (2 dmg) kills the 2-HP ally")
+		eq(act7.params.get("target_id_3", ""), "a1", "sc46-l4: wave 3 (1 dmg) kills the 1-HP ally")
+
+	# sc46-m: AI wave assignment, case 2 — two 1-HP allies + hero: the small
+	# waves (2 and 1) kill the allies; the 3-damage wave goes to the hero
+	# instead of being wasted on a 1-HP ally.
+	var state8 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state8, "p1", 5)
+	var cl8 := CardInstance.create("cl8", "chainlightning_def", "p1", "p1_hand")
+	state8.cards["cl8"] = cl8
+	state8.zones["p1_hand"].card_ids.append("cl8")
+	_add_ally(state8, "f1", "hp1_def", "p2")
+	_add_ally(state8, "f2", "hp1_def", "p2")
+
+	var ai8 := BaseAI.new()
+	var act8 := ai8._chain_lightning_action(state8, db, "p1", "cl8", "play_ability")
+	ok(act8 != null, "sc46-m: AI produced a Chain Lightning action")
+	if act8:
+		eq(act8.params.get("target_id", ""), "p2_hero",
+			"sc46-m2: wave 1 (3 dmg) hits the hero, not a 1-HP ally")
+		var t2: String = act8.params.get("target_id_2", "")
+		var t3: String = act8.params.get("target_id_3", "")
+		ok(t2 in ["f1", "f2"] and t3 in ["f1", "f2"] and t2 != t3,
+			"sc46-m3: waves 2 and 1 kill the two 1-HP allies")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 47 — Untargetable (Jeleane Nightbreeze, dark_portal_170): "This card
+# can't be targeted" (References/wow_rules.txt ~line 4215, in play only). Links
+# can't choose it as a target (rule 706), but combat is NOT targeting (601.2b)
+# and non-targeted effects (AoE) are unaffected. A target that BECOMES
+# Untargetable after the announce is illegal at resolution (glossary 4217) —
+# the effect fizzles like a target that left play.
+#
+# Assertions:
+#   sc47-a  targeted instant (Quick Strike-style) cannot target it
+#   sc47-b  targeted ability (Vanquish-style destroy_target:ally) cannot target it
+#   sc47-c  it CAN be attacked (combat is not targeting) and takes combat damage
+#   sc47-d  AoE (Flamestrike-style, no target) still hits it
+#   sc47-e  target becomes Untargetable after announce → effect fizzles,
+#           the instant still goes to the graveyard
+#   sc47-f  the same targeted instant is legal against a plain ally (sanity)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_untargetable_keyword() -> void:
+	print("\n-- Scenario 47: Untargetable — no link targeting; combat and AoE unaffected --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Jeleane Nightbreeze's real stats: cost 2, 3 ATK melee, 2 health, Untargetable.
+	db.ally("jeleane_def", 3, 2, (["untargetable"] as Array[String]), 2)
+	db.ally("plain_def", 2, 6, [], 3)
+	db.ally("attacker_def", 1, 4, [], 2)
+	db.instant("quickstrike_def", 2, "deal_damage_to_target:2:melee")
+	db.ability("vanquish_def", 3, "destroy_target:ally")
+	db.ability("flamestrike_def", 7, "deal_damage_aoe_opponent:3:fire")
+
+	# sc47-a / sc47-b / sc47-f: submission-time targeting checks.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 7)
+	_add_ally(state, "jeleane", "jeleane_def", "p2")
+	_add_ally(state, "plain", "plain_def", "p2")
+	var qs := CardInstance.create("qs", "quickstrike_def", "p1", "p1_hand")
+	state.cards["qs"] = qs
+	state.zones["p1_hand"].card_ids.append("qs")
+	var vq := CardInstance.create("vq", "vanquish_def", "p1", "p1_hand")
+	state.cards["vq"] = vq
+	state.zones["p1_hand"].card_ids.append("vq")
+
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "qs", "target_id": "jeleane"}), db),
+		"sc47-a: targeted instant cannot target an Untargetable ally")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "vq", "target_id": "jeleane"}), db),
+		"sc47-b: targeted ability (destroy) cannot target an Untargetable ally")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "qs", "target_id": "plain"}), db),
+		"sc47-f: the same instant is legal against a plain ally")
+
+	# sc47-c: combat is NOT targeting — Jeleane is a legal defender and takes
+	# combat damage normally.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "jeleane2", "jeleane_def", "p2")
+	var atk := _add_ally(state2, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	state2.players["p1"].resource_placed_this_turn = true
+
+	ok(StackResolver.can_submit(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "jeleane2"}), db),
+		"sc47-c: an Untargetable ally CAN be attacked (combat is not targeting)")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "jeleane2"}))
+	_drive(state2, db, p1_ai, ScriptedAI.new())
+	eq(state2.get_card("jeleane2").damage_taken, 1,
+		"sc47-c2: combat damage landed on the Untargetable defender")
+
+	# sc47-d: AoE (no target announced) still hits Untargetable allies.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 7)
+	_add_ally(state3, "jeleane3", "jeleane_def", "p2")
+	var fs := CardInstance.create("fs", "flamestrike_def", "p1", "p1_hand")
+	state3.cards["fs"] = fs
+	state3.zones["p1_hand"].card_ids.append("fs")
+
+	var fs_act := PendingAction.make("play_ability", "p1", {"card_id": "fs"})
+	ok(StackResolver.can_submit(state3, fs_act, db), "sc47-d: AoE submission is legal")
+	StackResolver.submit_action(state3, fs_act, db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)
+	ok(state3.get_card("jeleane3").zone_id == "p2_graveyard",
+		"sc47-d2: AoE damage hit (and destroyed) the Untargetable ally")
+
+	# sc47-e: resolution-time re-check (glossary 4217) — the target becomes
+	# Untargetable AFTER the announce (simulated via granted_keywords, the same
+	# container _has_keyword reads). The damage fizzles; the instant still goes
+	# to the graveyard, same as a target that left play.
+	var state4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state4, "p1", 2)
+	_add_ally(state4, "plain4", "plain_def", "p2")
+	var qs4 := CardInstance.create("qs4", "quickstrike_def", "p1", "p1_hand")
+	state4.cards["qs4"] = qs4
+	state4.zones["p1_hand"].card_ids.append("qs4")
+
+	var qs_act := PendingAction.make("play_instant", "p1",
+		{"card_id": "qs4", "target_id": "plain4"})
+	ok(StackResolver.can_submit(state4, qs_act, db), "sc47-e: announce against a legal target")
+	StackResolver.submit_action(state4, qs_act, db)
+	state4.get_card("plain4").granted_keywords.append("untargetable")
+	StackResolver.pass_priority(state4, db)
+	StackResolver.pass_priority(state4, db)
+	eq(state4.get_card("plain4").damage_taken, 0,
+		"sc47-e2: effect fizzled — target that became Untargetable took no damage")
+	ok(state4.get_card("qs4").zone_id == "p1_graveyard",
+		"sc47-e3: the fizzled instant still goes to the graveyard")

@@ -75,7 +75,7 @@
     },
     {
       "card_def_id": "azeroth_173",
-      "count": 2,
+      "count": 1,
       "_card_name": "Acolyte Demia"
     },
     {
@@ -105,8 +105,13 @@
     },
     {
       "card_def_id": "azeroth_179",
-      "count": 2,
+      "count": 1,
       "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "dark_portal_170",
+      "count": 2,
+      "_card_name": "Jeleane Nightbreeze"
     },
     {
       "card_def_id": "azeroth_200",

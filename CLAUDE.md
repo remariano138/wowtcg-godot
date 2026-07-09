@@ -110,6 +110,7 @@ power_text, data_status, engine_status, effects, image_path
 | `ferocity` | (keyword) — no summoning sickness |
 | `stealth` | (keyword) — can only attack heroes |
 | `ranged` | (keyword) — long-range, defender can't deal combat damage back |
+| `untargetable` | (keyword) — can't be chosen as a target of links (`_is_legal_target` in stack_resolver.gd, checked at submission AND resolution); combat/AoE unaffected. Chain Lightning's 2nd/3rd targets are a card-specific exception (allow flag) |
 
 **`data_status`**: `verified` = card text confirmed from image  
 **`engine_status`**: `implemented` = effects string is live in engine
@@ -172,6 +173,7 @@ Notable implemented mechanics:
 - **Ferocity** (keyword): no summoning sickness
 - **Stealth** (keyword): can only attack heroes (Long-Range rule)
 - **Ranged** (keyword): defender can't deal combat damage back (Long-Range)
+- **Untargetable** (keyword): can't be chosen as a target of links (rule 706); combat and non-targeted effects (AoE) unaffected. A target that becomes Untargetable after the announce fizzles at resolution (glossary 4217)
 - **on_enter:deal_damage_to_target** — Taz'dingo-style enter-play targeted effects
 - **activated_power** — Grimdron (1 fire dmg to hero or ally, usable during combat windows)
 - **sarmoth_taunt** — Sarmoth (opposing characters that can attack Sarmoth must only target Sarmoth)

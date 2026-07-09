@@ -300,7 +300,7 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
-			if target_id == "" or not state.is_in_play(target_id):
+			if not _is_legal_target(state, target_id, db):
 				return false
 			if _instant_targets_ally_only(def):
 				var t_zone := state.zones.get(state.get_card(target_id).zone_id) as Zone
@@ -327,9 +327,11 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		return false
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
-		if def and _instant_needs_target(def):
+		if def and _has_effect_flag_prefix(def, "chain_lightning"):
+			if not _can_play_chain_lightning(state, action, db): return false
+		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
-			if target_id == "" or not state.is_in_play(target_id): return false
+			if not _is_legal_target(state, target_id, db): return false
 			if _instant_targets_ally_only(def):
 				var t_card := state.get_card(target_id)
 				if t_card:
@@ -389,6 +391,94 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 		if parts[0] == "destroy_target" and parts.size() > 1 and parts[1] == "ally":
 			return true
 	return false
+
+
+# Whether an in-play card is a legal "hero or ally" target: a hero (card_type
+# "Hero") or an ally-row card. Excludes equipment (also hero_row) and
+# resources/graveyard/etc.
+static func _is_hero_or_ally(state: GameState, target_id: String, db) -> bool:
+	if not state.is_in_play(target_id):
+		return false
+	if _is_ally(state, target_id):
+		return true
+	if db:
+		var card := state.get_card(target_id)
+		var def := db.get_def(card.card_def_id) as CardDef if card else null
+		if def and def.card_type == "Hero":
+			return true
+	return false
+
+
+# Whether a card can be chosen as (or remain) a link target (rule 706): it must
+# be in play and — unless the caller opts out — must not have the Untargetable
+# keyword (glossary ~4215: "This card can't be targeted", in play only).
+# allow_untargetable is for card-specific slots that select rather than target
+# (e.g. Chain Lightning's 2nd/3rd targets). Combat is NOT targeting (601.2b)
+# and non-targeted effects (AoE) never go through this check.
+static func _is_legal_target(state: GameState, target_id: String, db,
+		allow_untargetable := false) -> bool:
+	if target_id == "" or not state.is_in_play(target_id):
+		return false
+	if not allow_untargetable:
+		var card := state.get_card(target_id)
+		if card and _has_keyword(card, "untargetable", db):
+			return false
+	return true
+
+
+# Chain Lightning (azeroth_106): up to 3 announced targets, in printed order.
+# target_id (mandatory), target_id_2 / target_id_3 (optional "may" targets).
+static func _chain_lightning_targets(action: PendingAction) -> Array[String]:
+	var result: Array[String] = []
+	var t1: String = action.params.get("target_id", "")
+	var t2: String = action.params.get("target_id_2", "")
+	var t3: String = action.params.get("target_id_3", "")
+	if t1 != "":
+		result.append(t1)
+	if t2 != "":
+		result.append(t2)
+	if t3 != "":
+		result.append(t3)
+	return result
+
+
+# Validates a Chain Lightning target announcement (card-specific — see CLAUDE.md).
+# 1st target: must be a legal hero-or-ally target and may NOT be Untargetable
+# (card-specific override of the normal Untargetable rule). 2nd/3rd targets:
+# must be a legal hero-or-ally target, distinct from all previously chosen
+# targets for this cast, but MAY be Untargetable. target_id_3 requires
+# target_id_2 to also be set (can't skip "another" in the printed order).
+static func _can_play_chain_lightning(state: GameState, action: PendingAction, db) -> bool:
+	var target_id:   String = action.params.get("target_id",   "")
+	var target_id_2: String = action.params.get("target_id_2", "")
+	var target_id_3: String = action.params.get("target_id_3", "")
+	if target_id == "":
+		return false
+	if not _is_hero_or_ally(state, target_id, db):
+		return false
+	if not _is_legal_target(state, target_id, db):
+		return false
+	if target_id_3 != "" and target_id_2 == "":
+		return false
+	if target_id_2 != "":
+		if target_id_2 == target_id:
+			return false
+		if not _is_hero_or_ally(state, target_id_2, db):
+			return false
+		# allow_untargetable: this slot selects rather than targets
+		# (card-specific exception — see comment above).
+		if not _is_legal_target(state, target_id_2, db, true):
+			return false
+	if target_id_3 != "":
+		if target_id_3 == target_id or target_id_3 == target_id_2:
+			return false
+		if not _is_hero_or_ally(state, target_id_3, db):
+			return false
+		# allow_untargetable: this slot selects rather than targets
+		# (card-specific exception — see comment above).
+		if not _is_legal_target(state, target_id_3, db, true):
+			return false
+	return true
 
 
 static func _can_place_resource(state: GameState, action: PendingAction,
@@ -628,7 +718,10 @@ static func _resolve_play_instant(state: GameState,
 				var parts := entry.strip_edges().split(":")
 				match parts[0].strip_edges():
 					"destroy_target":
-						if target_id != "" and state.is_in_play(target_id):
+						# Re-check at resolution (rule 706 / glossary 4217): the
+						# effect fizzles if the target left play OR became
+						# Untargetable after the announce.
+						if _is_legal_target(state, target_id, db):
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
 					"deal_damage_to_target":
@@ -642,7 +735,7 @@ static func _resolve_play_instant(state: GameState,
 						var ps := state.players.get(action.source_player) as PlayerState
 						var hero_id: String = ps.hero_instance_id if ps else ""
 						if hero_id != "" and amount > 0 \
-								and target_id != "" and state.is_in_play(target_id):
+								and _is_legal_target(state, target_id, db):
 							events.append_array(GameLogic.deal_damage(
 								state, hero_id, target_id, amount, db))
 							var t_card := state.get_card(target_id)
@@ -654,6 +747,44 @@ static func _resolve_play_instant(state: GameState,
 								else:
 									events.append_array(
 										_check_destroyed_trigger(state, target_id, hero_id, db))
+					"chain_lightning":
+						# "Your hero deals A1 <type> damage to target hero or ally. Your
+						# hero may deal A2 <type> damage to another hero or ally. Your
+						# hero may deal A3 <type> damage to another hero or ally."
+						# (Chain Lightning). Up to 3 targets are announced at play time
+						# (target_id/target_id_2/target_id_3); each wave resolves in
+						# printed order, with its own destruction/game-over check before
+						# the next wave — a target destroyed by an earlier wave simply
+						# can't be hit again (711.1), it doesn't invalidate the cast.
+						var cl_amounts: Array[int] = [
+							int(parts[1]) if parts.size() > 1 else 0,
+							int(parts[2]) if parts.size() > 2 else 0,
+							int(parts[3]) if parts.size() > 3 else 0,
+						]
+						var cl_ps := state.players.get(action.source_player) as PlayerState
+						var cl_hero_id: String = cl_ps.hero_instance_id if cl_ps else ""
+						var cl_targets := _chain_lightning_targets(action)
+						if cl_hero_id != "":
+							for i in cl_targets.size():
+								var cl_target_id: String = cl_targets[i]
+								var cl_amount: int = cl_amounts[i] if i < cl_amounts.size() else 0
+								# Rule 706 re-check per wave. Waves 2/3 select rather
+								# than target (card-specific exception), so only the
+								# 1st wave also fizzles on became-Untargetable.
+								if cl_amount <= 0 \
+										or not _is_legal_target(state, cl_target_id, db, i > 0):
+									continue
+								events.append_array(GameLogic.deal_damage(
+									state, cl_hero_id, cl_target_id, cl_amount, db))
+								var cl_t_card := state.get_card(cl_target_id)
+								if cl_t_card and state.get_current_hp(cl_target_id, db) <= 0:
+									var cl_t_zone := state.zones.get(cl_t_card.zone_id) as Zone
+									if cl_t_zone and cl_t_zone.zone_type == "hero_row":
+										events.append(GameEvent.game_over(
+											_other_player(state, cl_t_card.controller), cl_t_card.controller))
+									else:
+										events.append_array(_check_destroyed_trigger(
+											state, cl_target_id, cl_hero_id, db))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
@@ -806,8 +937,6 @@ static func has_incoming_hero_damage(state: GameState, db, player_id: String) ->
 	for act in state.pending_actions:
 		if act.source_player == player_id:
 			continue
-		if act.params.get("target_id", "") != hero_id:
-			continue
 		if not db:
 			continue
 		var src := state.get_card(act.params.get("card_id", ""))
@@ -816,9 +945,15 @@ static func has_incoming_hero_damage(state: GameState, db, player_id: String) ->
 			continue
 		match act.action_type:
 			"play_instant", "play_ability":
-				if _has_effect_flag_prefix(def, "deal_damage_to_target"):
+				if act.params.get("target_id", "") == hero_id \
+						and _has_effect_flag_prefix(def, "deal_damage_to_target"):
+					return true
+				if _has_effect_flag_prefix(def, "chain_lightning") \
+						and hero_id in _chain_lightning_targets(act):
 					return true
 			"use_ally_power":
+				if act.params.get("target_id", "") != hero_id:
+					continue
 				var ap := _ally_activated_power(def)
 				if (ap.get("effect", "") as String) == "deal_damage_to_target":
 					return true
@@ -946,7 +1081,7 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	var targets_kind: String = ap.get("targets", "")
 	if targets_kind in ["hero_or_ally", "ally"]:
 		var target_id: String = action.params.get("target_id", "")
-		if target_id == "" or not state.is_in_play(target_id):
+		if not _is_legal_target(state, target_id, db):
 			return false
 		# "ally" powers (e.g. Elder Moorf) may only target allies, not heroes.
 		if targets_kind == "ally" and not _is_ally(state, target_id):
@@ -1060,7 +1195,8 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		"deal_damage_to_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
-			if target_id != "" and state.is_in_play(target_id):
+			# Rule 706 re-check: fizzle if the target left play or became Untargetable.
+			if _is_legal_target(state, target_id, db):
 				events.append_array(GameLogic.deal_damage(state, card_id, target_id, amount, db))
 				var t_card := state.get_card(target_id)
 				if t_card and state.get_current_hp(target_id, db) <= 0:
@@ -1073,14 +1209,14 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		"heal_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
-			if target_id != "" and state.is_in_play(target_id):
+			if _is_legal_target(state, target_id, db):
 				events.append_array(GameLogic.heal(state, target_id, amount, db, card_id))
 		"buff_atk_target":
 			# Elder Moorf: "Target ally has +X ATK this turn."
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
 			var target := state.get_card(target_id)
-			if target and state.is_in_play(target_id) \
+			if target and _is_legal_target(state, target_id, db) \
 					and _is_ally(state, target_id):
 				var buff := Buff.make("moorf_atk", card_id, "atk", amount, "turns", 1)
 				events.append_array(GameLogic.add_buff(state, target_id, buff))
@@ -1097,7 +1233,7 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			# Ryn Dreamstrider: "Target hero or ally has +X ATK while attacking this turn."
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
-			if target_id != "" and state.is_in_play(target_id):
+			if _is_legal_target(state, target_id, db):
 				var buff := Buff.make("ryn_atk", card_id, "atk", amount,
 						"turns", 1, "while_attacking")
 				events.append_array(GameLogic.add_buff(state, target_id, buff))
@@ -1824,7 +1960,7 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 	var target_id: String = action.params.get("target_id", "")
 	var is_gy_power := _power_effect_is(def, "graveyard_to_hand")
 	if target_id != "" and not is_gy_power:
-		if not state.is_in_play(target_id):
+		if not _is_legal_target(state, target_id, db):
 			return false
 	if is_gy_power:
 		var gy_req := get_graveyard_search_requirement(def)
@@ -1839,7 +1975,8 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 		# target_id = damage target, heal_target_id = heal target; both must be in play and different.
 		if target_id != "":
 			var heal_target_id: String = action.params.get("heal_target_id", "")
-			if heal_target_id == "" or not state.is_in_play(heal_target_id):
+			# Heals are targeted too ("target hero or ally") — Untargetable blocks them.
+			if not _is_legal_target(state, heal_target_id, db):
 				return false
 			if heal_target_id == target_id:
 				return false
@@ -1987,7 +2124,8 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 		match parts[0].strip_edges():
 			"deal_damage_to_target":
 				# Format: deal_damage_to_target:AMOUNT:DMG_TYPE
-				if target_id == "":
+				# Rule 706 re-check: fizzle if the target left play or became Untargetable.
+				if not _is_legal_target(state, target_id, db):
 					continue
 				var amount := int(parts[1]) if parts.size() > 1 else 0
 				events.append_array(GameLogic.deal_damage(
@@ -2005,7 +2143,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 			"deal_7_minus_hand_to_hero":
 				# Format: deal_7_minus_hand_to_hero:DMG_TYPE
 				# Damage = max(7 - hand size of target hero's controller, 0).
-				if target_id != "" and state.is_in_play(target_id):
+				if _is_legal_target(state, target_id, db):
 					var t_card := state.get_card(target_id)
 					var hand_size := state.cards_in_zone(t_card.controller + "_hand").size()
 					var amount2: int = max(7 - hand_size, 0)
@@ -2019,7 +2157,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				# Format: deal_x_damage_to_ally:DMG_TYPE
 				# x_value is chosen by the player; paid as self-damage before effect resolves.
 				var x_value: int = action.params.get("x_value", 0)
-				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
+				if x_value >= 1 and _is_legal_target(state, target_id, db):
 					# Self-damage on the hero (paid as part of cost).
 					events.append_array(GameLogic.deal_damage(state, hero_id, hero_id, x_value, db))
 					# Damage to target ally.
@@ -2030,7 +2168,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 			"heal_x_from_target":
 				# X resources are already paid at submission. Heal X from target.
 				var x_value: int = action.params.get("x_value", 0)
-				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
+				if x_value >= 1 and _is_legal_target(state, target_id, db):
 					events.append_array(GameLogic.heal(state, target_id, x_value, db, hero_id))
 			"graveyard_to_hand":
 				# Format: graveyard_to_hand:TYPE:MIN:MAX:OWNER[:MAX_COST] (hero-power use).
@@ -2045,7 +2183,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 			"radak_pet_sacrifice":
 				# Pet already destroyed at submission. Deal x_value shadow damage to target.
 				var x_value: int = action.params.get("x_value", 0)
-				if x_value >= 1 and target_id != "" and state.is_in_play(target_id):
+				if x_value >= 1 and _is_legal_target(state, target_id, db):
 					events.append_array(GameLogic.deal_damage(state, hero_id, target_id, x_value, db))
 					var t_card := state.get_card(target_id)
 					if t_card and state.get_current_hp(target_id, db) <= 0:
@@ -2059,14 +2197,14 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				events.append_array(
 					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))
 			"destroy_exhausted_ally":
-				if target_id != "" and state.is_in_play(target_id):
+				if _is_legal_target(state, target_id, db):
 					events.append_array(_destroy_card_trigger(state, target_id, hero_id, db))
 			"deal_damage_and_heal":
 				# Format: deal_damage_and_heal:DMG_AMOUNT:DMG_TYPE:HEAL_AMOUNT
 				var dmg_amount  := int(parts[1]) if parts.size() > 1 else 0
 				var heal_amount := int(parts[3]) if parts.size() > 3 else 0
 				var heal_target_id: String = action.params.get("heal_target_id", "")
-				if target_id != "":
+				if _is_legal_target(state, target_id, db):
 					events.append_array(GameLogic.deal_damage(
 						state, hero_id, target_id, dmg_amount, db))
 					var t_card := state.get_card(target_id)
@@ -2078,7 +2216,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 						else:
 							events.append_array(
 								_check_destroyed_trigger(state, target_id, hero_id, db))
-				if heal_target_id != "" and state.is_in_play(heal_target_id):
+				if _is_legal_target(state, heal_target_id, db):
 					events.append_array(GameLogic.heal(state, heal_target_id, heal_amount, db, hero_id))
 	return events
 
@@ -2086,7 +2224,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 # ── Enters-play targeted effect ────────────────────────────────────────────────
 
 static func _can_choose_enter_play_target(state: GameState, action: PendingAction,
-		_db = null) -> bool:
+		db = null) -> bool:
 	if state.pending_enter_play_effect.is_empty():
 		return false
 	var source_id: String = action.params.get("source_card_id", "")
@@ -2100,7 +2238,7 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 		if (a as PendingAction).action_type == "choose_enter_play_target":
 			return false
 	var target_id: String = action.params.get("target_id", "")
-	if target_id == "" or not state.is_in_play(target_id):
+	if not _is_legal_target(state, target_id, db):
 		return false
 	return true
 
@@ -2119,6 +2257,9 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 		return events
 	match parts[0]:
 		"deal_damage_to_target":
+			# Rule 706 re-check: fizzle if the target left play or became Untargetable.
+			if not _is_legal_target(state, target_id, db):
+				return events
 			var amount := int(parts[1]) if parts.size() > 1 else 0
 			events.append_array(GameLogic.deal_damage(state, source_id, target_id, amount, db))
 			var t_card := state.get_card(target_id)

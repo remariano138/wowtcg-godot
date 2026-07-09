@@ -200,6 +200,13 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			continue
 		if action_type in ["play_instant", "play_ability"] and db:
 			var def := db.get_def(card.card_def_id) as CardDef
+			if def and StackResolver._has_effect_flag_prefix(def, "chain_lightning"):
+				# Chain Lightning: up to 3 distinct enemy targets, first target may
+				# not be Untargetable (2nd/3rd may). AI always targets opponents only.
+				var cl_action := _chain_lightning_action(state, db, player_id, card.instance_id, action_type)
+				if cl_action:
+					result.append(cl_action)
+				continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
@@ -1124,6 +1131,188 @@ func _other_player_id(state: GameState, player_id: String) -> String:
 		if pid != player_id:
 			return pid
 	return player_id
+
+
+# Parses "chain_lightning:A1:A2:A3:DMG_TYPE" into [A1, A2, A3].
+func _chain_lightning_amounts(def: CardDef) -> Array[int]:
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "chain_lightning":
+			var result: Array[int] = []
+			for i in range(1, 4):
+				result.append(int(parts[i]) if parts.size() > i else 0)
+			return result
+	return [0, 0, 0]
+
+
+# Chain Lightning (azeroth_106): builds a single action announcing up to 3
+# distinct enemy targets, one per wave (target_id/target_id_2/target_id_3).
+# AI always targets opponents only (never self-targets, per CLAUDE.md AI
+# conventions).
+#
+# Global wave assignment (not per-wave greedy): first maximize kills by
+# matching each killable target with the SMALLEST wave that suffices (waves
+# ascending, each killing the toughest candidate it can), then dump leftover
+# waves — largest first — onto the highest-HP remaining targets. This avoids
+# wasting the 3-damage wave on a 1-HP ally the 1-damage wave could kill
+# (e.g. two 1-HP allies + hero → waves 1 and 2 kill the allies, wave 3 hits
+# the hero).
+#
+# Legality is verified with can_submit probes per slot (which also excludes
+# Untargetable candidates from the 1st wave only); if a planned slot is
+# illegal, the offending candidate is dropped from the pool and the plan is
+# rebuilt.
+func _chain_lightning_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var amounts := _chain_lightning_amounts(def)
+	var opp := _other_player_id(state, player_id)
+	var opp_ps := state.players.get(opp) as PlayerState
+	var pool: Array[String] = []
+	for ally in state.cards_in_zone(opp + "_ally_row"):
+		pool.append(ally.instance_id)
+	if opp_ps and opp_ps.hero_instance_id != "":
+		pool.append(opp_ps.hero_instance_id)
+
+	var keys := ["target_id", "target_id_2", "target_id_3"]
+	while not pool.is_empty():
+		var plan := _chain_lightning_plan(state, db, amounts, pool)
+		if plan[0] == "":
+			return null   # no mandatory target plannable
+		# Validate slot by slot; on failure drop that candidate and re-plan.
+		var params := {"card_id": card_id}
+		var bad := ""
+		for i in range(3):
+			if plan[i] == "":
+				break
+			var probe_params: Dictionary = params.duplicate()
+			probe_params[keys[i]] = plan[i]
+			if not StackResolver.can_submit(state,
+					PendingAction.make(action_type, player_id, probe_params), db):
+				bad = plan[i]
+				break
+			params[keys[i]] = plan[i]
+		if bad != "":
+			pool.erase(bad)
+			continue
+		if not params.has("target_id"):
+			return null
+		var action := PendingAction.make(action_type, player_id, params)
+		if StackResolver.can_submit(state, action, db):
+			return action
+		return null
+	return null
+
+
+# Plans wave→target assignment for Chain Lightning. Returns a 3-element
+# Array[String] (one per wave slot, "" = unassigned). Phase 1: waves in
+# ascending damage order each kill the highest-HP candidate they can
+# (smallest sufficient wave per kill). Phase 2: leftover waves, largest
+# first, hit the highest-HP remaining candidates.
+func _chain_lightning_plan(state: GameState, db, amounts: Array[int],
+		pool: Array[String]) -> Array[String]:
+	var plan: Array[String] = ["", "", ""]
+	var remaining := pool.duplicate()
+
+	# Wave indices sorted by damage ascending (ties keep printed order).
+	var order := [0, 1, 2]
+	order.sort_custom(func(a, b): return amounts[a] < amounts[b])
+
+	# Phase 1: kills with the smallest sufficient wave.
+	for i in order:
+		if amounts[i] <= 0:
+			continue
+		var best := ""
+		var best_hp := -1
+		for cand in remaining:
+			var hp := state.get_current_hp(cand, db)
+			if hp <= amounts[i] and hp > best_hp:
+				best = cand
+				best_hp = hp
+		if best != "":
+			plan[i] = best
+			remaining.erase(best)
+
+	# Phase 2: leftover waves (largest first) onto toughest remaining targets.
+	for i in range(3):
+		if plan[i] != "" or amounts[i] <= 0 or remaining.is_empty():
+			continue
+		var best := ""
+		var best_hp := -1
+		for cand in remaining:
+			var hp := state.get_current_hp(cand, db)
+			if hp > best_hp:
+				best = cand
+				best_hp = hp
+		plan[i] = best
+		remaining.erase(best)
+
+	# Slots must be contiguous (target_id_3 requires target_id_2, and
+	# target_id is mandatory): compact assigned targets forward. Wave
+	# amounts are fixed per slot, so compacting changes which damage each
+	# target takes — re-sort so bigger waves keep their bigger targets:
+	# collect assigned targets, order by HP descending, refill slots in
+	# printed (descending-damage) order.
+	var assigned: Array[String] = []
+	for i in range(3):
+		if plan[i] != "":
+			assigned.append(plan[i])
+	if assigned.is_empty():
+		return plan   # all slots empty
+	# Keep kills on their planned waves when possible: only re-slot if
+	# there are gaps (e.g. wave 2 unassigned but wave 3 assigned).
+	var has_gap := false
+	for i in range(assigned.size()):
+		if plan[i] == "":
+			has_gap = true
+			break
+	if not has_gap:
+		return plan
+	# Re-plan compactly against only the assigned targets.
+	return _chain_lightning_plan_compact(state, db, amounts, assigned)
+
+
+# Compact re-plan: given the chosen targets, assign them to the first N wave
+# slots so that each killable target gets the smallest wave that still kills
+# it, and non-killable targets soak the biggest leftover waves (HP desc).
+func _chain_lightning_plan_compact(state: GameState, db, amounts: Array[int],
+		targets: Array[String]) -> Array[String]:
+	var plan: Array[String] = ["", "", ""]
+	var remaining := targets.duplicate()
+	var slots := range(mini(3, targets.size()))
+	# Kill phase over the compact slots, ascending damage.
+	var order := []
+	for i in slots:
+		order.append(i)
+	order.sort_custom(func(a, b): return amounts[a] < amounts[b])
+	for i in order:
+		var best := ""
+		var best_hp := -1
+		for cand in remaining:
+			var hp := state.get_current_hp(cand, db)
+			if hp <= amounts[i] and hp > best_hp:
+				best = cand
+				best_hp = hp
+		if best != "":
+			plan[i] = best
+			remaining.erase(best)
+	# Leftovers: biggest wave → toughest target.
+	for i in slots:
+		if plan[i] != "" or remaining.is_empty():
+			continue
+		var best := ""
+		var best_hp := -1
+		for cand in remaining:
+			var hp := state.get_current_hp(cand, db)
+			if hp > best_hp:
+				best = cand
+				best_hp = hp
+		plan[i] = best
+		remaining.erase(best)
+	return plan
 
 
 func _targeted_instant_actions(state: GameState, db, player_id: String,

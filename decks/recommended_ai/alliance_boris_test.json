@@ -15,8 +15,13 @@
     },
     {
       "card_def_id": "azeroth_360",
-      "count": 2,
+      "count": 1,
       "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
     },
     {
       "card_def_id": "dark_portal_316",
@@ -74,9 +79,9 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "azeroth_165",
+      "card_def_id": "azeroth_221",
       "count": 2,
-      "_card_name": "Quick Strike"
+      "_card_name": "Tristan Rapidstrike"
     },
     {
       "card_def_id": "azeroth_183",

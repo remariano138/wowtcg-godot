@@ -236,6 +236,8 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 		# Infernal: "At the start of your turn, discard a card, or target opponent
 		# gains control of [this]." Opens a pending choice the scene must resolve
 		# via StackResolver.choose_control_discard / decline_control_discard.
+		# Resolved immediately with no priority window — see data/rules_deviations.md
+		# "Infernal" for why this deviates from rule 501.1a's chain-based trigger.
 		if not each_turn and key == "turn_start_discard_or_give_control":
 			state.pending_control_discard_player = card.controller
 			state.pending_control_discard_ids.append(card.instance_id)

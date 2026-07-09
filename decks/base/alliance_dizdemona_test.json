@@ -15,12 +15,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_347",
-      "count": 2,
+      "count": 1,
       "_card_name": "Battle of Darrowshire"
     },
     {
@@ -110,13 +110,13 @@
     },
     {
       "card_def_id": "azeroth_173",
-      "count": 2,
+      "count": 1,
       "_card_name": "Acolyte Demia"
     },
     {
-      "card_def_id": "azeroth_175",
-      "count": 1,
-      "_card_name": "Anika Berlyn"
+      "card_def_id": "azeroth_221",
+      "count": 2,
+      "_card_name": "Tristan Rapidstrike"
     },
     {
       "card_def_id": "azeroth_179",

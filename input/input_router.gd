@@ -286,6 +286,18 @@ func start_graveyard_selection(quest_id: String) -> void:
 		return
 	var candidates := StackResolver.get_graveyard_search_candidates(
 			state, local_player, req, db)
+	# Optional-target rewards (The Missing Diplomat, min 0) with nothing to find:
+	# complete the quest immediately with no targets — the reward just fizzles.
+	# No browser is opened for an empty candidate list.
+	if candidates.is_empty() and int(req.get("min_count", 1)) == 0:
+		var complete := PendingAction.make("use_quest", local_player,
+				{"quest_id": quest_id})
+		var complete_events := StackResolver.submit_action(state, complete, db)
+		if not complete_events.is_empty():
+			EventBus.emit_events(complete_events)
+			_pass_own_proposal(complete)
+			refresh_highlights()
+		return
 	if candidates.size() < int(req.get("min_count", 1)):
 		return
 	_gy_select_quest_id = quest_id
@@ -872,7 +884,8 @@ func get_playable_card_ids() -> Array:
 				if ap_ready_ok \
 						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 						and state.phase == "action" and state.priority_player == local_player \
-						and state.pending_actions.is_empty():
+						and (state.pending_actions.is_empty() \
+							or not StackResolver._power_effect_is(def, "on_your_turn")):
 					result.append(card.instance_id)
 			else:
 				var ap_action := PendingAction.make("use_ally_power", local_player,
@@ -1002,7 +1015,8 @@ func get_context_actions(instance_id: String) -> Array:
 						ap_enabled = ap_ready_ok \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 							and state.phase == "action" and state.priority_player == local_player \
-							and state.pending_actions.is_empty()
+							and (state.pending_actions.is_empty() \
+								or not StackResolver._power_effect_is(def, "on_your_turn"))
 					else:
 						var ap_action := PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id})

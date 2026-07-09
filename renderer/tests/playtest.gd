@@ -105,6 +105,10 @@ var _pending_exhaust: Dictionary = {}  # player_id -> count of resources exhaust
 
 # ── Control panel ──────────────────────────────────────────────────────────────
 var _turbo_mode: bool = true
+# One-shot "auto-pass this combat" toggle (set by pressing F during a combat
+# window). Auto-passes the human's attack/defend windows until the opponent
+# responds (adds a link to the chain), then clears so the human can react.
+var _auto_pass_combat: bool = false
 var _turbo_btn:  Button
 var _tactical_btn: Button
 var _mode_desc_label: Label
@@ -332,9 +336,9 @@ func _build_scene() -> void:
 	# (resource label: x=648, same y as the button); now docked to the right of
 	# the speed mode selector.
 	_mulligan_hint_label = _add_label(
-		"Left-click = play/place\nRight-click = options\nEsc = retract",
-		Vector2(1470, 987), 11, Color(0.38, 0.38, 0.38))
-	_mulligan_hint_label.size = Vector2(190, 76)
+		"Left-click = play/place\nRight-click = options\nEsc = retract\nCtrl+Space = wrap up / end turn\nF = auto-pass combat windows",
+		Vector2(1470, 979), 11, Color(0.38, 0.38, 0.38))
+	_mulligan_hint_label.size = Vector2(200, 96)
 	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	_mulligan_hint_label.visible = false
@@ -859,24 +863,30 @@ func _update_pass_btn() -> void:
 		_pass_btn.text     = "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not has_plays:
-		var _no_play_label := "Wrap Up" if in_action \
-				else (("End Turn" if is_p1_turn else "Take Turn") if _state.phase == "end" else "Pass")
-		_pass_btn.text     = "No legal play — %s  [Space]" % _no_play_label
+		# Wrap-up / end-turn passes require Ctrl+Space (plain Space can't end your
+		# turn — prevents accidental skips); other passes stay on Space.
+		if in_action:
+			_pass_btn.text = "No legal play — Wrap Up  [Ctrl+Space]"
+		elif _state.phase == "end":
+			_pass_btn.text = "No legal play — %s  [Ctrl+Space]" \
+					% ("End Turn" if is_p1_turn else "Take Turn")
+		else:
+			_pass_btn.text = "No legal play — Pass  [Space]"
 		_pass_btn.modulate = Color(1.0, 0.35, 0.35)
 	elif chain_busy:
 		_pass_btn.text     = "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(1.0, 1.0, 1.0)
 	elif in_attack:
-		_pass_btn.text     = "Attack window : fight on!  [Space]"
+		_pass_btn.text     = "Attack window : fight on!  [Space] · auto-pass [F]"
 		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif in_defend:
-		_pass_btn.text     = "Defense window : fight on!  [Space]"
+		_pass_btn.text     = "Defense window : fight on!  [Space] · auto-pass [F]"
 		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif in_action:
-		_pass_btn.text     = "Wrap Up  [Space]"
+		_pass_btn.text     = "Wrap Up  [Ctrl+Space]"
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
 	elif _state.phase == "end":
-		_pass_btn.text     = ("End Turn  [Space]" if is_p1_turn else "Take Turn  [Space]")
+		_pass_btn.text     = ("End Turn  [Ctrl+Space]" if is_p1_turn else "Take Turn  [Ctrl+Space]")
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
 	else:
 		# Ready/draw phase, chain empty — passing closes a short mandatory window
@@ -891,6 +901,20 @@ func _input(event: InputEvent) -> void:
 	# the pass through _try_pass() before InputRouter's _unhandled_input fires.
 	# Godot 4 processes _unhandled_input children-first, so InputRouter would
 	# consume the event before this scene's _unhandled_input ever ran.
+	# Ctrl+Space is the ONLY way to wrap up / end the turn from the keyboard. Plain
+	# Space never ends the turn (see the wrap-up guard below), so it can't be pressed
+	# by accident. Ctrl+Space is a deliberate two-key combo → skip the confirm dialog.
+	# (A modifier makes the physical event stop matching the plain-Space "ui_accept"
+	# action, so it needs its own branch by keycode.)
+	if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE \
+			and event.ctrl_pressed:
+		if (_x_dialog and _x_dialog.visible) \
+				or (_gy_dialog and _gy_dialog.visible and not _gy_peek_active):
+			get_viewport().set_input_as_handled()
+			return
+		_try_pass(true)
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("ui_accept"):
 		# If the X dialog is open, Enter confirms it (the LineEdit grabs Enter via text_submitted,
 		# but we also handle it here for the case where focus has drifted to the OK button).
@@ -900,6 +924,12 @@ func _input(event: InputEvent) -> void:
 			return
 		# Graveyard browser open: Space must not pass priority underneath the modal.
 		if _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
+			get_viewport().set_input_as_handled()
+			return
+		# Plain Space must not end the turn — that requires Ctrl+Space. Absorb it
+		# so an accidental tap can't skip the turn.
+		if _is_wrap_up_pass():
+			_set_status("Press Ctrl+Space to wrap up / end your turn")
 			get_viewport().set_input_as_handled()
 			return
 		_try_pass()
@@ -933,6 +963,17 @@ func _input(event: InputEvent) -> void:
 		_log_bg.visible = _log_visible
 		_log.visible    = _log_visible
 		get_viewport().set_input_as_handled()
+	# F during one of the human's combat windows: auto-pass the attack AND defend
+	# windows in one go, stopping only if the opponent responds. (F, not C — C is
+	# the graveyard-confirm key.)
+	elif event is InputEventKey and event.pressed and event.keycode == KEY_F \
+			and not (_gy_dialog and _gy_dialog.visible) \
+			and not (_x_dialog and _x_dialog.visible) \
+			and _can_auto_pass_combat():
+		_auto_pass_combat = true
+		_set_status("Auto-passing combat — will stop if the opponent responds")
+		_drain_passes()
+		get_viewport().set_input_as_handled()
 	# C confirms the graveyard selection (matches the "Confirm (C)" button).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_C \
 			and _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
@@ -962,7 +1003,7 @@ func _on_pass_btn_pressed() -> void:
 
 # Gate for human passing: shows a confirmation if they'd end their action phase
 # without having played a single card or instant this turn.
-func _try_pass() -> void:
+func _try_pass(skip_confirm: bool = false) -> void:
 	if not _state or _p1_type != "human":
 		return
 	# Infernal choice pending for the human: Space/pass = decline the discard
@@ -980,7 +1021,7 @@ func _try_pass() -> void:
 		and _state.pending_actions.is_empty()
 		and not _p1_played_this_action_phase
 	)
-	if needs_confirm:
+	if needs_confirm and not skip_confirm:
 		_end_turn_dialog.popup_centered()
 	else:
 		_router.pass_priority_action()
@@ -1860,8 +1901,11 @@ func _on_graveyard_select_requested(quest_id: String, candidate_ids: Array,
 	var quest_name := quest_def.card_name if quest_def else "Quest"
 	var count_str := ("%d" % min_count) if min_count == max_count \
 			else "%d – %d" % [min_count, max_count]
+	var source := "graveyard"
+	if quest_def and StackResolver.get_graveyard_search_requirement(quest_def).get("source", "graveyard") == "deck":
+		source = "deck"
 	_open_gy_dialog(candidate_ids, false,
-			"%s — choose %s card(s) from the graveyard" % [quest_name, count_str],
+			"%s — choose %s card(s) from your %s" % [quest_name, count_str, source],
 			min_count, max_count)
 
 
@@ -2265,9 +2309,21 @@ func _drain_passes() -> void:
 			# Turbo auto-passes the human's own just-added top chain link even when they
 			# hold a legal instant (LIFO — they'll regain priority if the opponent reacts).
 			var owns_top := _player_owns_top_of_chain(pid)
-			if not _turbo_mode or (_router.has_any_legal_play() and not owns_top):
+			# C one-shot: auto-pass this player's combat windows until the opponent
+			# responds. An opponent link on the chain (not owned by us) means they
+			# played something → stop, clear the flag, and hand control back.
+			if _auto_pass_combat and pid == "p1":
+				if chain_pending and not owns_top:
+					_auto_pass_combat = false
+					break
+				if not (in_combat or owns_top):
+					_auto_pass_combat = false
+					break
+				events = StackResolver.pass_priority(_state, _db)
+			elif not _turbo_mode or (_router.has_any_legal_play() and not owns_top):
 				break
-			events = StackResolver.pass_priority(_state, _db)
+			else:
+				events = StackResolver.pass_priority(_state, _db)
 		else:
 			var ai: Object = _p1_ai if pid == "p1" else _p2_ai
 			if not ai:
@@ -2285,6 +2341,7 @@ func _drain_passes() -> void:
 		for e: GameEvent in events:
 			if e.event_type == "combat_concluded":
 				had_combat_conclusion = true
+				_auto_pass_combat = false  # one-shot per combat
 			elif e.event_type == "card_moved" and e.payload.get("from", "") == "chain":
 				var cid: String = e.payload.get("card", "")
 				var moved_card := _state.get_card(cid)
@@ -2347,6 +2404,32 @@ func _player_owns_top_of_chain(pid: String) -> bool:
 		return false
 	var top: PendingAction = _state.pending_actions.back()
 	return top != null and top.source_player == pid
+
+
+# True when a plain-Space pass would END the human's turn (wrap up the action
+# phase or take/end during the end phase). These are gated behind Ctrl+Space so
+# a stray Space tap can't skip the turn. Pending choices (control-discard decline,
+# sacrifices) are NOT wrap-ups — those keep their own Space handling.
+func _is_wrap_up_pass() -> bool:
+	if not _state or _state.priority_player != "p1" or _state.turn_player != "p1":
+		return false
+	if _state.pending_control_discard_player == "p1" \
+			or _state.pending_pet_sacrifice_player == "p1" \
+			or _state.pending_equip_sacrifice_player == "p1":
+		return false
+	if not _state.pending_actions.is_empty():
+		return false
+	if _state.combat_attack_window or _state.combat_defend_window or _state.in_protect_point:
+		return false
+	return _state.phase == "action" or _state.phase == "end"
+
+
+# True when the human currently holds priority in one of their own combat
+# windows — the moment pressing C to auto-pass the rest of combat makes sense.
+func _can_auto_pass_combat() -> bool:
+	return _state != null and _p1_type == "human" \
+		and _state.priority_player == "p1" \
+		and (_state.combat_attack_window or _state.combat_defend_window)
 
 
 func _is_p1_main_action_window() -> bool:

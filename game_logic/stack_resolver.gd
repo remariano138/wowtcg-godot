@@ -237,20 +237,27 @@ static func _can_play_non_instant(state: GameState, action: PendingAction,
 		return false
 	if card.controller != action.source_player:
 		return false
-	# Rule 502.1 / 1199: non-instants require the NON-COMBAT action phase — illegal
-	# during attack or defend windows even though phase == "action" and chain is empty.
-	if state.phase != "action":
-		return false
-	if state.combat_attack_window or state.combat_defend_window:
-		return false
-	if state.turn_player != action.source_player:
-		return false
-	if not state.pending_actions.is_empty():
-		return false
 	# Card must actually be an Ally — Abilities and Instants have their own action types.
+	var def: CardDef = null
 	if db:
-		var def := db.get_def(card.card_def_id) as CardDef
+		def = db.get_def(card.card_def_id) as CardDef
 		if def and def.card_type != "Ally":
+			return false
+	# Instant Ally (e.g. Tristan Rapidstrike): the Instant tag overrides non-instant
+	# timing (rule 409.1) — playable any time its controller has priority, including
+	# combat windows, the opponent's turn, and in response to a non-empty chain.
+	# It still resolves as a normal ally (enters the ally_row with summoning sickness,
+	# which does NOT prevent protecting — 601.2a restricts attackers only).
+	if def == null or not def.is_instant:
+		# Rule 502.1 / 1199: non-instants require the NON-COMBAT action phase — illegal
+		# during attack or defend windows even though phase == "action" and chain is empty.
+		if state.phase != "action":
+			return false
+		if state.combat_attack_window or state.combat_defend_window:
+			return false
+		if state.turn_player != action.source_player:
+			return false
+		if not state.pending_actions.is_empty():
 			return false
 	# Rule 412.2: player must be able to afford the cost.
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
@@ -1030,14 +1037,15 @@ static func _clear_damage_prevention(state: GameState) -> void:
 
 static func _can_use_ally_power(state: GameState, action: PendingAction,
 		db = null) -> bool:
-	# Requires priority, action phase, empty chain.
-	# No "turn_player" restriction — ally powers without "use only on your turn" work on
-	# either player's turn (e.g. Grimdron blocking in an opponent's attack/defend window).
+	# Requires priority and action phase. A non-empty chain is allowed: activated ally
+	# powers are instant-speed (rule 701.3) and may respond to something already on the
+	# chain (e.g. Freya Lightsworn healing in response to Ta'zo's damage power). The
+	# empty-chain gate applies only to "on_your_turn" (sorcery-speed) powers below.
+	# No "turn_player" restriction either — ally powers without "use only on your turn"
+	# work on either player's turn (e.g. Grimdron blocking in an opponent's window).
 	if state.priority_player != action.source_player:
 		return false
 	if state.phase != "action":
-		return false
-	if not state.pending_actions.is_empty():
 		return false
 	var card_id: String = action.params.get("card_id", "")
 	var card := state.get_card(card_id)
@@ -1061,8 +1069,11 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# Also used for engine-only deviations where the printed text has no such
 	# restriction but it's true by construction (e.g. Rayder — see
 	# data/rules_deviations.md).
-	if _power_effect_is(def, "on_your_turn") and state.turn_player != action.source_player:
-		return false
+	if _power_effect_is(def, "on_your_turn"):
+		if state.turn_player != action.source_player:
+			return false
+		if not state.pending_actions.is_empty():
+			return false
 	var extra_cost_str: String = ap.get("extra_cost", "")
 	var once_per_turn: bool = extra_cost_str == "once_per_turn"
 	# put_damage_self (e.g. Acolyte Demia) has no [Activate] tap symbol either —
@@ -1582,6 +1593,21 @@ static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
 				"owner":     parts[4].strip_edges(),
 				"max_cost":  int(parts[5]) if parts.size() >= 6 else -1,
 				"dest":      dest,
+				"source":    "graveyard",
+			}
+		# Deck search (The Missing Diplomat): deck_to_hand:TYPE:MIN:MAX[:MAX_COST].
+		# Always searches the completer's own deck; the deck is shuffled afterward
+		# (rule 413.2). MIN 0 means the reward may find nothing (rule 413.3) — the
+		# quest still completes, it just does nothing.
+		if parts.size() >= 4 and key == "deck_to_hand":
+			return {
+				"card_type": parts[1].strip_edges(),
+				"min_count": int(parts[2]),
+				"max_count": int(parts[3]),
+				"owner":     "own",
+				"max_cost":  int(parts[4]) if parts.size() >= 5 else -1,
+				"dest":      "hand",
+				"source":    "deck",
 			}
 	return {}
 
@@ -1628,6 +1654,11 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 	var result: Array[String] = []
 	if req.is_empty() or not db:
 		return result
+	# Deck-search rewards (The Missing Diplomat) look through the completer's own
+	# deck rather than a graveyard. Same type/cost filtering below.
+	var zone_suffix := "_graveyard"
+	if req.get("source", "graveyard") == "deck":
+		zone_suffix = "_deck"
 	var owner: String = req.get("owner", "own")
 	var gy_players: Array[String] = []
 	if owner == "own" or owner == "both":
@@ -1637,7 +1668,7 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 	var type_filter: String = req.get("card_type", "any")
 	var max_cost: int = req.get("max_cost", -1)
 	for gy_player in gy_players:
-		for card in state.cards_in_zone(gy_player + "_graveyard"):
+		for card in state.cards_in_zone(gy_player + zone_suffix):
 			var def := db.get_def(card.card_def_id) as CardDef
 			if not def:
 				continue
@@ -1821,6 +1852,27 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 						continue
 					events.append_array(GameLogic.move_card(state, tid, t_card.owner + "_rfg"))
 					events.append(GameEvent.card_removed_from_game(tid, player_id))
+			"deck_to_hand":
+				# The Missing Diplomat: search your deck, reveal the chosen ally,
+				# put it into your hand. Re-check each target is still in the
+				# player's deck at resolution (fizzle per-card otherwise). Rule
+				# 413.2/415.3b: the owner shuffles the deck after the search — do
+				# so even if no card was found (the deck was still searched).
+				for tid in target_ids:
+					var t_card := state.get_card(tid)
+					if not t_card:
+						continue
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if not t_zone or t_zone.zone_type != "deck":
+						continue
+					events.append(GameEvent.card_revealed_from_deck(tid, player_id))
+					events.append_array(GameLogic.move_card(state, tid, player_id + "_hand"))
+				# The deck is always searched when this reward runs, even if the
+				# player found nothing to take.
+				var deck_zone := state.zones.get(player_id + "_deck") as Zone
+				if deck_zone:
+					deck_zone.card_ids.shuffle()
+					events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
 	return events
 
 
@@ -2018,11 +2070,12 @@ static func retract_last(state: GameState, player_id: String,
 
 static func _can_activate_power(state: GameState, action: PendingAction,
 		db = null) -> bool:
-	# Hero powers are instants by default (rule 701.3) — usable any time player has priority.
-	# Powers with "on_your_turn" in effects also require turn player + action phase + empty chain.
+	# Hero powers are instants by default (rule 701.3) — usable any time player has
+	# priority, INCLUDING in response to something already on the chain (so a player
+	# can react to e.g. Ta'zo's damage power). Powers with "on_your_turn" in effects
+	# are sorcery-speed: they also require turn player + action phase + empty chain
+	# (that empty-chain gate is applied in the "on_your_turn" block below).
 	if state.priority_player != action.source_player:
-		return false
-	if not state.pending_actions.is_empty():
 		return false
 	var ps := state.players.get(action.source_player) as PlayerState
 	if not ps or ps.has_used_hero_power:
@@ -2040,6 +2093,8 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 	# "on_your_turn" in effects = "Use only on your turn": action phase, turn player, chain empty.
 	if _power_effect_is(def, "on_your_turn"):
 		if state.phase != "action" or state.turn_player != action.source_player:
+			return false
+		if not state.pending_actions.is_empty():
 			return false
 	# Must be able to afford the cost.
 	var cost: int = max(def.cost, 0)

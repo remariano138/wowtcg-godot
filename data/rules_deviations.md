@@ -77,3 +77,43 @@ to its `effects` string and add an entry here. Note this reuses the same
 flag as genuine "use only on your turn" printed text (Acolyte Demia) —
 the effects string alone doesn't distinguish printed restriction from
 engine deviation, which is exactly why this file exists.
+
+---
+
+## Infernal (`azeroth_127`)
+
+**Printed text:** "At the start of your turn, discard a card, or target
+opponent gains control of Infernal."
+
+**Rule 501.1a:** "at the start of [this turn]" triggers fire during the
+ready step, and the ready step's priority window must close (with nothing
+left to resolve) before the draw step begins. In paper play, a start-of-turn
+trigger like this one is added to the chain like any other triggered
+ability — players get a priority window in which to respond with instants
+*before* the triggered effect resolves and the discard-or-give-control
+choice is actually made.
+
+**Deviation:** the engine resolves the trigger immediately, with no
+priority window before the choice is made — `TurnManager._enter_ready` sets
+`pending_control_discard_player`/`_ids` and the choice must be resolved via
+`StackResolver.choose_control_discard` / `decline_control_discard` before
+anything else can happen (mirrors the pet-sacrifice and enter-play-target
+immediate-choice pattern, see `can_submit`'s blocking guard and `CLAUDE.md`
+§ "Mandatory immediate-resolution choices"). What's preserved from the
+rules: the choice itself still resolves before the ready step's window
+closes, so the draw step correctly cannot start until it's made.
+
+**Why:** none of the currently implemented cards can interact with a
+start-of-turn trigger before it resolves (no "in response to a trigger"
+instants exist yet), so a full chain-based implementation would add
+complexity with no observable difference in play. This matches the same
+immediate-resolution shortcut already taken for pet uniqueness and
+equipment slot uniqueness — both are also start-of-play-action mandatory
+choices with no printed response window that matters yet.
+
+**How to apply this pattern to future cards:** if a future card's
+start-of-turn (or other) trigger is meant to be respondable — e.g. an
+instant that says "in response to a triggered ability" — the immediate-
+resolution shortcut here and in the pet/equipment-sacrifice flows will need
+to be revisited to actually add the trigger to the chain instead of
+resolving it inline.

@@ -61,6 +61,7 @@ func _ready() -> void:
 	_test_chasing_ame_graveyard_to_hand()
 	_test_chasing_ame_blocked_and_filtered()
 	_test_finkle_einhorn_graveyard_to_play()
+	_test_missing_diplomat_deck_search()
 	_test_darrowshire_rfg_three_allies()
 	_test_darrowshire_blocked_with_too_few_allies()
 	_test_defias_brotherhood_requires_four_allies()
@@ -76,6 +77,12 @@ func _ready() -> void:
 	_test_generic_ai_protector_choice()
 	_test_generic_ai_while_attacking_buffs()
 	_test_ally_heal_power_targets_friendlies()
+	_test_react_to_hero_power_with_heal()
+	_test_react_to_hero_power_with_heal_legal_on_chain()
+	_test_on_your_turn_power_blocked_on_chain()
+	_test_instant_ally_timing_and_protect()
+	_test_ai_flashes_instant_protector()
+	_test_ai_holds_instant_protector()
 	_test_combat_instant_ambush()
 	_test_deacon_johanna_once_per_turn()
 	_test_acolyte_demia_power()
@@ -2286,6 +2293,74 @@ func _test_chasing_ame_blocked_and_filtered() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# The Missing Diplomat — search your deck for an ally, reveal it, put it into
+# your hand, then shuffle. May find nothing (min 0) — the quest still completes.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_missing_diplomat_deck_search() -> void:
+	print("\n-- The Missing Diplomat: search deck for an ally, put into hand, shuffle --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("diplomat_def", 4, "deck_to_hand:Ally:0:1")
+	db.ally("deck_ally_def", 2, 2, [], 3)
+	db.quest("deck_quest_def", 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+
+	var quest := CardInstance.create("dip_inst", "diplomat_def", "p1", "p1_resource_row")
+	state.cards["dip_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("dip_inst")
+
+	# p1 deck: two allies (candidates) + one quest (filtered out).
+	for pair in [["deck_a1", "deck_ally_def"], ["deck_a2", "deck_ally_def"], ["deck_q", "deck_quest_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_deck")
+		state.cards[pair[0]] = c
+		state.zones["p1_deck"].card_ids.append(pair[0])
+	# p2 deck ally must NOT be a candidate (owner filter = own).
+	var opp := CardInstance.create("opp_deck_a", "deck_ally_def", "p2", "p2_deck")
+	state.cards["opp_deck_a"] = opp
+	state.zones["p2_deck"].card_ids.append("opp_deck_a")
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("diplomat_def"))
+	eq(req.get("source", ""), "deck", "diplomat-a: requirement source is deck")
+	var cands := StackResolver.get_graveyard_search_candidates(state, "p1", req, db)
+	eq(cands, ["deck_a1", "deck_a2"], "diplomat-b: only own deck allies are candidates")
+
+	# Completion with no announced target is legal (min 0 — may fail to find).
+	ok(StackResolver.can_submit(state,
+			PendingAction.make("use_quest", "p1", {"quest_id": "dip_inst"}), db),
+		"diplomat-c: completion legal with no target (may find nothing)")
+
+	# A non-ally deck card can't be targeted.
+	ok(not StackResolver.can_submit(state,
+			PendingAction.make("use_quest", "p1",
+				{"quest_id": "dip_inst", "target_ids": ["deck_q"]}), db),
+		"diplomat-d: non-ally deck card is an illegal target")
+
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "dip_inst", "target_ids": ["deck_a1"]})
+	var events := StackResolver.submit_action(state, good, db)
+	ok(not events.is_empty(), "diplomat-e: completion with a valid deck ally submits")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.get_card("deck_a1").zone_id, "p1_hand", "diplomat-f: chosen ally moved to hand")
+	ok(state.get_card("dip_inst").face_down, "diplomat-g: quest flipped face-down")
+	var revealed := false
+	var shuffled := false
+	for ev in events:
+		if ev.event_type == "card_revealed_from_deck" \
+				and ev.payload.get("card_id", "") == "deck_a1":
+			revealed = true
+		if ev.event_type == "deck_shuffled" and ev.payload.get("player", "") == "p1":
+			shuffled = true
+	ok(revealed, "diplomat-h: card_revealed_from_deck event emitted")
+	ok(shuffled, "diplomat-i: deck shuffled after the search")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Finkle Einhorn, At Your Service! — put an ally (cost 2 or less) from the
 # graveyard directly into play; its enter-play triggers fire as if from hand.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3203,6 +3278,363 @@ func _test_ally_heal_power_targets_friendlies() -> void:
 	actions = ai._get_ally_power_actions(state, db, "p1")
 	eq(actions.size(), 0,
 		"sc33-c: no damaged friendly → heal power not offered (enemy never healed)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 33b — Instant-speed reaction to a hero power on the chain (LIFO)
+#
+# p2's Ta'zo puts "deal 3 to victim" on the chain. p1 responds with Freya's
+# activated power (heal 3 from victim). The chain resolves LIFO: Freya heals
+# FIRST, so the victim survives the damage that follows. Proves both that the
+# response is legal on a non-empty chain and that ordering is heal-then-damage.
+#
+#   victim: health 5, starts with 4 damage (1 effective HP).
+#   FIFO (wrong): 4 + 3 = 7 ≥ 5 → dies, heal fizzles → victim in graveyard.
+#   LIFO (right): heal 4→1, then +3 → 4 damage < 5 → survives.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_react_to_hero_power_with_heal() -> void:
+	print("\n-- Scenario 33b: Freya reacts to Ta'zo hero power on the chain (LIFO) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("tazo_def", 25, 3, "deal_damage_to_target:3:fire")
+	db.ally("victim_def", 2, 5, [], 2)
+	db.ally("freya_def", 2, 2, [], 2,
+			"activated_power:0:heal_target:3:holy:hero_or_ally")
+
+	var state := GameState.create_new(["p1", "p2"])
+	var h1 := CardInstance.create("p1_hero", "p1_hero", "p1", "p1_hero_row")
+	state.cards["p1_hero"] = h1
+	state.zones["p1_hero_row"].card_ids.append("p1_hero")
+	state.players["p1"].hero_instance_id = "p1_hero"
+
+	var h2 := CardInstance.create("tazo_inst", "tazo_def", "p2", "p2_hero_row")
+	state.cards["tazo_inst"] = h2
+	state.zones["p2_hero_row"].card_ids.append("tazo_inst")
+	state.players["p2"].hero_instance_id = "tazo_inst"
+
+	state.phase           = "action"
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	state.turn_number     = 1
+
+	_add_ally(state, "victim", "victim_def", "p1")
+	var freya := _add_ally(state, "freya", "freya_def", "p1")
+	freya.just_summoned = false
+	state.get_card("victim").damage_taken = 4
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# p2 puts Ta'zo's damage on the chain, then passes priority to p1.
+	var tazo_power := PendingAction.make("activate_power", "p2",
+		{"hero_id": "tazo_inst", "target_id": "victim"})
+	StackResolver.submit_action(state, tazo_power, db)
+	StackResolver.pass_priority(state, db)   # p2 → p1
+	eq(state.priority_player, "p1", "sc33b-a: p1 has priority to respond")
+
+	# The heal must be a LEGAL response even though the chain is non-empty.
+	var freya_resp := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "freya", "target_id": "victim"})
+	ok(StackResolver.can_submit(state, freya_resp, db),
+		"sc33b-b: Freya's power is legal in response on a non-empty chain")
+
+	StackResolver.submit_action(state, freya_resp, db)
+	# Drain: both players pass until the chain empties.
+	var guard := 8
+	while not state.pending_actions.is_empty() and guard > 0:
+		StackResolver.pass_priority(state, db)
+		guard -= 1
+
+	var victim := state.get_card("victim")
+	ok(victim != null and state.is_in_play("victim"),
+		"sc33b-c: victim survived (LIFO — heal resolved before damage)")
+	eq(victim.damage_taken if victim else -1, 4,
+		"sc33b-d: victim at 4 damage (4, heal→1, +3→4) < 5 health")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 33c — Hero powers are also instant-speed responses to the chain.
+# A hero power (Ta'zo) put on the chain by p2 can be answered by p1's own hero
+# power before it resolves (both are instants, rule 701.3).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_react_to_hero_power_with_heal_legal_on_chain() -> void:
+	print("\n-- Scenario 33c: hero power legal in response to a hero power on chain --")
+	var db := MockDB.new()
+	db.hero("p1_def", 30, 3, "deal_damage_to_target:3:fire")
+	db.hero("p2_def", 30, 3, "deal_damage_to_target:3:fire")
+
+	var state := GameState.create_new(["p1", "p2"])
+	var h1 := CardInstance.create("p1_hero", "p1_def", "p1", "p1_hero_row")
+	state.cards["p1_hero"] = h1
+	state.zones["p1_hero_row"].card_ids.append("p1_hero")
+	state.players["p1"].hero_instance_id = "p1_hero"
+	var h2 := CardInstance.create("p2_hero", "p2_def", "p2", "p2_hero_row")
+	state.cards["p2_hero"] = h2
+	state.zones["p2_hero_row"].card_ids.append("p2_hero")
+	state.players["p2"].hero_instance_id = "p2_hero"
+
+	state.phase           = "action"
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	state.turn_number     = 1
+	_add_resources(state, "p1", 3)
+	_add_resources(state, "p2", 3)
+
+	# p2 puts its hero power on the chain, passes to p1.
+	StackResolver.submit_action(state, PendingAction.make("activate_power", "p2",
+		{"hero_id": "p2_hero", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+
+	var resp := PendingAction.make("activate_power", "p1",
+		{"hero_id": "p1_hero", "target_id": "p2_hero"})
+	ok(StackResolver.can_submit(state, resp, db),
+		"sc33c-a: p1 hero power is legal in response on a non-empty chain")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 33d — "Use only on your turn" powers stay sorcery-speed: they may NOT
+# be added to a non-empty chain even by the turn player holding priority.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_on_your_turn_power_blocked_on_chain() -> void:
+	print("\n-- Scenario 33d: on_your_turn ally power blocked while chain non-empty --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Non-targeted on_your_turn power (draw) so no target machinery is involved.
+	db.ally("sorc_def", 2, 3, [], 2, "activated_power:0:draw:1|on_your_turn")
+	db.instant("bolt_def", 1, "deal_damage_to_target:1:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")   # p1 is turn/priority
+	var sorc := _add_ally(state, "sorc", "sorc_def", "p1")
+	sorc.just_summoned = false
+	_add_resources(state, "p1", 3)
+
+	var pow := PendingAction.make("use_ally_power", "p1", {"card_id": "sorc"})
+	ok(StackResolver.can_submit(state, pow, db),
+		"sc33d-a: on_your_turn power legal with an empty chain")
+
+	# Put an instant on the chain; the sorcery-speed power is now illegal.
+	var bolt := CardInstance.create("bolt", "bolt_def", "p1", "p1_hand")
+	state.cards["bolt"] = bolt
+	state.zones["p1_hand"].card_ids.append("bolt")
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt", "target_id": "p2_hero"}), db)
+	ok(not StackResolver.can_submit(state, pow, db),
+		"sc33d-b: on_your_turn power rejected once the chain is non-empty")
+
+
+# ── Shared setup for the Tristan Rapidstrike (Instant Ally) scenarios ──────────
+# p1's 2/3 attacker proposes combat; p2 holds Tristan (azeroth_221 — the real
+# def_id so BaseAI.COMBAT_INSTANT_TAGS matches) with 4 resources.
+func _instant_ally_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 2, 3, [], 3)
+	db.ally("vanilla_def", 2, 2, [], 2)
+	db.ally("azeroth_221", 3, 3, (["protector"] as Array[String]), 4)
+	(db.get_def("azeroth_221") as CardDef).is_instant = true
+	return db
+
+
+func _add_hand_card(state: GameState, inst_id: String, def_id: String,
+		ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_hand")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_hand"].card_ids.append(inst_id)
+	return card
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 35 — Instant Ally (Tristan Rapidstrike): playable during a combat
+# attack window (rule 409.1 — the Instant tag overrides non-instant timing),
+# then legally protects at the very next protect point (601.2a's "since the
+# start of turn" restriction applies to attackers only; summoning sickness
+# never blocks protecting).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_instant_ally_timing_and_protect() -> void:
+	print("\n-- Scenario 35: Instant Ally flashes in during attack window, protects --")
+	var db := _instant_ally_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_hand_card(state, "tristan", "azeroth_221", "p2")
+	_add_hand_card(state, "vanilla", "vanilla_def", "p2")
+	_add_resources(state, "p2", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# p1 attacks p2's hero; both pass → combat starts, attack window opens.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p1 → p2
+	StackResolver.pass_priority(state, db)   # p2 → resolve proposal
+	ok(state.combat_attack_window, "sc35-a: attack window is open")
+
+	StackResolver.pass_priority(state, db)   # p1 passes → p2 priority
+	eq(state.priority_player, "p2", "sc35-b: p2 has priority in the attack window")
+
+	# A plain ally is NOT playable here (rule 502.1) — the Instant Ally is.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ally", "p2",
+		{"card_id": "vanilla"}), db),
+		"sc35-c: non-instant ally rejected during the attack window")
+	var play := PendingAction.make("play_ally", "p2", {"card_id": "tristan"})
+	ok(StackResolver.can_submit(state, play, db),
+		"sc35-d: Instant Ally playable during the attack window")
+
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)   # p2 → p1
+	StackResolver.pass_priority(state, db)   # p1 → resolve play_ally
+	ok(state.is_in_play("tristan")
+			and state.get_card("tristan").zone_id == "p2_ally_row",
+		"sc35-e: Tristan resolved into p2's ally row mid-combat")
+	ok(state.get_card("tristan").just_summoned,
+		"sc35-f: Tristan has summoning sickness (irrelevant for protecting)")
+
+	# Close the attack window → protect point, with Tristan as a legal protector.
+	StackResolver.pass_priority(state, db)   # p1 (turn player got priority) → p2
+	StackResolver.pass_priority(state, db)   # p2 → close attack window
+	ok(state.in_protect_point, "sc35-g: protect point opened")
+	ok("tristan" in StackResolver.get_legal_protectors(
+			state, state.combat_attacker, state.combat_defender, db),
+		"sc35-h: freshly-flashed Tristan is a legal protector")
+
+	StackResolver.choose_protector(state, "tristan", db)
+	eq(state.combat_defender, "tristan", "sc35-i: Tristan is now the defender")
+	# Defend window → both pass → combat concludes.
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 0,
+		"sc35-j: hero took 0 damage (intercepted)")
+	eq(state.get_card("tristan").damage_taken, 2,
+		"sc35-k: Tristan took the attacker's 2 damage")
+	ok(not state.is_in_play("atk"),
+		"sc35-l: 2/3 attacker died to Tristan's 3 ATK")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 36 — AI flashes Tristan in during the ATTACK window when the
+# protector logic wants him (defending ally would die; Tristan kills the
+# attacker and survives), then protects with him at the protect point.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_flashes_instant_protector() -> void:
+	print("\n-- Scenario 36: AI flashes in Tristan and protects with him --")
+	var db := _instant_ally_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")   # 2/3
+	atk.just_summoned = false
+	_add_ally(state, "victim", "vanilla_def", "p2")            # 2/2 — dies to the hit
+	_add_hand_card(state, "tristan", "azeroth_221", "p2")
+	_add_resources(state, "p2", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var ai := GenericAI.new()
+
+	# Open the attack window on p2's 2/2.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # p1 passes on the window floor
+	eq(state.priority_player, "p2", "sc36-a: p2 (AI) holds priority, attack window open")
+
+	var action := ai.decide_action(state, db, "p2")
+	ok(action != null and action.action_type == "play_ally"
+			and action.params.get("card_id") == "tristan",
+		"sc36-b: AI plays Tristan during the attack window")
+
+	# Resolve the flash-in, close the window → protect point.
+	StackResolver.submit_action(state, action, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(ai.decide_action(state, db, "p2") == null if state.priority_player == "p2" else true,
+		"sc36-c: AI does not flash a second copy / re-act after playing")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.in_protect_point, "sc36-d: protect point opened after the flash-in")
+	eq(ai.choose_protector(state, db, "p2"), "tristan",
+		"sc36-e: AI protects with the freshly-played Tristan")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 37 — AI HOLDS Tristan when flashing him in is wrong:
+#   a) never blind-played on its own action window (held like a combat instant)
+#   b) never during the DEFEND window (protect point already past)
+#   c) not when a board protector already answers the attack
+#   d) not when the block isn't safe (attacker too big) and no hero is dying
+#   e) never when the AI is the ATTACKING side
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_holds_instant_protector() -> void:
+	print("\n-- Scenario 37: AI holds Tristan outside the right window --")
+	var db := _instant_ally_db()
+	db.ally("big_def", 4, 6, [], 5)
+	db.ally("board_prot_def", 3, 4, (["protector"] as Array[String]), 3)
+
+	# a) own action window: get_legal_actions never blind-plays a held card.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_hand_card(state, "tristan", "azeroth_221", "p1")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	var ai := GenericAI.new()
+	var blind := false
+	for a in ai.get_legal_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "tristan":
+			blind = true
+	ok(not blind, "sc37-a: Tristan is held — never blind-played on own window")
+
+	# Shared combat setup builder: p1's attacker vs p2's 2/2, Tristan in p2 hand.
+	var mk := func(attacker_def: String) -> GameState:
+		var s := _base_state(db, "p1_hero", "p2_hero")
+		var a := _add_ally(s, "atk", attacker_def, "p1")
+		a.just_summoned = false
+		_add_ally(s, "victim", "vanilla_def", "p2")
+		_add_hand_card(s, "tristan", "azeroth_221", "p2")
+		_add_resources(s, "p2", 4)
+		s.players["p1"].resource_placed_this_turn = true
+		s.players["p2"].resource_placed_this_turn = true
+		StackResolver.submit_action(s, PendingAction.make("propose_combat", "p1",
+			{"attacker_id": "atk", "defender_id": "victim"}), db)
+		StackResolver.pass_priority(s, db)
+		StackResolver.pass_priority(s, db)
+		StackResolver.pass_priority(s, db)   # window floor → p2 priority
+		return s
+
+	# b) defend window: too late.
+	var s_b: GameState = mk.call("attacker_def")
+	StackResolver.pass_priority(s_b, db)   # p2 passes → close attack window
+	# no protectors on board and none played → defend window opens directly
+	ok(s_b.combat_defend_window, "sc37-b1: defend window open")
+	if s_b.priority_player != "p2":
+		StackResolver.pass_priority(s_b, db)
+	ok(ai.instant_protector_action(s_b, db, "p2") == null,
+		"sc37-b2: Tristan never flashed during the defend window")
+
+	# c) a board protector already answers (3/4 safe-blocks the 2/3 attacker).
+	var s_c: GameState = mk.call("attacker_def")
+	var bp := _add_ally(s_c, "board_prot", "board_prot_def", "p2")
+	bp.just_summoned = false
+	ok(ai.instant_protector_action(s_c, db, "p2") == null,
+		"sc37-c: board protector answers — Tristan held")
+
+	# d) unsafe block (4/6 attacker: Tristan neither kills nor survives),
+	#    dying card is an ally, not the hero → hold.
+	var s_d: GameState = mk.call("big_def")
+	ok(ai.instant_protector_action(s_d, db, "p2") == null,
+		"sc37-d: unsafe block to save an ally — Tristan held")
+
+	# e) the attacking side never flashes its own protector.
+	var s_e: GameState = mk.call("attacker_def")
+	_add_hand_card(s_e, "tristan_p1", "azeroth_221", "p1")
+	_add_resources(s_e, "p1", 4)
+	ok(ai.instant_protector_action(s_e, db, "p1") == null,
+		"sc37-e: attacking side never flashes a protector")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

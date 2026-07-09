@@ -15,10 +15,17 @@ extends RefCounted
 #   "combat_instant_dmg" — instant dealing targeted damage
 #       (effects: deal_damage_to_target:N:TYPE). Played on the ATTACKING
 #       character when the AI is being attacked and the math works out.
+#   "combat_instant_protector" — Instant Ally with Protector. Played during the
+#       ATTACK window (never the defend window — the protect point is already
+#       past) when the AI is being attacked and the protector-choice logic
+#       would want to protect with it; the AI then protects with it at the
+#       following protect point via the normal choose_protector call.
+#       See instant_protector_action().
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
 	"azeroth_52":  "combat_instant_dmg",   # Fire Blast — 2 fire damage
+	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 }
 
 
@@ -29,7 +36,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var block := armor_prevention_action(state, db, player_id)
 	if block != null:
 		return block
-	return combat_instant_action(state, db, player_id)
+	var ambush := combat_instant_action(state, db, player_id)
+	if ambush != null:
+		return ambush
+	return instant_protector_action(state, db, player_id)
 
 
 # ── Armor damage prevention (rule 304.3) ──────────────────────────────────────
@@ -157,6 +167,86 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 			continue
 		var act := PendingAction.make("play_instant", player_id,
 			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# ── Instant protector (e.g. Tristan Rapidstrike) ──────────────────────────────
+# Flash in an Instant Ally with Protector during the ATTACK window of a combat
+# where the AI is being attacked, so it can protect at the following protect
+# point (the normal choose_protector call then picks it up — same decision
+# logic). NEVER during the defend window: the protect point is already past.
+#
+# Mirrors GenericAI.choose_protector's decision tree, evaluated hypothetically
+# on the in-hand card's printed stats:
+#   • a protector already on board answers this attack (self.choose_protector
+#     returns one) → hold the card, use the board;
+#   • proposed defender survives the hit:
+#       – attacker dies to the defender anyway → hold (free win);
+#       – else play only if the fresh protector KILLS the attacker AND SURVIVES;
+#   • proposed defender dies:
+#       – it's our hero → play (interpose anything — losing the hero loses
+#         the game);
+#       – it's an ally → play only on a kill-and-survive block. (The board
+#         logic also allows cheap fodder blocks, but paying a card AND its
+#         resource cost from hand to chump for an ally is value-negative.)
+func instant_protector_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.combat_attack_window:
+		return null   # attack window only — never the defend window
+	if not state.pending_actions.is_empty():
+		return null   # respond on the window floor
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only the attacked side flashes in a protector
+
+	var a_atk := state.get_atk(attacker_id, db, true)   # "while attacking" bonuses
+	if a_atk <= 0:
+		return null   # attacker deals no damage — nothing to block
+	var a_hp  := state.get_current_hp(attacker_id, db)
+	var d_hp  := state.get_current_hp(defender_id, db)
+	var d_atk := state.get_atk(defender_id, db)
+	var defender_dies := a_atk >= d_hp
+	var attacker_dies_to_defender := d_atk >= a_hp
+
+	# A board protector already answers this attack — hold the card.
+	if choose_protector(state, db, player_id) != "":
+		return null
+
+	var ps := state.players.get(player_id) as PlayerState
+	var defender_is_hero := ps != null and defender_id == ps.hero_instance_id
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_protector":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		# Hypothetical block with the fresh body's printed stats (it enters
+		# undamaged; protecting is legal despite summoning sickness — 601.2a
+		# restricts attackers only).
+		var kills_attacker := def.printed_atk >= a_hp
+		var survives_block := def.printed_health > a_atk
+		var safe_block := kills_attacker and survives_block
+		var play := false
+		if not defender_dies:
+			play = (not attacker_dies_to_defender) and safe_block
+		elif defender_is_hero:
+			play = true
+		else:
+			play = safe_block
+		if not play:
+			continue
+		var act := PendingAction.make("play_ally", player_id,
+			{"card_id": card.instance_id})
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null

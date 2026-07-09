@@ -170,6 +170,11 @@ static func card_returned_from_graveyard(card_id: String, player_id: String) -> 
 		"card_id": card_id, "player": player_id,
 	})
 
+static func card_revealed_from_deck(card_id: String, player_id: String) -> GameEvent:
+	return make("card_revealed_from_deck", {
+		"card_id": card_id, "player": player_id,
+	})
+
 static func card_removed_from_game(card_id: String, player_id: String) -> GameEvent:
 	return make("card_removed_from_game", {
 		"card_id": card_id, "player": player_id,

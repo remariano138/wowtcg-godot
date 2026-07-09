@@ -5,8 +5,13 @@
   "card_entries": [
     {
       "card_def_id": "azeroth_360",
-      "count": 2,
+      "count": 1,
       "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
     },
     {
       "card_def_id": "dark_portal_316",
@@ -35,17 +40,17 @@
     },
     {
       "card_def_id": "azeroth_176",
-      "count": 2,
+      "count": 4,
       "_card_name": "Apprentice Teep"
     },
     {
       "card_def_id": "azeroth_222",
-      "count": 4,
+      "count": 2,
       "_card_name": "Warden Tonarin"
     },
     {
       "card_def_id": "azeroth_212",
-      "count": 2,
+      "count": 4,
       "_card_name": "Parvink"
     },
     {
@@ -80,7 +85,7 @@
     },
     {
       "card_def_id": "azeroth_192",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kor Cindervein"
     },
     {
@@ -120,8 +125,13 @@
     },
     {
       "card_def_id": "azeroth_219",
-      "count": 4,
+      "count": 2,
       "_card_name": "Tracker Gallen"
+    },
+    {
+      "card_def_id": "azeroth_221",
+      "count": 2,
+      "_card_name": "Tristan Rapidstrike"
     }
   ],
   "recommended_ai_id": "ai_generic",

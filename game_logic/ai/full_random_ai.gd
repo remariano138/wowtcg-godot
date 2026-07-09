@@ -39,6 +39,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
 		return ambush
+	# Instant protector flash-in (BaseAI) — deterministic too.
+	var flash := instant_protector_action(state, db, player_id)
+	if flash != null:
+		return flash
 	var legal := get_legal_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false

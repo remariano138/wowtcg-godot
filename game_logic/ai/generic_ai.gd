@@ -59,6 +59,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
 		return ambush
+	var flash := instant_protector_action(state, db, player_id)
+	if flash != null:
+		return flash
 
 	# Everything below is our own action window only. Outside it (opponent's
 	# turn / a pending chain we don't want to answer), we simply pass — no random

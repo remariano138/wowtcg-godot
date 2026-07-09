@@ -659,6 +659,33 @@ static func _resolve_play_instant(state: GameState,
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
 						for _i in draw_n:
 							events.append_array(_draw_one(state, action.source_player))
+					"deal_damage_aoe_opponent":
+						# "Your hero deals N <type> damage to each opposing hero and
+						# ally." (Flamestrike) — no target needed, hits every
+						# character the opponent controls.
+						var aoe_amount := int(parts[1]) if parts.size() > 1 else 0
+						var ps2 := state.players.get(action.source_player) as PlayerState
+						var hero_id2: String = ps2.hero_instance_id if ps2 else ""
+						var opp2 := _other_player(state, action.source_player)
+						var opp_targets: Array[String] = []
+						var opp_ps2 := state.players.get(opp2) as PlayerState
+						if opp_ps2 and opp_ps2.hero_instance_id != "":
+							opp_targets.append(opp_ps2.hero_instance_id)
+						for opp_ally in state.cards_in_zone(opp2 + "_ally_row"):
+							opp_targets.append(opp_ally.instance_id)
+						if hero_id2 != "" and aoe_amount > 0:
+							for t_id in opp_targets:
+								events.append_array(GameLogic.deal_damage(
+									state, hero_id2, t_id, aoe_amount, db))
+								var t_card2 := state.get_card(t_id)
+								if t_card2 and state.get_current_hp(t_id, db) <= 0:
+									var t_zone2 := state.zones.get(t_card2.zone_id) as Zone
+									if t_zone2 and t_zone2.zone_type == "hero_row":
+										events.append(GameEvent.game_over(
+											_other_player(state, t_card2.controller), t_card2.controller))
+									else:
+										events.append_array(
+											_check_destroyed_trigger(state, t_id, hero_id2, db))
 	# Move used instant to its owner's graveyard (card is currently in chain zone).
 	var card2 := state.get_card(card_id)
 	if card2:

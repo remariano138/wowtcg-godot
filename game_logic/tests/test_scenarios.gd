@@ -93,6 +93,7 @@ func _ready() -> void:
 	_test_master_of_the_hunt_ongoing()
 	_test_guardian_steelhorn_cant_attack()
 	_test_starfire()
+	_test_flamestrike()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -4446,3 +4447,79 @@ func _test_starfire() -> void:
 
 	ok(state.get_card("starfire_inst").zone_id == "p1_graveyard",
 		"sc44-e: Starfire itself is in the graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 45 — Flamestrike: non-instant Ability (action-phase only), hero deals
+# 3 fire damage to EACH opposing hero and ally — no target announced.
+#
+# Assertions:
+#   sc45-a  cannot be played outside the action phase / with pending chain
+#   sc45-b  no target required to submit (unlike Quick Strike / Starfire)
+#   sc45-c  3 fire damage dealt to every opposing ally, sourced from the hero
+#   sc45-d  3 fire damage dealt to the opposing hero
+#   sc45-e  friendly allies and own hero take no damage
+#   sc45-f  a lethally-damaged opposing ally is destroyed (goes to graveyard)
+#   sc45-g  Flamestrike itself ends up in the graveyard
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_flamestrike() -> void:
+	print("\n-- Scenario 45: Flamestrike — hero deals 3 fire dmg to each opposing hero/ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("opp_ally_def", 2, 5, [], 3)
+	db.ally("opp_weak_def", 2, 2, [], 2)   # dies to 3 fire damage
+	db.ally("own_ally_def", 2, 5, [], 3)
+	db.ability("flamestrike_def", 7, "deal_damage_aoe_opponent:3:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 7)
+
+	var flamestrike := CardInstance.create("flamestrike_inst", "flamestrike_def", "p1", "p1_hand")
+	state.cards["flamestrike_inst"] = flamestrike
+	state.zones["p1_hand"].card_ids.append("flamestrike_inst")
+
+	var opp_ally := CardInstance.create("opp_ally", "opp_ally_def", "p2", "p2_ally_row")
+	state.cards["opp_ally"] = opp_ally
+	state.zones["p2_ally_row"].card_ids.append("opp_ally")
+
+	var opp_weak := CardInstance.create("opp_weak", "opp_weak_def", "p2", "p2_ally_row")
+	state.cards["opp_weak"] = opp_weak
+	state.zones["p2_ally_row"].card_ids.append("opp_weak")
+
+	var own_ally := CardInstance.create("own_ally", "own_ally_def", "p1", "p1_ally_row")
+	state.cards["own_ally"] = own_ally
+	state.zones["p1_ally_row"].card_ids.append("own_ally")
+
+	# Combat window open → not action-phase-only-legal.
+	state.combat_attack_window = true
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_ability", "p1", {"card_id": "flamestrike_inst"}), db),
+		"sc45-a: cannot be played during a combat window")
+	state.combat_attack_window = false
+
+	var act := PendingAction.make("play_ability", "p1", {"card_id": "flamestrike_inst"})
+	ok(StackResolver.can_submit(state, act, db), "sc45-b: no target required to submit")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(state, act, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(opp_ally.damage_taken, 3, "sc45-c: opposing ally took 3 fire damage")
+	var saw_dmg_from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "p2_hero":
+			saw_dmg_from_hero = true
+	ok(saw_dmg_from_hero, "sc45-d: opposing hero took 3 fire damage sourced from p1's hero")
+	eq(state.get_card("p2_hero").damage_taken, 3, "sc45-d2: opposing hero damage_taken == 3")
+
+	eq(own_ally.damage_taken, 0, "sc45-e: friendly ally took no damage")
+	eq(state.get_card("p1_hero").damage_taken, 0, "sc45-e2: own hero took no damage")
+
+	ok(state.get_card("opp_weak").zone_id == "p2_graveyard",
+		"sc45-f: lethally-damaged opposing ally destroyed")
+
+	ok(state.get_card("flamestrike_inst").zone_id == "p1_graveyard",
+		"sc45-g: Flamestrike itself is in the graveyard")

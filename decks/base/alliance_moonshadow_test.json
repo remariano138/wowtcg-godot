@@ -50,8 +50,13 @@
     },
     {
       "card_def_id": "azeroth_174",
-      "count": 2,
+      "count": 1,
       "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "azeroth_31",
+      "count": 1,
+      "_card_name": "Starfire"
     },
     {
       "card_def_id": "azeroth_171",

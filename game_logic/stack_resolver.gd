@@ -2171,11 +2171,29 @@ static func _fire_on_destroyed(state: GameState, card_id: String, db) -> Array[G
 # Wrapper: check_destroyed + on_destroyed trigger if the card actually died.
 static func _check_destroyed_trigger(state: GameState, card_id: String,
 		source_id: String, db) -> Array[GameEvent]:
+	var card := state.get_card(card_id)
+	var controller := card.controller if card else ""
 	var events := GameLogic.check_destroyed(state, card_id, source_id, db)
 	for e in events:
 		if e.event_type == "card_destroyed" and e.payload.get("card", "") == card_id:
 			events.append_array(_fire_on_destroyed(state, card_id, db))
+			if controller != "":
+				events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 			break
+	return events
+
+
+# When a card leaves play, any max-health aura it granted (party_health_aura,
+# pet_atk_health_aura, ...) disappears immediately. Allies that were only
+# alive because of that bonus must die now (rule 118.4/704 state-based death),
+# not survive until the next damage event. Re-checks the departed card's own
+# controller's board for anyone now at 0 or fewer effective health.
+static func _check_aura_loss_deaths(state: GameState, controller: String,
+		source_id: String, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	for card in state.cards_in_zone(controller + "_ally_row"):
+		if state.get_current_hp(card.instance_id, db) <= 0:
+			events.append_array(_check_destroyed_trigger(state, card.instance_id, source_id, db))
 	return events
 
 
@@ -2191,9 +2209,12 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 			var loser := card.controller
 			var winner := "p2" if loser == "p1" else "p1"
 			return [GameEvent.game_over(winner, loser)]
+	var controller := card.controller if card else ""
 	var events := GameLogic.destroy_card(state, card_id, source_id)
 	if not events.is_empty():
 		events.append_array(_fire_on_destroyed(state, card_id, db))
+		if controller != "":
+			events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 	return events
 
 

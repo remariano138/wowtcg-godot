@@ -18,6 +18,7 @@ extends RefCounted
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
+	"azeroth_52":  "combat_instant_dmg",   # Fire Blast — 2 fire damage
 }
 
 
@@ -194,6 +195,8 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			continue   # held for combat windows — see combat_instant_action()
 		var action_type := _action_type_for(card, db)
 		if action_type == "":
+			continue
+		if action_type == "play_ally" and db and _would_waste_pet(state, db, player_id, card):
 			continue
 		if action_type in ["play_instant", "play_ability"] and db:
 			var def := db.get_def(card.card_def_id) as CardDef
@@ -1193,6 +1196,30 @@ func _card_def(state: GameState, db, card_id: String) -> CardDef:
 	if not card or not db:
 		return null
 	return db.get_def(card.card_def_id) as CardDef
+
+
+# True if playing this Pet from hand would just trigger a sacrifice with no gain:
+# already at pet capacity and no pet in play is worth less than the new one.
+func _would_waste_pet(state: GameState, db, player_id: String, card: CardInstance) -> bool:
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.card_subtype != "Pet":
+		return false
+	var ps := state.players.get(player_id) as PlayerState
+	var capacity: int = ps.pet_capacity if ps else 1
+	var pets_in_play: Array[CardInstance] = []
+	for ally in state.cards_in_zone(player_id + "_ally_row"):
+		var ally_def := db.get_def(ally.card_def_id) as CardDef
+		if ally_def and ally_def.card_subtype == "Pet":
+			pets_in_play.append(ally)
+	if pets_in_play.size() < capacity:
+		return false
+	var new_cost: int = def.cost
+	for pet in pets_in_play:
+		var pet_def := db.get_def(pet.card_def_id) as CardDef
+		var pet_cost: int = pet_def.cost if pet_def else 0
+		if new_cost > pet_cost:
+			return false   # worth replacing this one — sacrifice heuristic will keep the best
+	return true
 
 
 func _def_cost(state: GameState, db, card_id: String) -> int:

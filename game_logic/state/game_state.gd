@@ -242,6 +242,8 @@ func get_max_hp(instance_id: String, db) -> int:
 func _aura_health_mods(inst: CardInstance, db) -> int:
 	var bonus := 0
 	var def: CardDef = db.get_def(inst.card_def_id)
+	if def and def.card_type == "Hero":
+		return bonus
 	for source in cards_in_zone(inst.controller + "_ally_row"):
 		if source.instance_id == inst.instance_id:
 			continue

@@ -237,9 +237,9 @@ func _build_scene() -> void:
 
 	# ── Left section: Turn / Priority / Announcer ──────────────────────────────
 	_phase_label    = _add_label("", Vector2(16, 971), 19, Color(0.9, 0.85, 0.45))
-	_priority_label = _add_label("", Vector2(16, 1003), 15, Color(0.9, 0.85, 0.3))
+	_priority_label = _add_label("", Vector2(120, 1003), 15, Color(0.9, 0.85, 0.3))
 	# _status now lives under the pass button (centre section) instead of here.
-	_add_label("Log [L]", Vector2(16, 1035), 13, Color(0.55, 0.55, 0.6))
+	_add_label("Log [L]", Vector2(16, 1003), 13, Color(0.55, 0.55, 0.6))
 
 	# ── VSep 1 ─────────────────────────────────────────────────────────────────
 	var vsep1 := ColorRect.new()
@@ -293,16 +293,6 @@ func _build_scene() -> void:
 	_mulligan_btn.pressed.connect(func() -> void: _commit_mulligan(true))
 	_mulligan_panel.add_child(_mulligan_btn)
 
-	# Mirrors the resource-placement indicator on the other side of the pass button
-	# (resource label: x=648, same y as the button).
-	_mulligan_hint_label = _add_label(
-		"Left-click = play/place  ·  Right-click = options  ·  Esc = retract",
-		Vector2(1082, 981), 11, Color(0.38, 0.38, 0.38))
-	_mulligan_hint_label.size = Vector2(190, 60)
-	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	_mulligan_hint_label.visible = false
-
 	# ── VSep 2 ─────────────────────────────────────────────────────────────────
 	var vsep2 := ColorRect.new()
 	vsep2.color    = Color(0.28, 0.33, 0.38)
@@ -327,7 +317,7 @@ func _build_scene() -> void:
 
 	_tactical_btn = Button.new()
 	_tactical_btn.text         = "Tactical"
-	_tactical_btn.position     = Vector2(1454, 987)
+	_tactical_btn.position     = Vector2(1330, 1027)
 	_tactical_btn.size         = Vector2(110, 36)
 	_tactical_btn.toggle_mode  = true
 	_tactical_btn.button_group = mode_group
@@ -335,7 +325,18 @@ func _build_scene() -> void:
 	add_child(_tactical_btn)
 
 	_mode_desc_label = _add_label("Auto-pass all 'no legal play'",
-		Vector2(1330, 1055), 10, Color(0.42, 0.52, 0.42))
+		Vector2(1330, 1067), 10, Color(0.42, 0.52, 0.42))
+
+	# Mirrors the resource-placement indicator on the other side of the pass button
+	# (resource label: x=648, same y as the button); now docked to the right of
+	# the speed mode selector.
+	_mulligan_hint_label = _add_label(
+		"Left-click = play/place\nRight-click = options\nEsc = retract",
+		Vector2(1470, 987), 11, Color(0.38, 0.38, 0.38))
+	_mulligan_hint_label.size = Vector2(190, 76)
+	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	_mulligan_hint_label.visible = false
 
 	_ai_timer = Timer.new()
 	_ai_timer.wait_time = AI_THINK_TIME
@@ -900,6 +901,7 @@ func _input(event: InputEvent) -> void:
 		# Escape: close the X dialog (cancels the whole power use).
 		if _x_dialog and _x_dialog.visible:
 			_x_dialog.visible = false
+			CardNode.input_blocked = false
 			_router.cancel_targeting()
 			_set_status("")
 			get_viewport().set_input_as_handled()
@@ -1701,6 +1703,7 @@ func _on_x_select_requested(hero_id: String, max_x: int) -> void:
 	var vp := get_viewport().get_visible_rect().size
 	_x_dialog.position = (vp - _x_dialog.custom_minimum_size) * 0.5
 	_x_dialog.visible = true
+	CardNode.input_blocked = true
 	_x_input.grab_focus()
 	var hero_card := _router.state.get_card(hero_id) if _router.state else null
 	var hero_def: CardDef = _router.db.get_def(hero_card.card_def_id) if hero_card and _router.db else null
@@ -1726,6 +1729,7 @@ func _confirm_x_value(text: String) -> void:
 		_x_input.grab_focus()
 		return
 	_x_dialog.visible = false
+	CardNode.input_blocked = false
 	_set_status("")
 	_router.confirm_x_value(x)
 
@@ -1860,6 +1864,7 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 	_gy_dialog.position = (Vector2(1920, 1080) - _gy_dialog.size) * 0.5
 	_gy_dimmer.visible = modal
 	_gy_dialog.visible = true
+	CardNode.input_blocked = modal
 	_update_gy_confirm()
 
 
@@ -1915,6 +1920,7 @@ func _on_gy_cancel_pressed() -> void:
 func _close_gy_dialog() -> void:
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
+	CardNode.input_blocked = false
 	_gy_view_only = false
 	_gy_peek_active = false
 

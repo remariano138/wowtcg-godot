@@ -354,6 +354,7 @@ func _on_game_event(event: GameEvent) -> void:
 				return
 			if new_hp > old_hp:
 				_show_heal_number(cid, new_hp - old_hp)
+				_play_heal_animation(cid)
 			var hero_player := _hero_player_for(cid)
 			if hero_player != "":
 				_update_hero_bar(hero_player, cid, new_hp, max_hp)
@@ -470,11 +471,31 @@ func _on_game_event(event: GameEvent) -> void:
 
 # ── Animations ─────────────────────────────────────────────────────────────────
 
-# Covers the destroyed card with an opaque red rectangle that fades away over
-# 1 second, revealing the card underneath (matches the emit_events() sim pause
-# in event_bus.gd, which holds the simulation still for the same duration).
-# Attached as a child of the CardNode so it travels along with any concurrent
-# move-to-graveyard tween instead of being left behind.
+# Covers a card with an opaque rectangle that fades away over `duration` seconds,
+# revealing the card underneath. Attached as a child of the CardNode so it travels
+# along with any concurrent move tween instead of being left behind.
+func _play_color_flash(card_id: String, color: Color, duration: float) -> ColorRect:
+	var cn := card_nodes.get(card_id) as CardNode
+	if not cn:
+		return null
+	var overlay := ColorRect.new()
+	overlay.color        = color
+	overlay.size          = Vector2(CardNode.W, CardNode.H)
+	overlay.position      = Vector2(-CardNode.W * 0.5, -CardNode.H * 0.5)
+	overlay.mouse_filter  = Control.MOUSE_FILTER_IGNORE
+	overlay.z_index       = 50
+	cn.add_child(overlay)
+	var tw := create_tween()
+	tw.tween_property(overlay, "color:a", 0.0, duration)
+	tw.finished.connect(func() -> void:
+		if is_instance_valid(overlay):
+			overlay.queue_free())
+	return overlay
+
+
+# Red flash — matches the emit_events() sim pause in event_bus.gd, which holds
+# the simulation still for the same duration (see _death_tweens above, which
+# card_moved awaits before animating the move to graveyard).
 func _play_death_animation(card_id: String) -> void:
 	var cn := card_nodes.get(card_id) as CardNode
 	if not cn:
@@ -492,6 +513,12 @@ func _play_death_animation(card_id: String) -> void:
 	tw.finished.connect(func() -> void:
 		if is_instance_valid(overlay):
 			overlay.queue_free())
+
+
+# Green flash — no sim pause of its own (the plain damage_pause() already covers
+# hp_changed via event_bus.gd), no move to defer, so it's a fire-and-forget flash.
+func _play_heal_animation(card_id: String) -> void:
+	_play_color_flash(card_id, Color(0.1, 0.75, 0.15, 1.0), GameTiming.heal_animation())
 
 
 func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:

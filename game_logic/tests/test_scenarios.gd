@@ -87,9 +87,12 @@ func _ready() -> void:
 	_test_old_bones_protects_hero_only()
 	_test_arcane_shot()
 	_test_arcane_shot_combat_instant_tag()
+	_test_fire_blast()
 	_test_nerra_lifeboon_health_aura()
+	_test_nerra_death_triggers_aura_loss_death()
 	_test_master_of_the_hunt_ongoing()
 	_test_guardian_steelhorn_cant_attack()
+	_test_starfire()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -4108,6 +4111,129 @@ func _test_arcane_shot_combat_instant_tag() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40b — Fire Blast: same shape as Quick Strike (hero deals damage to
+# announced target), cost 1, fire damage. Also tagged as a combat instant
+# (AI holds it, ambushes only during attack/defend windows).
+#
+# Assertions:
+#   sc40b-a  submission WITHOUT a target is rejected
+#   sc40b-b  2 fire damage dealt to the announced target, sourced from the hero
+#   sc40b-c  Fire Blast itself ends up in the graveyard
+#   sc40b-d  get_legal_actions never blind-plays it outside combat
+#   sc40b-e  attack window — 2 HP / cost-matching attacker → play targeting it
+#   sc40b-f  attack window — attacker survives 2 dmg → hold
+#   sc40b-g  integration: attacker killed by Fire Blast during the attack window
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_fire_blast() -> void:
+	print("\n-- Scenario 40b: Fire Blast — hero deals 2 fire dmg, cost 1 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_ally_def", 2, 4, [], 3)
+	# Registered under its REAL def id so BaseAI.COMBAT_INSTANT_TAGS matches.
+	db.instant("azeroth_52", 1, "deal_damage_to_target:2:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+
+	var blast := CardInstance.create("blast_inst", "azeroth_52", "p1", "p1_hand")
+	state.cards["blast_inst"] = blast
+	state.zones["p1_hand"].card_ids.append("blast_inst")
+
+	var enemy := CardInstance.create("enemy_ally", "target_ally_def", "p2", "p2_ally_row")
+	state.cards["enemy_ally"] = enemy
+	state.zones["p2_ally_row"].card_ids.append("enemy_ally")
+
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_instant", "p1", {"card_id": "blast_inst"}), db),
+		"sc40b-a: submission without a target is rejected")
+
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": "blast_inst", "target_id": "enemy_ally"})
+	ok(StackResolver.can_submit(state, act, db), "sc40b-a2: full action is legal")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(state, act, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(enemy.damage_taken, 2, "sc40b-b: enemy ally took 2 fire damage")
+	var saw_dmg_from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "enemy_ally":
+			saw_dmg_from_hero = true
+	ok(saw_dmg_from_hero, "sc40b-b2: damage sourced from p1's hero")
+
+	ok(state.get_card("blast_inst").zone_id == "p1_graveyard",
+		"sc40b-c: Fire Blast itself is in the graveyard")
+
+	# ── Hold outside combat: never a blind play on own action window ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 1)
+	var blast_hold := CardInstance.create("blast_hold", "azeroth_52", "p1", "p1_hand")
+	st3.cards["blast_hold"] = blast_hold
+	st3.zones["p1_hand"].card_ids.append("blast_hold")
+	var blind := false
+	for a in BaseAI.new().get_legal_actions(st3, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "blast_hold":
+			blind = true
+	ok(not blind, "sc40b-d: get_legal_actions never blind-plays a held combat instant")
+
+	# ── Attack-window ambush matrix ──
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.instant("azeroth_52", 1, "deal_damage_to_target:2:fire")
+	db2.ally("atk_worthy_def", 3, 2, [], 4)   # cost 4, 2 HP — dies to Fire Blast
+	db2.ally("atk_fat_def",    3, 5, [], 4)   # cost 4, 5 HP — survives 2 dmg
+
+	var ai := BaseAI.new()
+	var st := _base_state(db2, "p1_hero", "p2_hero")
+	st.turn_player     = "p2"
+	st.priority_player = "p1"
+	_add_resources(st, "p1", 1)
+	var blast_p1 := CardInstance.create("blast_p1", "azeroth_52", "p1", "p1_hand")
+	st.cards["blast_p1"] = blast_p1
+	st.zones["p1_hand"].card_ids.append("blast_p1")
+	_add_ally(st, "atk_worthy", "atk_worthy_def", "p2")
+	_add_ally(st, "atk_fat",    "atk_fat_def",    "p2")
+	st.combat_attack_window = true
+	st.combat_defender = "p1_hero"
+
+	st.combat_attacker = "atk_worthy"
+	var act2 := ai.combat_instant_action(st, db2, "p1")
+	ok(act2 != null and act2.params.get("card_id") == "blast_p1"
+			and act2.params.get("target_id") == "atk_worthy",
+		"sc40b-e: attack window — 2 HP attacker dies to Fire Blast → play targeting it")
+
+	st.combat_attacker = "atk_fat"
+	ok(ai.combat_instant_action(st, db2, "p1") == null,
+		"sc40b-f: attack window — 5 HP attacker survives 2 dmg → hold")
+
+	# ── Integration: p1 attacks, BaseAI p2 ambushes during the attack window ──
+	var st4 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_ally(st4, "raider", "atk_worthy_def", "p1")   # cost 4, 2 HP, 3 ATK
+	_add_resources(st4, "p2", 1)
+	var blast4 := CardInstance.create("blast_ambush", "azeroth_52", "p2", "p2_hand")
+	st4.cards["blast_ambush"] = blast4
+	st4.zones["p2_hand"].card_ids.append("blast_ambush")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}))
+
+	_drive_turns(st4, db2, p1_ai, BaseAI.new(), 3)
+
+	ok(st4.get_card("raider").zone_id == "p1_graveyard",
+		"sc40b-g: attacker killed by Fire Blast during the attack window")
+	eq(st4.get_card("p2_hero").damage_taken, 0,
+		"sc40b-h: p2 hero took no combat damage (attacker died pre-conclusion)")
+	ok(st4.get_card("blast_ambush").zone_id == "p2_graveyard",
+		"sc40b-i: Fire Blast in graveyard after the ambush")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 41 — Nerra Lifeboon: "Other allies in your party have +1 health."
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -4137,6 +4263,41 @@ func _test_nerra_lifeboon_health_aura() -> void:
 	GameLogic.move_card(state, "nerra_inst", "p1_graveyard")
 	GameLogic.move_card(state, "nerra2_inst", "p1_graveyard")
 	eq(state.get_max_hp("grunt_inst", db), 2, "sc41-f: aura gone once both Nerras leave play")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 41b — Nerra Lifeboon aura-loss death check.
+#
+# An ally kept alive only by Nerra's +health aura must die the instant Nerra
+# dies, even with no further damage dealt (state-based death, rule 118.4/704).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_nerra_death_triggers_aura_loss_death() -> void:
+	print("\n-- Scenario 41b: Nerra death kills an ally kept alive by her aura --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("nerra_def", 4, 4, [], 5, "party_health_aura:1")
+	db.ally("braxiss_def", 4, 4)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "nerra_inst", "nerra_def", "p1")
+	_add_ally(state, "braxiss_inst", "braxiss_def", "p1")
+
+	# Braxiss: printed 4 health, +1 from Nerra's aura = 5 max. Take 4 damage —
+	# survives with 1 effective health left.
+	state.get_card("braxiss_inst").damage_taken = 4
+	eq(state.get_max_hp("braxiss_inst", db), 5, "sc41b-a: Braxiss has 5 max health thanks to Nerra")
+	eq(state.get_current_hp("braxiss_inst", db), 1, "sc41b-b: Braxiss survives on 1 effective health")
+
+	# Kill Nerra directly (simulates combat lethal damage).
+	state.get_card("nerra_inst").damage_taken = state.get_max_hp("nerra_inst", db)
+	StackResolver._check_destroyed_trigger(state, "nerra_inst", "p2_hero", db)
+
+	ok(state.get_card("nerra_inst").zone_id == "p1_graveyard", "sc41b-c: Nerra destroyed")
+	eq(state.get_max_hp("braxiss_inst", db), 4, "sc41b-d: Braxiss back to 4 max health, aura gone")
+	ok(state.get_card("braxiss_inst").zone_id == "p1_graveyard",
+		"sc41b-e: Braxiss dies too — 4 damage now equals his 4 max health")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4213,3 +4374,75 @@ func _test_guardian_steelhorn_cant_attack() -> void:
 		{"attacker_id": "steel", "defender_id": "p2_hero"})
 	ok(not StackResolver.can_submit(state, propose, db),
 		"sc43-c: propose_combat with Guardian Steelhorn is illegal")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 44 — Starfire: non-instant Ability (action-phase only), hero deals
+# 5 arcane damage to an announced target, plus "Draw a card."
+#
+# Assertions:
+#   sc44-a  cannot be played outside the action phase / with pending chain
+#   sc44-b  submission without a target is rejected
+#   sc44-c  5 arcane damage dealt to the announced target, sourced from the hero
+#   sc44-d  a card is drawn
+#   sc44-e  Starfire itself ends up in the graveyard
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_starfire() -> void:
+	print("\n-- Scenario 44: Starfire — hero deals 5 arcane dmg + draw a card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_ally_def", 2, 8, [], 3)
+	db.ally("filler_def", 1, 1, [], 1)
+	db.ability("starfire_def", 6, "deal_damage_to_target:5:arcane|draw:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+
+	var starfire := CardInstance.create("starfire_inst", "starfire_def", "p1", "p1_hand")
+	state.cards["starfire_inst"] = starfire
+	state.zones["p1_hand"].card_ids.append("starfire_inst")
+
+	var enemy := CardInstance.create("enemy_ally", "target_ally_def", "p2", "p2_ally_row")
+	state.cards["enemy_ally"] = enemy
+	state.zones["p2_ally_row"].card_ids.append("enemy_ally")
+
+	# A card to draw, at the top of p1's deck.
+	var draw_card := CardInstance.create("draw_card_inst", "filler_def", "p1", "p1_deck")
+	state.cards["draw_card_inst"] = draw_card
+	state.zones["p1_deck"].card_ids.append("draw_card_inst")
+
+	# Combat window open → not action-phase-only-legal.
+	state.combat_attack_window = true
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_ability", "p1",
+			{"card_id": "starfire_inst", "target_id": "enemy_ally"}), db),
+		"sc44-a: cannot be played during a combat window")
+	state.combat_attack_window = false
+
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_ability", "p1", {"card_id": "starfire_inst"}), db),
+		"sc44-b: submission without a target is rejected")
+
+	var act := PendingAction.make("play_ability", "p1",
+		{"card_id": "starfire_inst", "target_id": "enemy_ally"})
+	ok(StackResolver.can_submit(state, act, db), "sc44-b2: full action is legal")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(state, act, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(enemy.damage_taken, 5, "sc44-c: enemy ally took 5 arcane damage")
+	var saw_dmg_from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "enemy_ally":
+			saw_dmg_from_hero = true
+	ok(saw_dmg_from_hero, "sc44-c2: damage sourced from p1's hero")
+
+	ok(state.get_card("draw_card_inst").zone_id == "p1_hand",
+		"sc44-d: a card was drawn into p1's hand")
+
+	ok(state.get_card("starfire_inst").zone_id == "p1_graveyard",
+		"sc44-e: Starfire itself is in the graveyard")

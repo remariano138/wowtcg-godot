@@ -32,6 +32,13 @@ var _hp_badge_bg: Panel = null
 var _hp_badge_lbl: Label = null
 var _stats_lbl: Label = null
 
+# Set true while a modal overlay (graveyard browser, X-value dialog, …) is open
+# so board cards underneath don't intercept clicks/hover meant for the overlay.
+# CardNode detects clicks via raw _input() (screen-space bounding box), which
+# runs before Control._gui_input — so it fires even when a Control is drawn on
+# top, unless callers explicitly gate it with this flag.
+static var input_blocked: bool = false
+
 # ── Wiggle state ───────────────────────────────────────────────────────────────
 var _wiggle_tween: Tween = null
 var _wiggle_base: float = 0.0
@@ -373,6 +380,11 @@ func stop_wiggle(more_seconds: float = 0.0) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if input_blocked:
+		if _mouse_inside:
+			_mouse_inside = false
+			card_unhovered.emit(instance_id)
+		return
 	var local: Vector2 = to_local(get_viewport().get_mouse_position())
 	var inside: bool   = abs(local.x) <= W * 0.5 and abs(local.y) <= H * 0.5
 

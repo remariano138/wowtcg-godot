@@ -80,9 +80,14 @@
     },
     {
       "card_def_id": "azeroth_236",
-      "count": 4,
+      "count": 2,
       "_card_name": "Fa'tafi"
-    },    
+    },
+    {
+      "card_def_id": "azeroth_113",
+      "count": 2,
+      "_card_name": "Lightning Bolt"
+    },
     {
       "card_def_id": "azeroth_262",
       "count": 4,
@@ -94,9 +99,9 @@
       "_card_name": "Vesh'ral"
     },
     {
-      "card_def_id": "azeroth_228",
+      "card_def_id": "azeroth_240",
       "count": 2,
-      "_card_name": "Benethor Draigo"
+      "_card_name": "Guardian Steelhorn"
     },
     {
       "card_def_id": "azeroth_252",

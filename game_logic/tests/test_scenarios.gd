@@ -25,6 +25,7 @@ func _ready() -> void:
 	_test_parvink_enter_play()
 	_test_vanquish()
 	_test_quick_strike()
+	_test_lightning_bolt()
 	_test_pet_uniqueness()
 	_test_mooncloth_robe_power()
 	_test_mooncloth_robe_hero_exhausted()
@@ -891,6 +892,92 @@ func _test_quick_strike() -> void:
 	ok(not StackResolver.can_submit(tstate,
 		PendingAction.make("play_ally", "p1", {"card_id": "dummy_ally"}), db),
 		"sc8b-g: a non-instant ally is NOT legal in that same window")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 8c — Lightning Bolt: non-instant ability, hero deals 4 nature to
+# target hero or ally (own or opponent's)
+#
+# Same shape as Quick Strike (deal_damage_to_target) but action-phase timing
+# like Vanquish, not instant speed. Also verifies self-targeting is legal for
+# the human/engine, but the AI never selects its own hero/ally as a target.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_lightning_bolt() -> void:
+	print("\n-- Scenario 8c: Lightning Bolt — non-instant, 4 nature to target hero or ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("enemy_ally_def", 2, 6, [], 3)
+	db.ability("bolt_def", 3, "deal_damage_to_target:4:nature")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var bolt := CardInstance.create("bolt_inst", "bolt_def", "p1", "p1_hand")
+	state.cards["bolt_inst"] = bolt
+	state.zones["p1_hand"].card_ids.append("bolt_inst")
+
+	var enemy := CardInstance.create("enemy_ally_inst", "enemy_ally_def", "p2", "p2_ally_row")
+	state.cards["enemy_ally_inst"] = enemy
+	state.zones["p2_ally_row"].card_ids.append("enemy_ally_inst")
+
+	# Not legal during a combat window (non-instant, action-phase timing).
+	var tstate := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(tstate, "p1", 3)
+	tstate.combat_attack_window = true
+	var bolt2 := CardInstance.create("bolt2", "bolt_def", "p1", "p1_hand")
+	tstate.cards["bolt2"] = bolt2
+	tstate.zones["p1_hand"].card_ids.append("bolt2")
+	var p2_hero_id_t := (tstate.players.get("p2") as PlayerState).hero_instance_id
+	ok(not StackResolver.can_submit(tstate,
+		PendingAction.make("play_ability", "p1", {"card_id": "bolt2", "target_id": p2_hero_id_t}), db),
+		"sc8c-a: Lightning Bolt is NOT legal during a combat window")
+
+	# Legal to target own hero (rules-legal, even if AI would never choose it).
+	var p1_hero_id := (state.players.get("p1") as PlayerState).hero_instance_id
+	ok(StackResolver.can_submit(state,
+		PendingAction.make("play_ability", "p1", {"card_id": "bolt_inst", "target_id": p1_hero_id}), db),
+		"sc8c-b: Lightning Bolt CAN legally target your own hero")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_ability", "p1",
+		{"card_id": "bolt_inst", "target_id": "enemy_ally_inst"}))
+
+	var all_events := _drive_turns(state, db, p1_ai, ScriptedAI.new(), 3)
+
+	var total_dmg := 0
+	var dmg_source := ""
+	for e in all_events:
+		if e.event_type == "damage_dealt":
+			total_dmg += int(e.payload.get("amount", 0))
+			dmg_source = e.payload.get("source", dmg_source)
+	eq(total_dmg, 4, "sc8c-c: exactly 4 nature damage dealt")
+	eq(dmg_source, p1_hero_id, "sc8c-d: damage source is the controller's hero")
+	ok(state.get_card("bolt_inst").zone_id == "p1_graveyard", "sc8c-e: Lightning Bolt in graveyard")
+	eq(state.get_card("enemy_ally_inst").damage_taken, 4,
+		"sc8c-f: target carries the 4 damage")
+
+	# AI never targets its own hero/ally with a targeted damage ability.
+	var astate := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(astate, "p1", 3)
+	var bolt3 := CardInstance.create("bolt3", "bolt_def", "p1", "p1_hand")
+	astate.cards["bolt3"] = bolt3
+	astate.zones["p1_hand"].card_ids.append("bolt3")
+	var own_ally := CardInstance.create("own_ally_inst", "enemy_ally_def", "p1", "p1_ally_row")
+	astate.cards["own_ally_inst"] = own_ally
+	astate.zones["p1_ally_row"].card_ids.append("own_ally_inst")
+
+	var base_ai := BaseAI.new()
+	var actions: Array[PendingAction] = base_ai.get_legal_actions(astate, db, "p1")
+	var p1_hero_id_a := (astate.players.get("p1") as PlayerState).hero_instance_id
+	var self_targeted := false
+	for act in actions:
+		if act.action_type == "play_ability" and act.params.get("card_id", "") == "bolt3":
+			var tid: String = act.params.get("target_id", "")
+			if tid == p1_hero_id_a or tid == "own_ally_inst":
+				self_targeted = true
+	ok(not self_targeted, "sc8c-g: AI never generates a self-targeting Lightning Bolt action")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

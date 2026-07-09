@@ -120,8 +120,13 @@
     },
     {
       "card_def_id": "azeroth_179",
-      "count": 2,
+      "count": 1,
       "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "azeroth_127",
+      "count": 1,
+      "_card_name": "Infernal"
     },
     {
       "card_def_id": "azeroth_200",

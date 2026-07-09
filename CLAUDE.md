@@ -66,6 +66,7 @@ pass_priority(state, db)         → consecutive_passes++; at 2: resolve top OR 
 Some choices must resolve without going through the stack:
 - `StackResolver.choose_discard(state, card_id, db)` — pending discard
 - `StackResolver.choose_pet_sacrifice(state, card_id, db)` — pet uniqueness violation
+- `StackResolver.choose_control_discard(state, card_id, db)` / `decline_control_discard(state, db)` — Infernal's start-of-turn "discard a card, or target opponent gains control". Unlike a mandatory discard the player MAY decline: control changes (rule 401.3 — card moves to the new controller's ally_row, `just_summoned` set, pet uniqueness re-checked for the new controller). `pass_priority` is also hard-blocked while pending; in the UI the pass button becomes the decline option ("Give up control [Space]") and hand cards highlight red for the discard.
 
 These are called directly (not via `submit_action`). The blocking guard in `can_submit` prevents anything else while they're pending.
 
@@ -105,6 +106,8 @@ power_text, data_status, engine_status, effects, image_path
 | `destroy_target:ally` | Destroy a target ally (Vanquish-style) |
 | `sarmoth_taunt` | Opposing characters that can attack this must attack only this |
 | `heal_x_from_target:DMG_TYPE` | Hero power: pay X resources → heal X from target hero or ally (Boris) |
+| `turn_start_discard_or_give_control` | At the start of your turn: discard a card, or the opponent gains control of this (Infernal). Fires in `TurnManager._apply_start_of_turn_effects`; resolves via `choose_control_discard` / `decline_control_discard` |
+| `end_of_turn_damage_opposing:AMOUNT:DMG_TYPE` | At the end of your turn, this deals AMOUNT damage to each opposing hero and ally (Infernal). Fires in `TurnManager._apply_end_of_turn_effects` |
 | `elusive` | (keyword in keywords col, not effects) — can't be chosen as defender |
 | `protector` | (keyword) — can intercept attacks |
 | `ferocity` | (keyword) — no summoning sickness |
@@ -114,6 +117,13 @@ power_text, data_status, engine_status, effects, image_path
 
 **`data_status`**: `verified` = card text confirmed from image  
 **`engine_status`**: `implemented` = effects string is live in engine
+
+**Engine behavior that deviates from the printed rules/card text** (e.g. a
+timing restriction not in the printed text but true by construction of the
+duel format) must be tracked in `data/rules_deviations.md`, with a code
+comment at the enforcement site pointing back to it. Don't hardcode a
+card-specific check in `stack_resolver.gd` for this — add a data-driven
+effects flag instead (see `require_turn_player` for the pattern).
 
 ---
 
@@ -179,6 +189,7 @@ Notable implemented mechanics:
 - **sarmoth_taunt** — Sarmoth (opposing characters that can attack Sarmoth must only target Sarmoth)
 - **destroy_target:ally** — Vanquish
 - **Pet uniqueness** — pet_capacity enforced with immediate sacrifice choice
+- **Infernal** (azeroth_127) — start-of-turn "discard or give control" choice (declinable, unlike a forced discard) + end-of-turn 1 fire to each opposing hero and ally
 - **Equipment** — Mooncloth Robe (first equipment). Plays via `play_equipment` into the hero row; `activated_power` with `draw` effect + `exhaust_hero` extra cost. Slot uniqueness (rule 414.3) enforced with an immediate destroy choice mirroring Pet uniqueness (`pending_equip_sacrifice_*`, `choose_equipment_sacrifice`, `equipment_sacrifice_required`). See "Equipment" section below.
 - **Hero powers**: Ta'zo flip (deal_damage_to_target:3:fire), Dizdemona (deal_x_damage_to_ally), Omedus (deal_damage_aoe), Grennan (heal), Boris Brightbeard (heal_x_from_target — pay X resources, heal X from any hero or ally), Radak Doombringer (radak_pet_sacrifice — flip: sacrifice Pet with cost X, deal X shadow dmg to target)
 - **Quest cards** — basic cost-based quest completion

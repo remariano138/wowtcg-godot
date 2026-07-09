@@ -97,6 +97,10 @@ func _ready() -> void:
 	_test_flamestrike()
 	_test_chain_lightning()
 	_test_untargetable_keyword()
+	_test_infernal_discard_keeps_control()
+	_test_infernal_decline_gives_control()
+	_test_infernal_decline_pet_uniqueness()
+	_test_infernal_end_of_turn_damage()
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -348,6 +352,10 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int) -> Array[G
 						game_over = true
 					elif ae.event_type == "discard_choice_opened":
 						all_events.append_array(_headless_discard(state, ae, db))
+					elif ae.event_type == "control_discard_choice_opened":
+						all_events.append_array(_headless_control_discard(state, db))
+			elif e.event_type == "control_discard_choice_opened":
+				all_events.append_array(_headless_control_discard(state, db))
 			elif e.event_type == "discard_choice_opened":
 				all_events.append_array(_headless_discard(state, e, db))
 			elif e.event_type == "pet_sacrifice_required":
@@ -393,6 +401,26 @@ func _headless_discard(state: GameState, event: GameEvent, db) -> Array[GameEven
 				break
 			events.append_array(StackResolver.choose_discard(state, card.instance_id, db))
 
+	return events
+
+
+# ── Headless control-discard helper (Infernal) ───────────────────────────────
+# Discards the first hand card to keep control; declines only with an empty hand.
+
+func _headless_control_discard(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	while state.pending_control_discard_player != "":
+		var pl := state.pending_control_discard_player
+		var hand := state.cards_in_zone(pl + "_hand")
+		var sub: Array[GameEvent] = \
+			StackResolver.choose_control_discard(state, hand[0].instance_id, db) \
+			if not hand.is_empty() else StackResolver.decline_control_discard(state, db)
+		if sub.is_empty():
+			break   # safety: avoid an infinite loop on unexpected state
+		events.append_array(sub)
+		for e in sub:
+			if e.event_type == "pet_sacrifice_required":
+				events.append_array(_headless_pet_sacrifice(state, e, db))
 	return events
 
 
@@ -3580,7 +3608,7 @@ func _test_rayder_party_buff_while_attacking() -> void:
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
-	db.ally("rayder_def", 2, 2, [], 2, "activated_power:0:party_buff_atk_attacking:2")
+	db.ally("rayder_def", 2, 2, [], 2, "activated_power:0:party_buff_atk_attacking:2|on_your_turn")
 	db.ally("grunt_def", 1, 1)
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
@@ -3588,6 +3616,15 @@ func _test_rayder_party_buff_while_attacking() -> void:
 	rayder.just_summoned = false
 	rayder.is_exhausted  = false
 	_add_ally(state, "grunt_inst", "grunt_def", "p1")
+
+	# Engine deviation (data/rules_deviations.md): the power can never matter
+	# off-turn (allies can only attack on the controller's turn), so it's
+	# blocked entirely rather than letting the AI exhaust Rayder for nothing.
+	state.turn_player = "p2"
+	var off_turn_attempt := PendingAction.make("use_ally_power", "p1", {"card_id": "rayder_inst"})
+	eq(StackResolver.can_submit(state, off_turn_attempt, db), false,
+		"sc26-e: Rayder's power cannot be activated off-turn")
+	state.turn_player = "p1"
 
 	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "rayder_inst"})
 	StackResolver.submit_action(state, use, db)
@@ -3622,7 +3659,7 @@ func _test_for_the_horde_quest_buff() -> void:
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
-	db.quest("fth_def", 1, "party_buff_atk_attacking:1")
+	db.quest("fth_def", 1, "party_buff_atk_attacking:1|require_turn_player")
 	db.ally("horde_def", 2, 2)
 	db.ally("neutral_def", 2, 2)
 	db.get_def("horde_def").alignment = "Horde"
@@ -3637,6 +3674,14 @@ func _test_for_the_horde_quest_buff() -> void:
 	var quest := CardInstance.create("fth_inst", "fth_def", "p1", "p1_resource_row")
 	state.cards["fth_inst"] = quest
 	state.zones["p1_resource_row"].card_ids.append("fth_inst")
+
+	# Engine deviation (data/rules_deviations.md): completion is blocked
+	# entirely off-turn, since the reward can never matter off-turn.
+	state.turn_player = "p2"
+	var off_turn_attempt := PendingAction.make("use_quest", "p1", {"quest_id": "fth_inst"})
+	eq(StackResolver.can_submit(state, off_turn_attempt, db), false,
+		"sc27-e: For the Horde! cannot be completed off-turn")
+	state.turn_player = "p1"
 
 	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "fth_inst"})
 	StackResolver.submit_action(state, complete, db)
@@ -3978,7 +4023,7 @@ func _test_bloodclaw_no_horde_bonus() -> void:
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
-	db.quest("fth_def", 1, "party_buff_atk_attacking:1")
+	db.quest("fth_def", 1, "party_buff_atk_attacking:1|require_turn_player")
 	db.pet("bloodclaw_def", 3, 1, [], 1)
 	db.get_def("bloodclaw_def").alignment = ""   # neutral — no faction printed
 
@@ -4926,3 +4971,117 @@ func _test_untargetable_keyword() -> void:
 		"sc47-e2: effect fizzled — target that became Untargetable took no damage")
 	ok(state4.get_card("qs4").zone_id == "p1_graveyard",
 		"sc47-e3: the fizzled instant still goes to the graveyard")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 39 — Infernal (azeroth_127): "At the start of your turn, discard a
+# card, or target opponent gains control of Infernal. At the end of your turn,
+# Infernal deals 1 fire damage to each opposing hero and ally."
+# ══════════════════════════════════════════════════════════════════════════════
+
+const INFERNAL_FX := "turn_start_discard_or_give_control|end_of_turn_damage_opposing:1:fire"
+
+func _infernal_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.pet("infernal_def", 6, 6, [], 6, INFERNAL_FX)
+	db.ally("junk_def", 1, 1, [], 1)
+	return db
+
+# Advance from p2's end phase into p1's ready step, firing start-of-turn triggers.
+func _infernal_start_p1_turn(state: GameState, db) -> Array[GameEvent]:
+	state.phase       = "end"
+	state.turn_player = "p2"
+	return TurnManager.advance_phase(state, db)
+
+
+func _test_infernal_discard_keeps_control() -> void:
+	print("\n-- Scenario 39a: Infernal — discard a card to keep control --")
+	var db := _infernal_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "infernal_inst", "infernal_def", "p1")
+	var junk := CardInstance.create("junk_inst", "junk_def", "p1", "p1_hand")
+	state.cards["junk_inst"] = junk
+	state.zones["p1_hand"].card_ids.append("junk_inst")
+
+	var adv := _infernal_start_p1_turn(state, db)
+	var opened := adv.any(func(e: GameEvent) -> bool:
+		return e.event_type == "control_discard_choice_opened")
+	ok(opened, "sc39a-a: control_discard_choice_opened fired at start of p1's turn")
+	eq(state.pending_control_discard_player, "p1", "sc39a-b: pending choice belongs to p1")
+
+	# Choice blocks priority: passing and submitting are both refused.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"sc39a-c: pass_priority is blocked while the choice is pending")
+
+	var events := StackResolver.choose_control_discard(state, "junk_inst", db)
+	ok(not events.is_empty(), "sc39a-d: choose_control_discard resolved")
+	eq(state.get_card("junk_inst").zone_id, "p1_graveyard", "sc39a-e: hand card discarded")
+	eq(state.get_card("infernal_inst").controller, "p1", "sc39a-f: Infernal still controlled by p1")
+	eq(state.get_card("infernal_inst").zone_id, "p1_ally_row", "sc39a-g: Infernal still in p1_ally_row")
+	eq(state.pending_control_discard_player, "", "sc39a-h: pending choice cleared")
+
+
+func _test_infernal_decline_gives_control() -> void:
+	print("\n-- Scenario 39b: Infernal — decline the discard, opponent gains control --")
+	var db := _infernal_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "infernal_inst", "infernal_def", "p1")
+
+	_infernal_start_p1_turn(state, db)
+	eq(state.pending_control_discard_player, "p1", "sc39b-a: pending choice belongs to p1")
+
+	var events := StackResolver.decline_control_discard(state, db)
+	var changed := events.any(func(e: GameEvent) -> bool:
+		return e.event_type == "control_changed")
+	ok(changed, "sc39b-b: control_changed event fired")
+	var infernal := state.get_card("infernal_inst")
+	eq(infernal.controller, "p2", "sc39b-c: Infernal controlled by p2")
+	eq(infernal.zone_id, "p2_ally_row", "sc39b-d: Infernal moved to p2_ally_row (rule 401.3)")
+	ok(infernal.just_summoned,
+		"sc39b-e: Infernal can't attack for p2 this turn (not controlled since turn start)")
+	eq(state.pending_control_discard_player, "", "sc39b-f: pending choice cleared")
+
+
+func _test_infernal_decline_pet_uniqueness() -> void:
+	print("\n-- Scenario 39c: Infernal declined into a party that already has a Pet --")
+	var db := _infernal_db()
+	db.pet("otherpet_def", 2, 2, [], 2)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "infernal_inst", "infernal_def", "p1")
+	_add_ally(state, "otherpet_inst", "otherpet_def", "p2")
+
+	_infernal_start_p1_turn(state, db)
+	var events := StackResolver.decline_control_discard(state, db)
+	var sac_required := events.any(func(e: GameEvent) -> bool:
+		return e.event_type == "pet_sacrifice_required")
+	ok(sac_required, "sc39c-a: pet uniqueness fires for the new controller")
+	eq(state.pending_pet_sacrifice_player, "p2", "sc39c-b: p2 must sacrifice a pet")
+	events = StackResolver.choose_pet_sacrifice(state, "otherpet_inst", db)
+	ok(not events.is_empty(), "sc39c-c: p2 sacrificed the other pet")
+	eq(state.get_card("infernal_inst").zone_id, "p2_ally_row",
+		"sc39c-d: Infernal survives in p2_ally_row")
+
+
+func _test_infernal_end_of_turn_damage() -> void:
+	print("\n-- Scenario 39d: Infernal — end of turn, 1 fire to each opposing hero and ally --")
+	var db := _infernal_db()
+	db.ally("tough_def", 0, 3)
+	db.ally("weak_def", 0, 1)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "infernal_inst", "infernal_def", "p1")
+	_add_ally(state, "friendly_inst", "weak_def", "p1")
+	_add_ally(state, "tough_inst", "tough_def", "p2")
+	_add_ally(state, "weak_inst", "weak_def", "p2")
+
+	# Advance p1's action phase into the end phase — end-of-turn triggers fire.
+	state.phase       = "action"
+	state.turn_player = "p1"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p2_hero", db), 29, "sc39d-a: opposing hero took 1 fire damage")
+	eq(state.get_card("tough_inst").damage_taken, 1, "sc39d-b: opposing ally took 1 damage")
+	eq(state.get_card("weak_inst").zone_id, "p2_graveyard", "sc39d-c: 1-health opposing ally destroyed")
+	eq(state.get_current_hp("p1_hero", db), 30, "sc39d-d: own hero untouched")
+	eq(state.get_card("friendly_inst").damage_taken, 0, "sc39d-e: own ally untouched")
+	eq(state.get_card("infernal_inst").damage_taken, 0, "sc39d-f: Infernal doesn't damage itself")

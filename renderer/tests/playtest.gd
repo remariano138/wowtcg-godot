@@ -213,6 +213,7 @@ func _build_scene() -> void:
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
+	_router.control_discard_mode_ended.connect(_on_control_discard_mode_ended)
 	_router.equipment_sacrifice_mode_ended.connect(_on_equipment_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
@@ -272,7 +273,7 @@ func _build_scene() -> void:
 
 	# ── Mulligan panel (replaces pass area during mulligan phase) ──────────────
 	_mulligan_panel = VBoxContainer.new()
-	_mulligan_panel.position = Vector2(648, 968)
+	_mulligan_panel.position = Vector2(760, 420)
 	_mulligan_panel.custom_minimum_size = Vector2(400, 110)
 	_mulligan_panel.visible  = false
 	add_child(_mulligan_panel)
@@ -840,9 +841,15 @@ func _update_pass_btn() -> void:
 	var is_p1_turn := _state.turn_player == "p1"
 
 	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1" \
-		or _state.pending_equip_sacrifice_player == "p1"
+		or _state.pending_equip_sacrifice_player == "p1" \
+		or _state.pending_control_discard_player == "p2"
 
-	if _state.pending_pet_sacrifice_player == "p1":
+	if _state.pending_control_discard_player == "p1":
+		# Infernal choice: the pass button is the DECLINE option (give control).
+		_pass_btn.disabled = false
+		_pass_btn.text     = "Give up control  [Space]"
+		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
+	elif _state.pending_pet_sacrifice_player == "p1":
 		_pass_btn.text     = "Sacrifice a pet  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _state.pending_equip_sacrifice_player == "p1":
@@ -956,7 +963,16 @@ func _on_pass_btn_pressed() -> void:
 # Gate for human passing: shows a confirmation if they'd end their action phase
 # without having played a single card or instant this turn.
 func _try_pass() -> void:
-	if not _state or _state.priority_player != "p1" or _p1_type != "human":
+	if not _state or _p1_type != "human":
+		return
+	# Infernal choice pending for the human: Space/pass = decline the discard
+	# and give the opponent control of the source.
+	if _state.pending_control_discard_player == "p1":
+		_router.decline_control_discard()
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	if _state.priority_player != "p1":
 		return
 	var needs_confirm := (
 		_state.turn_player == "p1"
@@ -1149,6 +1165,11 @@ func _log_event(event: GameEvent) -> void:
 				_log_entry("[color=#f44][b]%s destroyed by %s[/b][/color]" % [card_name, src_name])
 			else:
 				_log_entry("[color=#f44][b]%s destroyed[/b][/color]" % card_name)
+		"instant_resolved":
+			var p: String   = _log_player(event.payload.get("player", ""))
+			var cid: String = event.payload.get("card_id", "")
+			var col := "#7af" if event.payload.get("player", "") == "p1" else "#fa8"
+			_log_entry("[color=%s]%s plays [b]%s[/b][/color]" % [col, p, _log_card(cid)])
 		"hero_power_used":
 			var p: String = _log_player(event.payload.get("player", ""))
 			_log_entry("[color=#aef]%s hero power[/color]" % p)
@@ -1277,6 +1298,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_discard_choice(event.payload)
 		"pet_sacrifice_required":
 			_handle_pet_sacrifice(event.payload)
+		"control_discard_choice_opened":
+			_handle_control_discard(event.payload)
 		"equipment_sacrifice_required":
 			_handle_equipment_sacrifice(event.payload)
 		"enter_play_target_required":
@@ -1431,6 +1454,13 @@ func _on_discard_mode_ended() -> void:
 var _discard_reason: String = "card_effect"
 
 
+func _on_control_discard_mode_ended() -> void:
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
+
+
 func _on_pet_sacrifice_mode_ended() -> void:
 	_set_status("")
 	_refresh_ui()
@@ -1532,6 +1562,35 @@ func _pick_ai_discard(player_id: String) -> CardInstance:
 			return (da.cost if da else 0) < (db_.cost if db_ else 0))
 		return non_resource[0]
 	return resource_only[randi() % resource_only.size()]
+
+
+# Infernal: "discard a card, or target opponent gains control of [this]."
+# Unlike a mandatory discard, the player may decline (Space / pass button).
+func _handle_control_discard(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var source_id: String = payload.get("source", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	if player_type != "human":
+		# AI: a 6-drop body is almost always worth a spare card — discard the
+		# least valuable hand card; decline (give control) only with an empty hand.
+		var ai: Object = _p1_ai if player == "p1" else _p2_ai
+		var pick_id := ""
+		if not _state.cards_in_zone(player + "_hand").is_empty():
+			if ai is BaseAI:
+				pick_id = (ai as BaseAI).choose_discard_card(_state, _db, player)
+			else:
+				var pick := _pick_ai_discard(player)
+				pick_id = pick.instance_id if pick else ""
+		var events := StackResolver.choose_control_discard(_state, pick_id, _db) \
+				if pick_id != "" else StackResolver.decline_control_discard(_state, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_control_discard_mode(source_id)
+		_set_status("%s: click a card to discard, or press Space to give the opponent control"
+				% _log_card(source_id))
+		_refresh_ui()
 
 
 func _handle_pet_sacrifice(payload: Dictionary) -> void:
@@ -2145,6 +2204,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for pet sacrifice before advancing
 	if _state.pending_equip_sacrifice_player != "":
 		return  # wait for equipment sacrifice before advancing
+	if _state.pending_control_discard_player != "":
+		return  # wait for the discard-or-give-control choice before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	if pid_type != "human" \
@@ -2190,7 +2251,8 @@ func _drain_passes() -> void:
 		if _game_over or _state.in_protect_point or _in_protect_mode:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
-				or _state.pending_equip_sacrifice_player != "":
+				or _state.pending_equip_sacrifice_player != "" \
+				or _state.pending_control_discard_player != "":
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
 		var chain_pending := not _state.pending_actions.is_empty()
@@ -2248,6 +2310,8 @@ func _maybe_turbo_pass() -> void:
 	if _state.pending_discard_count > 0:
 		return
 	if _state.pending_pet_sacrifice_player != "":
+		return
+	if _state.pending_control_discard_player != "":
 		return
 	if _state.priority_player != "p1" or _p1_type != "human":
 		return

@@ -232,7 +232,17 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 	var trigger_key := "heal_at_each_turn_start" if each_turn else "heal_at_turn_start"
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts.size() < 2 or parts[0].strip_edges() != trigger_key:
+		var key := parts[0].strip_edges()
+		# Infernal: "At the start of your turn, discard a card, or target opponent
+		# gains control of [this]." Opens a pending choice the scene must resolve
+		# via StackResolver.choose_control_discard / decline_control_discard.
+		if not each_turn and key == "turn_start_discard_or_give_control":
+			state.pending_control_discard_player = card.controller
+			state.pending_control_discard_ids.append(card.instance_id)
+			events.append(GameEvent.control_discard_choice_opened(
+				card.controller, card.instance_id))
+			continue
+		if parts.size() < 2 or key != trigger_key:
 			continue
 		var amount := int(parts[1])
 		events.append_array(GameLogic.heal(state, card.instance_id, amount, db))
@@ -249,9 +259,31 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 	var events: Array[GameEvent] = []
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts.size() < 1 or parts[0].strip_edges() != "ready_self_at_turn_end":
-			continue
-		events.append_array(GameLogic.ready_card(state, card.instance_id))
+		match parts[0].strip_edges():
+			"ready_self_at_turn_end":
+				events.append_array(GameLogic.ready_card(state, card.instance_id))
+			"end_of_turn_damage_opposing":
+				# Infernal: "At the end of your turn, [this] deals AMOUNT DMG_TYPE
+				# damage to each opposing hero and ally."
+				var amount := int(parts[1]) if parts.size() > 1 else 1
+				var opp := ""
+				for pid in state.players:
+					if pid != card.controller:
+						opp = pid
+						break
+				if opp == "":
+					continue
+				for target in state.cards_in_zone(opp + "_ally_row").duplicate():
+					events.append_array(GameLogic.deal_damage(
+						state, card.instance_id, target.instance_id, amount, db))
+					events.append_array(StackResolver._check_destroyed_trigger(
+						state, target.instance_id, card.instance_id, db))
+				var opp_hero := state.get_hero(opp)
+				if opp_hero:
+					events.append_array(GameLogic.deal_damage(
+						state, card.instance_id, opp_hero.instance_id, amount, db))
+					if state.get_current_hp(opp_hero.instance_id, db) <= 0:
+						events.append(GameEvent.game_over(card.controller, opp))
 	return events
 
 

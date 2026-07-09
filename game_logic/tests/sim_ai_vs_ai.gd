@@ -81,6 +81,17 @@ func _run_game(db: CardDatabase, deck_id1: String, deck_id2: String) -> String:
 				return "DEADLOCK: discard required but AI returned no card\n" + _dump(state, db)
 			StackResolver.choose_discard(state, did, db)
 			continue
+		if state.pending_control_discard_player != "":
+			# Infernal: discard the least valuable card; decline (give control)
+			# only when the hand is empty.
+			var cdp := state.pending_control_discard_player
+			var cd_id: String = (ais[cdp] as BaseAI).choose_discard_card(state, db, cdp) \
+					if not state.cards_in_zone(cdp + "_hand").is_empty() else ""
+			if cd_id != "":
+				StackResolver.choose_control_discard(state, cd_id, db)
+			else:
+				StackResolver.decline_control_discard(state, db)
+			continue
 		if state.pending_pet_sacrifice_player != "":
 			# Sacrifice the first candidate (keep-best logic lives in the scene).
 			var sac := state.cards_in_zone(state.pending_pet_sacrifice_player + "_ally_row")

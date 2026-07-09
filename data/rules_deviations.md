@@ -1,0 +1,79 @@
+# Rules deviations
+
+Engine behavior that intentionally contradicts (or narrows) the printed card
+text or `References/wow_rules.txt`, for traceability. Every entry here should
+be reflected by a code comment at the enforcement site pointing back to this
+file.
+
+Do not add an entry for something that is merely an *implementation detail*
+of a rule (e.g. how a window drains priority) — only for cases where the
+engine deliberately behaves more restrictively (or more permissively) than
+what the rules/card text alone would allow.
+
+---
+
+## For the Horde! (`azeroth_344`)
+
+**Printed text:** "Pay (1) to complete this quest. Reward: Horde allies in
+your party have +1 ATK while attacking this turn." No timing restriction is
+printed — quest completion is normally usable any time a player has priority
+(rule-legal, see `StackResolver._can_use_quest`).
+
+**Deviation:** restricted to the quest controller's own turn
+(`require_turn_player` effects flag, checked in
+`StackResolver._can_use_quest` via `quest_requires_turn_player`).
+
+**Why:** in a duel, a player can only attack on their own turn, so the
+reward can never affect anything if completed off-turn. Letting it be
+"legal but useless" off-turn had two costs: (1) it forced players to keep
+manually checking/dismissing it every priority window instead of Turbo
+autoskip handling their pass, and (2) the AI had to needlessly evaluate a
+quest completion action every non-turn priority window with the
+`use_quest` branch of `BaseAI.get_legal_actions` never doing anything
+useful with it.
+
+**Effect of the deviation:** Turbo autoskip can safely skip past this
+quest's completion window whenever it's not the controller's turn; the AI
+no longer offers/considers it off-turn either (it's simply not a legal
+action, so `get_legal_actions` never returns it — no special-casing needed
+in `base_ai.gd`).
+
+**How to apply this pattern to future cards:** if a quest reward is
+timing-gated in a way the printed text doesn't spell out but is true by
+construction of the duel format (e.g. anything referencing "attacking",
+"defending", or "this combat"), add `require_turn_player` to its `effects`
+string and add an entry here — don't hardcode the card id in
+`stack_resolver.gd`.
+
+---
+
+## Rayder (`azeroth_45`)
+
+**Printed text:** "[activate] -> Allies in your party have +2 ATK while
+attacking this turn." No "use only on your turn" clause is printed — ally
+activated powers are normally usable on either player's turn by default
+(see the "No turn_player restriction" convention note in
+`StackResolver._can_use_ally_power`, e.g. Grimdron blocking during an
+opponent's attack/defend window).
+
+**Deviation:** restricted to Rayder's controller's own turn, via the
+existing `on_your_turn` effects segment (reused from the genuine "use only
+on your turn" printed-text convention, e.g. Acolyte Demia — see
+`StackResolver._can_use_ally_power`).
+
+**Why:** the buff only affects allies "while attacking," which can only
+happen on the controller's turn in a duel — so activating it off-turn is
+always a no-op reward-wise, while still exhausting Rayder. An exhausted
+ally is a strictly worse board state against effects that punish exhausted
+characters (e.g. destroy-exhausted-ally effects), so the AI would
+sometimes activate the power off-turn for zero benefit and a real
+downside. Restricting it to the controller's turn removes that trap for
+both the AI and Turbo autoskip.
+
+**How to apply this pattern to future cards:** if an ally/equipment
+activated power's only effect is conditioned on something that's only ever
+true on the controller's turn (e.g. "while attacking"), add `on_your_turn`
+to its `effects` string and add an entry here. Note this reuses the same
+flag as genuine "use only on your turn" printed text (Acolyte Demia) —
+the effects string alone doesn't distinguish printed restriction from
+engine deviation, which is exactly why this file exists.

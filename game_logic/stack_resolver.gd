@@ -115,6 +115,10 @@ static func submit_action(state: GameState, action: PendingAction,
 
 
 static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
+	# A pending discard-or-give-control choice (Infernal) must be resolved via
+	# choose_control_discard / decline_control_discard before priority can move.
+	if state.pending_control_discard_player != "":
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -188,6 +192,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Equipment slot uniqueness violation blocks everything until resolved via
 	# choose_equipment_sacrifice().
 	if state.pending_equip_sacrifice_player != "":
+		return false
+
+	# Infernal-style discard-or-give-control choice blocks everything until
+	# resolved via choose_control_discard() / decline_control_discard().
+	if state.pending_control_discard_player != "":
 		return false
 
 	match action.action_type:
@@ -1049,6 +1058,9 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		return false
 	# "Use only on your turn" (e.g. Acolyte Demia) — same convention as hero
 	# powers (_power_effect_is(def, "on_your_turn")), as a standalone segment.
+	# Also used for engine-only deviations where the printed text has no such
+	# restriction but it's true by construction (e.g. Rayder — see
+	# data/rules_deviations.md).
 	if _power_effect_is(def, "on_your_turn") and state.turn_player != action.source_player:
 		return false
 	var extra_cost_str: String = ap.get("extra_cost", "")
@@ -1597,6 +1609,19 @@ static func quest_requires_hero_damaged_by_ally(def: CardDef) -> bool:
 	return false
 
 
+# Engine-only restriction (NOT in the printed rules — see data/rules_deviations.md):
+# some quests are only ever useful on the controller's own turn (e.g. For the
+# Horde!, whose reward only affects attacking allies). Restricting completion
+# to the turn player also lets the AI skip evaluating them off-turn.
+static func quest_requires_turn_player(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges() == "require_turn_player":
+			return true
+	return false
+
+
 # All graveyard cards matching a requirement, from player_id's point of view.
 static func get_graveyard_search_candidates(state: GameState, player_id: String,
 		req: Dictionary, db) -> Array[String]:
@@ -1676,6 +1701,9 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 		var opp_ps := state.players.get(_other_player(state, action.source_player)) as PlayerState
 		if not opp_ps or not opp_ps.hero_damaged_by_ally_this_turn:
 			return false
+	# Engine-only deviation — see data/rules_deviations.md.
+	if quest_requires_turn_player(def) and state.turn_player != action.source_player:
+		return false
 	# Graveyard-target rewards: targets are announced with the completion (rule 601-style
 	# targeting) and must be legal now. Blocked entirely when too few candidates exist.
 	var gy_req := get_graveyard_search_requirement(def)
@@ -1821,6 +1849,67 @@ static func choose_discard(state: GameState, card_id: String,
 		events.append(GameEvent.discard_choice_opened(
 			state.pending_discard_player, state.pending_discard_count))
 	return events
+
+
+# ── Discard-or-give-control choice (Infernal) ─────────────────────────────────
+# "At the start of your turn, discard a card, or target opponent gains control
+# of [this]." Called directly by the scene (not via submit_action), like
+# choose_pet_sacrifice — but unlike a mandatory discard, the player may decline.
+
+# Player chose to discard a hand card and keep control of the source.
+static func choose_control_discard(state: GameState, card_id: String,
+		_db = null) -> Array[GameEvent]:
+	if state.pending_control_discard_player == "" \
+			or state.pending_control_discard_ids.is_empty():
+		return []
+	var card := state.get_card(card_id)
+	if not card or card.controller != state.pending_control_discard_player:
+		return []
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand":
+		return []
+
+	var events: Array[GameEvent] = []
+	events.append_array(GameLogic.discard_card(state, card_id))
+	state.pending_control_discard_ids.pop_front()
+	_advance_control_discard_queue(state, events)
+	return events
+
+
+# Player declined to discard — the opponent gains control of the source
+# (rule 401.3: the new controller moves it to his ally row). just_summoned is
+# set because an ally can't attack or use powers unless it has been under its
+# controller's control continuously since the start of their turn.
+static func decline_control_discard(state: GameState,
+		db = null) -> Array[GameEvent]:
+	if state.pending_control_discard_player == "" \
+			or state.pending_control_discard_ids.is_empty():
+		return []
+	var events: Array[GameEvent] = []
+	var source_id: String = state.pending_control_discard_ids.pop_front()
+	var source := state.get_card(source_id)
+	if source and state.is_in_play(source_id):
+		var old_ctrl := source.controller
+		var new_ctrl := _other_player(state, old_ctrl)
+		source.controller = new_ctrl
+		source.just_summoned = true
+		events.append_array(GameLogic.move_card(state, source_id, new_ctrl + "_ally_row"))
+		events.append(GameEvent.control_changed(source_id, old_ctrl, new_ctrl))
+		# The source may be a Pet (Infernal is) — new controller's pet capacity
+		# can now be violated exactly as if a second pet entered play.
+		events.append_array(_check_pet_uniqueness(state, source_id, db))
+	_advance_control_discard_queue(state, events)
+	return events
+
+
+static func _advance_control_discard_queue(state: GameState,
+		events: Array[GameEvent]) -> void:
+	if state.pending_control_discard_ids.is_empty():
+		state.pending_control_discard_player = ""
+	else:
+		events.append(GameEvent.control_discard_choice_opened(
+			state.pending_control_discard_player,
+			state.pending_control_discard_ids[0]))
 
 
 static func choose_pet_sacrifice(state: GameState, card_id: String,

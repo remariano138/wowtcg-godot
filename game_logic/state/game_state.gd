@@ -56,6 +56,11 @@ var pending_pet_sacrifice_ids: Array[String] = []  # instance_ids of ALL pets cu
 # most one occupies the conflicting slot.
 var pending_equip_sacrifice_player: String = ""
 var pending_equip_sacrifice_ids: Array[String] = []  # instance_ids of same-slot equipment in play
+# Infernal-style start-of-turn choice: discard a card OR give the opponent
+# control of the source. Optional discard — declining is a legal resolution
+# (unlike pending_discard, which is mandatory).
+var pending_control_discard_player: String = ""
+var pending_control_discard_ids: Array[String] = []  # source instance_ids, resolved front-first
 
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.

@@ -105,6 +105,12 @@ static func game_over(winner: String, loser: String) -> GameEvent:
 static func discard_choice_opened(player_id: String, count: int, reason: String = "card_effect") -> GameEvent:
 	return make("discard_choice_opened", {"player": player_id, "count": count, "reason": reason})
 
+static func control_discard_choice_opened(player_id: String, source_card_id: String) -> GameEvent:
+	return make("control_discard_choice_opened", {"player": player_id, "source": source_card_id})
+
+static func control_changed(card_id: String, old_controller: String, new_controller: String) -> GameEvent:
+	return make("control_changed", {"card": card_id, "old": old_controller, "new": new_controller})
+
 static func pet_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
 	return make("pet_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
 

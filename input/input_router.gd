@@ -21,6 +21,8 @@ signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 signal targeting_cancelled()
 signal discard_mode_started(count: int)
 signal discard_mode_ended()
+signal control_discard_mode_started(source_id: String)
+signal control_discard_mode_ended()
 signal pet_sacrifice_mode_started(candidate_ids: Array)
 signal pet_sacrifice_mode_ended()
 signal equipment_sacrifice_mode_started(candidate_ids: Array)
@@ -48,6 +50,7 @@ var _targeting_source:      String = ""   # instance_id of attacker / hero; "" =
 var _targeting_action_type: String = ""   # "propose_combat" or "activate_power"
 var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for crosshair)
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
+var _in_control_discard_mode: bool = false  # true while player chooses: discard OR give control (Infernal)
 var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet to sacrifice
 var _in_equip_sacrifice_mode: bool = false  # true while player must choose equipment to destroy
 var _equip_sacrifice_candidates: Array[String] = []
@@ -110,6 +113,12 @@ func handle_card_click(instance_id: String) -> void:
 	# ── Discard mode: click discards the chosen hand card ─────────────────────
 	if _in_discard_mode:
 		_handle_discard_click(instance_id)
+		return
+
+	# ── Control-discard mode (Infernal): click a hand card to discard and keep
+	# control; declining goes through decline_control_discard() (pass button) ──
+	if _in_control_discard_mode:
+		_handle_control_discard_click(instance_id)
 		return
 
 	# ── Targeting mode: click selects the target ─────────────────────────────
@@ -176,7 +185,8 @@ func handle_card_click(instance_id: String) -> void:
 	# Abilities/instants with targets: enter targeting mode rather than submitting
 	# directly — targeting is cancellable (Esc) until the target click submits.
 	if action_type == "play_ability" and _ability_needs_target(instance_id):
-		start_targeting(instance_id, "play_ability", _card_dmg_type(instance_id), 0)
+		start_targeting(instance_id, "play_ability",
+			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
 	if action_type == "play_instant" and _instant_needs_target(instance_id):
 		start_targeting(instance_id, "play_instant",
@@ -217,6 +227,49 @@ func _handle_discard_click(instance_id: String) -> void:
 		_in_discard_mode = false
 		_highlight_color = Color(0.2, 1.0, 0.3)
 		discard_mode_ended.emit()
+	refresh_highlights()
+
+
+# ── Control-discard mode (Infernal: discard a card OR give up control) ────────
+
+func start_control_discard_mode(source_id: String) -> void:
+	_in_control_discard_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)  # red — pending choice blocks all other play
+	refresh_highlights()
+	control_discard_mode_started.emit(source_id)
+
+
+func _handle_control_discard_click(instance_id: String) -> void:
+	var card := state.get_card(instance_id)
+	if not card or card.controller != local_player:
+		return
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand":
+		return
+	var events := StackResolver.choose_control_discard(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_end_control_discard_mode_if_done()
+
+
+# Player declined the discard: opponent gains control of the source card.
+func decline_control_discard() -> void:
+	if not _in_control_discard_mode:
+		return
+	var events := StackResolver.decline_control_discard(state, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_end_control_discard_mode_if_done()
+
+
+func _end_control_discard_mode_if_done() -> void:
+	# Stay in the mode if another source's choice is still queued.
+	if state.pending_control_discard_player != local_player:
+		_in_control_discard_mode = false
+		_highlight_color = Color(0.2, 1.0, 0.3)
+		control_discard_mode_ended.emit()
 	refresh_highlights()
 
 
@@ -515,7 +568,9 @@ func _handle_chain_lightning_click(instance_id: String) -> void:
 		_submit_chain_lightning()
 	else:
 		# Re-emit to refresh the cursor/status text and re-highlight remaining targets.
-		targeting_started.emit(_targeting_source, _targeting_dmg_type, 0)
+		# Chain Lightning's amount steps down per target (3/2/1) — show the next one.
+		var next_amount := _chain_lightning_amount_for(_targeting_source, _chain_lightning_picked.size())
+		targeting_started.emit(_targeting_source, _targeting_dmg_type, next_amount)
 		refresh_highlights()
 
 
@@ -703,6 +758,14 @@ func get_playable_card_ids() -> Array:
 		for cid: String in _equip_sacrifice_candidates:
 			equip_ids.append(cid)
 		return equip_ids
+
+	# Control-discard mode (Infernal): all local hand cards are valid discard
+	# choices (declining goes through the pass button, not a card click).
+	if _in_control_discard_mode and state.pending_control_discard_player == local_player:
+		var cd_ids: Array = []
+		for card in state.cards_in_zone(local_player + "_hand"):
+			cd_ids.append(card.instance_id)
+		return cd_ids
 
 	# Discard mode: all local hand cards are valid discard choices.
 	if _in_discard_mode and state.pending_discard_player == local_player:
@@ -1019,7 +1082,8 @@ func handle_context_action(action: PendingAction) -> void:
 		"play_ability":
 			if _ability_needs_target(action.params.get("card_id", "")):
 				var cid: String = action.params.get("card_id", "")
-				start_targeting(cid, "play_ability", _card_dmg_type(cid), 0)
+				start_targeting(cid, "play_ability",
+					_card_dmg_type(cid), _card_dmg_amount(cid))
 				return
 		"play_instant":
 			if _instant_needs_target(action.params.get("card_id", "")):
@@ -1396,6 +1460,21 @@ func _card_dmg_type(card_id: String) -> String:
 	return ""
 
 
+# Chain Lightning's per-target amount (recipe: chain_lightning:3:2:1:TYPE).
+# picked_count is how many targets have already been chosen (0 = first target).
+func _chain_lightning_amount_for(card_id: String, picked_count: int) -> int:
+	if not db: return 0
+	var card := state.get_card(card_id)
+	if not card: return 0
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def: return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "chain_lightning" and parts.size() > 1 + picked_count:
+			return int(parts[1 + picked_count])
+	return 0
+
+
 # Damage amount shown on the targeting cursor for damage effects
 # (deal_damage_to_target:N:TYPE). 0 when the card deals no direct damage.
 func _card_dmg_amount(card_id: String) -> int:
@@ -1406,8 +1485,11 @@ func _card_dmg_amount(card_id: String) -> int:
 	if not def: return 0
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0].strip_edges() == "deal_damage_to_target" and parts.size() > 1:
-			return int(parts[1])
+		match parts[0].strip_edges():
+			"deal_damage_to_target":
+				if parts.size() > 1: return int(parts[1])
+			"chain_lightning":
+				if parts.size() > 1: return int(parts[1])
 	return 0
 
 

@@ -106,6 +106,7 @@ power_text, data_status, engine_status, effects, image_path
 | `destroy_target:ally` | Destroy a target ally (Vanquish-style) |
 | `sarmoth_taunt` | Opposing characters that can attack this must attack only this |
 | `heal_x_from_target:DMG_TYPE` | Hero power: pay X resources → heal X from target hero or ally (Boris) |
+| `reveal_pick:CARD_TYPE:N` | Quest reward: reveal the top N cards; put a revealed card of `CARD_TYPE` (`Equipment`/`Ally`/`Ability`; matches the parsed `CardDef.card_type`, so `Instant Ally`→`Ally`) into hand, rest to the bottom of the deck in revealed order. If at least one matches, sets `pending_reveal_pick_*` and emits `reveal_pick_opened`; the scene resolves it via `StackResolver.choose_reveal_pick()` (direct call, not the stack — like pet sacrifice; `can_submit`/`pass_priority` hard-block while pending). No match → all revealed cards go straight to the bottom, no choice. Big Game Hunter (Equipment:4), Kibler's Exotic Pets (Ally:3), Zapped Giants (Ability:3) |
 | `turn_start_discard_or_give_control` | At the start of your turn: discard a card, or the opponent gains control of this (Infernal). Fires in `TurnManager._apply_start_of_turn_effects`; resolves via `choose_control_discard` / `decline_control_discard` |
 | `end_of_turn_damage_opposing:AMOUNT:DMG_TYPE` | At the end of your turn, this deals AMOUNT damage to each opposing hero and ally (Infernal). Fires in `TurnManager._apply_end_of_turn_effects` |
 | `elusive` | (keyword in keywords col, not effects) — can't be chosen as defender |
@@ -193,10 +194,13 @@ Notable implemented mechanics:
 - **Equipment** — Mooncloth Robe (first equipment). Plays via `play_equipment` into the hero row; `activated_power` with `draw` effect + `exhaust_hero` extra cost. Slot uniqueness (rule 414.3) enforced with an immediate destroy choice mirroring Pet uniqueness (`pending_equip_sacrifice_*`, `choose_equipment_sacrifice`, `equipment_sacrifice_required`). See "Equipment" section below.
 - **Hero powers**: Ta'zo flip (deal_damage_to_target:3:fire), Dizdemona (deal_x_damage_to_ally), Omedus (deal_damage_aoe), Grennan (heal), Boris Brightbeard (heal_x_from_target — pay X resources, heal X from any hero or ally), Radak Doombringer (radak_pet_sacrifice — flip: sacrifice Pet with cost X, deal X shadow dmg to target)
 - **Quest cards** — basic cost-based quest completion
+- **Reveal-and-pick quests** — Big Game Hunter (`azeroth_348`, Equipment:4), Kibler's Exotic Pets (`azeroth_355`, Ally:3), Zapped Giants (`azeroth_361`, Ability:3): reveal top N, keep one revealed card of a type, rest to bottom (`reveal_pick` recipe; human picks via the reveal browser, AI keeps highest-cost via `_pick_ai_reveal`)
+- **Long-Range** (keyword) — Tanwa the Marksman (dark_portal_235, 4/3). While a Long-Range character is attacking, the defender deals no combat damage back (`_do_combat_conclusion` zeroes `def_dmg` when the attacker has `long_range`; has no effect when the character is defending instead).
 - **Instant Ally** — Tristan Rapidstrike (azeroth_221, 3/3 Protector). The Instant tag (CSV `type` = "Instant Ally" → `CardDef.is_instant`) makes `play_ally` instant-speed in `_can_play_non_instant`: playable any time with priority (combat windows, opponent's turn, non-empty chain — rule 409.1). Resolves as a normal ally (summoning sickness, which does NOT block protecting — 601.2a restricts attackers only). AI: tagged `combat_instant_protector` in `BaseAI.COMBAT_INSTANT_TAGS` (held, never blind-played); `instant_protector_action` flashes it in during the ATTACK window only (never defend — the protect point is past) when being attacked, no board protector answers, and the protector decision tree would pick it (safe kill-and-survive block, or any block to save the hero); the normal `choose_protector` then uses it at the protect point.
 
 ### Playtested heroes (confirmed working)
-Dizdemona, Ta'zo, Grennan, Boris Brightbeard, Omedus, Sarmoth (ally), Radak Doombringer
+Alliance : Boris, Dizdemona, Moonshadow
+Horde : Ta'zo, Grennan, Boris Brightbeard, Omedus, Radak Doombringer
 
 ---
 

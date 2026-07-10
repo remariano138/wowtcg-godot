@@ -14,6 +14,11 @@
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
+      "card_def_id": "azeroth_361",
+      "count": 2,
+      "_card_name": "Zapped Giants"
+    },
+    {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
@@ -50,12 +55,12 @@
     },
     {
       "card_def_id": "azeroth_230",
-      "count": 2,
+      "count": 1,
       "_card_name": "Blood Guard Mal'wani"
     },
     {
       "card_def_id": "azeroth_235",
-      "count": 1,
+      "count": 2,
       "_card_name": "Elder Moorf"
     },
     {
@@ -64,9 +69,9 @@
       "_card_name": "For the Horde!"
     },
     {
-      "card_def_id": "azeroth_225",
+      "card_def_id": "azeroth_242",
       "count": 2,
-      "_card_name": "Arnold Flem"
+      "_card_name": "Hierophant Caydiem"
     },
     {
       "card_def_id": "azeroth_171",
@@ -100,19 +105,24 @@
     },
     {
       "card_def_id": "azeroth_264",
-      "count": 4,
+      "count": 2,
       "_card_name": "Vesh'ral"
     },
     {
       "card_def_id": "azeroth_240",
-      "count": 2,
+      "count": 4,
       "_card_name": "Guardian Steelhorn"
     },
     {
       "card_def_id": "azeroth_252",
-      "count": 2,
+      "count": 1,
       "_card_name": "Moko Hunts-at-Dawn"
     },
+    {
+      "card_def_id": "dark_portal_235",
+      "count": 1,
+      "_card_name": "Tanwa the Marksman"
+    },    
     {
       "card_def_id": "azeroth_274",
       "count": 2,
@@ -130,6 +140,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
+  "strategy": "Solid Tauren Protectors supported by heals and spell damage",
   "source": "recommended_ai",
   "metadata": {
     "author": "playtest",

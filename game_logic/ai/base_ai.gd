@@ -570,6 +570,10 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 					break
+		elif ap.get("targets", "") == "hero_or_ally_two":
+			# Hierophant Caydiem: damage an enemy, heal a damaged friendly — two
+			# distinct targets. Mirrors _damage_and_heal_actions for hero powers.
+			result.append_array(_ally_damage_and_heal_actions(state, db, player_id, card.instance_id, int(ap.get("amount", 0))))
 		elif ap.get("targets", "") == "ally":
 			# Friendly buff powers (Elder Moorf): target our own highest-ATK ally
 			# so the +ATK swing lands where it matters most. Never buffs the enemy.
@@ -908,6 +912,67 @@ func _damage_and_heal_actions(state: GameState, db, player_id: String,
 
 	var final_act := PendingAction.make("activate_power", player_id,
 		{"hero_id": hero_id, "target_id": best_dmg, "heal_target_id": best_heal})
+	if StackResolver.can_submit(state, final_act, db):
+		return [final_act]
+	return []
+
+
+# Ally-power version of _damage_and_heal_actions (e.g. Hierophant Caydiem):
+# pick the single best (dmg_target, heal_target) pair via use_ally_power.
+func _ally_damage_and_heal_actions(state: GameState, db, player_id: String,
+		ally_id: String, damage: int) -> Array[PendingAction]:
+	var all_ids: Array[String] = []
+	for pid in state.players:
+		var ps2 := state.players.get(pid) as PlayerState
+		if ps2 and ps2.hero_instance_id != "":
+			all_ids.append(ps2.hero_instance_id)
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			all_ids.append(card.instance_id)
+
+	var valid_dmg: Array[String] = []
+	for dmg_id in all_ids:
+		var dmg_card := state.get_card(dmg_id)
+		if not dmg_card or dmg_card.controller == player_id:
+			continue
+		for heal_id in all_ids:
+			if heal_id == dmg_id:
+				continue
+			var act := PendingAction.make("use_ally_power", player_id,
+				{"card_id": ally_id, "target_id": dmg_id, "heal_target_id": heal_id})
+			if StackResolver.can_submit(state, act, db):
+				valid_dmg.append(dmg_id)
+				break
+
+	if valid_dmg.is_empty():
+		return []
+
+	var best_dmg := _best_damage_target(state, db, player_id, valid_dmg, damage)
+	if best_dmg == "":
+		return []
+
+	var valid_heal: Array[String] = []
+	for heal_id in all_ids:
+		if heal_id == best_dmg:
+			continue
+		var heal_card := state.get_card(heal_id)
+		if not heal_card or heal_card.controller != player_id:
+			continue
+		if state.get_current_hp(heal_id, db) >= state.get_max_hp(heal_id, db):
+			continue
+		var act := PendingAction.make("use_ally_power", player_id,
+			{"card_id": ally_id, "target_id": best_dmg, "heal_target_id": heal_id})
+		if StackResolver.can_submit(state, act, db):
+			valid_heal.append(heal_id)
+
+	if valid_heal.is_empty():
+		return []
+
+	var best_heal := _best_heal_target(state, db, player_id, valid_heal)
+	if best_heal == "":
+		return []
+
+	var final_act := PendingAction.make("use_ally_power", player_id,
+		{"card_id": ally_id, "target_id": best_dmg, "heal_target_id": best_heal})
 	if StackResolver.can_submit(state, final_act, db):
 		return [final_act]
 	return []

@@ -4,7 +4,9 @@ extends Node
 #
 # HOW TO RUN:
 #   In Godot editor: Scene > New Scene > add this script as the root node > Play Scene.
-#   All lines should say PASS. Non-zero FAIL count = a bug.
+#   Passing scenarios print a single "PASS <fn_name>" summary line; a scenario
+#   with any failing assertion prints its full buffered log instead. Non-zero
+#   FAIL count = a bug.
 #
 # Philosophy: each test builds a specific game state from scratch, wires up
 # ScriptedAI instances that play predetermined actions, then drives the
@@ -16,98 +18,108 @@ const MAX_STEPS := 200   # guard against infinite loops in a broken driver
 func _ready() -> void:
 	print("=== WoW TCG Engine — Scenario Tests ===\n")
 
-	_test_protector_intercepts_attack()
-	_test_ferocity_attacks_turn_played()
-	_test_elusive_never_targetable()
-	_test_hand_size_wrap_up_discard()
-	_test_tazo_hero_power()
-	_test_tazdingo_enter_play()
-	_test_parvink_enter_play()
-	_test_vanquish()
-	_test_quick_strike()
-	_test_lightning_bolt()
-	_test_pet_uniqueness()
-	_test_mooncloth_robe_power()
-	_test_mooncloth_robe_hero_exhausted()
-	_test_equipment_slot_uniqueness()
-	_test_ai_plays_equipment()
-	_test_pads_block_combat()
-	_test_pads_block_instant()
-	_test_pads_overblock_expires()
-	_test_ai_armor_block_heuristic()
-	_test_grimdron_ally_power()
-	_test_sarmoth_taunt_forces_attacker()
-	_test_sarmoth_taunt_multiple_attackers()
-	_test_sarmoth_elusive_no_taunt()
-	_test_sarmoth_taunt_lifts_on_death()
-	_test_boris_heal_x()
-	_test_radak_pet_sacrifice()
-	_test_radak_no_pets()
-	_test_timmo_destroy_exhausted_ally()
-	_test_quest_cant_reuse_while_pending()
-	_test_liba_wobblebonk_enter_play()
-	_test_kulan_earthguard_end_of_turn_ready()
-	_test_tracker_gallen_atk_per_ally()
-	_test_malwani_atk_per_damage_self()
-	_test_zorm_party_atk_while_attacking()
-	_test_elder_moorf_buff_target()
-	_test_rayder_party_buff_while_attacking()
-	_test_for_the_horde_quest_buff()
-	_test_turn_buff_expires_at_end_of_turn()
-	_test_zorm_bonus_applies_to_real_combat_damage()
-	_test_get_atk_if_attacking_preview()
-	_test_moorf_buff_applies_to_real_defense_damage()
-	_test_ryn_dreamstrider_buff_target_attacking()
-	_test_chasing_ame_graveyard_to_hand()
-	_test_chasing_ame_blocked_and_filtered()
-	_test_finkle_einhorn_graveyard_to_play()
-	_test_missing_diplomat_deck_search()
-	_test_darrowshire_rfg_three_allies()
-	_test_darrowshire_blocked_with_too_few_allies()
-	_test_defias_brotherhood_requires_four_allies()
-	_test_toreks_assault_requires_hero_damaged_by_ally()
-	_test_find_lethal()
-	_test_find_lethal_baseline_in_ai_actions()
-	_test_sort_valuable_cards()
-	_test_find_safe_lethals()
-	_test_generic_ai_safe_kill_flow()
-	_test_generic_ai_value_choices()
-	_test_combat_trade_value()
-	_test_generic_ai_trade_develop_chip()
-	_test_generic_ai_protector_choice()
-	_test_generic_ai_while_attacking_buffs()
-	_test_ally_heal_power_targets_friendlies()
-	_test_react_to_hero_power_with_heal()
-	_test_react_to_hero_power_with_heal_legal_on_chain()
-	_test_on_your_turn_power_blocked_on_chain()
-	_test_instant_ally_timing_and_protect()
-	_test_ai_flashes_instant_protector()
-	_test_ai_holds_instant_protector()
-	_test_combat_instant_ambush()
-	_test_deacon_johanna_once_per_turn()
-	_test_acolyte_demia_power()
-	_test_acolyte_demia_own_turn_only()
-	_test_acolyte_demia_self_destroys()
-	_test_senzir_beastwalker_power()
-	_test_senzir_beastwalker_no_pet_in_graveyard()
-	_test_ai_senzir_picks_most_valuable_pet()
-	_test_bloodclaw_no_horde_bonus()
-	_test_old_bones_protects_hero_only()
-	_test_arcane_shot()
-	_test_arcane_shot_combat_instant_tag()
-	_test_fire_blast()
-	_test_nerra_lifeboon_health_aura()
-	_test_nerra_death_triggers_aura_loss_death()
-	_test_master_of_the_hunt_ongoing()
-	_test_guardian_steelhorn_cant_attack()
-	_test_starfire()
-	_test_flamestrike()
-	_test_chain_lightning()
-	_test_untargetable_keyword()
-	_test_infernal_discard_keeps_control()
-	_test_infernal_decline_gives_control()
-	_test_infernal_decline_pet_uniqueness()
-	_test_infernal_end_of_turn_damage()
+	var tests: Array[Callable] = [
+		_test_protector_intercepts_attack,
+		_test_ferocity_attacks_turn_played,
+		_test_elusive_never_targetable,
+		_test_hand_size_wrap_up_discard,
+		_test_tazo_hero_power,
+		_test_tazdingo_enter_play,
+		_test_parvink_enter_play,
+		_test_vanquish,
+		_test_quick_strike,
+		_test_lightning_bolt,
+		_test_pet_uniqueness,
+		_test_mooncloth_robe_power,
+		_test_mooncloth_robe_hero_exhausted,
+		_test_equipment_slot_uniqueness,
+		_test_ai_plays_equipment,
+		_test_pads_block_combat,
+		_test_pads_block_instant,
+		_test_pads_overblock_expires,
+		_test_ai_armor_block_heuristic,
+		_test_grimdron_ally_power,
+		_test_sarmoth_taunt_forces_attacker,
+		_test_sarmoth_taunt_multiple_attackers,
+		_test_sarmoth_elusive_no_taunt,
+		_test_sarmoth_taunt_lifts_on_death,
+		_test_boris_heal_x,
+		_test_radak_pet_sacrifice,
+		_test_radak_no_pets,
+		_test_timmo_destroy_exhausted_ally,
+		_test_quest_cant_reuse_while_pending,
+		_test_liba_wobblebonk_enter_play,
+		_test_kulan_earthguard_end_of_turn_ready,
+		_test_tracker_gallen_atk_per_ally,
+		_test_malwani_atk_per_damage_self,
+		_test_zorm_party_atk_while_attacking,
+		_test_elder_moorf_buff_target,
+		_test_rayder_party_buff_while_attacking,
+		_test_for_the_horde_quest_buff,
+		_test_turn_buff_expires_at_end_of_turn,
+		_test_zorm_bonus_applies_to_real_combat_damage,
+		_test_get_atk_if_attacking_preview,
+		_test_moorf_buff_applies_to_real_defense_damage,
+		_test_ryn_dreamstrider_buff_target_attacking,
+		_test_chasing_ame_graveyard_to_hand,
+		_test_chasing_ame_blocked_and_filtered,
+		_test_finkle_einhorn_graveyard_to_play,
+		_test_missing_diplomat_deck_search,
+		_test_reveal_pick_takes_matching_card,
+		_test_reveal_pick_no_match_all_to_bottom,
+		_test_reveal_pick_blocks_other_actions,
+		_test_darrowshire_rfg_three_allies,
+		_test_darrowshire_blocked_with_too_few_allies,
+		_test_defias_brotherhood_requires_four_allies,
+		_test_toreks_assault_requires_hero_damaged_by_ally,
+		_test_find_lethal,
+		_test_find_lethal_baseline_in_ai_actions,
+		_test_sort_valuable_cards,
+		_test_find_safe_lethals,
+		_test_generic_ai_safe_kill_flow,
+		_test_generic_ai_value_choices,
+		_test_combat_trade_value,
+		_test_generic_ai_trade_develop_chip,
+		_test_generic_ai_protector_choice,
+		_test_generic_ai_while_attacking_buffs,
+		_test_ally_heal_power_targets_friendlies,
+		_test_react_to_hero_power_with_heal,
+		_test_react_to_hero_power_with_heal_legal_on_chain,
+		_test_on_your_turn_power_blocked_on_chain,
+		_test_instant_ally_timing_and_protect,
+		_test_ai_flashes_instant_protector,
+		_test_ai_holds_instant_protector,
+		_test_combat_instant_ambush,
+		_test_deacon_johanna_once_per_turn,
+		_test_acolyte_demia_power,
+		_test_acolyte_demia_own_turn_only,
+		_test_acolyte_demia_self_destroys,
+		_test_senzir_beastwalker_power,
+		_test_senzir_beastwalker_no_pet_in_graveyard,
+		_test_ai_senzir_picks_most_valuable_pet,
+		_test_bloodclaw_no_horde_bonus,
+		_test_old_bones_protects_hero_only,
+		_test_arcane_shot,
+		_test_arcane_shot_combat_instant_tag,
+		_test_fire_blast,
+		_test_nerra_lifeboon_health_aura,
+		_test_nerra_death_triggers_aura_loss_death,
+		_test_master_of_the_hunt_ongoing,
+		_test_guardian_steelhorn_cant_attack,
+		_test_starfire,
+		_test_flamestrike,
+		_test_chain_lightning,
+		_test_untargetable_keyword,
+		_test_infernal_discard_keeps_control,
+		_test_infernal_decline_gives_control,
+		_test_infernal_decline_pet_uniqueness,
+		_test_infernal_end_of_turn_damage,
+		_test_hierophant_caydiem_power,
+		_test_tanwa_long_range,
+	]
+
+	for t in tests:
+		_run_test(t)
 
 	print("\n=== Results: %d passed  %d failed ===" % [_pass, _fail])
 	if _fail == 0:
@@ -119,25 +131,45 @@ func _ready() -> void:
 
 
 # ── Assertion helpers ──────────────────────────────────────────────────────────
+#
+# Per-test output is buffered: if every assertion in a test passes, only a
+# single "PASS <fn_name>" summary line prints. If anything fails, the full
+# buffered log (including the test's own header print) is flushed so the
+# failure is fully diagnosable. Keeps a full run's console output short
+# without losing detail exactly where it's needed.
 
 var _pass := 0
 var _fail := 0
+var _buf: Array[String] = []
+var _buf_had_fail := false
+
+func _run_test(fn: Callable) -> void:
+	_buf = []
+	_buf_had_fail = false
+	fn.call()
+	if _buf_had_fail:
+		for line in _buf:
+			print(line)
+	else:
+		print("  PASS  %s" % fn.get_method())
 
 func ok(condition: bool, label: String) -> void:
 	if condition:
 		_pass += 1
-		print("  PASS  %s" % label)
+		_buf.append("  PASS  %s" % label)
 	else:
 		_fail += 1
-		print("  FAIL  %s" % label)
+		_buf_had_fail = true
+		_buf.append("  FAIL  %s" % label)
 
 func eq(a, b, label: String) -> void:
 	if a == b:
 		_pass += 1
-		print("  PASS  %s" % label)
+		_buf.append("  PASS  %s" % label)
 	else:
 		_fail += 1
-		print("  FAIL  %s  [got %s, expected %s]" % [label, str(a), str(b)])
+		_buf_had_fail = true
+		_buf.append("  FAIL  %s  [got %s, expected %s]" % [label, str(a), str(b)])
 
 
 # ── Mock database ──────────────────────────────────────────────────────────────
@@ -561,7 +593,7 @@ func _add_resources(state: GameState, player_id: String, count: int) -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_protector_intercepts_attack() -> void:
-	print("\n-- Scenario 1: Protector intercepts attack on hero --")
+	_buf.append("\n-- Scenario 1: Protector intercepts attack on hero --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -595,7 +627,7 @@ func _test_protector_intercepts_attack() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ferocity_attacks_turn_played() -> void:
-	print("\n-- Scenario 2: Ferocity ally attacks the turn it is played --")
+	_buf.append("\n-- Scenario 2: Ferocity ally attacks the turn it is played --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -623,7 +655,7 @@ func _test_ferocity_attacks_turn_played() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_elusive_never_targetable() -> void:
-	print("\n-- Scenario 3: Elusive ally is never a legal defender --")
+	_buf.append("\n-- Scenario 3: Elusive ally is never a legal defender --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -651,7 +683,7 @@ func _test_elusive_never_targetable() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_hand_size_wrap_up_discard() -> void:
-	print("\n-- Scenario 4: Wrap-up discard reduces hand to max size --")
+	_buf.append("\n-- Scenario 4: Wrap-up discard reduces hand to max size --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -676,7 +708,7 @@ func _test_hand_size_wrap_up_discard() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_tazo_hero_power() -> void:
-	print("\n-- Scenario 5: Ta'zo hero power deals 3 damage --")
+	_buf.append("\n-- Scenario 5: Ta'zo hero power deals 3 damage --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("tazo_def", 25, 3, "deal_damage_to_target:3:fire")
@@ -742,7 +774,7 @@ func _test_tazo_hero_power() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_tazdingo_enter_play() -> void:
-	print("\n-- Scenario 6: Taz'dingo enters-play targeted damage --")
+	_buf.append("\n-- Scenario 6: Taz'dingo enters-play targeted damage --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -782,7 +814,7 @@ func _test_tazdingo_enter_play() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_parvink_enter_play() -> void:
-	print("\n-- Scenario 7: Parvink enters play and draws a card --")
+	_buf.append("\n-- Scenario 7: Parvink enters play and draws a card --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -815,7 +847,7 @@ func _test_parvink_enter_play() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_vanquish() -> void:
-	print("\n-- Scenario 8: Vanquish destroys target ally --")
+	_buf.append("\n-- Scenario 8: Vanquish destroys target ally --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -867,7 +899,7 @@ func _test_vanquish() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_quick_strike() -> void:
-	print("\n-- Scenario 8b: Quick Strike — hero deals 2 melee to announced target --")
+	_buf.append("\n-- Scenario 8b: Quick Strike — hero deals 2 melee to announced target --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -941,7 +973,7 @@ func _test_quick_strike() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_lightning_bolt() -> void:
-	print("\n-- Scenario 8c: Lightning Bolt — non-instant, 4 nature to target hero or ally --")
+	_buf.append("\n-- Scenario 8c: Lightning Bolt — non-instant, 4 nature to target hero or ally --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1041,7 +1073,7 @@ func _test_lightning_bolt() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_pet_uniqueness() -> void:
-	print("\n-- Scenario 9: Pet uniqueness — only 1 pet allowed in play --")
+	_buf.append("\n-- Scenario 9: Pet uniqueness — only 1 pet allowed in play --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1124,7 +1156,7 @@ func _test_pet_uniqueness() -> void:
 const ROBE_EFFECTS := "equipment:chest:0|activated_power:2:draw:1:::exhaust_hero"
 
 func _test_mooncloth_robe_power() -> void:
-	print("\n-- Mooncloth Robe: play from hand + draw power --")
+	_buf.append("\n-- Mooncloth Robe: play from hand + draw power --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1192,7 +1224,7 @@ func _test_mooncloth_robe_power() -> void:
 
 
 func _test_mooncloth_robe_hero_exhausted() -> void:
-	print("\n-- Mooncloth Robe: cannot use with exhausted hero / too few resources --")
+	_buf.append("\n-- Mooncloth Robe: cannot use with exhausted hero / too few resources --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1229,7 +1261,7 @@ func _test_mooncloth_robe_hero_exhausted() -> void:
 
 
 func _test_equipment_slot_uniqueness() -> void:
-	print("\n-- Equipment slot uniqueness: only 1 Chest allowed --")
+	_buf.append("\n-- Equipment slot uniqueness: only 1 Chest allowed --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1278,7 +1310,7 @@ func _test_equipment_slot_uniqueness() -> void:
 
 
 func _test_ai_plays_equipment() -> void:
-	print("\n-- AI generates equipment play + draw-power actions --")
+	_buf.append("\n-- AI generates equipment play + draw-power actions --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1337,7 +1369,7 @@ func _test_ai_plays_equipment() -> void:
 const PADS_EFFECTS := "equipment:feet:1"
 
 func _test_pads_block_combat() -> void:
-	print("\n-- Pads of the Dread Wolf: block combat damage to hero --")
+	_buf.append("\n-- Pads of the Dread Wolf: block combat damage to hero --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1400,7 +1432,7 @@ func _test_pads_block_combat() -> void:
 
 
 func _test_pads_block_instant() -> void:
-	print("\n-- Pads of the Dread Wolf: block effect damage (chain response) --")
+	_buf.append("\n-- Pads of the Dread Wolf: block effect damage (chain response) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1440,7 +1472,7 @@ func _test_pads_block_instant() -> void:
 
 
 func _test_pads_overblock_expires() -> void:
-	print("\n-- Armor block: leftover block expires after combat --")
+	_buf.append("\n-- Armor block: leftover block expires after combat --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1476,7 +1508,7 @@ func _test_pads_overblock_expires() -> void:
 
 
 func _test_ai_armor_block_heuristic() -> void:
-	print("\n-- AI armor block heuristic: highest DEF first, no wasted potential --")
+	_buf.append("\n-- AI armor block heuristic: highest DEF first, no wasted potential --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1565,7 +1597,7 @@ func _test_ai_armor_block_heuristic() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_grimdron_ally_power() -> void:
-	print("\n-- Scenario 10: Grimdron ally power deals 1 fire damage --")
+	_buf.append("\n-- Scenario 10: Grimdron ally power deals 1 fire damage --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1648,7 +1680,7 @@ func _test_grimdron_ally_power() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_sarmoth_taunt_forces_attacker() -> void:
-	print("\n-- Scenario 11: Sarmoth taunt forces attacker to target Sarmoth --")
+	_buf.append("\n-- Scenario 11: Sarmoth taunt forces attacker to target Sarmoth --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1691,7 +1723,7 @@ func _test_sarmoth_taunt_forces_attacker() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_sarmoth_taunt_multiple_attackers() -> void:
-	print("\n-- Scenario 12: Sarmoth taunt restricts all attackers --")
+	_buf.append("\n-- Scenario 12: Sarmoth taunt restricts all attackers --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1721,7 +1753,7 @@ func _test_sarmoth_taunt_multiple_attackers() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_sarmoth_taunt_lifts_on_death() -> void:
-	print("\n-- Scenario 13: Sarmoth taunt lifts after Sarmoth dies --")
+	_buf.append("\n-- Scenario 13: Sarmoth taunt lifts after Sarmoth dies --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1762,7 +1794,7 @@ func _test_sarmoth_taunt_lifts_on_death() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_sarmoth_elusive_no_taunt() -> void:
-	print("\n-- Scenario 14: Elusive Sarmoth — taunt doesn't restrict --")
+	_buf.append("\n-- Scenario 14: Elusive Sarmoth — taunt doesn't restrict --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1790,7 +1822,7 @@ func _test_sarmoth_elusive_no_taunt() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_boris_heal_x() -> void:
-	print("\n-- Scenario 15: Boris Brightbeard heal-X hero power --")
+	_buf.append("\n-- Scenario 15: Boris Brightbeard heal-X hero power --")
 	var db := MockDB.new()
 	db.hero("boris_def", 26, 0, "heal_x_from_target:holy|on_your_turn")
 	db.hero("p2_hero", 30)
@@ -1851,7 +1883,7 @@ func _test_boris_heal_x() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_radak_pet_sacrifice() -> void:
-	print("\n-- Scenario 16: Radak sacrifices Sarmoth (cost 3) for 3 shadow damage --")
+	_buf.append("\n-- Scenario 16: Radak sacrifices Sarmoth (cost 3) for 3 shadow damage --")
 	var db := MockDB.new()
 	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|on_your_turn")
 	db.pet("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
@@ -1923,7 +1955,7 @@ func _test_radak_pet_sacrifice() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_radak_no_pets() -> void:
-	print("\n-- Scenario 17: Radak probe rejected with no Pets in play --")
+	_buf.append("\n-- Scenario 17: Radak probe rejected with no Pets in play --")
 	var db := MockDB.new()
 	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|on_your_turn")
 	db.ally("normal_ally_def", 2, 3, [], 2)
@@ -1964,7 +1996,7 @@ func _test_radak_no_pets() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_timmo_destroy_exhausted_ally() -> void:
-	print("\n-- Scenario 17b: Timmo destroys only exhausted allies; hero destroy ends game --")
+	_buf.append("\n-- Scenario 17b: Timmo destroys only exhausted allies; hero destroy ends game --")
 	var db := MockDB.new()
 	db.hero("timmo_def", 27, 0, "destroy_exhausted_ally|on_your_turn")
 	db.hero("p2_hero", 30)
@@ -2041,7 +2073,7 @@ func _test_timmo_destroy_exhausted_ally() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_quest_cant_reuse_while_pending() -> void:
-	print("\n-- Scenario 18: quest can't be re-triggered while its own completion is pending --")
+	_buf.append("\n-- Scenario 18: quest can't be re-triggered while its own completion is pending --")
 	var db := MockDB.new()
 	db.hero("p1_hero_def", 30)
 	db.hero("p2_hero_def", 30)
@@ -2083,7 +2115,7 @@ func _test_quest_cant_reuse_while_pending() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_liba_wobblebonk_enter_play() -> void:
-	print("\n-- Scenario 19: Liba Wobblebonk enters play and draws a card --")
+	_buf.append("\n-- Scenario 19: Liba Wobblebonk enters play and draws a card --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2116,7 +2148,7 @@ func _test_liba_wobblebonk_enter_play() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_kulan_earthguard_end_of_turn_ready() -> void:
-	print("\n-- Scenario 20: Kulan Earthguard readies itself at end of turn --")
+	_buf.append("\n-- Scenario 20: Kulan Earthguard readies itself at end of turn --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2143,7 +2175,7 @@ func _test_kulan_earthguard_end_of_turn_ready() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_tracker_gallen_atk_per_ally() -> void:
-	print("\n-- Scenario 21: Tracker Gallen gains ATK per ally in party --")
+	_buf.append("\n-- Scenario 21: Tracker Gallen gains ATK per ally in party --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2172,7 +2204,7 @@ func _test_tracker_gallen_atk_per_ally() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_malwani_atk_per_damage_self() -> void:
-	print("\n-- Scenario 22: Blood Guard Mal'wani gains ATK per damage on him --")
+	_buf.append("\n-- Scenario 22: Blood Guard Mal'wani gains ATK per damage on him --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2200,7 +2232,7 @@ func _test_malwani_atk_per_damage_self() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_chasing_ame_graveyard_to_hand() -> void:
-	print("\n-- Scenario 23: Chasing A-Me 01 returns an ally from the graveyard to hand --")
+	_buf.append("\n-- Scenario 23: Chasing A-Me 01 returns an ally from the graveyard to hand --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2261,7 +2293,7 @@ func _test_chasing_ame_graveyard_to_hand() -> void:
 
 
 func _test_chasing_ame_blocked_and_filtered() -> void:
-	print("\n-- Scenario 24: Chasing A-Me 01 blocked with no valid graveyard target --")
+	_buf.append("\n-- Scenario 24: Chasing A-Me 01 blocked with no valid graveyard target --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2298,7 +2330,7 @@ func _test_chasing_ame_blocked_and_filtered() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_missing_diplomat_deck_search() -> void:
-	print("\n-- The Missing Diplomat: search deck for an ally, put into hand, shuffle --")
+	_buf.append("\n-- The Missing Diplomat: search deck for an ally, put into hand, shuffle --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2361,12 +2393,150 @@ func _test_missing_diplomat_deck_search() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Reveal-and-pick quests (Big Game Hunter / Kibler's Exotic Pets / Zapped
+# Giants): "Reveal the top N cards; put a revealed <type> card into your hand and
+# the rest on the bottom of your deck."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_reveal_pick_takes_matching_card() -> void:
+	_buf.append("\n-- Reveal-pick: reveal top 4, take an equipment, rest to bottom in order --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("bgh_def", 2, "reveal_pick:Equipment:4")
+	db.ally("ally_def", 2, 2, [], 3)
+	db.equipment("equip_def", 2, "equipment:chest:0")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+
+	var quest := CardInstance.create("bgh_inst", "bgh_def", "p1", "p1_resource_row")
+	state.cards["bgh_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("bgh_inst")
+
+	# Deck top→down: ally, equipment (the match), ally, ally, then a 5th card that
+	# must NOT be revealed (only top 4 are seen).
+	var layout := [["d_a1", "ally_def"], ["d_eq", "equip_def"],
+			["d_a2", "ally_def"], ["d_a3", "ally_def"], ["d_bottom", "ally_def"]]
+	for pair in layout:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_deck")
+		state.cards[pair[0]] = c
+		state.zones["p1_deck"].card_ids.append(pair[0])
+
+	var action := PendingAction.make("use_quest", "p1", {"quest_id": "bgh_inst"})
+	var events := StackResolver.submit_action(state, action, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.pending_reveal_pick_player, "p1", "revealpick-a: pending choice belongs to p1")
+	eq(state.pending_reveal_pick_ids, ["d_eq"], "revealpick-b: only the equipment is selectable")
+	var opened := false
+	for ev in events:
+		if ev.event_type == "reveal_pick_opened":
+			opened = true
+	ok(opened, "revealpick-c: reveal_pick_opened emitted")
+	ok(state.get_card("d_bottom").zone_id == "p1_deck", "revealpick-d: 5th card untouched")
+
+	# Take the equipment.
+	var res := StackResolver.choose_reveal_pick(state, "d_eq", db)
+	eq(state.pending_reveal_pick_player, "", "revealpick-e: pending cleared after pick")
+	eq(state.get_card("d_eq").zone_id, "p1_hand", "revealpick-f: chosen equipment in hand")
+	# The three non-picked revealed allies go to the bottom, below d_bottom, in
+	# revealed order: d_a1, d_a2, d_a3.
+	var deck_ids: Array = state.zones["p1_deck"].card_ids
+	eq(deck_ids, ["d_bottom", "d_a1", "d_a2", "d_a3"],
+		"revealpick-g: rest pushed to bottom in revealed order")
+	var resolved := false
+	for ev in res:
+		if ev.event_type == "reveal_pick_resolved" and ev.payload.get("card_id", "") == "d_eq":
+			resolved = true
+	ok(resolved, "revealpick-h: reveal_pick_resolved emitted")
+
+
+func _test_reveal_pick_no_match_all_to_bottom() -> void:
+	_buf.append("\n-- Reveal-pick: no matching card → all revealed go to bottom, no choice --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("kibler_def", 2, "reveal_pick:Ally:3")
+	db.ability("abil_def", 1, "")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+
+	var quest := CardInstance.create("kib_inst", "kibler_def", "p1", "p1_resource_row")
+	state.cards["kib_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("kib_inst")
+
+	# Top three are all abilities (no ally to find); a 4th card stays on top… no,
+	# a 4th card must remain the new top after the three cycle to the bottom.
+	var layout := [["k_ab1", "abil_def"], ["k_ab2", "abil_def"],
+			["k_ab3", "abil_def"], ["k_keep", "abil_def"]]
+	for pair in layout:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_deck")
+		state.cards[pair[0]] = c
+		state.zones["p1_deck"].card_ids.append(pair[0])
+
+	var action := PendingAction.make("use_quest", "p1", {"quest_id": "kib_inst"})
+	var events := StackResolver.submit_action(state, action, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.pending_reveal_pick_player, "", "revealpick-i: no pending choice when nothing matches")
+	# The three revealed abilities cycle to the bottom; k_keep becomes the top.
+	eq(state.zones["p1_deck"].card_ids, ["k_keep", "k_ab1", "k_ab2", "k_ab3"],
+		"revealpick-j: all revealed cards pushed to the bottom in order")
+
+
+func _test_reveal_pick_blocks_other_actions() -> void:
+	_buf.append("\n-- Reveal-pick: pending choice blocks other submissions and passing --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("zapped_def", 2, "reveal_pick:Ability:3")
+	db.ability("abil_def", 1, "")
+	db.ally("ally_def", 2, 2, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+
+	var quest := CardInstance.create("zap_inst", "zapped_def", "p1", "p1_resource_row")
+	state.cards["zap_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("zap_inst")
+
+	var abil := CardInstance.create("z_ab1", "abil_def", "p1", "p1_deck")
+	state.cards["z_ab1"] = abil
+	state.zones["p1_deck"].card_ids.append("z_ab1")
+	# An ally in hand — proves nothing else can be played while the pick is pending.
+	var hand_ally := CardInstance.create("z_hand", "ally_def", "p1", "p1_hand")
+	state.cards["z_hand"] = hand_ally
+	state.zones["p1_hand"].card_ids.append("z_hand")
+
+	var action := PendingAction.make("use_quest", "p1", {"quest_id": "zap_inst"})
+	StackResolver.submit_action(state, action, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.pending_reveal_pick_player, "p1", "revealpick-k: reveal pick pending")
+	ok(not StackResolver.can_submit(state,
+			PendingAction.make("play_ally", "p1", {"card_id": "z_hand"}), db),
+		"revealpick-l: can't play an ally while a reveal pick is pending")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"revealpick-m: passing is blocked while a reveal pick is pending")
+
+	# Picking the only revealed ability resolves and unblocks.
+	StackResolver.choose_reveal_pick(state, "z_ab1", db)
+	eq(state.get_card("z_ab1").zone_id, "p1_hand", "revealpick-n: ability taken to hand")
+	eq(state.pending_reveal_pick_player, "", "revealpick-o: pending cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Finkle Einhorn, At Your Service! — put an ally (cost 2 or less) from the
 # graveyard directly into play; its enter-play triggers fire as if from hand.
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_finkle_einhorn_graveyard_to_play() -> void:
-	print("\n-- Finkle Einhorn: put a cost≤2 ally from graveyard into play (triggers fire) --")
+	_buf.append("\n-- Finkle Einhorn: put a cost≤2 ally from graveyard into play (triggers fire) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2431,7 +2601,7 @@ func _test_finkle_einhorn_graveyard_to_play() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_darrowshire_rfg_three_allies() -> void:
-	print("\n-- Scenario 25: Battle of Darrowshire removes 3 allies from the game, draws 1 --")
+	_buf.append("\n-- Scenario 25: Battle of Darrowshire removes 3 allies from the game, draws 1 --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2496,7 +2666,7 @@ func _test_darrowshire_rfg_three_allies() -> void:
 
 
 func _test_darrowshire_blocked_with_too_few_allies() -> void:
-	print("\n-- Scenario 26: Battle of Darrowshire blocked with fewer than 3 graveyard allies --")
+	_buf.append("\n-- Scenario 26: Battle of Darrowshire blocked with fewer than 3 graveyard allies --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2530,7 +2700,7 @@ func _test_darrowshire_blocked_with_too_few_allies() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_defias_brotherhood_requires_four_allies() -> void:
-	print("\n-- Scenario 26b: The Defias Brotherhood needs 4+ allies in party --")
+	_buf.append("\n-- Scenario 26b: The Defias Brotherhood needs 4+ allies in party --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2582,7 +2752,7 @@ func _test_defias_brotherhood_requires_four_allies() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
-	print("\n-- Scenario 26c: Torek's Assault requires opposing hero damaged by our ally --")
+	_buf.append("\n-- Scenario 26c: Torek's Assault requires opposing hero damaged by our ally --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2647,7 +2817,7 @@ func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_find_lethal() -> void:
-	print("\n-- Scenario 27: find_lethal lists lethal targets, hero-only when hero is lethal --")
+	_buf.append("\n-- Scenario 27: find_lethal lists lethal targets, hero-only when hero is lethal --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2691,7 +2861,7 @@ func _test_find_lethal() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_find_lethal_baseline_in_ai_actions() -> void:
-	print("\n-- Scenario 28: hero/ally power actions restricted/ordered by find_lethal --")
+	_buf.append("\n-- Scenario 28: hero/ally power actions restricted/ordered by find_lethal --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("tazo_def", 25, 3, "deal_damage_to_target:3:fire")
@@ -2765,7 +2935,7 @@ func _test_find_lethal_baseline_in_ai_actions() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_sort_valuable_cards() -> void:
-	print("\n-- Scenario 29: sort_valuable_cards orders most valuable first --")
+	_buf.append("\n-- Scenario 29: sort_valuable_cards orders most valuable first --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2834,7 +3004,7 @@ func _test_sort_valuable_cards() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_find_safe_lethals() -> void:
-	print("\n-- Scenario 30: find_safe_lethals returns kill-and-survive pairs --")
+	_buf.append("\n-- Scenario 30: find_safe_lethals returns kill-and-survive pairs --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2882,7 +3052,7 @@ func _pairs_contain(pairs: Array, attacker: String, defender: String) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_generic_ai_safe_kill_flow() -> void:
-	print("\n-- Scenario 31: GenericAI baits with cheap attacker, kills best target --")
+	_buf.append("\n-- Scenario 31: GenericAI baits with cheap attacker, kills best target --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2945,7 +3115,7 @@ func _test_generic_ai_safe_kill_flow() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_generic_ai_value_choices() -> void:
-	print("\n-- Scenario 32: GenericAI discards/places least valuable, picks best from graveyard --")
+	_buf.append("\n-- Scenario 32: GenericAI discards/places least valuable, picks best from graveyard --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3006,7 +3176,7 @@ func _test_generic_ai_value_choices() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_combat_trade_value() -> void:
-	print("\n-- Scenario 32b: combat_trade_value classifies safe_lethal/both/suicide/no_one --")
+	_buf.append("\n-- Scenario 32b: combat_trade_value classifies safe_lethal/both/suicide/no_one --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3041,7 +3211,7 @@ func _test_combat_trade_value() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_generic_ai_trade_develop_chip() -> void:
-	print("\n-- Scenario 32c: GenericAI trades up, develops, chips (holding protectors) --")
+	_buf.append("\n-- Scenario 32c: GenericAI trades up, develops, chips (holding protectors) --")
 	var ai := GenericAI.new()
 
 	# ── _trade_action: take an even 'both' trade, refuse a value-down one ──
@@ -3146,7 +3316,7 @@ func _test_generic_ai_trade_develop_chip() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_generic_ai_protector_choice() -> void:
-	print("\n-- Scenario 32d: GenericAI protects from the proposed-fight outcome --")
+	_buf.append("\n-- Scenario 32d: GenericAI protects from the proposed-fight outcome --")
 	var ai := GenericAI.new()
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
@@ -3208,7 +3378,7 @@ func _test_generic_ai_protector_choice() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_generic_ai_while_attacking_buffs() -> void:
-	print("\n-- Scenario 32e: AI combat eval honors 'while attacking' buffs (Zorm) --")
+	_buf.append("\n-- Scenario 32e: AI combat eval honors 'while attacking' buffs (Zorm) --")
 	var ai := GenericAI.new()
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
@@ -3244,7 +3414,7 @@ func _test_generic_ai_while_attacking_buffs() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ally_heal_power_targets_friendlies() -> void:
-	print("\n-- Scenario 33: heal_target ally power never heals the enemy --")
+	_buf.append("\n-- Scenario 33: heal_target ally power never heals the enemy --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3294,7 +3464,7 @@ func _test_ally_heal_power_targets_friendlies() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_react_to_hero_power_with_heal() -> void:
-	print("\n-- Scenario 33b: Freya reacts to Ta'zo hero power on the chain (LIFO) --")
+	_buf.append("\n-- Scenario 33b: Freya reacts to Ta'zo hero power on the chain (LIFO) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("tazo_def", 25, 3, "deal_damage_to_target:3:fire")
@@ -3360,7 +3530,7 @@ func _test_react_to_hero_power_with_heal() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_react_to_hero_power_with_heal_legal_on_chain() -> void:
-	print("\n-- Scenario 33c: hero power legal in response to a hero power on chain --")
+	_buf.append("\n-- Scenario 33c: hero power legal in response to a hero power on chain --")
 	var db := MockDB.new()
 	db.hero("p1_def", 30, 3, "deal_damage_to_target:3:fire")
 	db.hero("p2_def", 30, 3, "deal_damage_to_target:3:fire")
@@ -3399,7 +3569,7 @@ func _test_react_to_hero_power_with_heal_legal_on_chain() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_on_your_turn_power_blocked_on_chain() -> void:
-	print("\n-- Scenario 33d: on_your_turn ally power blocked while chain non-empty --")
+	_buf.append("\n-- Scenario 33d: on_your_turn ally power blocked while chain non-empty --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3457,7 +3627,7 @@ func _add_hand_card(state: GameState, inst_id: String, def_id: String,
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_instant_ally_timing_and_protect() -> void:
-	print("\n-- Scenario 35: Instant Ally flashes in during attack window, protects --")
+	_buf.append("\n-- Scenario 35: Instant Ally flashes in during attack window, protects --")
 	var db := _instant_ally_db()
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	var atk := _add_ally(state, "atk", "attacker_def", "p1")
@@ -3523,7 +3693,7 @@ func _test_instant_ally_timing_and_protect() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ai_flashes_instant_protector() -> void:
-	print("\n-- Scenario 36: AI flashes in Tristan and protects with him --")
+	_buf.append("\n-- Scenario 36: AI flashes in Tristan and protects with him --")
 	var db := _instant_ally_db()
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	var atk := _add_ally(state, "atk", "attacker_def", "p1")   # 2/3
@@ -3572,7 +3742,7 @@ func _test_ai_flashes_instant_protector() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ai_holds_instant_protector() -> void:
-	print("\n-- Scenario 37: AI holds Tristan outside the right window --")
+	_buf.append("\n-- Scenario 37: AI holds Tristan outside the right window --")
 	var db := _instant_ally_db()
 	db.ally("big_def", 4, 6, [], 5)
 	db.ally("board_prot_def", 3, 4, (["protector"] as Array[String]), 3)
@@ -3663,7 +3833,7 @@ func _test_ai_holds_instant_protector() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_combat_instant_ambush() -> void:
-	print("\n-- Scenario 34: combat instant — AI holds Quick Strike, ambushes attacker --")
+	_buf.append("\n-- Scenario 34: combat instant — AI holds Quick Strike, ambushes attacker --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3788,7 +3958,7 @@ func _test_combat_instant_ambush() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_deacon_johanna_once_per_turn() -> void:
-	print("\n-- Scenario 35: Deacon Johanna — once-per-turn heal, no exhaust cost --")
+	_buf.append("\n-- Scenario 35: Deacon Johanna — once-per-turn heal, no exhaust cost --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3855,7 +4025,7 @@ func _test_deacon_johanna_once_per_turn() -> void:
 const DEMIA_EFFECTS := "activated_power:1:deal_damage_to_target:1:shadow:hero_or_ally:put_damage_self:1|on_your_turn"
 
 func _test_acolyte_demia_power() -> void:
-	print("\n-- Scenario 36: Acolyte Demia — activate, put 1 damage on self, deal 1 shadow --")
+	_buf.append("\n-- Scenario 36: Acolyte Demia — activate, put 1 damage on self, deal 1 shadow --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3892,7 +4062,7 @@ func _test_acolyte_demia_power() -> void:
 
 
 func _test_acolyte_demia_own_turn_only() -> void:
-	print("\n-- Scenario 36b: Acolyte Demia — use only on your turn --")
+	_buf.append("\n-- Scenario 36b: Acolyte Demia — use only on your turn --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3915,7 +4085,7 @@ func _test_acolyte_demia_own_turn_only() -> void:
 
 
 func _test_acolyte_demia_self_destroys() -> void:
-	print("\n-- Scenario 36c: Acolyte Demia — self-damage can be exactly fatal --")
+	_buf.append("\n-- Scenario 36c: Acolyte Demia — self-damage can be exactly fatal --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3950,7 +4120,7 @@ func _test_acolyte_demia_self_destroys() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_zorm_party_atk_while_attacking() -> void:
-	print("\n-- Scenario 24: Zorm Stonefury party '+1 ATK while attacking' aura --")
+	_buf.append("\n-- Scenario 24: Zorm Stonefury party '+1 ATK while attacking' aura --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -3990,7 +4160,7 @@ func _test_zorm_party_atk_while_attacking() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_elder_moorf_buff_target() -> void:
-	print("\n-- Scenario 25: Elder Moorf +2 ATK to target ally this turn --")
+	_buf.append("\n-- Scenario 25: Elder Moorf +2 ATK to target ally this turn --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4036,7 +4206,7 @@ func _test_elder_moorf_buff_target() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_rayder_party_buff_while_attacking() -> void:
-	print("\n-- Scenario 26: Rayder party '+2 ATK while attacking this turn' --")
+	_buf.append("\n-- Scenario 26: Rayder party '+2 ATK while attacking this turn' --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4087,7 +4257,7 @@ func _test_rayder_party_buff_while_attacking() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_for_the_horde_quest_buff() -> void:
-	print("\n-- Scenario 27: For the Horde! buffs only Horde allies while attacking --")
+	_buf.append("\n-- Scenario 27: For the Horde! buffs only Horde allies while attacking --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4142,7 +4312,7 @@ func _test_for_the_horde_quest_buff() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_turn_buff_expires_at_end_of_turn() -> void:
-	print("\n-- Scenario 28: 'this turn' buffs are swept at end of turn --")
+	_buf.append("\n-- Scenario 28: 'this turn' buffs are swept at end of turn --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4168,7 +4338,7 @@ func _test_turn_buff_expires_at_end_of_turn() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_zorm_bonus_applies_to_real_combat_damage() -> void:
-	print("\n-- Scenario 29: Zorm's +1 ATK while attacking lands in real combat damage --")
+	_buf.append("\n-- Scenario 29: Zorm's +1 ATK while attacking lands in real combat damage --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4198,7 +4368,7 @@ func _test_zorm_bonus_applies_to_real_combat_damage() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_get_atk_if_attacking_preview() -> void:
-	print("\n-- Scenario 30: get_atk_if_attacking previews attack ATK without mutating state --")
+	_buf.append("\n-- Scenario 30: get_atk_if_attacking previews attack ATK without mutating state --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4232,7 +4402,7 @@ func _test_get_atk_if_attacking_preview() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_moorf_buff_applies_to_real_defense_damage() -> void:
-	print("\n-- Scenario 31: Elder Moorf's buff lands on real combat damage while defending --")
+	_buf.append("\n-- Scenario 31: Elder Moorf's buff lands on real combat damage while defending --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4274,7 +4444,7 @@ func _test_moorf_buff_applies_to_real_defense_damage() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ryn_dreamstrider_buff_target_attacking() -> void:
-	print("\n-- Scenario 32: Ryn Dreamstrider targeted 'while attacking' buff --")
+	_buf.append("\n-- Scenario 32: Ryn Dreamstrider targeted 'while attacking' buff --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4325,7 +4495,7 @@ func _test_ryn_dreamstrider_buff_target_attacking() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_senzir_beastwalker_power() -> void:
-	print("\n-- Scenario 34: Sen'zir Beastwalker returns a Pet from graveyard to hand --")
+	_buf.append("\n-- Scenario 34: Sen'zir Beastwalker returns a Pet from graveyard to hand --")
 	var db := MockDB.new()
 	db.hero("senzir_def", 28, 3, "graveyard_to_hand:Pet:1:1:own")
 	db.hero("p2_hero", 30)
@@ -4398,7 +4568,7 @@ func _test_senzir_beastwalker_power() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_senzir_beastwalker_no_pet_in_graveyard() -> void:
-	print("\n-- Scenario 35: Sen'zir power blocked with no Pet in graveyard --")
+	_buf.append("\n-- Scenario 35: Sen'zir power blocked with no Pet in graveyard --")
 	var db := MockDB.new()
 	db.hero("senzir_def", 28, 3, "graveyard_to_hand:Pet:1:1:own")
 	db.hero("p2_hero", 30)
@@ -4423,7 +4593,7 @@ func _test_senzir_beastwalker_no_pet_in_graveyard() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ai_senzir_picks_most_valuable_pet() -> void:
-	print("\n-- Scenario 36: AI picks the most valuable Pet for Sen'zir's power --")
+	_buf.append("\n-- Scenario 36: AI picks the most valuable Pet for Sen'zir's power --")
 	var db := MockDB.new()
 	db.hero("senzir_def", 28, 3, "graveyard_to_hand:Pet:1:1:own")
 	db.hero("p2_hero", 30)
@@ -4451,7 +4621,7 @@ func _test_ai_senzir_picks_most_valuable_pet() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_bloodclaw_no_horde_bonus() -> void:
-	print("\n-- Scenario 37: Bloodclaw (neutral Pet) gets no For the Horde! bonus --")
+	_buf.append("\n-- Scenario 37: Bloodclaw (neutral Pet) gets no For the Horde! bonus --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4492,7 +4662,7 @@ func _test_bloodclaw_no_horde_bonus() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_old_bones_protects_hero_only() -> void:
-	print("\n-- Scenario 38: Old Bones can protect your hero (restricted, not full Protector) --")
+	_buf.append("\n-- Scenario 38: Old Bones can protect your hero (restricted, not full Protector) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4546,7 +4716,7 @@ func _test_old_bones_protects_hero_only() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_arcane_shot() -> void:
-	print("\n-- Scenario 39: Arcane Shot — hero deals 1 arcane dmg + draw a card --")
+	_buf.append("\n-- Scenario 39: Arcane Shot — hero deals 1 arcane dmg + draw a card --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4609,7 +4779,7 @@ func _test_arcane_shot() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_arcane_shot_combat_instant_tag() -> void:
-	print("\n-- Scenario 40: Arcane Shot tagged as a combat instant (held, ambush-only) --")
+	_buf.append("\n-- Scenario 40: Arcane Shot tagged as a combat instant (held, ambush-only) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4693,7 +4863,7 @@ func _test_arcane_shot_combat_instant_tag() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_fire_blast() -> void:
-	print("\n-- Scenario 40b: Fire Blast — hero deals 2 fire dmg, cost 1 --")
+	_buf.append("\n-- Scenario 40b: Fire Blast — hero deals 2 fire dmg, cost 1 --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4805,7 +4975,7 @@ func _test_fire_blast() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_nerra_lifeboon_health_aura() -> void:
-	print("\n-- Scenario 41: Nerra Lifeboon party '+1 health' aura --")
+	_buf.append("\n-- Scenario 41: Nerra Lifeboon party '+1 health' aura --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4840,7 +5010,7 @@ func _test_nerra_lifeboon_health_aura() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_nerra_death_triggers_aura_loss_death() -> void:
-	print("\n-- Scenario 41b: Nerra death kills an ally kept alive by her aura --")
+	_buf.append("\n-- Scenario 41b: Nerra death kills an ally kept alive by her aura --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4876,7 +5046,7 @@ func _test_nerra_death_triggers_aura_loss_death() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_master_of_the_hunt_ongoing() -> void:
-	print("\n-- Scenario 42: Master of the Hunt ongoing '+2 ATK / +2 health' pet aura --")
+	_buf.append("\n-- Scenario 42: Master of the Hunt ongoing '+2 ATK / +2 health' pet aura --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4917,7 +5087,7 @@ func _test_master_of_the_hunt_ongoing() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_guardian_steelhorn_cant_attack() -> void:
-	print("\n-- Scenario 43: Guardian Steelhorn can't attack --")
+	_buf.append("\n-- Scenario 43: Guardian Steelhorn can't attack --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -4956,7 +5126,7 @@ func _test_guardian_steelhorn_cant_attack() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_starfire() -> void:
-	print("\n-- Scenario 44: Starfire — hero deals 5 arcane dmg + draw a card --")
+	_buf.append("\n-- Scenario 44: Starfire — hero deals 5 arcane dmg + draw a card --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -5030,7 +5200,7 @@ func _test_starfire() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_flamestrike() -> void:
-	print("\n-- Scenario 45: Flamestrike — hero deals 3 fire dmg to each opposing hero/ally --")
+	_buf.append("\n-- Scenario 45: Flamestrike — hero deals 3 fire dmg to each opposing hero/ally --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -5111,7 +5281,7 @@ func _test_flamestrike() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_chain_lightning() -> void:
-	print("\n-- Scenario 46: Chain Lightning — up to 3 waves, 3/2/1 nature --")
+	_buf.append("\n-- Scenario 46: Chain Lightning — up to 3 waves, 3/2/1 nature --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -5312,7 +5482,7 @@ func _test_chain_lightning() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_untargetable_keyword() -> void:
-	print("\n-- Scenario 47: Untargetable — no link targeting; combat and AoE unaffected --")
+	_buf.append("\n-- Scenario 47: Untargetable — no link targeting; combat and AoE unaffected --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -5428,7 +5598,7 @@ func _infernal_start_p1_turn(state: GameState, db) -> Array[GameEvent]:
 
 
 func _test_infernal_discard_keeps_control() -> void:
-	print("\n-- Scenario 39a: Infernal — discard a card to keep control --")
+	_buf.append("\n-- Scenario 39a: Infernal — discard a card to keep control --")
 	var db := _infernal_db()
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	_add_ally(state, "infernal_inst", "infernal_def", "p1")
@@ -5455,7 +5625,7 @@ func _test_infernal_discard_keeps_control() -> void:
 
 
 func _test_infernal_decline_gives_control() -> void:
-	print("\n-- Scenario 39b: Infernal — decline the discard, opponent gains control --")
+	_buf.append("\n-- Scenario 39b: Infernal — decline the discard, opponent gains control --")
 	var db := _infernal_db()
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	_add_ally(state, "infernal_inst", "infernal_def", "p1")
@@ -5476,7 +5646,7 @@ func _test_infernal_decline_gives_control() -> void:
 
 
 func _test_infernal_decline_pet_uniqueness() -> void:
-	print("\n-- Scenario 39c: Infernal declined into a party that already has a Pet --")
+	_buf.append("\n-- Scenario 39c: Infernal declined into a party that already has a Pet --")
 	var db := _infernal_db()
 	db.pet("otherpet_def", 2, 2, [], 2)
 	var state := _base_state(db, "p1_hero", "p2_hero")
@@ -5496,7 +5666,7 @@ func _test_infernal_decline_pet_uniqueness() -> void:
 
 
 func _test_infernal_end_of_turn_damage() -> void:
-	print("\n-- Scenario 39d: Infernal — end of turn, 1 fire to each opposing hero and ally --")
+	_buf.append("\n-- Scenario 39d: Infernal — end of turn, 1 fire to each opposing hero and ally --")
 	var db := _infernal_db()
 	db.ally("tough_def", 0, 3)
 	db.ally("weak_def", 0, 1)
@@ -5517,3 +5687,98 @@ func _test_infernal_end_of_turn_damage() -> void:
 	eq(state.get_current_hp("p1_hero", db), 30, "sc39d-d: own hero untouched")
 	eq(state.get_card("friendly_inst").damage_taken, 0, "sc39d-e: own ally untouched")
 	eq(state.get_card("infernal_inst").damage_taken, 0, "sc39d-f: Infernal doesn't damage itself")
+
+
+func _test_hierophant_caydiem_power() -> void:
+	_buf.append("\n-- Hierophant Caydiem: 1 nature damage to target + heal 1 from another target --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("caydiem_def", 2, 4, [], 4,
+		"activated_power:3:deal_damage_and_heal:1:nature:hero_or_ally_two")
+	db.ally("dummy_ally_def", 0, 3, [], 0)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	var caydiem := _add_ally(state, "caydiem_inst", "caydiem_def", "p1")
+	caydiem.just_summoned = false
+	caydiem.is_exhausted  = false
+
+	# Friendly damaged ally to heal.
+	var friendly := _add_ally(state, "friendly_inst", "dummy_ally_def", "p1")
+	friendly.damage_taken = 2
+
+	# Enemy ally to damage.
+	_add_ally(state, "enemy_inst", "dummy_ally_def", "p2")
+
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# hc-a: same card can't be both damage and heal target (rule 706.1).
+	var same_target := PendingAction.make("use_ally_power", "p1", {
+		"card_id": "caydiem_inst", "target_id": "enemy_inst", "heal_target_id": "enemy_inst",
+	})
+	ok(not StackResolver.can_submit(state, same_target, db),
+		"hc-a: damage and heal target can't be the same card")
+
+	# hc-b: legal action — damage the enemy ally, heal the friendly ally.
+	var action := PendingAction.make("use_ally_power", "p1", {
+		"card_id": "caydiem_inst", "target_id": "enemy_inst", "heal_target_id": "friendly_inst",
+	})
+	ok(StackResolver.can_submit(state, action, db), "hc-b: distinct damage/heal targets are legal")
+
+	StackResolver.submit_action(state, action, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("enemy_inst").damage_taken, 1, "hc-c: enemy ally took 1 nature damage")
+	eq(state.get_card("friendly_inst").damage_taken, 1, "hc-d: friendly ally healed 1 (2 -> 1)")
+	ok(state.get_card("caydiem_inst").is_exhausted, "hc-e: Caydiem exhausted after use")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 49 — Tanwa the Marksman: Long-Range (defenders deal no combat damage)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_tanwa_long_range() -> void:
+	_buf.append("\n-- Scenario 49: Long-Range — defender deals no combat damage back --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tanwa_def", 4, 3, (["long_range"] as Array[String]), 6)
+	db.ally("plain_def", 5, 6, [], 3)
+
+	# tl-a: Long-Range attacker vs a hard-hitting ally defender — defender
+	# deals 0 damage back, attacker still deals its own damage normally.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var tanwa := _add_ally(state, "tanwa", "tanwa_def", "p1")
+	tanwa.just_summoned = false
+	_add_ally(state, "plain", "plain_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "tanwa", "defender_id": "plain"}))
+	var p2_ai := ScriptedAI.new()
+
+	_drive(state, db, p1_ai, p2_ai)
+
+	eq(state.get_card("plain").damage_taken, 4, "tl-a: defender took 4 damage from Long-Range attacker")
+	eq(state.get_card("tanwa").damage_taken, 0, "tl-b: Long-Range attacker took 0 damage back")
+
+	# tl-c: when Tanwa is the DEFENDER instead, Long-Range has no effect —
+	# it only suppresses damage from defenders while Tanwa is attacking.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "tanwa2", "tanwa_def", "p2")
+	var atk2 := _add_ally(state2, "atk2", "plain_def", "p1")
+	atk2.just_summoned = false
+	state2.players["p1"].resource_placed_this_turn = true
+
+	var p1_ai2 := ScriptedAI.new()
+	p1_ai2.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk2", "defender_id": "tanwa2"}))
+	var p2_ai2 := ScriptedAI.new()
+
+	_drive(state2, db, p1_ai2, p2_ai2)
+
+	eq(state2.get_card("atk2").damage_taken, 4, "tl-c: attacker still takes damage from Tanwa when Tanwa defends")

@@ -10,6 +10,7 @@ var display_name: String = ""
 var hero_card_def_id: String = ""
 var card_entries: Array[DeckCardEntry] = []
 var recommended_ai_id: String = ""  # AIProfile id, empty = use generic fallback
+var strategy: String = ""           # one-line strategy blurb shown in the deck picker
 var source: String = ""             # "base" | "recommended_ai" | "custom"
 var metadata: Dictionary = {}
 
@@ -40,6 +41,7 @@ func to_dict() -> Dictionary:
 		"hero_card_def_id": hero_card_def_id,
 		"card_entries": entries,
 		"recommended_ai_id": recommended_ai_id,
+		"strategy": strategy,
 		"source": source,
 		"metadata": metadata,
 	}
@@ -53,6 +55,7 @@ static func from_dict(d: Dictionary) -> DeckDefinition:
 	for entry_dict in d.get("card_entries", []):
 		deck.card_entries.append(DeckCardEntry.from_dict(entry_dict))
 	deck.recommended_ai_id = str(d.get("recommended_ai_id", ""))
+	deck.strategy = str(d.get("strategy", ""))
 	deck.source = str(d.get("source", ""))
 	deck.metadata = d.get("metadata", {})
 	return deck

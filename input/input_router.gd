@@ -875,7 +875,7 @@ func get_playable_card_ids() -> Array:
 			var ap_data := StackResolver._ally_activated_power(def)
 			if ap_data == {}:
 				continue
-			var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally"]
+			var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "hero_or_ally_two"]
 			if ap_needs_target:
 				# Affordability only — target chosen after targeting mode starts.
 				var ap_once_per_turn: bool = ap_data.get("extra_cost", "") == "once_per_turn"
@@ -996,7 +996,7 @@ func get_context_actions(instance_id: String) -> Array:
 			if zone.zone_type in ["ally_row", "hero_row"] and card.controller == local_player:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
-					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally"]
+					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "hero_or_ally_two"]
 					var ap_enabled: bool
 					if ap_needs_target:
 						# Check affordability only (target chosen after targeting mode starts).
@@ -1555,6 +1555,38 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 	var ally := state.get_card(ally_id)
 	if not ally:
 		return result
+	if _is_ally_damage_and_heal_power(ally_id):
+		if _targeting_first_target == "":
+			# Phase 1: show all valid damage targets (those with a valid heal partner).
+			for pid in state.players:
+				for card in state.cards_in_zone(pid + "_ally_row"):
+					if _any_valid_ally_heal_target(ally_id, card.instance_id) != "":
+						result.append(card.instance_id)
+				var ps := state.players.get(pid) as PlayerState
+				if ps and ps.hero_instance_id != "" \
+						and _any_valid_ally_heal_target(ally_id, ps.hero_instance_id) != "":
+					result.append(ps.hero_instance_id)
+		else:
+			# Phase 2: valid heal targets for the already-chosen damage target.
+			for pid in state.players:
+				for card in state.cards_in_zone(pid + "_ally_row"):
+					if card.instance_id == _targeting_first_target:
+						continue
+					var act := PendingAction.make("use_ally_power", local_player, {
+						"card_id": ally_id, "target_id": _targeting_first_target,
+						"heal_target_id": card.instance_id,
+					})
+					if StackResolver.can_submit(state, act, db):
+						result.append(card.instance_id)
+				var ps := state.players.get(pid) as PlayerState
+				if ps and ps.hero_instance_id != "" and ps.hero_instance_id != _targeting_first_target:
+					var act := PendingAction.make("use_ally_power", local_player, {
+						"card_id": ally_id, "target_id": _targeting_first_target,
+						"heal_target_id": ps.hero_instance_id,
+					})
+					if StackResolver.can_submit(state, act, db):
+						result.append(ps.hero_instance_id)
+		return result
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
 			var act := PendingAction.make("use_ally_power", local_player,
@@ -1568,6 +1600,42 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
 	return result
+
+
+func _is_ally_damage_and_heal_power(ally_id: String) -> bool:
+	if not db or not state:
+		return false
+	var ally := state.get_card(ally_id)
+	if not ally:
+		return false
+	var def := db.get_def(ally.card_def_id) as CardDef
+	if not def:
+		return false
+	var ap := StackResolver._ally_activated_power(def)
+	return (ap.get("effect", "") as String) == "deal_damage_and_heal"
+
+
+# Returns the id of any valid heal target paired with dmg_target, or "" if none.
+func _any_valid_ally_heal_target(ally_id: String, dmg_target: String) -> String:
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			if card.instance_id == dmg_target:
+				continue
+			var act := PendingAction.make("use_ally_power", local_player, {
+				"card_id": ally_id, "target_id": dmg_target,
+				"heal_target_id": card.instance_id,
+			})
+			if StackResolver.can_submit(state, act, db):
+				return card.instance_id
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "" and ps.hero_instance_id != dmg_target:
+			var act := PendingAction.make("use_ally_power", local_player, {
+				"card_id": ally_id, "target_id": dmg_target,
+				"heal_target_id": ps.hero_instance_id,
+			})
+			if StackResolver.can_submit(state, act, db):
+				return ps.hero_instance_id
+	return ""
 
 
 # Called by the UI (playtest.gd) after the player confirms the X value in the dialog.
@@ -1665,6 +1733,40 @@ func _is_radak_power(hero_id: String) -> bool:
 
 
 func _handle_ally_power_targeting_click(instance_id: String) -> void:
+	if _is_ally_damage_and_heal_power(_targeting_source):
+		var legal := _get_ally_power_targets(_targeting_source)
+		if _targeting_first_target == "":
+			# Phase 1: instance_id is the damage target.
+			if instance_id in legal:
+				_targeting_first_target = instance_id
+				targeting_started.emit(_targeting_source, "heal", 0)
+				refresh_highlights()
+			elif instance_id == _targeting_source:
+				cancel_targeting()
+			return
+		else:
+			# Phase 2: instance_id is the heal target.
+			if instance_id == _targeting_first_target:
+				# Clicked the damage target again — go back to phase 1.
+				_targeting_first_target = ""
+				targeting_started.emit(_targeting_source, _targeting_dmg_type, 0)
+				refresh_highlights()
+				return
+			if instance_id not in legal:
+				return
+			var action := PendingAction.make("use_ally_power", local_player, {
+				"card_id": _targeting_source,
+				"target_id": _targeting_first_target,
+				"heal_target_id": instance_id,
+			})
+			_targeting_source       = ""
+			_targeting_first_target = ""
+			targeting_cancelled.emit()
+			var events := StackResolver.submit_action(state, action, db)
+			if events.is_empty():
+				return
+			EventBus.emit_events(events)
+			return
 	var legal := _get_ally_power_targets(_targeting_source)
 	if instance_id not in legal:
 		return

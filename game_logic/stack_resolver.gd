@@ -119,6 +119,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_control_discard / decline_control_discard before priority can move.
 	if state.pending_control_discard_player != "":
 		return []
+	# A pending reveal-and-pick choice is mandatory — resolve it via
+	# choose_reveal_pick() before priority can move.
+	if state.pending_reveal_pick_player != "":
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -197,6 +201,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Infernal-style discard-or-give-control choice blocks everything until
 	# resolved via choose_control_discard() / decline_control_discard().
 	if state.pending_control_discard_player != "":
+		return false
+
+	# Reveal-and-pick quest reward blocks everything until resolved via
+	# choose_reveal_pick().
+	if state.pending_reveal_pick_player != "":
 		return false
 
 	match action.action_type:
@@ -1109,6 +1118,17 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		# "ally" powers (e.g. Elder Moorf) may only target allies, not heroes.
 		if targets_kind == "ally" and not _is_ally(state, target_id):
 			return false
+	elif targets_kind == "hero_or_ally_two":
+		# Hierophant Caydiem: damage target_id, heal a different heal_target_id
+		# (rule 706.1 — "another target" can't repeat the first).
+		var target_id2: String = action.params.get("target_id", "")
+		var heal_target_id: String = action.params.get("heal_target_id", "")
+		if not _is_legal_target(state, target_id2, db):
+			return false
+		if not _is_legal_target(state, heal_target_id, db):
+			return false
+		if heal_target_id == target_id2:
+			return false
 	return true
 
 
@@ -1260,6 +1280,24 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				var buff := Buff.make("ryn_atk", card_id, "atk", amount,
 						"turns", 1, "while_attacking")
 				events.append_array(GameLogic.add_buff(state, target_id, buff))
+		"deal_damage_and_heal":
+			# Hierophant Caydiem: deals AMOUNT damage to target_id and heals
+			# AMOUNT from a different heal_target_id.
+			var amount: int = int(ap.get("amount", 0))
+			var target_id: String = action.params.get("target_id", "")
+			var heal_target_id: String = action.params.get("heal_target_id", "")
+			if _is_legal_target(state, target_id, db):
+				events.append_array(GameLogic.deal_damage(state, card_id, target_id, amount, db))
+				var t_card := state.get_card(target_id)
+				if t_card and state.get_current_hp(target_id, db) <= 0:
+					var t_zone := state.zones.get(t_card.zone_id) as Zone
+					if t_zone and t_zone.zone_type == "hero_row":
+						events.append(GameEvent.game_over(
+							_other_player(state, t_card.controller), t_card.controller))
+					else:
+						events.append_array(_check_destroyed_trigger(state, target_id, card_id, db))
+			if _is_legal_target(state, heal_target_id, db):
+				events.append_array(GameLogic.heal(state, heal_target_id, amount, db, card_id))
 
 	return events
 
@@ -1534,6 +1572,9 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	# must still be set while these are computed.
 	var atk_dmg := state.get_atk(attacker_id, db)   # to defender
 	var def_dmg := state.get_atk(defender_id, db)   # to attacker (0 for heroes, per 205.1)
+	# Rule glossary "Long-Range": while attacking, defenders can't deal combat damage.
+	if _has_keyword(attacker, "long_range", db):
+		def_dmg = 0
 	state.combat_attacker = ""
 	state.combat_defender = ""
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
@@ -1852,6 +1893,15 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 						continue
 					events.append_array(GameLogic.move_card(state, tid, t_card.owner + "_rfg"))
 					events.append(GameEvent.card_removed_from_game(tid, player_id))
+			"reveal_pick":
+				# Big Game Hunter / Kibler's Exotic Pets / Zapped Giants: reveal the
+				# top N cards; the controller puts a revealed card of the required
+				# type into hand and the rest go to the bottom of the deck. The pick
+				# is a mandatory post-resolution choice (choose_reveal_pick) when at
+				# least one matching card is revealed.
+				var want_type := parts[1].strip_edges()
+				var reveal_n := int(parts[2]) if parts.size() > 2 else 1
+				events.append_array(_reveal_pick(state, player_id, want_type, reveal_n, db))
 			"deck_to_hand":
 				# The Missing Diplomat: search your deck, reveal the chosen ally,
 				# put it into your hand. Re-check each target is still in the
@@ -1873,6 +1923,71 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 				if deck_zone:
 					deck_zone.card_ids.shuffle()
 					events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
+	return events
+
+
+# Reveal the top N cards of the player's deck for a "reveal_pick" quest reward.
+# Cards stay physically at the top of the deck; if any match `want_type`, set the
+# pending choice and emit reveal_pick_opened (the scene resolves it via
+# choose_reveal_pick). If none match, all revealed cards go straight to the
+# bottom of the deck with no choice.
+static func _reveal_pick(state: GameState, player_id: String, want_type: String,
+		n: int, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var deck := state.zones.get(player_id + "_deck") as Zone
+	if not deck or deck.card_ids.is_empty():
+		events.append(GameEvent.make("deck_empty", {"player": player_id}))
+		return events
+	var count: int = min(n, deck.card_ids.size())
+	var revealed: Array[String] = []
+	for i in count:
+		revealed.append(deck.card_ids[i])
+	var selectable: Array[String] = []
+	for cid in revealed:
+		events.append(GameEvent.card_revealed_from_deck(cid, player_id))
+		var c := state.get_card(cid)
+		var d := db.get_def(c.card_def_id) as CardDef if c and db else null
+		if d and d.card_type == want_type:
+			selectable.append(cid)
+	if selectable.is_empty():
+		# Nothing of the required type — put every revealed card on the bottom in
+		# revealed order (deck→deck move erases from the top and appends to the end).
+		for cid in revealed:
+			events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
+		return events
+	state.pending_reveal_pick_player = player_id
+	state.pending_reveal_pick_ids = selectable
+	state.pending_reveal_pick_all = revealed
+	events.append(GameEvent.reveal_pick_opened(player_id, selectable, revealed, want_type))
+	return events
+
+
+# Entry point: the controller has chosen which revealed card to keep. The picked
+# card goes to hand; every other revealed card goes to the bottom of the deck in
+# revealed order. Called directly by the scene (not via submit_action), like
+# choose_pet_sacrifice. card_id must be one of the selectable (matching) cards.
+static func choose_reveal_pick(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_reveal_pick_player == "":
+		return []
+	if card_id not in state.pending_reveal_pick_ids:
+		return []   # must pick a card of the required type
+	var player_id := state.pending_reveal_pick_player
+	var revealed := state.pending_reveal_pick_all.duplicate()
+	# Clear pending state up front so subsequent moves can't re-enter this path.
+	state.pending_reveal_pick_player = ""
+	state.pending_reveal_pick_ids = []
+	state.pending_reveal_pick_all = []
+
+	var events: Array[GameEvent] = []
+	events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
+	events.append(GameEvent.make("reveal_pick_resolved", {
+		"player": player_id, "card_id": card_id,
+	}))
+	for cid: String in revealed:
+		if cid == card_id:
+			continue
+		events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
 	return events
 
 

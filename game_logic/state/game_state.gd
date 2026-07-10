@@ -61,6 +61,14 @@ var pending_equip_sacrifice_ids: Array[String] = []  # instance_ids of same-slot
 # (unlike pending_discard, which is mandatory).
 var pending_control_discard_player: String = ""
 var pending_control_discard_ids: Array[String] = []  # source instance_ids, resolved front-first
+# Reveal-and-pick quest reward (Big Game Hunter, Kibler's Exotic Pets, Zapped
+# Giants): "Reveal the top N cards; put a revealed <type> card into your hand and
+# the rest on the bottom of your deck." The revealed cards stay physically at the
+# top of the deck while pending (everything else is blocked); on resolution the
+# picked card goes to hand and the rest are pushed to the bottom in revealed order.
+var pending_reveal_pick_player: String = ""
+var pending_reveal_pick_ids: Array[String] = []   # revealed cards matching the type — the selectable set
+var pending_reveal_pick_all: Array[String] = []   # every revealed card, in top→down order
 
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.

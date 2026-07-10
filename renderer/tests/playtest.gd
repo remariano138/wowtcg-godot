@@ -50,6 +50,8 @@ var _p2_type_opt: OptionButton
 var _p2_deck_opt: OptionButton
 var _p1_cat_opt:  OptionButton
 var _p2_cat_opt:  OptionButton
+var _p1_strategy_label: Label
+var _p2_strategy_label: Label
 var _p1_deck_ids: Array[String] = []   # dropdown index -> deck_id (last entry = DECK_RANDOM)
 var _p2_deck_ids: Array[String] = []
 var _p1_ai_types: Array[String] = []   # dropdown index -> type string ("human", "recommended", or an ai_id)
@@ -90,6 +92,7 @@ var _gy_min:           int = 1
 var _gy_max:           int = 1
 var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
+var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
 var _end_turn_dialog: ConfirmationDialog
 var _p1_played_this_action_phase: bool = false
 var _game_over: bool = false
@@ -109,6 +112,13 @@ var _turbo_mode: bool = true
 # window). Auto-passes the human's attack/defend windows until the opponent
 # responds (adds a link to the chain), then clears so the human can react.
 var _auto_pass_combat: bool = false
+# One-shot "wrap up my turn" burst set by Ctrl+Space. Auto-passes every empty
+# priority window belonging to the human (ready/draw/action/end phases, and
+# any chain link the human just added themselves) regardless of Turbo/Tactical
+# mode, until either a real decision appears for the human (pending choice,
+# opponent adds a chain link they must respond to) or their own next main
+# action window is reached — whichever comes first, that's the stop.
+var _wrap_up_active: bool = false
 var _turbo_btn:  Button
 var _tactical_btn: Button
 var _mode_desc_label: Label
@@ -419,11 +429,17 @@ func _build_menu() -> void:
 	inner.add_child(_player_row("Player 1", p1_labels, 0,
 		CAT_ALL,
 		func(opt): _p1_type_opt = opt, func(opt): _p1_cat_opt = opt, func(opt): _p1_deck_opt = opt))
+	_p1_strategy_label = _make_strategy_label()
+	inner.add_child(_p1_strategy_label)
 	inner.add_child(_player_row("Player 2", p2_labels, 0,
 		CAT_RECOMMENDED,
 		func(opt): _p2_type_opt = opt, func(opt): _p2_cat_opt = opt, func(opt): _p2_deck_opt = opt))
+	_p2_strategy_label = _make_strategy_label()
+	inner.add_child(_p2_strategy_label)
 	_p1_cat_opt.item_selected.connect(func(idx): _repopulate_deck_opt("p1", idx))
 	_p2_cat_opt.item_selected.connect(func(idx): _repopulate_deck_opt("p2", idx))
+	_p1_deck_opt.item_selected.connect(func(_idx): _update_strategy_label("p1"))
+	_p2_deck_opt.item_selected.connect(func(_idx): _update_strategy_label("p2"))
 	_repopulate_deck_opt("p1", CAT_ALL)
 	_repopulate_deck_opt("p2", CAT_RECOMMENDED)
 
@@ -526,6 +542,33 @@ func _repopulate_deck_opt(player_key: String, cat_index: int) -> void:
 		_p1_deck_ids = stored
 	else:
 		_p2_deck_ids = stored
+	_update_strategy_label(player_key)
+
+
+# A muted, wrapping one-line strategy blurb shown under a player's deck picker.
+func _make_strategy_label() -> Label:
+	var lbl := Label.new()
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.75))
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.custom_minimum_size = Vector2(520, 0)
+	return lbl
+
+
+# Show the selected deck's strategy blurb (blank for Random / no strategy).
+func _update_strategy_label(player_key: String) -> void:
+	var opt := _p1_deck_opt if player_key == "p1" else _p2_deck_opt
+	var ids := _p1_deck_ids if player_key == "p1" else _p2_deck_ids
+	var lbl := _p1_strategy_label if player_key == "p1" else _p2_strategy_label
+	if lbl == null or opt.selected < 0 or opt.selected >= ids.size():
+		return
+	var deck_id := ids[opt.selected]
+	var text := ""
+	if deck_id != DECK_RANDOM:
+		var deck_def := DeckManager.load_deck(deck_id)
+		if deck_def != null:
+			text = deck_def.strategy
+	lbl.text = text
 
 
 # Resolve both deck picks, honoring "avoid mirror matches". Returns
@@ -912,6 +955,7 @@ func _input(event: InputEvent) -> void:
 				or (_gy_dialog and _gy_dialog.visible and not _gy_peek_active):
 			get_viewport().set_input_as_handled()
 			return
+		_wrap_up_active = true
 		_try_pass(true)
 		get_viewport().set_input_as_handled()
 		return
@@ -1226,6 +1270,10 @@ func _log_event(event: GameEvent) -> void:
 			var p:  String = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("quest_id", "")
 			_log_entry("[color=#af8]%s completes %s[/color]" % [p, _log_card(cid)])
+		"reveal_pick_resolved":
+			var rp:  String = _log_player(event.payload.get("player", ""))
+			var rcid: String = event.payload.get("card_id", "")
+			_log_entry("[color=#af8]%s takes %s (rest to bottom of deck)[/color]" % [rp, _log_card(rcid)])
 		"armor_prevention_used":
 			var p:  String = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("card_id", "")
@@ -1343,6 +1391,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_control_discard(event.payload)
 		"equipment_sacrifice_required":
 			_handle_equipment_sacrifice(event.payload)
+		"reveal_pick_opened":
+			_handle_reveal_pick(event.payload)
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)
 		"mulligan_phase_started":
@@ -1678,6 +1728,53 @@ func _pick_ai_pet_keep(_player_id: String, candidates: Array) -> String:
 	return best
 
 
+# Reveal-and-pick quest reward (Big Game Hunter / Kibler's Exotic Pets / Zapped
+# Giants): the top cards were revealed and at least one matches the required type.
+# The controller keeps one; the rest go to the bottom of the deck.
+func _handle_reveal_pick(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var selectable: Array = payload.get("selectable", [])
+	var revealed: Array = payload.get("revealed", [])
+	var card_type: String = payload.get("card_type", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	if player_type != "human":
+		# AI keeps the most valuable revealed card of the required type.
+		var pick_id := _pick_ai_reveal(selectable)
+		var events := StackResolver.choose_reveal_pick(_state, pick_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: reuse the browser modal, but as a mandatory single pick (no cancel).
+		_open_gy_dialog(selectable, false,
+				"Revealed top %d — choose a %s card to keep (rest go to bottom of deck)"
+						% [revealed.size(), card_type], 1, 1)
+		_gy_reveal_mode = true
+		_gy_cancel_btn.visible = false
+		_set_status("Choose a %s card to put into your hand" % card_type)
+		_refresh_ui()
+
+
+# AI reveal-pick: keep the highest-cost card, tie-broken by total stats.
+func _pick_ai_reveal(candidates: Array) -> String:
+	if candidates.is_empty():
+		return ""
+	var best: String = candidates[0]
+	var best_score := -999999
+	for cid: String in candidates:
+		var card := _state.get_card(cid)
+		if not card:
+			continue
+		var def: CardDef = _db.get_def(card.card_def_id) if _db else null
+		if not def:
+			continue
+		var score: int = def.cost * 100 + def.printed_atk + def.printed_health
+		if score > best_score:
+			best_score = score
+			best = cid
+	return best
+
+
 func _handle_enter_play_target(payload: Dictionary) -> void:
 	var card_id: String  = payload.get("card_id", "")
 	var dmg_type: String = payload.get("dmg_type", "")
@@ -2007,12 +2104,23 @@ func _update_gy_confirm() -> void:
 func _on_gy_confirm_pressed() -> void:
 	if _gy_view_only or _gy_confirm_btn.disabled:
 		return
+	if _gy_reveal_mode:
+		var pick: String = _gy_selected[0] if not _gy_selected.is_empty() else ""
+		_close_gy_dialog()
+		var events := StackResolver.choose_reveal_pick(_state, pick, _db)
+		EventBus.emit_events(events)
+		_set_status("")
+		_refresh_ui()
+		_schedule_next_turn()
+		return
 	_close_gy_dialog()
 	_router.confirm_graveyard_selection(_gy_selected.duplicate())
 	_refresh_ui()
 
 
 func _on_gy_cancel_pressed() -> void:
+	if _gy_reveal_mode:
+		return  # mandatory reveal-pick — no cancel
 	var was_view_only := _gy_view_only
 	_close_gy_dialog()
 	if not was_view_only:
@@ -2021,6 +2129,7 @@ func _on_gy_cancel_pressed() -> void:
 
 
 func _close_gy_dialog() -> void:
+	_gy_reveal_mode = false
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
 	CardNode.input_blocked = false
@@ -2250,6 +2359,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for equipment sacrifice before advancing
 	if _state.pending_control_discard_player != "":
 		return  # wait for the discard-or-give-control choice before advancing
+	if _state.pending_reveal_pick_player != "":
+		return  # wait for the reveal-and-pick quest choice before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	if pid_type != "human" \
@@ -2296,7 +2407,9 @@ func _drain_passes() -> void:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \
-				or _state.pending_control_discard_player != "":
+				or _state.pending_control_discard_player != "" \
+				or _state.pending_reveal_pick_player != "":
+			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
 		var chain_pending := not _state.pending_actions.is_empty()
@@ -2320,7 +2433,12 @@ func _drain_passes() -> void:
 					_auto_pass_combat = false
 					break
 				events = StackResolver.pass_priority(_state, _db)
-			elif not _turbo_mode or (_router.has_any_legal_play() and not owns_top):
+			elif _router.has_any_legal_play() and not owns_top:
+				# The opponent added something to the chain that the human can react
+				# to — the documented stop condition for a Ctrl+Space wrap-up burst.
+				_wrap_up_active = false
+				break
+			elif not (_turbo_mode or _wrap_up_active):
 				break
 			else:
 				events = StackResolver.pass_priority(_state, _db)
@@ -2360,22 +2478,28 @@ func _drain_passes() -> void:
 
 
 func _maybe_turbo_pass() -> void:
-	if _draining or not _turbo_mode or not _state or not _router:
+	if _draining or not (_turbo_mode or _wrap_up_active) or not _state or not _router:
 		return
 	if _in_protect_mode:
 		return
 	if _state.pending_discard_count > 0:
+		_wrap_up_active = false
 		return
 	if _state.pending_pet_sacrifice_player != "":
+		_wrap_up_active = false
 		return
 	if _state.pending_control_discard_player != "":
+		_wrap_up_active = false
 		return
 	if _state.priority_player != "p1" or _p1_type != "human":
 		return
 	var phase := _state.phase
 	# Never auto-pass the human's own main action window (chain empty, no combat):
 	# that pass ends the turn and requires an explicit Wrap Up, even with no legal play.
+	# For a Ctrl+Space wrap-up burst, reaching this window again means the burst
+	# carried the human all the way to their own next real decision point — stop.
 	if _is_p1_main_action_window():
+		_wrap_up_active = false
 		return
 	# Opponent's action-phase wrap-up window (chain empty, no combat window): always
 	# skip it, legal plays or not — the human still gets the real end-of-turn window
@@ -2389,6 +2513,10 @@ func _maybe_turbo_pass() -> void:
 	if not _router.has_any_legal_play() or phase == "ready" or phase == "draw" \
 			or _player_owns_top_of_chain("p1"):
 		call_deferred("_do_turbo_pass")
+	else:
+		# A legal instant exists and the opponent (not the human) owns the top of
+		# the chain — that's "the opponent played something," the documented stop.
+		_wrap_up_active = false
 
 
 func _player_owns_top_of_chain(pid: String) -> bool:
@@ -2451,16 +2579,18 @@ func _is_opponent_action_window() -> bool:
 
 
 func _do_turbo_pass() -> void:
-	if not _turbo_mode or not _state or not _router:
+	if not (_turbo_mode or _wrap_up_active) or not _state or not _router:
 		return
 	if _state.priority_player != "p1" or _p1_type != "human":
 		return
 	var phase := _state.phase
 	# Re-check at fire time — state may have changed since the deferred was scheduled.
 	if _is_p1_main_action_window():
+		_wrap_up_active = false
 		return
 	if _router.has_any_legal_play() and phase != "ready" and phase != "draw" \
 			and not _player_owns_top_of_chain("p1"):
+		_wrap_up_active = false
 		return
 	_router.pass_priority_action()
 	_refresh_ui()

@@ -116,6 +116,11 @@ func _ready() -> void:
 		_test_infernal_end_of_turn_damage,
 		_test_hierophant_caydiem_power,
 		_test_tanwa_long_range,
+		_test_generic_ai_all_out_hero_lethal,
+		_test_generic_ai_all_out_with_spell_lethal,
+		_test_litori_freeze_fizzles_proposal,
+		_test_litori_too_late_in_window,
+		_test_ai_litori_freeze_save,
 	]
 
 	for t in tests:
@@ -4034,15 +4039,17 @@ func _test_acolyte_demia_power() -> void:
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	var demia := _add_ally(state, "demia_inst", "demia_def", "p1")
 	demia.just_summoned = false
-	demia.is_exhausted  = false
+	# Already exhausted going in: rule 701.2 payment powers (no [Activate] tap
+	# symbol) have no exhaust requirement, unlike 701.3 activated powers.
+	demia.is_exhausted  = true
 	_add_resources(state, "p1", 1)
 	state.players["p1"].resource_placed_this_turn = true
 
 	var use := PendingAction.make("use_ally_power", "p1",
 		{"card_id": "demia_inst", "target_id": "p2_hero"})
 
-	# ad-a: legal on Demia's controller's own turn.
-	ok(StackResolver.can_submit(state, use, db), "ad-a: Demia power legal on p1's turn")
+	# ad-a: legal on Demia's controller's own turn, even while exhausted.
+	ok(StackResolver.can_submit(state, use, db), "ad-a: Demia power legal on p1's turn while exhausted")
 
 	StackResolver.submit_action(state, use, db)
 	StackResolver.pass_priority(state, db)
@@ -4054,9 +4061,11 @@ func _test_acolyte_demia_power() -> void:
 	# ad-c: target hero took 1 shadow damage dealt.
 	eq(state.get_card("p2_hero").damage_taken, 1, "ad-c: p2 hero took 1 shadow damage")
 
-	# ad-d: Demia is NOT exhausted (no activate symbol on this power) and can be
-	# used again immediately as long as the resource cost can still be paid.
-	ok(not state.get_card("demia_inst").is_exhausted, "ad-d: Demia not exhausted after use")
+	# ad-d: Demia's exhausted state is untouched by using the power (no activate
+	# symbol on this power — using it neither requires nor causes exhaustion) and
+	# she can be used again immediately as long as the resource cost can be paid.
+	ok(state.get_card("demia_inst").is_exhausted,
+		"ad-d: Demia's exhausted flag is unchanged by the power (still exhausted from setup)")
 	_add_resources(state, "p1", 1)
 	ok(StackResolver.can_submit(state, use, db), "ad-d2: Demia power reusable immediately")
 
@@ -5695,14 +5704,19 @@ func _test_hierophant_caydiem_power() -> void:
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
 	db.ally("caydiem_def", 2, 4, [], 4,
-		"activated_power:3:deal_damage_and_heal:1:nature:hero_or_ally_two")
+		"activated_power:3:deal_damage_and_heal:1:nature:hero_or_ally_two:no_activate")
 	db.ally("dummy_ally_def", 0, 3, [], 0)
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
 
+	# Printed cost is a plain "3 ->" with no [Activate] tap symbol, so this is a
+	# 701.2 payment power (like Acolyte Demia), not a 701.3 activated power:
+	# still just_summoned AND already exhausted, to prove neither summoning
+	# sickness nor the exhausted state gates a plain payment power (701.2 has
+	# no such restriction — only 701.3 activated powers check is_exhausted).
 	var caydiem := _add_ally(state, "caydiem_inst", "caydiem_def", "p1")
-	caydiem.just_summoned = false
-	caydiem.is_exhausted  = false
+	caydiem.just_summoned = true
+	caydiem.is_exhausted  = true
 
 	# Friendly damaged ally to heal.
 	var friendly := _add_ally(state, "friendly_inst", "dummy_ally_def", "p1")
@@ -5733,7 +5747,40 @@ func _test_hierophant_caydiem_power() -> void:
 
 	eq(state.get_card("enemy_inst").damage_taken, 1, "hc-c: enemy ally took 1 nature damage")
 	eq(state.get_card("friendly_inst").damage_taken, 1, "hc-d: friendly ally healed 1 (2 -> 1)")
-	ok(state.get_card("caydiem_inst").is_exhausted, "hc-e: Caydiem exhausted after use")
+	ok(state.get_card("caydiem_inst").is_exhausted,
+		"hc-e: Caydiem's exhausted state is untouched by the power (still exhausted from setup — no [Activate] tap symbol on the printed cost, so using it neither requires nor causes exhaustion)")
+
+	# hc-f: repeatable the same turn since it never exhausted and has no
+	# once-per-turn text.
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	var friendly2 := _add_ally(state, "friendly_inst2", "dummy_ally_def", "p1")
+	friendly2.damage_taken = 2
+	var action2 := PendingAction.make("use_ally_power", "p1", {
+		"card_id": "caydiem_inst", "target_id": "enemy_inst", "heal_target_id": "friendly_inst2",
+	})
+	ok(StackResolver.can_submit(state, action2, db), "hc-f: power usable again the same turn")
+	StackResolver.submit_action(state, action2, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("enemy_inst").damage_taken, 2, "hc-g: enemy ally took another 1 nature damage")
+
+	# hc-h: BaseAI._get_ally_power_actions must propose this power even while
+	# Caydiem is exhausted AND just_summoned (701.2 payment power — no
+	# [Activate] symbol, so summoning sickness/exhaustion don't gate it, same
+	# as the engine-level check above). Regression for a bug where the AI's
+	# generic ally-power gate wrongly skipped no_activate/put_damage_self
+	# powers whenever the source was tapped or freshly played — Caydiem's
+	# power would then almost never fire in a real AI game.
+	_add_resources(state, "p1", 3)
+	var ai := BaseAI.new()
+	var legal := ai.get_legal_actions(state, db, "p1")
+	var proposed_caydiem := false
+	for a in legal:
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "caydiem_inst":
+			proposed_caydiem = true
+	ok(proposed_caydiem,
+		"hc-h: AI proposes Caydiem's power while exhausted and just_summoned")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5782,3 +5829,321 @@ func _test_tanwa_long_range() -> void:
 	_drive(state2, db, p1_ai2, p2_ai2)
 
 	eq(state2.get_card("atk2").damage_taken, 4, "tl-c: attacker still takes damage from Tanwa when Tanwa defends")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 50 — GenericAI: all-out hero lethal
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_all_out_hero_lethal() -> void:
+	_buf.append("\n-- Scenario 50: GenericAI attacks all-out when the combined board is lethal --")
+	var ai := GenericAI.new()
+
+	# aol-a: no single attacker is lethal (3 and 5 vs 8 hp), but together they
+	# are (8 >= 8) and the enemy has no Protector — go all out with the least
+	# valuable attacker first.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("small_def", 3, 3, [], 1)
+	db.ally("big_def",   5, 5, [], 4)
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st, "small", "small_def", "p1")
+	_add_ally(st, "big",   "big_def",   "p1")
+	st.players["p1"].resource_placed_this_turn = true
+	st.get_card("p2_hero").damage_taken = 22   # 8 HP left
+
+	ok(ai._hero_lethal_action(st, db, "p1") == null,
+		"aol-a1: neither attacker alone is lethal (3 or 5 vs 8 hp)")
+	var act := ai._all_out_hero_lethal_action(st, db, "p1")
+	ok(act != null and act.action_type == "propose_combat"
+			and act.params.get("attacker_id") == "small"
+			and act.params.get("defender_id") == "p2_hero",
+		"aol-a2: all-out triggers (3+5=8 >= 8 hp), least valuable attacker first")
+
+	# aol-b: an enemy Protector on board blunts the assumption — bail out.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.ally("small_def", 3, 3, [], 1)
+	db2.ally("big_def",   5, 5, [], 4)
+	db2.ally("prot_def",  1, 1, (["protector"] as Array[String]), 1)
+	var st2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_ally(st2, "small", "small_def", "p1")
+	_add_ally(st2, "big",   "big_def",   "p1")
+	_add_ally(st2, "prot",  "prot_def",  "p2")
+	st2.players["p1"].resource_placed_this_turn = true
+	st2.get_card("p2_hero").damage_taken = 22   # 8 HP left
+
+	ok(ai._all_out_hero_lethal_action(st2, db2, "p1") == null,
+		"aol-b: enemy Protector present → no all-out swing")
+
+	# aol-c: enemy armor block raises the required total — 8 ATK vs 8 hp + 2
+	# block (DEF-2 ready armor) is not enough; without the armor it would be.
+	var db3 := MockDB.new()
+	db3.hero("p1_hero", 30)
+	db3.hero("p2_hero", 30)
+	db3.ally("small_def", 3, 3, [], 1)
+	db3.ally("big_def",   5, 5, [], 4)
+	db3.equipment("armor_def", 2, "equipment:chest:2")
+	var st3 := _base_state(db3, "p1_hero", "p2_hero")
+	_add_ally(st3, "small", "small_def", "p1")
+	_add_ally(st3, "big",   "big_def",   "p1")
+	var armor := CardInstance.create("armor", "armor_def", "p2", "p2_hero_row")
+	st3.cards["armor"] = armor
+	st3.zones["p2_hero_row"].card_ids.append("armor")
+	st3.players["p1"].resource_placed_this_turn = true
+	st3.get_card("p2_hero").damage_taken = 22   # 8 HP left
+
+	ok(ai._all_out_hero_lethal_action(st3, db3, "p1") == null,
+		"aol-c: ready DEF-2 armor raises the threshold to 10 → 8 ATK isn't enough")
+
+	# Exhaust the armor (already used/committed elsewhere) — now it can't add
+	# more block, so the same 8 ATK is lethal again.
+	armor.is_exhausted = true
+	act = ai._all_out_hero_lethal_action(st3, db3, "p1")
+	ok(act != null and act.params.get("attacker_id") == "small",
+		"aol-d: exhausted armor can't block → all-out triggers again")
+
+	# aol-e: decide_action's pipeline picks the all-out swing over develop/chip.
+	act = ai.decide_action(st3, db3, "p1")
+	ok(act != null and act.action_type == "propose_combat"
+			and act.params.get("defender_id") == "p2_hero",
+		"aol-e: decide_action returns the all-out attack ahead of develop/chip")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 51 — GenericAI: all-out + finishing spell
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_generic_ai_all_out_with_spell_lethal() -> void:
+	_buf.append("\n-- Scenario 51: GenericAI attacks all-out then finishes with a held spell --")
+	var ai := GenericAI.new()
+
+	# aos-a: 3+5=8 ATK alone can't reach 9 hp, but +4 from Lightning Bolt can.
+	# Board isn't lethal all-out by itself → attack first, hold the spell.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("small_def", 3, 3, [], 1)
+	db.ally("big_def",   5, 5, [], 4)
+	db.instant("bolt_def", 3, "deal_damage_to_target:4:nature")
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st, "small", "small_def", "p1")
+	_add_ally(st, "big",   "big_def",   "p1")
+	var bolt := CardInstance.create("bolt", "bolt_def", "p1", "p1_hand")
+	st.cards["bolt"] = bolt
+	st.zones["p1_hand"].card_ids.append("bolt")
+	st.players["p1"].resource_placed_this_turn = true
+	_add_resources(st, "p1", 3)
+	st.get_card("p2_hero").damage_taken = 21   # 9 HP left
+
+	ok(ai._all_out_hero_lethal_action(st, db, "p1") == null,
+		"aos-a1: 3+5=8 ATK alone isn't lethal against 9 hp")
+	var act := ai._all_out_with_spell_hero_lethal_action(st, db, "p1")
+	ok(act != null and act.action_type == "propose_combat"
+			and act.params.get("attacker_id") == "small",
+		"aos-a2: 8 ATK + 4 dmg clears 9 hp → attack first, least valuable attacker")
+
+	# aos-b: once every attacker has swung, the spell itself is returned as
+	# the finisher instead of being left to the develop step.
+	st.get_card("small").is_exhausted = true
+	st.get_card("big").is_exhausted = true
+	act = ai._all_out_with_spell_hero_lethal_action(st, db, "p1")
+	ok(act != null and act.action_type == "play_instant"
+			and act.params.get("card_id") == "bolt"
+			and act.params.get("target_id") == "p2_hero",
+		"aos-b: no attackers left to swing → deliver the finishing spell")
+
+	# aos-c: not enough resources to actually cast the spell this turn → the
+	# combo isn't recognized at all (falls through, doesn't force a bad swing).
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.ally("small_def", 3, 3, [], 1)
+	db2.ally("big_def",   5, 5, [], 4)
+	db2.instant("bolt_def", 3, "deal_damage_to_target:4:nature")
+	var st2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_ally(st2, "small", "small_def", "p1")
+	_add_ally(st2, "big",   "big_def",   "p1")
+	var bolt2 := CardInstance.create("bolt", "bolt_def", "p1", "p1_hand")
+	st2.cards["bolt"] = bolt2
+	st2.zones["p1_hand"].card_ids.append("bolt")
+	st2.players["p1"].resource_placed_this_turn = true
+	# No resources placed — Lightning Bolt (cost 3) isn't payable this turn.
+	st2.get_card("p2_hero").damage_taken = 21   # 9 HP left
+
+	ok(ai._all_out_with_spell_hero_lethal_action(st2, db2, "p1") == null,
+		"aos-c: spell isn't affordable this turn → combo not recognized")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 52 — Litori Frostburn: "can't attack" in response to a combat
+# proposal interrupts the proposal (601.3) — attacker never exhausts.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_litori_freeze_fizzles_proposal() -> void:
+	_buf.append("\n-- Scenario 52: Litori freeze in response to proposal — fizzle, no exhaust --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("litori_def", 25, 2, "target_cant_attack")
+	db.ally("attacker_def", 4, 4, [], 3)
+
+	var state := _base_state(db, "p1_hero", "litori_def")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var all_events: Array[GameEvent] = []
+	# p1 proposes combat vs p2's hero; the proposal sits on the chain.
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "litori_def"})
+	all_events.append_array(StackResolver.submit_action(state, proposal, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 → p2
+
+	# p2 flips Litori targeting the proposed attacker, in response.
+	var flip := PendingAction.make("activate_power", "p2",
+		{"hero_id": "litori_def", "target_id": "atk"})
+	ok(StackResolver.can_submit(state, flip, db),
+		"li-a: Litori flip is legal in response to the enemy proposal")
+	all_events.append_array(StackResolver.submit_action(state, flip, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p2 passes
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 passes → flip resolves
+
+	ok(atk.has_restriction("cannot_attack"),
+		"li-b: attacker carries the cannot_attack restriction after the flip resolves")
+
+	# Both pass again → the proposal itself resolves and must fizzle (601.3).
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled":
+			saw_fizzle = true
+	ok(saw_fizzle, "li-c: proposal fizzled at resolution")
+	ok(not atk.is_exhausted, "li-d: attacker did NOT exhaust — combat never started")
+	ok(not state.combat_attack_window, "li-e: no attack window opened")
+	eq(state.get_card("litori_def").damage_taken, 0, "li-f: hero took no damage")
+
+	# Attacker can't be proposed again this turn.
+	ok("atk" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"li-g: frozen attacker is not a legal attacker")
+	var again := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "litori_def"})
+	ok(not StackResolver.can_submit(state, again, db),
+		"li-h: re-proposing with the frozen attacker is rejected")
+
+	# The restriction is "this turn" — the end-of-turn buff sweep clears it.
+	atk.decrement_turn_buffs()
+	ok("atk" in StackResolver.get_legal_attackers(state, "p1", db),
+		"li-i: after the turn sweep the attacker is legal again")
+
+	# The flip is once per game.
+	ok(state.players["p2"].has_used_hero_power, "li-j: hero power marked as used")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 53 — Litori during the attack window is TOO LATE: the attacker is
+# already attacking (602.1) and "can't attack" is not a remove-from-combat
+# effect (602.4) — combat proceeds and damage is dealt.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_litori_too_late_in_window() -> void:
+	_buf.append("\n-- Scenario 53: Litori during the attack window doesn't stop the combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("litori_def", 25, 2, "target_cant_attack")
+	db.ally("attacker_def", 4, 4, [], 3)
+
+	var state := _base_state(db, "p1_hero", "litori_def")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# Proposal resolves uncontested — combat step starts, attack window opens.
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "litori_def"})
+	StackResolver.submit_action(state, proposal, db)
+	StackResolver.pass_priority(state, db)   # p1 passes
+	StackResolver.pass_priority(state, db)   # p2 passes → proposal resolves
+	ok(state.combat_attack_window, "lw-a: attack window is open")
+	ok(atk.is_exhausted, "lw-b: attacker exhausted at combat start")
+
+	# p2 flips Litori on the attacker mid-window — legal, but too late.
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+	var flip := PendingAction.make("activate_power", "p2",
+		{"hero_id": "litori_def", "target_id": "atk"})
+	ok(StackResolver.can_submit(state, flip, db), "lw-c: flip is submittable in the window")
+	StackResolver.submit_action(state, flip, db)
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → flip resolves
+	ok(atk.has_restriction("cannot_attack"), "lw-d: restriction applied")
+
+	# Drive the combat to conclusion: attack window close → defend window → damage.
+	for i in range(6):
+		if state.get_card("litori_def").damage_taken > 0:
+			break
+		StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("litori_def").damage_taken, 4,
+		"lw-e: combat concluded normally — hero took the 4 damage")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 54 — AI uses the Litori flip to cancel a dangerous incoming attack
+# while the proposal is still on the chain (and holds it otherwise).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_litori_freeze_save() -> void:
+	_buf.append("\n-- Scenario 54: AI flips Litori in response to a heavy attack proposal --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("litori_def", 25, 2, "target_cant_attack")
+	db.ally("big_def",   5, 5, [], 4)
+	db.ally("small_def", 2, 2, [], 1)
+
+	# af-a: 5 ATK at our hero (>= 4 threshold) → the AI answers the proposal.
+	var state := _base_state(db, "p1_hero", "litori_def")
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": "litori_def"})
+	StackResolver.submit_action(state, proposal, db)
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "activate_power"
+			and act.params.get("target_id") == "big",
+		"af-a: AI flips Litori targeting the proposed attacker")
+
+	# Play it out: the proposal must fizzle and the attacker stays ready.
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # flip resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal fizzles
+	ok(not state.get_card("big").is_exhausted and not state.combat_attack_window,
+		"af-b: proposal cancelled — attacker never exhausted, no combat")
+
+	# af-c: chip attack (2 ATK, hero at full 25) → hold the once-per-game flip.
+	var state2 := _base_state(db, "p1_hero", "litori_def")
+	var small := _add_ally(state2, "small", "small_def", "p1")
+	small.just_summoned = false
+	_add_resources(state2, "p2", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+
+	var proposal2 := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "small", "defender_id": "litori_def"})
+	StackResolver.submit_action(state2, proposal2, db)
+	StackResolver.pass_priority(state2, db)
+	ok(ai.decide_action(state2, db, "p2") == null,
+		"af-c: AI holds the flip against a 2-ATK chip attack")

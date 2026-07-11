@@ -1,0 +1,144 @@
+﻿{
+  "deck_id": "alliance_litori_test",
+  "display_name": "Alliance_test (Litori)",
+  "hero_card_def_id": "azeroth_5",
+  "card_entries": [
+    {
+      "card_def_id": "azeroth_298",
+      "count": 1,
+      "_card_name": "Mooncloth Robe"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 1,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 2,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_347",
+      "count": 2,
+      "_card_name": "Battle of Darrowshire"
+    },
+    {
+      "card_def_id": "azeroth_340",
+      "count": 4,
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_176",
+      "count": 2,
+      "_card_name": "Apprentice Teep"
+    },
+    {
+      "card_def_id": "azeroth_222",
+      "count": 2,
+      "_card_name": "Warden Tonarin"
+    },
+    {
+      "card_def_id": "azeroth_219",
+      "count": 4,
+      "_card_name": "Tracker Gallen"
+    },
+    {
+      "card_def_id": "azeroth_212",
+      "count": 2,
+      "_card_name": "Parvink"
+    },
+    {
+      "card_def_id": "azeroth_174",
+      "count": 2,
+      "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_221",
+      "count": 2,
+      "_card_name": "Tristan Rapidstrike"
+    },
+    {
+      "card_def_id": "azeroth_183",
+      "count": 2,
+      "_card_name": "Freya Lightsworn"
+    },
+    {
+      "card_def_id": "azeroth_180",
+      "count": 4,
+      "_card_name": "Crazy Igvand"
+    },
+    {
+      "card_def_id": "azeroth_192",
+      "count": 4,
+      "_card_name": "Kor Cindervein"
+    },    
+    {
+      "card_def_id": "azeroth_197",
+      "count": 4,
+      "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_173",
+      "count": 1,
+      "_card_name": "Acolyte Demia"
+    },
+    {
+      "card_def_id": "azeroth_175",
+      "count": 4,
+      "_card_name": "Anika Berlyn"
+    },
+    {
+      "card_def_id": "azeroth_179",
+      "count": 1,
+      "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
+    },
+    {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
+    },
+    {
+      "card_def_id": "azeroth_200",
+      "count": 4,
+      "_card_name": "Liba Wobblebonk"
+    }
+  ],
+  "recommended_ai_id": "ai_generic",
+  "source": "recommended_ai",
+  "metadata": {
+    "author": "playtest",
+    "origin": "migrated from renderer/tests/playtest.gd"
+  },
+  "_hero_name": "Litori Frostburn"
+}

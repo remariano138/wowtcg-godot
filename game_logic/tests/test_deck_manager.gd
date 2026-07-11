@@ -36,10 +36,11 @@ func _check(cond: bool, label: String) -> void:
 
 func _test_library_scan() -> void:
 	var index := DeckManager.get_available_decks(true)
-	_check(index.recommended_ai.size() == 6, "library finds 6 recommended_ai decks (got %d)" % index.recommended_ai.size())
+	_check(index.recommended_ai.size() == 7, "library finds 7 recommended_ai decks (got %d)" % index.recommended_ai.size())
 	_check(index.base.size() == 3, "library finds 3 base decks (got %d)" % index.base.size())
 	_check(index.custom.is_empty(), "custom category empty")
-	_check(index.all().size() == 9, "all() aggregates categories")
+	_check(index.all().size() == 10, "all() aggregates categories")
+	_check(index.recommended_ai.has("alliance_litori_test"), "alliance_litori_test discovered")
 	_check(index.recommended_ai.has("horde_tazo_test"), "horde_tazo_test discovered")
 	_check(index.base.has("alliance_dizdemona_test"), "dizdemona (Warlock) is in base, not recommended_ai")
 	_check(index.base.has("horde_radak_test"), "radak (Warlock) is in base, not recommended_ai")

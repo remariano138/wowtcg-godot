@@ -17,9 +17,16 @@ extends Node2D
 #   Draw step draws mechanically (no visual yet — Phase 7c).
 #   TurnManager + StackResolver + FullRandomAI all cooperate.
 
+# NOT a "thinking" pause. _ai_timer exists purely to (a) defer each AI beat off the
+# call stack so back-to-back passes don't recurse/freeze the frame, and (b) stay
+# cancellable via _ai_timer.stop() (protect windows). Human-facing pacing lives in
+# GameTiming (see below) — keep this a tiny scheduler tick, not a pacing knob.
 const AI_THINK_TIME       := 0.001
+# How often the self-healing reconcile pass runs (snaps crooked cards back to
+# their true exhausted/ready orientation once animations settle).
+const RECONCILE_TICK      := 0.3
 # Pause durations live in game_logic/timing.gd (GameTiming) so they can all be tuned
-# together via GameTiming.animation_speed.
+# together via GameTiming.animation_speed (see the in-game Speed slider).
 
 # Deck lists live in res://decks/ and are served by DeckManager — this scene
 # only picks ids.
@@ -34,6 +41,9 @@ var _gm:     GameManager
 var _renderer: BoardRenderer
 var _router: InputRouter
 var _ai_timer:   Timer
+var _reconcile_timer: Timer
+var _speed_slider: HSlider
+var _speed_value_label: Label
 var _draining: bool = false  # true while _drain_passes is running
 
 # Per-player type + AI instance (null = human).
@@ -119,6 +129,14 @@ var _auto_pass_combat: bool = false
 # opponent adds a chain link they must respond to) or their own next main
 # action window is reached — whichever comes first, that's the stop.
 var _wrap_up_active: bool = false
+# "Nothing changed" tracking (mode-independent — runs ahead of Turbo/Tactical,
+# see _human_has_new_info): identity of the chain-top PendingAction and a
+# generation counter for combat window transitions, both captured the last
+# time the human was actually stopped to make a decision. Object identity
+# (get_instance_id) is used for the chain top since PendingAction has no id.
+var _last_seen_chain_top_iid: int = 0
+var _window_generation: int = 0
+var _last_seen_window_gen: int = 0
 var _turbo_btn:  Button
 var _tactical_btn: Button
 var _mode_desc_label: Label
@@ -353,11 +371,42 @@ func _build_scene() -> void:
 	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	_mulligan_hint_label.visible = false
 
+	# ── Far right: Animation speed slider (scales every GameTiming pause live) ──
+	# animation_speed: 0 = instant (no pauses), 1 = base timing, up to 3x slower.
+	var speed_lbl := _add_label("Speed", Vector2(1690, 971), 10, Color(0.55, 0.55, 0.55))
+	speed_lbl.size = Vector2(180, 16)
+	_speed_slider = HSlider.new()
+	_speed_slider.position   = Vector2(1690, 995)
+	_speed_slider.size       = Vector2(180, 24)
+	_speed_slider.min_value  = 0.0
+	_speed_slider.max_value  = 3.0
+	_speed_slider.step       = 0.1
+	_speed_slider.value      = GameTiming.animation_speed
+	_speed_slider.value_changed.connect(func(v: float) -> void:
+		GameTiming.animation_speed = v
+		if _speed_value_label:
+			_speed_value_label.text = "%.1fx" % v)
+	add_child(_speed_slider)
+	_speed_value_label = _add_label("%.1fx" % GameTiming.animation_speed,
+		Vector2(1690, 1025), 11, Color(0.6, 0.6, 0.65))
+
 	_ai_timer = Timer.new()
 	_ai_timer.wait_time = AI_THINK_TIME
 	_ai_timer.one_shot  = true
 	_ai_timer.timeout.connect(_do_ai_turn)
 	add_child(_ai_timer)
+
+	# Self-healing reconcile: repeatedly snap any settled-but-crooked card back to
+	# its true orientation. Idempotent + skips in-flight animations, so a plain
+	# recurring tick is robust without precise idle detection.
+	_reconcile_timer = Timer.new()
+	_reconcile_timer.wait_time = RECONCILE_TICK
+	_reconcile_timer.one_shot  = false
+	_reconcile_timer.timeout.connect(func() -> void:
+		if _renderer and _state:
+			_renderer.reconcile_from_state(_state))
+	add_child(_reconcile_timer)
+	_reconcile_timer.start()
 
 	_context_menu = PopupMenu.new()
 	_context_menu.id_pressed.connect(_on_context_menu_id_pressed)
@@ -801,6 +850,12 @@ func _refresh_ui() -> void:
 				_renderer.sync_zone_with_state(hand_zone_id, hz.card_ids)
 
 
+func _turn_label(turn_number: int) -> String:
+	var round_num: int = (turn_number + 1) / 2
+	var suffix: String = "a" if turn_number % 2 == 1 else "b"
+	return "%d%s" % [round_num, suffix]
+
+
 func _update_phase_label() -> void:
 	var names := {
 		"mulligan": "Mulligan",
@@ -808,8 +863,8 @@ func _update_phase_label() -> void:
 		"action": "Action Phase", "end": "End Phase",
 	}
 	var phase_str: String = names.get(_state.phase, _state.phase)
-	_phase_label.text = "Turn %d  ·  %s  ·  %s's turn" % [
-		_state.turn_number, phase_str, _state.turn_player]
+	_phase_label.text = "Turn %s  ·  %s  ·  %s's turn" % [
+		_turn_label(_state.turn_number), phase_str, _state.turn_player]
 
 
 func _update_priority_label() -> void:
@@ -828,6 +883,11 @@ func _update_priority_label() -> void:
 
 
 func _describe_pending_action(action: PendingAction) -> String:
+	if action.action_type == "propose_combat":
+		return "%s attacks %s" % [
+			_log_card(action.params.get("attacker_id", "")),
+			_log_card(action.params.get("defender_id", "")),
+		]
 	var name := _pending_action_card_name(action)
 	match action.action_type:
 		"play_ally":            return "Play %s" % name
@@ -894,13 +954,16 @@ func _update_pass_btn() -> void:
 	if _state.pending_control_discard_player == "p1":
 		# Infernal choice: the pass button is the DECLINE option (give control).
 		_pass_btn.disabled = false
-		_pass_btn.text     = "Give up control  [Space]"
+		_pass_btn.text     = "Give up control  [Ctrl+Space]"
 		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
 	elif _state.pending_pet_sacrifice_player == "p1":
 		_pass_btn.text     = "Sacrifice a pet  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _state.pending_equip_sacrifice_player == "p1":
 		_pass_btn.text     = "Destroy equipment  [Space]"
+		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
+	elif _router.is_awaiting_chain_lightning_optional_target():
+		_pass_btn.text     = "Skip target  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not my_turn:
 		_pass_btn.text     = "Pass Priority  [Space]"
@@ -955,6 +1018,16 @@ func _input(event: InputEvent) -> void:
 				or (_gy_dialog and _gy_dialog.visible and not _gy_peek_active):
 			get_viewport().set_input_as_handled()
 			return
+		# Infernal: Ctrl+Space gives up control (declines the discard). Gated behind
+		# Ctrl so a stray plain-Space can't hand the card to the opponent by mistake.
+		# Handled on its own (NOT via the wrap-up burst) so giving up control doesn't
+		# also try to end the turn — it's a start-of-turn choice, the turn continues.
+		if _state.pending_control_discard_player == "p1":
+			_router.decline_control_discard()
+			_refresh_ui()
+			_schedule_next_turn()
+			get_viewport().set_input_as_handled()
+			return
 		_wrap_up_active = true
 		_try_pass(true)
 		get_viewport().set_input_as_handled()
@@ -974,6 +1047,13 @@ func _input(event: InputEvent) -> void:
 		# so an accidental tap can't skip the turn.
 		if _is_wrap_up_pass():
 			_set_status("Press Ctrl+Space to wrap up / end your turn")
+			get_viewport().set_input_as_handled()
+			return
+		# Same protection for Infernal's give-up-control: plain Space must not
+		# hand the card to the opponent. Ctrl+Space (or clicking the pass
+		# button / a hand card to discard) is required.
+		if _state.pending_control_discard_player == "p1":
+			_set_status("Press Ctrl+Space to give up control, or click a card to discard")
 			get_viewport().set_input_as_handled()
 			return
 		_try_pass()
@@ -1154,7 +1234,9 @@ func _log_event(event: GameEvent) -> void:
 		"turn_changed":
 			var n: int    = event.payload.get("turn", 0)
 			var p: String = _log_player(event.payload.get("player", ""))
-			_log_entry("\n[color=#d4af37][b]── Turn %d · %s ──[/b][/color]" % [n, p])
+			_log_entry("\n[color=#d4af37]═══════════════[/color]")
+			_log_entry("[color=#d4af37][b][font_size=15]Turn %s · %s[/font_size][/b][/color]" % [_turn_label(n), p])
+			_log_entry("[color=#d4af37]═══════════════[/color]")
 		"phase_changed":
 			var ph: String = event.payload.get("new", "")
 			match ph:
@@ -1206,11 +1288,21 @@ func _log_event(event: GameEvent) -> void:
 				_log_entry("[color=#888]%s places %s face-up[/color]" % [p, _log_card(cid)])
 			else:
 				_log_entry("[color=#888]%s places a card face-down[/color]" % p)
+		"action_proposed":
+			if event.payload.get("action_type", "") == "propose_combat":
+				var p: String = _log_player(event.payload.get("player", ""))
+				var patt: String = _log_card(event.payload.get("attacker_id", ""))
+				var pdef: String = _log_card(event.payload.get("defender_id", ""))
+				_log_entry("[color=#fc8]%s proposes: %s attacks %s[/color]" % [p, patt, pdef])
+		"action_fizzled":
+			if event.payload.get("action_type", "") == "propose_combat":
+				_log_entry("[color=#a66]-- combat proposal fizzled --[/color]")
 		"combat_started":
 			var att: String = _log_card(event.payload.get("attacker_id", ""))
 			var def: String = _log_card(event.payload.get("defender_id", ""))
 			_log_entry("[color=#fc8][b]%s ⚔ %s[/b][/color]" % [att, def])
 		"attack_window_opened":
+			_window_generation += 1
 			_set_status("⚔ Attack window — you may respond before protect")
 			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
@@ -1219,6 +1311,7 @@ func _log_event(event: GameEvent) -> void:
 			# the AI — same reason defend_window_opened drains below.
 			_drain_passes()
 		"defend_window_opened":
+			_window_generation += 1
 			_set_status("⚔ Defend window — you may respond before damage")
 			# Defender may now be a protector that swapped in during protect point,
 			# so re-highlight rather than assume the attack-window pair still holds.
@@ -1328,6 +1421,9 @@ func _on_game_event(event: GameEvent) -> void:
 		"action_proposed":
 			if event.payload.get("player") == "p1":
 				_p1_played_this_action_phase = true
+			if event.payload.get("action_type", "") == "propose_combat":
+				_set_proposed_combat_highlight(
+					event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			_drain_passes()
 		"card_moved":
@@ -1360,8 +1456,12 @@ func _on_game_event(event: GameEvent) -> void:
 			if event.payload.get("from", "") == "chain":
 				_schedule_next_turn()
 		"action_retracted":
+			if event.payload.get("action_type", "") == "propose_combat":
+				_clear_combat_highlight()
 			_refresh_ui()
 		"action_fizzled":
+			if event.payload.get("action_type", "") == "propose_combat":
+				_clear_combat_highlight()
 			_refresh_ui()
 			_maybe_turbo_pass()
 		"phase_changed":
@@ -1382,6 +1482,7 @@ func _on_game_event(event: GameEvent) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		"protect_point_opened":
+			_window_generation += 1
 			_handle_protect_point(event.payload)
 		"discard_choice_opened":
 			_handle_discard_choice(event.payload)
@@ -2172,6 +2273,33 @@ func _clear_combat_highlight() -> void:
 	_combat_highlight_ids.clear()
 
 
+# Same red outline as _set_combat_highlight, but for a combat PROPOSAL still
+# sitting on the chain (601.1) — before the combat step / attack window even
+# exists, so it can't gate on combat_attack_window/combat_defend_window like
+# _apply_combat_highlight does. Guards instead on the proposal still being the
+# top of the chain, so a deferred call that lands after the proposal already
+# resolved (or fizzled — e.g. Litori) doesn't paint a stale outline.
+func _set_proposed_combat_highlight(attacker_id: String, defender_id: String) -> void:
+	call_deferred("_apply_proposed_combat_highlight", attacker_id, defender_id)
+
+
+func _apply_proposed_combat_highlight(attacker_id: String, defender_id: String) -> void:
+	if _state.pending_actions.is_empty():
+		return
+	var top: PendingAction = _state.pending_actions.back()
+	if top.action_type != "propose_combat" \
+			or top.params.get("attacker_id", "") != attacker_id \
+			or top.params.get("defender_id", "") != defender_id:
+		return
+	_clear_combat_highlight()
+	if attacker_id != "":
+		_renderer.set_card_outline(attacker_id, true, Color(1.0, 0.2, 0.2))
+		_combat_highlight_ids.append(attacker_id)
+	if defender_id != "" and defender_id != attacker_id:
+		_renderer.set_card_outline(defender_id, true, Color(1.0, 0.2, 0.2))
+		_combat_highlight_ids.append(defender_id)
+
+
 # ── Protect point ──────────────────────────────────────────────────────────────
 
 func _handle_protect_point(payload: Dictionary) -> void:
@@ -2432,15 +2560,43 @@ func _drain_passes() -> void:
 				if not (in_combat or owns_top):
 					_auto_pass_combat = false
 					break
+				_mark_priority_info_seen()
 				events = StackResolver.pass_priority(_state, _db)
-			elif _router.has_any_legal_play() and not owns_top:
-				# The opponent added something to the chain that the human can react
-				# to — the documented stop condition for a Ctrl+Space wrap-up burst.
+			elif not owns_top and not _human_has_new_info(pid):
+				# Layer 2 (mode-independent "nothing changed" auto-pass): the chain
+				# top isn't a new opponent link and no combat window transition
+				# happened since we last looked. The engine still requires the
+				# pass, there's just nothing new to prompt the human about —
+				# so auto-pass regardless of Turbo/Tactical.
+				_mark_priority_info_seen()
+				events = StackResolver.pass_priority(_state, _db)
+			elif not owns_top and (_turbo_mode or _wrap_up_active) \
+					and not _router.has_any_legal_play():
+				# Layer 3 (Turbo / wrap-up burst): something changed, but there's
+				# nothing you could legally play in response — so skip the window
+				# instead of stopping. This is Turbo's whole job ("auto-pass all
+				# 'no legal play'"). In Tactical (no burst) we fall through to the
+				# hold below so the player can still watch the window open.
+				if in_combat:
+					_log_entry("[color=#667]-- Turbo skipped %s (no legal response) --[/color]" \
+							% _describe_priority_stop_reason())
+				_mark_priority_info_seen()
+				events = StackResolver.pass_priority(_state, _db)
+			elif not owns_top:
+				# Something changed AND you have a legal response (or you're in
+				# Tactical mode): stop and hand priority to the human. New opponent
+				# chain link, or a combat window transition (e.g. defend window
+				# opened: you may now want to commit a buff you held back in case
+				# of a Protector). Documented stop for a wrap-up burst / Turbo.
+				_log_entry("[color=#889]-- priority held for you (%s) --[/color]" % \
+						_describe_priority_stop_reason())
+				_mark_priority_info_seen()
 				_wrap_up_active = false
 				break
 			elif not (_turbo_mode or _wrap_up_active):
 				break
 			else:
+				_mark_priority_info_seen()
 				events = StackResolver.pass_priority(_state, _db)
 		else:
 			var ai: Object = _p1_ai if pid == "p1" else _p2_ai
@@ -2493,6 +2649,15 @@ func _maybe_turbo_pass() -> void:
 		return
 	if _state.priority_player != "p1" or _p1_type != "human":
 		return
+	# Combat windows and a non-empty chain are _drain_passes's exclusive domain
+	# (it owns the full Layer 2 / Layer 3 decision there — hold, or Turbo-skip
+	# on no legal play). Re-deriving the same "new info?" verdict here would
+	# race against the marker _drain_passes just set, always reading back
+	# "nothing new" and passing straight through a window that was correctly
+	# held open a moment ago.
+	if _state.combat_attack_window or _state.combat_defend_window \
+			or not _state.pending_actions.is_empty():
+		return
 	var phase := _state.phase
 	# Never auto-pass the human's own main action window (chain empty, no combat):
 	# that pass ends the turn and requires an explicit Wrap Up, even with no legal play.
@@ -2510,12 +2675,14 @@ func _maybe_turbo_pass() -> void:
 	# Auto-pass when there's nothing to play, during ready/draw (instants are so rare
 	# there that Turbo skips them — switch to Tactical to play powers early), OR when
 	# the human just added the top chain link themselves (see _player_owns_top_of_chain).
-	if not _router.has_any_legal_play() or phase == "ready" or phase == "draw" \
+	if not _human_has_new_info("p1") or phase == "ready" or phase == "draw" \
 			or _player_owns_top_of_chain("p1"):
 		call_deferred("_do_turbo_pass")
 	else:
-		# A legal instant exists and the opponent (not the human) owns the top of
-		# the chain — that's "the opponent played something," the documented stop.
+		# A new opponent chain link or a combat window transition happened
+		# since we last looked — that's the documented stop, independent of
+		# whether a legal play happens to exist.
+		_mark_priority_info_seen()
 		_wrap_up_active = false
 
 
@@ -2532,6 +2699,64 @@ func _player_owns_top_of_chain(pid: String) -> bool:
 		return false
 	var top: PendingAction = _state.pending_actions.back()
 	return top != null and top.source_player == pid
+
+
+# "Something happened" since the human last got to decide, per the layer-2
+# auto-pass rule: a NEW opponent-owned chain link on top (not the same one
+# they already saw/passed on), or a combat window transition (attack ->
+# protect point -> defend -> resolved). Explicitly NOT included: legal-play
+# existence, resources entering play, or non-chain forced/triggered effects
+# (e.g. Taz'dingo, Infernal's end-of-turn burn) — those open no counterplay
+# window, so passing through them shouldn't cost the human an extra ask.
+func _human_has_new_info(pid: String) -> bool:
+	if not _state.pending_actions.is_empty():
+		var top: PendingAction = _state.pending_actions.back()
+		# Placing a resource adds a link to the chain (rule 410.3), but in this
+		# ruleset the human never responds to it — treat it as not-actionable so
+		# it never prompts (per design). Everything else the opponent adds counts.
+		if top.source_player != pid and top.action_type != "place_resource" \
+				and top.get_instance_id() != _last_seen_chain_top_iid:
+			return true
+	# A combat-window transition only counts while a combat window is actually
+	# open. Once combat is over the gen counter is stale (the window it referred
+	# to is closed), so it must not linger as phantom "new info" at the next
+	# phase-boundary window — that was forcing a second wrap-up press.
+	if _state.combat_attack_window or _state.combat_defend_window:
+		return _window_generation != _last_seen_window_gen
+	return false
+
+
+# Human-readable reason for a priority stop, for the game log — same
+# criteria as _human_has_new_info, split out for display.
+func _describe_priority_stop_reason() -> String:
+	if not _state.pending_actions.is_empty():
+		var top: PendingAction = _state.pending_actions.back()
+		if top != null and top.source_player != "p1" \
+				and top.action_type != "place_resource" \
+				and top.get_instance_id() != _last_seen_chain_top_iid:
+			if top.action_type == "propose_combat":
+				return "opponent proposes %s attacks %s" % [
+					_log_card(top.params.get("attacker_id", "")),
+					_log_card(top.params.get("defender_id", "")),
+				]
+			return "opponent added %s to the chain" % top.action_type
+	if _window_generation != _last_seen_window_gen:
+		if _state.combat_defend_window:
+			return "defend window opened"
+		if _state.combat_attack_window:
+			return "attack window opened"
+		return "protect point"
+	return "unknown"
+
+
+# Call when the human is actually stopped/shown a decision, so the next
+# drain pass doesn't re-flag the same chain top / window as "new."
+func _mark_priority_info_seen() -> void:
+	if not _state.pending_actions.is_empty():
+		_last_seen_chain_top_iid = _state.pending_actions.back().get_instance_id()
+	else:
+		_last_seen_chain_top_iid = 0
+	_last_seen_window_gen = _window_generation
 
 
 # True when a plain-Space pass would END the human's turn (wrap up the action
@@ -2588,10 +2813,16 @@ func _do_turbo_pass() -> void:
 	if _is_p1_main_action_window():
 		_wrap_up_active = false
 		return
-	if _router.has_any_legal_play() and phase != "ready" and phase != "draw" \
+	# Hold only when something changed AND you have a legal response. With no
+	# legal play, Turbo passes through even on new info (its "auto-pass all
+	# 'no legal play'" contract) — matching Layer 3 in _drain_passes.
+	if _human_has_new_info("p1") and _router.has_any_legal_play() \
+			and phase != "ready" and phase != "draw" \
 			and not _player_owns_top_of_chain("p1"):
+		_mark_priority_info_seen()
 		_wrap_up_active = false
 		return
+	_mark_priority_info_seen()
 	_router.pass_priority_action()
 	_refresh_ui()
 	_schedule_next_turn()

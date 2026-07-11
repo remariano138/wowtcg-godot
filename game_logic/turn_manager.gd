@@ -94,7 +94,7 @@ static func _enter_mulligan(state: GameState, _db) -> Array[GameEvent]:
 
 static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	state.phase = "ready"
-	var events: Array[GameEvent] = []
+	var events: Array[GameEvent] = [GameEvent.turn_changed(state.turn_number, state.turn_player)]
 
 	# Reset once-per-turn flags.
 	var ps := state.players.get(state.turn_player) as PlayerState

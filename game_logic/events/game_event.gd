@@ -136,6 +136,10 @@ static func damage_prevented(target_id: String, amount: int, remaining: int) -> 
 static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
 	return make("hero_power_used", {"player": player_id, "hero_id": hero_id})
 
+# "Can't attack this turn" restriction placed on a hero or ally (Litori Frostburn).
+static func cant_attack_applied(target_id: String, source_id: String) -> GameEvent:
+	return make("cant_attack_applied", {"target_id": target_id, "source_id": source_id})
+
 static func mulligan_phase_started(first_player: String, player_order: Array) -> GameEvent:
 	return make("mulligan_phase_started", {
 		"first_player": first_player, "player_order": player_order,

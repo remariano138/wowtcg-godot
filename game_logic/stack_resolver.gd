@@ -1088,7 +1088,8 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# put_damage_self (e.g. Acolyte Demia) has no [Activate] tap symbol either —
 	# its cost is just the resource + self-damage, so it's a plain payment power
 	# (701.2), not an activated power (701.3). No summoning sickness, no exhaust.
-	var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self")
+	var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self") \
+		or extra_cost_str == "no_activate"
 	if once_per_turn:
 		# No [Activate] tap symbol on this power (rule 701.3/3216): it isn't gated
 		# by summoning sickness or the card's exhausted state, only by its own
@@ -1109,8 +1110,14 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# exhausts your hero). If the hero can't pay, the power can't be used.
 	if not _can_pay_extra_power_cost(state, action.source_player, ap.get("extra_cost", "")):
 		return false
-	# Targeted effects require a valid in-play target.
+	# Targeted effects require a valid in-play target. `_skip_target_check` (used
+	# by has_any_legal_play / highlight probes, mirroring the instant/quest
+	# no-target-check helpers) validates everything EXCEPT the specific target,
+	# since the target is picked interactively after the power is chosen.
+	var skip_target: bool = action.params.get("_skip_target_check", false)
 	var targets_kind: String = ap.get("targets", "")
+	if skip_target:
+		return true
 	if targets_kind in ["hero_or_ally", "ally"]:
 		var target_id: String = action.params.get("target_id", "")
 		if not _is_legal_target(state, target_id, db):
@@ -1186,10 +1193,10 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		# No [Activate] tap symbol on this power — don't exhaust the source,
 		# just mark it used until the once-per-turn flag resets next turn.
 		card.used_this_turn = true
-	elif extra_cost.begins_with("put_damage_self"):
-		# No [Activate] tap symbol on this power either (e.g. Acolyte Demia) —
-		# its only cost is the resource + self-damage below, so the source
-		# never exhausts and can be reused any time it's affordable.
+	elif extra_cost.begins_with("put_damage_self") or extra_cost == "no_activate":
+		# No [Activate] tap symbol on this power either (e.g. Acolyte Demia,
+		# Hierophant Caydiem) — the source never exhausts and can be reused
+		# any time it's affordable.
 		pass
 	else:
 		# Exhaust the source at resolution (the activate symbol).
@@ -1338,6 +1345,9 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	# "can't attack" allies (e.g. Guardian Steelhorn) can never propose combat.
 	if _has_keyword(attacker, "cant_attack", db):
 		return false
+	# "Can't attack this turn" restriction buff (e.g. Litori Frostburn).
+	if attacker.has_restriction("cannot_attack"):
+		return false
 	# Defender must be controlled by the opponent.
 	if defender.controller == action.source_player:
 		return false
@@ -1366,7 +1376,9 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 	var ps := state.players.get(player_id) as PlayerState
 	if ps and ps.hero_instance_id != "":
 		var hero := state.get_card(ps.hero_instance_id)
-		if hero and not hero.is_exhausted and state.get_atk(hero.instance_id, db) > 0:
+		if hero and not hero.is_exhausted and state.get_atk(hero.instance_id, db) > 0 \
+				and not _has_keyword(hero, "cant_attack", db) \
+				and not hero.has_restriction("cannot_attack"):
 			result.append(hero.instance_id)
 	# Allies (rule 302.2: just_summoned unless Ferocity).
 	for card in state.cards_in_zone(player_id + "_ally_row"):
@@ -1376,6 +1388,8 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 			continue
 		# "can't attack" allies (e.g. Guardian Steelhorn) are never legal attackers.
 		if _has_keyword(card, "cant_attack", db):
+			continue
+		if card.has_restriction("cannot_attack"):
 			continue
 		result.append(card.instance_id)
 	return result
@@ -1500,10 +1514,17 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 
 	# Rule 601.3: recheck legality as proposal resolves.
 	# If either combatant is gone or now illegal, proposal fizzles — NO exhaust.
+	# A "can't attack this turn" modifier applied in response (e.g. Litori
+	# Frostburn) makes the proposal illegal here — the attacker never exhausts
+	# and combat never starts. Once the combat step HAS started (attack window
+	# open), the same modifier is too late to stop it (602.1: the attacker is
+	# already attacking; "can't attack" is not a remove-from-combat effect).
 	if not attacker or not defender \
 			or not state.is_in_play(attacker_id) \
 			or not state.is_in_play(defender_id) \
 			or attacker.is_exhausted \
+			or _has_keyword(attacker, "cant_attack", db) \
+			or attacker.has_restriction("cannot_attack") \
 			or _has_keyword(defender, "elusive", db):
 		return [GameEvent.make("action_fizzled", {
 			"action_type": "propose_combat", "reason": "illegal_at_resolution",
@@ -2424,6 +2445,17 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					var t_card := state.get_card(target_id)
 					if t_card and state.get_current_hp(target_id, db) <= 0:
 						events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
+			"target_cant_attack":
+				# Litori Frostburn: "Target hero or ally can't attack this turn."
+				# Rule 706 re-check: fizzle if the target left play or became Untargetable.
+				# Does NOT remove an existing attacker from combat (602.4) — its bite
+				# is via the 601.3 legality recheck when played in response to a
+				# combat proposal still on the chain.
+				if _is_legal_target(state, target_id, db):
+					var ca_card := state.get_card(target_id)
+					ca_card.active_buffs.append(Buff.make(
+						"cant_attack_this_turn", hero_id, "cannot_attack", 1, "turns", 1))
+					events.append(GameEvent.cant_attack_applied(target_id, hero_id))
 			"heal_x_from_target":
 				# X resources are already paid at submission. Heal X from target.
 				var x_value: int = action.params.get("x_value", 0)

@@ -566,8 +566,13 @@ func _chain_lightning_params(extra_target_id: String = "") -> Dictionary:
 
 
 func _handle_chain_lightning_click(instance_id: String) -> void:
-	if instance_id == _targeting_source and _chain_lightning_picked.is_empty():
-		cancel_targeting()
+	if instance_id == _targeting_source:
+		if _chain_lightning_picked.is_empty():
+			cancel_targeting()
+		else:
+			# Clicking the source again after the mandatory 1st target skips
+			# any remaining optional targets, same as pressing Space.
+			_submit_chain_lightning()
 		return
 	if _chain_lightning_picked.size() >= 3 or instance_id in _chain_lightning_picked:
 		return
@@ -734,6 +739,10 @@ func _pass_own_proposal(action: PendingAction) -> void:
 	EventBus.emit_events(pass_events)
 
 
+func is_awaiting_chain_lightning_optional_target() -> bool:
+	return _targeting_source != "" and not _chain_lightning_picked.is_empty()
+
+
 func pass_priority_action() -> void:
 	if not state or state.priority_player != local_player:
 		return
@@ -878,9 +887,17 @@ func get_playable_card_ids() -> Array:
 			var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "hero_or_ally_two"]
 			if ap_needs_target:
 				# Affordability only — target chosen after targeting mode starts.
-				var ap_once_per_turn: bool = ap_data.get("extra_cost", "") == "once_per_turn"
-				var ap_ready_ok: bool = (not card.used_this_turn) if ap_once_per_turn \
-					else (not card.is_exhausted and not card.just_summoned)
+				var ap_extra_cost: String = ap_data.get("extra_cost", "")
+				var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
+				var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self") \
+					or ap_extra_cost == "no_activate"
+				var ap_ready_ok: bool
+				if ap_once_per_turn:
+					ap_ready_ok = not card.used_this_turn
+				elif ap_no_activate_symbol:
+					ap_ready_ok = true
+				else:
+					ap_ready_ok = not card.is_exhausted and not card.just_summoned
 				if ap_ready_ok \
 						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 						and state.phase == "action" and state.priority_player == local_player \
@@ -927,8 +944,12 @@ func has_any_legal_play() -> bool:
 	# Legal on either player's turn (rule 701.2).
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(local_player + zone_suffix):
+			# `_skip_target_check`: a targeted power (e.g. Elder Moorf) is a legal
+			# play even before a target is picked — validate everything but the
+			# target, mirroring get_playable_card_ids' inline check and the
+			# instant/quest no-target-check probes.
 			var ap_action := PendingAction.make("use_ally_power", local_player,
-				{"card_id": card.instance_id})
+				{"card_id": card.instance_id, "_skip_target_check": true})
 			if StackResolver.can_submit(state, ap_action, db):
 				return true
 	return false
@@ -1004,7 +1025,8 @@ func get_context_actions(instance_id: String) -> Array:
 						# as long as you hold priority (e.g. defending with Grimdron's power).
 						var ap_extra_cost: String = ap_data.get("extra_cost", "")
 						var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
-						var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self")
+						var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self") \
+							or ap_extra_cost == "no_activate"
 						var ap_ready_ok: bool
 						if ap_once_per_turn:
 							ap_ready_ok = not card.used_this_turn
@@ -1416,7 +1438,7 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand", "target_cant_attack"]:
 			return true
 	return false
 

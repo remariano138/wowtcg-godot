@@ -62,6 +62,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var flash := instant_protector_action(state, db, player_id)
 	if flash != null:
 		return flash
+	var freeze := hero_disable_action(state, db, player_id)
+	if freeze != null:
+		return freeze
 
 	# Everything below is our own action window only. Outside it (opponent's
 	# turn / a pending chain we don't want to answer), we simply pass — no random
@@ -74,6 +77,19 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var hero_kill := _hero_lethal_action(state, db, player_id)
 	if hero_kill != null:
 		return hero_kill
+	# 1.5. Win now, all-out: no single attacker/Ferocity play is lethal, but
+	# swinging with the whole board at once is, and the enemy has no
+	# Protector to blunt any of the attacks.
+	var all_out_kill := _all_out_hero_lethal_action(state, db, player_id)
+	if all_out_kill != null:
+		return all_out_kill
+	# 1.6. Win now, all-out + a hand spell: the board alone isn't lethal even
+	# all-out, but the board PLUS one damage spell in hand is. Attack with
+	# everyone first and hold the spell for the last hit — see
+	# _all_out_with_spell_hero_lethal_action for why.
+	var all_out_spell := _all_out_with_spell_hero_lethal_action(state, db, player_id)
+	if all_out_spell != null:
+		return all_out_spell
 	# 2. Free kills (kill and survive).
 	var safe := _safe_lethal_action(state, db, player_id)
 	if safe != null:
@@ -330,6 +346,186 @@ func _hero_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 		if StackResolver.can_submit(state, play, db):
 			return play
 	return null
+
+
+# "All out" — no single attacker is lethal (checked above), but attacking with
+# EVERY ready ally at once is, and the enemy board has zero Protectors to
+# absorb any of the swings. Attacking with everything — including allies that
+# would normally be held back to protect next turn — wins the game outright,
+# so it outranks safe kills, trades, and development just like straight hero
+# lethal. Re-evaluated on every call: as attackers exhaust and the enemy
+# hero's HP drops (each combat window resolves independently), the pipeline
+# keeps returning attacks as long as the remaining math still adds up.
+func _all_out_hero_lethal_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if state.phase != "action" or state.turn_player != player_id:
+		return null
+	if not state.pending_actions.is_empty():
+		return null
+	if state.combat_attack_window or state.combat_defend_window:
+		return null
+
+	var opp := "p2" if player_id == "p1" else "p1"
+	var ps_opp := state.players.get(opp) as PlayerState
+	if not ps_opp or ps_opp.hero_instance_id == "" \
+			or not state.is_in_play(ps_opp.hero_instance_id):
+		return null
+	var hero_id := ps_opp.hero_instance_id
+
+	# Any enemy Protector can intercept one of our attacks, breaking the "every
+	# swing connects" assumption below — bail out entirely.
+	for card in state.cards_in_zone(opp + "_ally_row"):
+		if StackResolver._has_keyword(card, "protector", db):
+			return null
+
+	var hero_hp := state.get_current_hp(hero_id, db)
+	# Block absorbs damage before it reaches the hero, so the required total
+	# ATK is hp PLUS whatever the enemy can still block, not minus.
+	var threshold := hero_hp + _enemy_available_hero_block(state, db, opp)
+
+	var attackers: Array[String] = []
+	var total_atk := 0
+	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+		var atk := state.get_atk(aid, db, true)   # "while attacking" bonuses
+		if atk <= 0:
+			continue
+		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
+			continue
+		attackers.append(aid)
+		total_atk += atk
+
+	if attackers.is_empty() or total_atk < threshold:
+		return null   # attacking with the whole board still doesn't kill
+
+	# Least valuable attacker first (mirrors _hero_chip_action) — no reason to
+	# risk the more valuable cards first when every swing is going through.
+	var best := ""
+	var best_val: Array = []
+	for aid in attackers:
+		var val := BaseAI._card_value_key(state, db, aid)
+		if best == "" or val < best_val:
+			best = aid
+			best_val = val
+
+	var act := PendingAction.make("propose_combat", player_id,
+			{"attacker_id": best, "defender_id": hero_id})
+	return act if StackResolver.can_submit(state, act, db) else null
+
+
+# "All out, finish with a spell" — the board alone isn't lethal even
+# all-out (checked above), but the board PLUS one damage spell in hand
+# together clear the threshold, and the enemy has no Protector. Allies
+# attack FIRST; the spell is held back and only actually played once every
+# legal attacker has swung. Reasoning: if the attack sequence gets
+# interrupted (protector flashed in, instant-speed heal, etc.) and the hero
+# ends up not dying this turn after all, the spell is still in hand and free
+# to answer whatever the board looks like afterward, instead of having been
+# burned on a hero that wasn't going to die anyway.
+#
+# Only one spell needs to close the gap, and each candidate is checked with
+# can_submit — i.e. actually payable with resources left THIS turn. That
+# stops the AI from treating a hand of several copies of the same spell as
+# though all of them were available at once (which would make it easy to
+# bait an all-in attack that doesn't kill, spending the whole hand for
+# nothing against a deck that can heal back up).
+func _all_out_with_spell_hero_lethal_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if state.phase != "action" or state.turn_player != player_id:
+		return null
+	if not state.pending_actions.is_empty():
+		return null
+	if state.combat_attack_window or state.combat_defend_window:
+		return null
+
+	var opp := "p2" if player_id == "p1" else "p1"
+	var ps_opp := state.players.get(opp) as PlayerState
+	if not ps_opp or ps_opp.hero_instance_id == "" \
+			or not state.is_in_play(ps_opp.hero_instance_id):
+		return null
+	var hero_id := ps_opp.hero_instance_id
+
+	# Same Protector guard as the pure all-out check — one Protector can
+	# absorb an attack, breaking the "every swing connects" assumption.
+	for card in state.cards_in_zone(opp + "_ally_row"):
+		if StackResolver._has_keyword(card, "protector", db):
+			return null
+
+	var hero_hp := state.get_current_hp(hero_id, db)
+	var threshold := hero_hp + _enemy_available_hero_block(state, db, opp)
+
+	var attackers: Array[String] = []
+	var total_atk := 0
+	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+		var atk := state.get_atk(aid, db, true)   # "while attacking" bonuses
+		if atk <= 0:
+			continue
+		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
+			continue
+		attackers.append(aid)
+		total_atk += atk
+
+	# Find the biggest damage spell in hand that's legal AND affordable right
+	# now, and would close the gap together with the remaining attackers.
+	var finisher: PendingAction = null
+	var finisher_dmg := 0
+	for card in state.cards_in_zone(player_id + "_hand"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var action_type := _action_type_for(card, db)
+		if action_type != "play_instant" and action_type != "play_ability":
+			continue
+		var dmg := BaseAI._combat_instant_dmg(def)
+		if dmg <= 0:
+			continue
+		var act := PendingAction.make(action_type, player_id,
+				{"card_id": card.instance_id, "target_id": hero_id})
+		if not StackResolver.can_submit(state, act, db):
+			continue   # not legal/affordable this turn — doesn't count
+		if total_atk + dmg >= threshold and dmg > finisher_dmg:
+			finisher = act
+			finisher_dmg = dmg
+
+	if finisher == null:
+		return null   # no spell in hand can close the gap right now
+
+	# Allies attack first — hold the spell for the last hit.
+	if not attackers.is_empty():
+		var best := ""
+		var best_val: Array = []
+		for aid in attackers:
+			var val := BaseAI._card_value_key(state, db, aid)
+			if best == "" or val < best_val:
+				best = aid
+				best_val = val
+		var atk_act := PendingAction.make("propose_combat", player_id,
+				{"attacker_id": best, "defender_id": hero_id})
+		return atk_act if StackResolver.can_submit(state, atk_act, db) else null
+
+	# Every legal attacker has already swung this turn — deliver the finisher.
+	return finisher
+
+
+# Enemy hero's total available damage prevention right now: current block
+# (PlayerState.damage_prevention, already committed via use_armor_prevention)
+# plus the DEF of every ready armor they could still exhaust to add more
+# before this window's damage resolves (rule 304.3 block is declared before
+# damage, so an all-out read must assume they use everything available).
+func _enemy_available_hero_block(state: GameState, db, opp: String) -> int:
+	var ps := state.players.get(opp) as PlayerState
+	var block: int = ps.damage_prevention if ps else 0
+	for card in state.cards_in_zone(opp + "_hero_row"):
+		if card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Equipment":
+			continue
+		var dv := int(StackResolver._equipment_info(def).get("def", 0))
+		if dv > 0:
+			block += dv
+	return block
 
 
 # Returns the next safe-kill action (play a hand Ferocity ally, or propose

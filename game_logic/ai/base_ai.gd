@@ -39,6 +39,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
 		return ambush
+	var freeze := hero_disable_action(state, db, player_id)
+	if freeze != null:
+		return freeze
 	return instant_protector_action(state, db, player_id)
 
 
@@ -249,6 +252,73 @@ func instant_protector_action(state: GameState, db, player_id: String) -> Pendin
 			{"card_id": card.instance_id})
 		if StackResolver.can_submit(state, act, db):
 			return act
+	return null
+
+
+# ── Hero disable flip (e.g. Litori Frostburn: target can't attack this turn) ──
+# The instant save that does NOT kill the attacker. Timing is everything: a
+# "can't attack" modifier can't remove an attacker already in combat (602.4),
+# but applied while the enemy's combat PROPOSAL is still on the chain, the
+# 601.3 legality recheck interrupts the proposal — combat never starts and the
+# attacker doesn't even exhaust (it just can't attack again this turn).
+#
+# So this fires ONLY while the top pending action is an opposing propose_combat
+# whose defender we control. The flip is once per game — spend it only on a
+# real save:
+#   • defender is our hero and the hit is lethal or heavy (ATK >= 4), or
+#   • defender is an ally (cost >= 2) that would die without killing the
+#     attacker back (a plain bad trade for us).
+# Held if a tagged damage combat-instant in hand can kill the attacker instead
+# (a cheaper, permanent answer that combat_instant_action will play later).
+func hero_disable_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.pending_actions.is_empty():
+		return null
+	var top: PendingAction = state.pending_actions.back()
+	if top.action_type != "propose_combat" or top.source_player == player_id:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.has_used_hero_power or ps.hero_instance_id == "":
+		return null
+	var hero_id := ps.hero_instance_id
+	if not _hero_power_is(state, db, hero_id, "target_cant_attack"):
+		return null
+
+	var attacker_id: String = top.params.get("attacker_id", "")
+	var defender_id: String = top.params.get("defender_id", "")
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only save our own side
+
+	var a_atk := state.get_atk(attacker_id, db, true)
+	var a_hp  := state.get_current_hp(attacker_id, db)
+	var d_hp  := state.get_current_hp(defender_id, db)
+	var worth := false
+	if defender_id == ps.hero_instance_id:
+		worth = a_atk >= d_hp or a_atk >= 4
+	else:
+		var d_def := db.get_def(defender.card_def_id) as CardDef
+		var d_atk := state.get_atk(defender_id, db)
+		var kills_back := d_atk >= a_hp \
+			and not StackResolver._has_keyword(state.get_card(attacker_id), "long_range", db)
+		worth = a_atk >= d_hp and not kills_back and d_def != null and d_def.cost >= 2
+	if not worth:
+		return null
+
+	# A kill is strictly better than a freeze — hold if a combat instant answers it.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if def and _combat_instant_dmg(def) >= a_hp \
+				and def.cost <= state.get_available_resources(player_id):
+			return null
+
+	var act := PendingAction.make("activate_power", player_id,
+		{"hero_id": hero_id, "target_id": attacker_id})
+	if StackResolver.can_submit(state, act, db):
+		return act
 	return null
 
 
@@ -485,11 +555,17 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		var ap := StackResolver._ally_activated_power(def)
 		if ap.is_empty():
 			continue
-		var once_per_turn: bool = ap.get("extra_cost", "") == "once_per_turn"
+		var extra_cost_str: String = ap.get("extra_cost", "")
+		var once_per_turn: bool = extra_cost_str == "once_per_turn"
+		# put_damage_self / no_activate (e.g. Acolyte Demia, Hierophant Caydiem)
+		# have no [Activate] tap symbol — 701.2 payment powers, not gated by
+		# summoning sickness or exhaustion. Mirrors StackResolver._can_use_ally_power.
+		var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self") \
+			or extra_cost_str == "no_activate"
 		if once_per_turn:
 			if card.used_this_turn:
 				continue
-		elif card.is_exhausted or card.just_summoned:
+		elif not no_activate_symbol and (card.is_exhausted or card.just_summoned):
 			continue
 		# Don't draw into a full hand (the card would just be discarded at wrap-up).
 		if ap.get("effect", "") == "draw":
@@ -608,6 +684,10 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 	var needs_target := _hero_power_needs_target(state, db, hero_id)
 
 	if needs_target:
+		# target_cant_attack (Litori Frostburn): held for defense — never
+		# blind-played on our own turn. See hero_disable_action().
+		if _hero_power_is(state, db, hero_id, "target_cant_attack"):
+			return result
 		# deal_x_damage_to_ally: pick best target and optimal X.
 		if _hero_power_is(state, db, hero_id, "deal_x_damage_to_ally"):
 			result.append_array(_x_damage_ally_actions(state, db, player_id, hero_id))
@@ -1276,7 +1356,7 @@ func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "target_cant_attack"]:
 			return true
 	return false
 

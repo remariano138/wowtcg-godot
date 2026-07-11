@@ -814,6 +814,29 @@ func _kill_pos_tween(card_id: String) -> void:
 		_pos_tweens.erase(card_id)
 
 
+# Self-healing pass: snap each card's orientation to authoritative GameState.
+# Event-driven animations (wiggle, exhaust/ready swings) can leave a card at a
+# crooked resting angle if tweens race; this reasserts truth once motion settles.
+# Visual-only, read-only on state, and idempotent (a no-op when already correct).
+# Skips cards mid-animation: a live position tween (_pos_tweens) or an active
+# wiggle (CardNode.is_wiggling) — so it never fights in-flight motion.
+func reconcile_from_state(state) -> void:
+	if state == null:
+		return
+	for card_id in card_nodes:
+		if _pos_tweens.has(card_id):
+			continue  # positional move / lunge in flight — leave it alone
+		var cn := card_nodes.get(card_id) as CardNode
+		if not cn or not is_instance_valid(cn):
+			continue
+		if cn.is_wiggling():
+			continue  # effect cue mid-swing — reasserts on next pass
+		var card = state.get_card(card_id)
+		if card == null:
+			continue
+		cn.settle_rotation(card.is_exhausted)
+
+
 # ── Input bridge ───────────────────────────────────────────────────────────────
 
 func _on_card_clicked(instance_id: String) -> void:

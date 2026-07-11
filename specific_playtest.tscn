@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://cspecptmoorf1"]
+
+[ext_resource type="Script" path="res://renderer/tests/specific_playtest.gd" id="1_spec"]
+
+[node name="SpecificPlaytest" type="Node2D"]
+script = ExtResource("1_spec")

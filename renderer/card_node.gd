@@ -379,6 +379,23 @@ func stop_wiggle(more_seconds: float = 0.0) -> void:
 		wiggle_for(more_seconds)
 
 
+# True while a wiggle tween is animating this card's rotation. Reconcile passes
+# skip wiggling cards so they don't fight the effect cue mid-swing.
+func is_wiggling() -> bool:
+	return _wiggle_tween != null
+
+
+# Snap rotation to match authoritative state (exhausted = 90°, ready = 0°).
+# No-op while wiggling. Also re-bases the wiggle so a later stop_wiggle() snaps
+# to the correct orientation instead of a stale/crooked angle. Visual-only.
+func settle_rotation(exhausted: bool) -> void:
+	if _wiggle_tween != null:
+		return
+	var target := 90.0 if exhausted else 0.0
+	rotation_degrees = target
+	_wiggle_base = target
+
+
 func _input(event: InputEvent) -> void:
 	if input_blocked:
 		if _mouse_inside:

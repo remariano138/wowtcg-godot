@@ -407,7 +407,7 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			and state.pending_actions.is_empty() \
 			and not state.combat_attack_window and not state.combat_defend_window:
 		for atk_id in StackResolver.get_legal_attackers(state, player_id, db):
-			if state.get_atk(atk_id, db) <= 0:
+			if forecast_atk(state, db, atk_id) <= 0:
 				continue   # never propose combat with a 0-ATK attacker
 			for def_id in StackResolver.get_legal_defenders(state, atk_id, db):
 				result.append(PendingAction.make("propose_combat", player_id,
@@ -518,11 +518,17 @@ func _decide_resource_placement(state: GameState, db, player_id: String) -> Pend
 # Rule 602.2: the defending player may exhaust a ready Protector to intercept,
 # or return "" to skip protection.  Called by the scene after protect_point_opened.
 # Base behaviour: protect with the highest current HP protector (random on tie).
-func choose_protector(state: GameState, db, _player_id: String) -> String:
+# The hero (Draconian Deflector grant) is only used when no ally can step in —
+# its HP pool would otherwise always win the highest-HP pick and it would
+# chump-block every attack with face damage.
+func choose_protector(state: GameState, db, player_id: String) -> String:
 	var protectors := StackResolver.get_legal_protectors(
 		state, state.combat_attacker, state.combat_defender, db)
 	if protectors.is_empty():
 		return ""
+	var ps := state.players.get(player_id) as PlayerState
+	if ps and ps.hero_instance_id in protectors and protectors.size() > 1:
+		protectors.erase(ps.hero_instance_id)
 	var best_id := protectors[0]
 	var best_hp := state.get_current_hp(best_id, db)
 	for i in range(1, protectors.size()):
@@ -533,6 +539,79 @@ func choose_protector(state: GameState, db, _player_id: String) -> String:
 		elif hp == best_hp and randi() % 2 == 0:
 			best_id = protectors[i]
 	return best_id
+
+
+# ── Weapon strikes (rules 303 / 602.1 / 602.3) ────────────────────────────────
+
+# Forecast ATK for a would-be attacker: "while attacking" bonuses plus, for a
+# hero that could still strike, the best affordable ready weapon's ATK.
+# Affordability uses that controller's CURRENT resources — this also works for
+# the OPPONENT's hero (resources are public information), so protector/trade
+# math can anticipate an enemy strike. Once a strike has actually happened,
+# get_atk already includes the association and get_strikeable_weapons returns
+# [] (weapon exhausted / one-per-combat), so nothing is double-counted.
+# assume_attacking=false forecasts the character as a DEFENDER (no "while
+# attacking" bonuses, but a hero may still strike defensively per 602.3).
+static func forecast_atk(state: GameState, db, attacker_id: String,
+		assume_attacking: bool = true) -> int:
+	var atk := state.get_atk(attacker_id, db, assume_attacking)
+	var card := state.get_card(attacker_id)
+	if card and db:
+		var best := 0
+		for wid in StackResolver.get_strikeable_weapons(state, card.controller, attacker_id, db):
+			best = maxi(best, state.get_atk(wid, db))
+		atk += best
+	return atk
+
+
+# Strike decision — called by the scene on strike_point_opened when the pending
+# player is an AI. Returns the weapon instance_id to strike with, or "" to pass.
+#   Attacking: always strike with the best (highest-ATK) offered weapon — the
+#   hero attack was proposed because of the weapon in the first place.
+#   Defending: strike when the counter-damage KILLS the attacker, or when the
+#   attacker is the opponent's LAST legal attacker (nothing later is worth
+#   saving the weapon/resources for — no reason not to defend ourselves).
+#   Earlier in the turn the weapon is held unless it kills: better to kill a
+#   random attacker than to spend it on one that survives the strike.
+#   Never strike defensively against a Long-Range attacker — the defender
+#   deals no combat damage back, so the strike would be wasted.
+func choose_strike_weapon(state: GameState, db, player_id: String) -> String:
+	var offered := state.pending_strike_weapon_ids
+	if offered.is_empty() or not db:
+		return ""
+	var best := offered[0]
+	var best_atk := state.get_atk(best, db)
+	for i in range(1, offered.size()):
+		var a := state.get_atk(offered[i], db)
+		if a > best_atk:
+			best_atk = a
+			best = offered[i]
+
+	if state.pending_strike_side == "attack":
+		return best
+
+	# Defending.
+	var attacker := state.get_card(state.combat_attacker)
+	if not attacker:
+		return ""
+	if StackResolver._has_keyword(attacker, "long_range", db):
+		return ""   # we'd deal no combat damage back anyway
+	# A PROTECTING hero always retaliates when it can afford to (offered
+	# weapons are pre-filtered by affordability): the opponent is attacking
+	# around the hero, so this is likely the weapon's only use this turn.
+	var ps := state.players.get(player_id) as PlayerState
+	if ps and state.combat_protector == state.combat_defender \
+			and state.combat_defender == ps.hero_instance_id:
+		return best
+	var counter_dmg := state.get_atk(state.combat_defender, db) + best_atk
+	if counter_dmg >= state.get_current_hp(state.combat_attacker, db):
+		return best   # the strike kills the attacker — take the trade now
+	# Last visible legal attacker? The current attacker is already exhausted, so
+	# it no longer appears in get_legal_attackers — an empty list means nothing
+	# else can attack us this turn.
+	if StackResolver.get_legal_attackers(state, attacker.controller, db).is_empty():
+		return best
+	return ""
 
 
 # Returns activate_power actions for the player's hero.
@@ -751,12 +830,53 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 					legal = [legal[legal_ids.find(top)]]
 			result.append_array(legal)
 	else:
+		# melee_strike_discount (Gorebelly): the flip is only worth it when the
+		# discount saves more than the flip costs on a strike we can actually
+		# make this turn — ready hero (it will attack), ready melee weapon, and
+		# net save = min(discount, strike cost) − flip cost > 0. With cheap
+		# weapons (e.g. Krol Blade, strike 1) the flip is never proposed.
+		if _hero_power_is(state, db, hero_id, "melee_strike_discount"):
+			if not _strike_discount_worth_it(state, db, player_id, hero_id):
+				return result
 		var action := PendingAction.make("activate_power", player_id,
 			{"hero_id": hero_id, "target_id": ""})
 		if StackResolver.can_submit(state, action, db):
 			result.append(action)
 
 	return result
+
+
+func _strike_discount_worth_it(state: GameState, db, player_id: String,
+		hero_id: String) -> bool:
+	var hero := state.get_card(hero_id)
+	if not hero or hero.is_exhausted:
+		return false   # hero can't attack anymore — no strike coming
+	var hero_def := db.get_def(hero.card_def_id) as CardDef
+	var flip_cost: int = max(hero_def.cost, 0) if hero_def else 0
+	var discount := 0
+	if hero_def:
+		for entry in hero_def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			if parts[0] == "melee_strike_discount":
+				discount = int(parts[1]) if parts.size() > 1 else 0
+	if discount <= 0:
+		return false
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.dmg_type.to_lower() != "melee":
+			continue
+		var info := StackResolver._weapon_info(def)
+		if info.is_empty():
+			continue
+		var strike_cost: int = info.get("strike_cost", 0)
+		# Must be able to afford flip + discounted strike, and save net resources.
+		var total: int = flip_cost + max(0, strike_cost - discount)
+		if mini(discount, strike_cost) > flip_cost \
+				and total <= state.get_available_resources(player_id):
+			return true
+	return false
 
 
 func _hero_power_is(state: GameState, db, hero_id: String, effect_key: String) -> bool:
@@ -1205,11 +1325,11 @@ static func find_safe_lethals(state: GameState, db, attackers: Array[String],
 		defenders: Array[String]) -> Array:
 	var result: Array = []
 	for a in attackers:
-		var a_atk := state.get_atk(a, db, true)   # forecast "while attacking" bonuses
+		var a_atk := forecast_atk(state, db, a)   # "while attacking" bonuses + weapon strike
 		var a_hp  := state.get_current_hp(a, db)
 		for d in defenders:
 			if a_atk >= state.get_current_hp(d, db) \
-					and a_hp > state.get_atk(d, db):   # defender isn't attacking → plain
+					and a_hp > forecast_atk(state, db, d, false):   # defender may strike back
 				result.append([a, d])
 	return result
 
@@ -1235,8 +1355,12 @@ static func find_safe_lethals(state: GameState, db, attackers: Array[String],
 # the incoming attacker → pass c1_is_attacker=false.
 static func combat_trade_value(state: GameState, db, c1: String, c2: String,
 		c1_is_attacker: bool = true) -> String:
-	var c2_dies := state.get_atk(c1, db, c1_is_attacker) >= state.get_current_hp(c2, db)
-	var c1_dies := state.get_atk(c2, db, not c1_is_attacker) >= state.get_current_hp(c1, db)
+	# The attacking side gets the strike forecast too (a hero that can still
+	# strike will — resources are public, so this also covers the enemy hero).
+	var c1_atk := forecast_atk(state, db, c1, c1_is_attacker)
+	var c2_atk := forecast_atk(state, db, c2, not c1_is_attacker)
+	var c2_dies := c1_atk >= state.get_current_hp(c2, db)
+	var c1_dies := c2_atk >= state.get_current_hp(c1, db)
 	if c2_dies and not c1_dies:
 		return "safe_lethal"
 	if c2_dies and c1_dies:

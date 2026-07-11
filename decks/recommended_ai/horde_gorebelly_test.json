@@ -45,8 +45,18 @@
     },
     {
       "card_def_id": "azeroth_246",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_285",
+      "count": 1,
+      "_card_name": "Draconian Deflector"
+    },
+    {
+      "card_def_id": "azeroth_290",
+      "count": 1,
+      "_card_name": "Golem Skull Helm"
     },
     {
       "card_def_id": "azeroth_260",
@@ -90,7 +100,7 @@
     },
     {
       "card_def_id": "azeroth_331",
-      "count": 3,
+      "count": 2,
       "_card_name": "Krol Blade"
     },
     {
@@ -120,7 +130,7 @@
     },
     {
       "card_def_id": "azeroth_274",
-      "count": 2,
+      "count": 1,
       "_card_name": "Zorm Stonefury"
     },
     {

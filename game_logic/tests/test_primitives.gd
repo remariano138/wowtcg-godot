@@ -285,12 +285,24 @@ func _test_deal_damage_fatal() -> void:
 	var db    := _make_db()
 	_add_card(state, "target", "ally_2_2", "p2", "p2_ally_row")  # 2 HP
 
+	# deal_damage only places damage — it deliberately does NOT destroy the
+	# target (see the doc comment on GameLogic.deal_damage): destruction is a
+	# separate step so simultaneous combat can land both hits before either
+	# fatality check runs. Every real call site (stack_resolver.gd) follows up
+	# with check_destroyed/_check_destroyed_trigger — do the same here.
 	var events := GameLogic.deal_damage(state, "src", "target", 2, db)
 	var card   := state.get_card("target")
 
-	eq(card.zone_id, "p2_graveyard",     "fatal: moved to graveyard")
+	eq(card.zone_id, "p2_ally_row",      "fatal: still in play after deal_damage alone")
 	var types := events.map(func(e: GameEvent) -> String: return e.event_type)
 	ok(types.has("damage_dealt"),        "fatal: damage_dealt event")
+	ok(types.has("hp_changed"),          "fatal: hp_changed event")
+	ok(not types.has("card_destroyed"),  "fatal: no destruction event from deal_damage alone")
+
+	events.append_array(GameLogic.check_destroyed(state, "target", "src", db))
+
+	eq(card.zone_id, "p2_graveyard",     "fatal: moved to graveyard after check_destroyed")
+	types = events.map(func(e: GameEvent) -> String: return e.event_type)
 	ok(types.has("card_destroyed"),      "fatal: card_destroyed event")
 	ok(types.has("card_moved"),          "fatal: card_moved event")
 	# Graveyard entry should have reset damage
@@ -455,8 +467,11 @@ func _test_damage_cap() -> void:
 	ok(events.any(func(e: GameEvent) -> bool:
 		return e.event_type == "damage_dealt" and e.payload["amount"] == 1),
 		"cap: only 1 damage placed (not 6)")
+	# deal_damage doesn't destroy on its own (see _test_deal_damage_fatal) — the
+	# caller runs check_destroyed as a separate state-based check.
+	events.append_array(GameLogic.check_destroyed(state, "cap1", "src", db))
 	ok(events.any(func(e: GameEvent) -> bool: return e.event_type == "card_destroyed"),
-		"cap: card destroyed at fatal")
+		"cap: card destroyed at fatal via check_destroyed")
 
 
 func _test_destroy_card() -> void:

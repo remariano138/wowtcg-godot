@@ -36,10 +36,10 @@ func _check(cond: bool, label: String) -> void:
 
 func _test_library_scan() -> void:
 	var index := DeckManager.get_available_decks(true)
-	_check(index.recommended_ai.size() == 7, "library finds 7 recommended_ai decks (got %d)" % index.recommended_ai.size())
+	_check(index.recommended_ai.size() == 8, "library finds 8 recommended_ai decks (got %d)" % index.recommended_ai.size())
 	_check(index.base.size() == 3, "library finds 3 base decks (got %d)" % index.base.size())
 	_check(index.custom.is_empty(), "custom category empty")
-	_check(index.all().size() == 10, "all() aggregates categories")
+	_check(index.all().size() == 11, "all() aggregates categories")
 	_check(index.recommended_ai.has("alliance_litori_test"), "alliance_litori_test discovered")
 	_check(index.recommended_ai.has("horde_tazo_test"), "horde_tazo_test discovered")
 	_check(index.base.has("alliance_dizdemona_test"), "dizdemona (Warlock) is in base, not recommended_ai")
@@ -53,7 +53,9 @@ func _test_load_all_decks() -> void:
 		if deck == null:
 			continue
 		_check(deck.deck_id == deck_id, "%s: deck_id matches filename" % deck_id)
-		_check(deck.total_cards() == 60, "%s: 60 cards (got %d)" % [deck_id, deck.total_cards()])
+		# Rule: a deck needs AT LEAST 60 cards (DeckManager.validate_deck) — some
+		# demo decks run a couple over (Grennan/Gorebelly at 62).
+		_check(deck.total_cards() >= 60, "%s: >=60 cards (got %d)" % [deck_id, deck.total_cards()])
 		_check(not deck.hero_card_def_id.is_empty(), "%s: has hero" % deck_id)
 		_check(deck.recommended_ai_id == "ai_generic", "%s: recommends ai_generic" % deck_id)
 

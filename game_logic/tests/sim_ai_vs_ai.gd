@@ -110,6 +110,11 @@ func _run_game(db: CardDatabase, deck_id1: String, deck_id2: String) -> String:
 			var prot: String = (ais[dp] as BaseAI).choose_protector(state, db, dp)
 			StackResolver.choose_protector(state, prot, db)
 			continue
+		if state.pending_strike_player != "":
+			var sp := state.pending_strike_player
+			var weapon: String = (ais[sp] as BaseAI).choose_strike_weapon(state, db, sp)
+			StackResolver.choose_strike(state, weapon, db)
+			continue
 
 		# Normal priority decision.
 		var pid: String = state.priority_player

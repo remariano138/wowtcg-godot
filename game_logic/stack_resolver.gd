@@ -123,6 +123,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_reveal_pick() before priority can move.
 	if state.pending_reveal_pick_player != "":
 		return []
+	# A pending strike decision (602.1 / 602.3) must be resolved via
+	# choose_strike() before priority can move.
+	if state.pending_strike_player != "":
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -206,6 +210,10 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Reveal-and-pick quest reward blocks everything until resolved via
 	# choose_reveal_pick().
 	if state.pending_reveal_pick_player != "":
+		return false
+
+	# Strike point (602.1 / 602.3) blocks everything until resolved via choose_strike().
+	if state.pending_strike_player != "":
 		return false
 
 	match action.action_type:
@@ -933,6 +941,134 @@ static func _equipment_info(def: CardDef) -> Dictionary:
 	return {}
 
 
+# ── Weapons and striking (rules 303, 602.1, 602.3) ────────────────────────────
+#
+# Effects segment "weapon:STRIKE_COST" marks an Equipment card as a weapon
+# (alongside its "equipment:SLOT:DEF" segment, which drives play + slot
+# uniqueness). The weapon's ATK is the CSV atk column; damage type is the CSV
+# dmg_type column ("Melee" gates Gorebelly's strike discount).
+#
+# Striking (303.2) doesn't use the chain: at exactly two moments — as the
+# combat step starts for the attacking player (602.1) and as the defender
+# enters combat for the defending player (602.3) — a hero's controller may
+# exhaust a weapon + pay its strike cost to associate it with that hero for
+# the combat. While associated, the hero gets +weapon ATK (303.2b, live in
+# GameState.get_atk). Only heroes are wielders; the hero may be exhausted;
+# one weapon per combat (303.2c).
+
+# Parse the "weapon:STRIKE_COST" segment. Returns {} if the card isn't a weapon.
+static func _weapon_info(def: CardDef) -> Dictionary:
+	if not def:
+		return {}
+	for segment in def.effects.split("|"):
+		var parts := segment.split(":")
+		if parts[0] == "weapon":
+			return {"strike_cost": int(parts[1]) if parts.size() > 1 else 0}
+	return {}
+
+
+# Effective strike cost for player_id (applies the pending melee discount).
+static func get_strike_cost(state: GameState, player_id: String, def: CardDef) -> int:
+	var info := _weapon_info(def)
+	if info.is_empty():
+		return -1
+	var cost: int = info.get("strike_cost", 0)
+	var ps := state.players.get(player_id) as PlayerState
+	if ps and ps.melee_strike_discount > 0 and def.dmg_type.to_lower() == "melee":
+		cost = max(0, cost - ps.melee_strike_discount)
+	return cost
+
+
+# Weapons player_id could strike with right now for the given wielder:
+# ready weapons in the hero row whose (discounted) strike cost is affordable.
+# Empty if the wielder isn't that player's hero or already struck this combat
+# (303.2c — one weapon per combat).
+static func get_strikeable_weapons(state: GameState, player_id: String,
+		wielder_id: String, db) -> Array[String]:
+	var result: Array[String] = []
+	if not db:
+		return result
+	var ps := state.players.get(player_id) as PlayerState
+	# Only heroes are wielders (303.2), and only the hero's own controller strikes.
+	if not ps or ps.hero_instance_id != wielder_id:
+		return result
+	if not (state.combat_struck_weapons.get(wielder_id, []) as Array).is_empty():
+		return result
+	var available := state.get_available_resources(player_id)
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		var cost := get_strike_cost(state, player_id, def)
+		if cost >= 0 and cost <= available:
+			result.append(card.instance_id)
+	return result
+
+
+# Opens a strike point for the wielder's controller if any strike is possible.
+# Returns [] (and leaves state untouched) when there's nothing to offer, so
+# callers fall through to opening the attack/defend window directly.
+static func _open_strike_point(state: GameState, wielder_id: String,
+		side: String, db) -> Array[GameEvent]:
+	var wielder := state.get_card(wielder_id)
+	if not wielder:
+		return []
+	var weapons := get_strikeable_weapons(state, wielder.controller, wielder_id, db)
+	if weapons.is_empty():
+		return []
+	state.pending_strike_player     = wielder.controller
+	state.pending_strike_weapon_ids = weapons
+	state.pending_strike_side      = side
+	return [GameEvent.strike_point_opened(wielder.controller, wielder_id, weapons, side)]
+
+
+# Entry point for the strike decision (NOT chain-based — called directly by the
+# scene, like choose_protector). weapon_id == "" means decline to strike.
+# Pays the cost (exhaust weapon + resources, 303.2), records the association,
+# then opens the window the strike point was holding up.
+static func choose_strike(state: GameState, weapon_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_strike_player == "":
+		return []
+	var player_id := state.pending_strike_player
+	var side      := state.pending_strike_side
+	var offered   := state.pending_strike_weapon_ids
+	state.pending_strike_player     = ""
+	state.pending_strike_weapon_ids = []
+	state.pending_strike_side       = ""
+
+	var events: Array[GameEvent] = []
+	var wielder_id := state.combat_attacker if side == "attack" else state.combat_defender
+	if weapon_id != "" and weapon_id in offered and state.is_in_play(weapon_id) \
+			and state.is_in_play(wielder_id) and db:
+		var weapon := state.get_card(weapon_id)
+		var def := db.get_def(weapon.card_def_id) as CardDef
+		var cost := get_strike_cost(state, player_id, def)
+		if cost >= 0 and cost <= state.get_available_resources(player_id) \
+				and not weapon.is_exhausted:
+			var ps := state.players.get(player_id) as PlayerState
+			if ps and ps.melee_strike_discount > 0 and def.dmg_type.to_lower() == "melee":
+				ps.melee_strike_discount = 0   # "the next time" — consumed
+			events.append_array(GameLogic.exhaust_card(state, weapon_id))
+			if cost > 0:
+				events.append_array(_pay_resources(state, player_id, cost))
+			var struck: Array = state.combat_struck_weapons.get(wielder_id, [])
+			struck.append(weapon_id)
+			state.combat_struck_weapons[wielder_id] = struck
+			events.append(GameEvent.weapon_struck(player_id, wielder_id, weapon_id, cost))
+
+	# Open the window this strike point was holding up.
+	if side == "attack":
+		state.combat_attack_window = true
+		events.append(GameEvent.attack_window_opened(
+			state.combat_attacker, state.combat_defender))
+	else:
+		state.combat_defend_window = true
+		events.append(GameEvent.defend_window_opened(
+			state.combat_attacker, state.combat_defender))
+	return events
+
+
 # ── Armor damage prevention (rule 304.3) ──────────────────────────────────────
 #
 # Exhaust a ready armor with DEF > 0 to add its DEF to the controller's
@@ -1370,13 +1506,16 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 static func get_legal_attackers(state: GameState, player_id: String, db) -> Array[String]:
 	var result: Array[String] = []
 	# Hero (rule 301.3: no summoning sickness; still must be ready per 601.2a).
-	# Also require ATK > 0 — a 0 ATK hero with no weapon deals no damage and
-	# exhausts for nothing; treat as not a legal attacker (practical gate, not
-	# an explicit rule, but avoids pointless/confusing highlights and AI plays).
+	# Also require ATK > 0 OR an affordable, ready weapon to strike with — a
+	# 0 ATK hero that can't strike deals no damage and exhausts for nothing;
+	# treat as not a legal attacker (practical gate, not an explicit rule, but
+	# avoids pointless/confusing highlights and AI plays).
 	var ps := state.players.get(player_id) as PlayerState
 	if ps and ps.hero_instance_id != "":
 		var hero := state.get_card(ps.hero_instance_id)
-		if hero and not hero.is_exhausted and state.get_atk(hero.instance_id, db) > 0 \
+		if hero and not hero.is_exhausted \
+				and (state.get_atk(hero.instance_id, db) > 0
+					or not get_strikeable_weapons(state, player_id, hero.instance_id, db).is_empty()) \
 				and not _has_keyword(hero, "cant_attack", db) \
 				and not hero.has_restriction("cannot_attack"):
 			result.append(hero.instance_id)
@@ -1442,6 +1581,14 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 			if _has_keyword(card, "protector", db):
 				result.append(card.instance_id)
 				continue
+			# Draconian Deflector-style grant: an in-play card with
+			# hero_has_protector gives its controller's HERO Protector.
+			if db:
+				var ps := state.players.get(defending_player) as PlayerState
+				if ps and card.instance_id == ps.hero_instance_id \
+						and _hero_has_protector_grant(state, defending_player, db):
+					result.append(card.instance_id)
+					continue
 			# Old Bones-style restricted grant: "can protect your hero" — only
 			# usable when the hero is the proposed defender, not for allies.
 			if defender_is_hero and db:
@@ -1449,6 +1596,15 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 				if cdef and _has_effect_flag(cdef, "protect_hero_only"):
 					result.append(card.instance_id)
 	return result
+
+
+# "Your hero has protector" (Draconian Deflector): true when any in-play card
+# in the player's hero_row carries the hero_has_protector effect flag.
+static func _hero_has_protector_grant(state: GameState, player_id: String, db) -> bool:
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "hero_has_protector"):
+			return true
+	return false
 
 
 static func _has_effect_flag(def: CardDef, flag: String) -> bool:
@@ -1488,17 +1644,22 @@ static func _close_attack_window(state: GameState, db) -> Array[GameEvent]:
 		events.append(GameEvent.protect_point_opened(
 			state.combat_attacker, state.combat_defender, protectors))
 	else:
-		events.append_array(_open_defend_window(state))
+		events.append_array(_open_defend_window(state, db))
 	return events
 
 
 # Opens the Defend Window (rule 602.3): the proposed defender becomes the defender
-# and both players get another priority window before damage.
-static func _open_defend_window(state: GameState) -> Array[GameEvent]:
+# and both players get another priority window before damage. If the defender is
+# a hero whose controller can strike with a weapon, the defending strike point
+# opens first (602.3 — "at this time and only at this time", no chain).
+static func _open_defend_window(state: GameState, db = null) -> Array[GameEvent]:
 	# If either combatant left play, skip straight to conclusion.
 	if not state.is_in_play(state.combat_attacker) \
 			or not state.is_in_play(state.combat_defender):
-		return _do_combat_conclusion(state, null)
+		return _do_combat_conclusion(state, db)
+	var strike := _open_strike_point(state, state.combat_defender, "defend", db)
+	if not strike.is_empty():
+		return strike
 	state.combat_defend_window = true
 	return [GameEvent.defend_window_opened(state.combat_attacker, state.combat_defender)]
 
@@ -1536,6 +1697,12 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	state.combat_defender = defender_id
 	events.append_array(GameLogic.exhaust_card(state, attacker_id))
 	events.append(GameEvent.combat_started(attacker_id, defender_id))
+	# Rule 602.1: the attacking player can strike with weapons now (and only
+	# now), before the attack window opens. Doesn't use the chain.
+	var strike := _open_strike_point(state, attacker_id, "attack", db)
+	if not strike.is_empty():
+		events.append_array(strike)
+		return events
 	state.combat_attack_window = true
 	events.append(GameEvent.attack_window_opened(attacker_id, defender_id))
 	return events
@@ -1545,7 +1712,7 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 # by the scene after the defending player makes their choice).
 # protector_id == "" means the defending player chose to skip protection.
 static func choose_protector(state: GameState, protector_id: String,
-		_db = null) -> Array[GameEvent]:
+		db = null) -> Array[GameEvent]:
 	if not state.in_protect_point:
 		return []
 	state.in_protect_point = false
@@ -1558,12 +1725,13 @@ static func choose_protector(state: GameState, protector_id: String,
 		# Rule 602.2: exhaust the protector; it becomes the new defender.
 		events.append_array(GameLogic.exhaust_card(state, protector_id))
 		state.combat_defender = protector_id
+		state.combat_protector = protector_id
 		events.append(GameEvent.protect_chosen(protector_id, defending_player))
 	else:
 		events.append(GameEvent.protect_chosen("", defending_player))
 
 	# Rule 602.3: protect point concludes, now open the Defend Window.
-	events.append_array(_open_defend_window(state))
+	events.append_array(_open_defend_window(state, db))
 	return events
 
 
@@ -1582,6 +1750,8 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 			or not state.is_in_play(defender_id):
 		state.combat_attacker = ""
 		state.combat_defender = ""
+		state.combat_protector = ""
+		state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
 		events.append(GameEvent.combat_concluded(attacker_id, defender_id, 0, 0))
 		_clear_damage_prevention(state)   # threat gone — unspent block expires
 		return events
@@ -1598,6 +1768,8 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		def_dmg = 0
 	state.combat_attacker = ""
 	state.combat_defender = ""
+	state.combat_protector = ""
+	state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
 	# Apply both damage packets first (deal_damage no longer auto-destroys),
@@ -2484,6 +2656,16 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 								_other_player(state, t_card.controller), t_card.controller))
 						else:
 							events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
+			"melee_strike_discount":
+				# Gorebelly: "You pay (3) less the next time you strike with a
+				# Melee weapon this turn." Consumed by the next melee strike;
+				# cleared at the start of every turn.
+				var disc_amount := int(parts[1]) if parts.size() > 1 else 0
+				var disc_ps := state.players.get(action.source_player) as PlayerState
+				if disc_ps and disc_amount > 0:
+					disc_ps.melee_strike_discount += disc_amount
+					events.append(GameEvent.strike_discount_gained(
+						action.source_player, disc_amount))
 			"shuffle_hand_draw":
 				events.append_array(
 					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))

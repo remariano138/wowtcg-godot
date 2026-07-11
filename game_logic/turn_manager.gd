@@ -111,6 +111,8 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			p.damage_prevention = 0
 			p.hero_damaged_by_ally_this_turn = false
 			p.party_atk_buffs_this_turn.clear()
+			# "This turn" strike discount (Gorebelly) never survives into a new turn.
+			p.melee_strike_discount = 0
 
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):

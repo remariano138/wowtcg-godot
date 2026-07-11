@@ -39,9 +39,20 @@ var consecutive_passes: int = 0
 var combat_attacker: String = ""   # instance_id of attacker; "" = no combat
 var combat_defender: String = ""   # instance_id of proposed/actual defender
 var in_protect_point: bool  = false # true while waiting for protect decision
+var combat_protector: String = ""  # who exhausted to protect this combat; "" = nobody
 # Rule 602.1 / 602.3: priority windows within a combat step.
 var combat_attack_window: bool  = false  # true during the Attack Window
 var combat_defend_window: bool  = false  # true during the Defend Window
+# Weapon strikes (rule 303.2a): wielder instance_id -> Array[String] of weapon
+# instance_ids associated with it for the current combat step. Cleared at
+# combat conclusion. Feeds the strike modifier (+weapon ATK) in get_atk.
+var combat_struck_weapons: Dictionary = {}
+# Strike point (rules 602.1 / 602.3): non-empty while a hero's controller must
+# decide whether to strike with a weapon. Doesn't use the chain — resolved via
+# StackResolver.choose_strike() (direct call, like the protect point).
+var pending_strike_player: String = ""
+var pending_strike_weapon_ids: Array[String] = []  # strikeable weapons offered
+var pending_strike_side: String = ""  # "attack" (602.1) or "defend" (602.3)
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending
@@ -180,17 +191,25 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 			atk += per_damage * inst.damage_taken
 	# (3) Party auras granted by other cards in play (e.g. Zorm Stonefury).
 	atk += _aura_atk_mods(inst, is_attacking, db)
+	# (3b) Strike modifier (rule 303.2b): +X ATK per weapon associated with this
+	# wielder for the current combat step. Live lookup — never cached.
+	for weapon_id in combat_struck_weapons.get(instance_id, []):
+		atk += get_atk(weapon_id, db)
 	# (4) Party-wide "while attacking this turn" grants (Rayder, For the
 	# Horde!) — tracked per-player, not per-card, so they also cover allies
-	# that entered play after the effect resolved.
+	# that entered play after the effect resolved. Card text is "allies", so
+	# a hero attacking never gets these.
 	if is_attacking:
-		var ps := players.get(inst.controller) as PlayerState
-		if ps:
-			for grant in ps.party_atk_buffs_this_turn:
-				var alignment: String = grant.get("alignment", "")
-				if alignment != "" and def.alignment != alignment:
-					continue
-				atk += int(grant.get("amount", 0))
+		var zone := zones.get(inst.zone_id) as Zone
+		var is_ally := zone != null and zone.zone_type == "ally_row"
+		if is_ally:
+			var ps := players.get(inst.controller) as PlayerState
+			if ps:
+				for grant in ps.party_atk_buffs_this_turn:
+					var alignment: String = grant.get("alignment", "")
+					if alignment != "" and def.alignment != alignment:
+						continue
+					atk += int(grant.get("amount", 0))
 	return atk
 
 
@@ -212,6 +231,8 @@ func get_atk_if_attacking(instance_id: String, db) -> int:
 func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 	var bonus := 0
 	var def: CardDef = db.get_def(inst.card_def_id)
+	var inst_zone := zones.get(inst.zone_id) as Zone
+	var inst_is_ally := inst_zone != null and inst_zone.zone_type == "ally_row"
 	for source in cards_in_zone(inst.controller + "_ally_row"):
 		var src_def: CardDef = db.get_def(source.card_def_id)
 		if not src_def:
@@ -221,8 +242,10 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 			match p[0]:
 				"party_atk_while_attacking":
 					# Zorm Stonefury: "+X ATK while attacking" to your allies
-					# (including the source itself). Stacks with multiple copies.
-					if is_attacking:
+					# (including the source itself) — card text says "allies",
+					# so a hero attacking (with or without a weapon) does NOT
+					# get this bonus. Stacks with multiple copies.
+					if is_attacking and inst_is_ally:
 						bonus += int(p[1]) if p.size() > 1 else 1
 	for source in cards_in_zone(inst.controller + "_hero_row"):
 		var src_def2: CardDef = db.get_def(source.card_def_id)

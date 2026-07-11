@@ -80,7 +80,7 @@
     },
     {
       "card_def_id": "azeroth_230",
-      "count": 4,
+      "count": 2,
       "_card_name": "Blood Guard Mal'wani"
     },
     {
@@ -112,6 +112,11 @@
       "card_def_id": "azeroth_235",
       "count": 1,
       "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_331",
+      "count": 2,
+      "_card_name": "Krol Blade"
     },
     {
       "card_def_id": "azeroth_40",

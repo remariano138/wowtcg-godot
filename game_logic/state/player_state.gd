@@ -33,6 +33,11 @@ var pet_capacity: int = 1
 # when the priority window closes, and at the start of each turn.
 var damage_prevention: int = 0
 
+# Gorebelly's flip power: "You pay (3) less the next time you strike with a
+# Melee weapon this turn." Consumed by the next melee strike; cleared at the
+# start of every turn (so it lasts exactly the turn it was gained in).
+var melee_strike_discount: int = 0
+
 # Rule-condition tracking for quests like Torek's Assault: whether this
 # player's hero was dealt damage by an opposing ally this turn. Reset at the
 # start of each turn.

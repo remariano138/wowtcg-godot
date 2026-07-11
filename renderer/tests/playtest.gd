@@ -148,6 +148,12 @@ var _protect_nodes: Array[Node] = []
 var _protect_defender_id: String = ""
 var _protect_attacker_id: String = ""
 
+# Strike point (rules 602.1 / 602.3) — inline weapon-strike choice, mirrors
+# the protect-point UI.
+var _in_strike_mode: bool = false
+var _strike_weapon_ids: Array = []
+var _strike_nodes: Array[Node] = []
+
 # ── Combat window highlight (attacker/defender in red during attack/defend windows) ──
 var _combat_highlight_ids: Array = []
 
@@ -837,7 +843,7 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 func _refresh_ui() -> void:
 	_update_priority_label()
 	_update_phase_label()
-	if not _in_protect_mode:
+	if not _in_protect_mode and not _in_strike_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
 	_update_cancel_btn()
@@ -1484,6 +1490,15 @@ func _on_game_event(event: GameEvent) -> void:
 		"protect_point_opened":
 			_window_generation += 1
 			_handle_protect_point(event.payload)
+		"strike_point_opened":
+			_window_generation += 1
+			_handle_strike_point(event.payload)
+		"weapon_struck":
+			var w_card := _state.get_card(event.payload.get("weapon_id", ""))
+			var w_def: CardDef = _db.get_def(w_card.card_def_id) if w_card else null
+			_set_status("⚔ %s strikes with %s" % [event.payload.get("player", "?"),
+				w_def.card_name if w_def else "a weapon"])
+			_refresh_ui()
 		"discard_choice_opened":
 			_handle_discard_choice(event.payload)
 		"pet_sacrifice_required":
@@ -2439,6 +2454,110 @@ func _resolve_protection(protector_id: String) -> void:
 func _on_card_clicked_scene(instance_id: String) -> void:
 	if _in_protect_mode and instance_id in _protect_protectors:
 		_resolve_protection(instance_id)
+	elif _in_strike_mode and instance_id in _strike_weapon_ids:
+		_resolve_strike(instance_id)
+
+
+# ── Strike point (rules 602.1 / 602.3) ─────────────────────────────────────────
+
+func _handle_strike_point(payload: Dictionary) -> void:
+	var striking_player: String = payload.get("player", "")
+	var weapon_ids: Array       = payload.get("weapon_ids", [])
+	var side: String            = payload.get("side", "attack")
+
+	var striking_type := _p1_type if striking_player == "p1" else _p2_type
+	var striking_ai: Object = _p1_ai if striking_player == "p1" else _p2_ai
+	if striking_type != "human":
+		# AI decides immediately (BaseAI.choose_strike_weapon).
+		var weapon_id: String = striking_ai.choose_strike_weapon(_state, _db, striking_player)
+		var events := StackResolver.choose_strike(_state, weapon_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_strike_inline(weapon_ids, side)
+
+
+func _show_strike_inline(weapon_ids: Array, side: String) -> void:
+	_in_strike_mode    = true
+	_strike_weapon_ids = weapon_ids
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	const CENTER_X := 960
+	const BTN_W    := 200
+	const BTN_GAP  := 10
+	const SKIP_W   := 120
+	const SKIP_GAP := 20
+
+	var n := weapon_ids.size()
+	var row_width: int = n * BTN_W + max(n - 1, 0) * BTN_GAP + SKIP_GAP + SKIP_W
+	@warning_ignore("integer_division")
+	var btn_x := CENTER_X - row_width / 2
+
+	var header := Label.new()
+	header.text = "Strike with a weapon? (%s)" % \
+		("attacking" if side == "attack" else "defending")
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(0.9, 0.5, 0.2))
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.size     = Vector2(row_width + 100, 20)
+	@warning_ignore("integer_division")
+	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
+	add_child(header)
+	_strike_nodes.append(header)
+
+	for cid in weapon_ids:
+		var btn_label: String = cid
+		var card := _state.get_card(cid)
+		if card and _db:
+			var def: CardDef = _db.get_def(card.card_def_id)
+			if def:
+				var cost := StackResolver.get_strike_cost(_state, _state.pending_strike_player, def)
+				btn_label = "%s  (+%d ATK, %d)" % [def.card_name, _state.get_atk(cid, _db), cost]
+		var btn := Button.new()
+		btn.text     = btn_label
+		btn.position = Vector2(btn_x, 987)
+		btn.size     = Vector2(BTN_W, 36)
+		var captured_id: String = cid
+		btn.pressed.connect(func() -> void: _resolve_strike(captured_id))
+		add_child(btn)
+		_strike_nodes.append(btn)
+		btn_x += BTN_W + BTN_GAP
+
+	var skip := Button.new()
+	skip.text     = "Don't strike"
+	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
+	skip.size     = Vector2(SKIP_W, 36)
+	skip.pressed.connect(func() -> void: _resolve_strike(""))
+	add_child(skip)
+	_strike_nodes.append(skip)
+
+	# Highlight the strikeable weapons (deferred, same reason as protect outlines).
+	var captured_ids: Array = weapon_ids.duplicate()
+	call_deferred("_apply_strike_highlights", captured_ids)
+
+
+func _apply_strike_highlights(weapon_ids: Array) -> void:
+	if not _in_strike_mode:
+		return   # already resolved before this frame fired
+	_renderer.highlight_cards(weapon_ids)
+
+
+func _resolve_strike(weapon_id: String) -> void:
+	_in_strike_mode    = false
+	_strike_weapon_ids = []
+	for n in _strike_nodes:
+		n.queue_free()
+	_strike_nodes.clear()
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_strike(_state, weapon_id, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_drain_passes()
 
 
 # ── Game over ──────────────────────────────────────────────────────────────────
@@ -2468,6 +2587,8 @@ func _on_rematch() -> void:
 	_p1_played_this_action_phase  = false
 	_in_protect_mode              = false
 	_protect_nodes                = []
+	_in_strike_mode               = false
+	_strike_nodes                 = []
 	_p1_has_mulliganed            = false
 	_p1_ai = _make_ai(_p1_type, _last_p1_deck_id)
 	_p2_ai = _make_ai(_p2_type, _last_p2_deck_id)
@@ -2494,7 +2615,9 @@ func _schedule_next_turn() -> void:
 	if pid_type != "human" \
 			and not _ai_timer.time_left > 0 \
 			and not _state.in_protect_point \
-			and not _in_protect_mode:
+			and not _in_protect_mode \
+			and _state.pending_strike_player == "" \
+			and not _in_strike_mode:
 		_ai_timer.start()
 
 
@@ -2531,7 +2654,8 @@ func _drain_passes() -> void:
 	var limit := 30
 	while limit > 0:
 		limit -= 1
-		if _game_over or _state.in_protect_point or _in_protect_mode:
+		if _game_over or _state.in_protect_point or _in_protect_mode \
+				or _state.pending_strike_player != "" or _in_strike_mode:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \

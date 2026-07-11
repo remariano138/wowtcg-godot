@@ -121,6 +121,13 @@ func _ready() -> void:
 		_test_litori_freeze_fizzles_proposal,
 		_test_litori_too_late_in_window,
 		_test_ai_litori_freeze_save,
+		_test_weapon_attack_strike,
+		_test_weapon_defend_strike,
+		_test_strike_gates_and_gorebelly_discount,
+		_test_ai_strike_decisions,
+		_test_golem_skull_helm_block,
+		_test_deflector_hero_protects,
+		_test_ai_hero_protect_decisions,
 	]
 
 	for t in tests:
@@ -208,6 +215,14 @@ class MockDB extends RefCounted:
 		d.card_type      = "Equipment"
 		d.card_subtype   = subtype
 		_defs[def_id] = d
+
+	# Weapon (rule 303): Equipment with ATK, dmg_type, and a weapon:STRIKE_COST segment.
+	func weapon(def_id: String, cost: int, atk: int, strike_cost: int,
+			dmg_type: String = "Melee", slot: String = "melee_weapon") -> void:
+		equipment(def_id, cost, "equipment:%s:0|weapon:%d" % [slot, strike_cost])
+		var d := _defs[def_id] as CardDef
+		d.printed_atk = atk
+		d.dmg_type    = dmg_type
 
 	func hero(def_id: String, health: int, power_cost: int = 0, power_effects: String = "") -> void:
 		var d := CardDef.new()
@@ -4163,6 +4178,10 @@ func _test_zorm_party_atk_while_attacking() -> void:
 	state.combat_attacker = "grunt_inst"
 	eq(state.get_atk("grunt_inst", db), 4, "sc24-g: two Zorms stack (+2)")
 
+	# Card text is "your allies" — your own attacking HERO gets nothing from Zorm.
+	state.combat_attacker = "p1_hero"
+	eq(state.get_atk("p1_hero", db), 0, "sc24-h: attacking hero unaffected by Zorm (allies only)")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 25 — Elder Moorf: "[1],[activate] Target ally has +2 ATK this turn"
@@ -4259,6 +4278,10 @@ func _test_rayder_party_buff_while_attacking() -> void:
 	_add_ally(state, "latecomer_inst", "grunt_def", "p1")
 	state.combat_attacker = "latecomer_inst"
 	eq(state.get_atk("latecomer_inst", db), 3, "sc26-d: late-summoned ally still +2 while attacking")
+
+	# Card text is "your allies" — the attacking hero gets nothing from Rayder.
+	state.combat_attacker = "p1_hero"
+	eq(state.get_atk("p1_hero", db), 0, "sc26-f: attacking hero unaffected by Rayder (allies only)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6147,3 +6170,440 @@ func _test_ai_litori_freeze_save() -> void:
 	StackResolver.pass_priority(state2, db)
 	ok(ai.decide_action(state2, db, "p2") == null,
 		"af-c: AI holds the flip against a 2-ATK chip attack")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hero combat — weapons & striking (rules 303 / 602.1 / 602.3)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Attacking strike: hero with a weapon is a legal attacker; the strike point
+# opens as the combat step starts, the strike pays exhaust+resources, and the
+# hero deals weapon ATK.
+func _test_weapon_attack_strike() -> void:
+	_buf.append("\n-- Weapon: attacking hero strikes (Krol Blade) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("krol_def", 3, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+
+	# ws-a: the 0-ATK hero is a legal attacker only because it can strike.
+	ok("p1_hero" in StackResolver.get_legal_attackers(state, "p1", db),
+		"ws-a: hero with affordable weapon is a legal attacker")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p1 passes
+	StackResolver.pass_priority(state, db)   # p2 passes -> combat starts -> strike point
+
+	eq(state.pending_strike_player, "p1", "ws-b: attack strike point opened for p1")
+	eq(state.pending_strike_side, "attack", "ws-b2: side is attack")
+	ok(state.get_card("p1_hero").is_exhausted, "ws-b3: attacker exhausted before strike point")
+	ok(not state.combat_attack_window, "ws-b4: attack window held until strike resolves")
+
+	# ws-c: everything else is blocked while the strike point is pending.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"ws-c: pass_priority blocked while strike pending")
+
+	StackResolver.choose_strike(state, "krol", db)
+	ok(state.get_card("krol").is_exhausted, "ws-d: weapon exhausted by striking")
+	eq(state.get_available_resources("p1"), 1, "ws-d2: strike cost 1 paid")
+	eq(state.get_atk("p1_hero", db), 3, "ws-d3: strike modifier gives hero +3 ATK")
+	ok(state.combat_attack_window, "ws-d4: attack window opened after strike")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window closes -> conclusion
+
+	eq(state.get_card("p2_hero").damage_taken, 3, "ws-e: defender hero took weapon damage")
+	ok(state.combat_struck_weapons.is_empty(), "ws-e2: association cleared after combat")
+	eq(state.get_atk("p1_hero", db), 0, "ws-e3: hero ATK back to 0 after combat")
+
+
+# Defending strike (602.3): after the protect point, the defending hero's
+# controller may strike; the hero then deals combat damage back.
+func _test_weapon_defend_strike() -> void:
+	_buf.append("\n-- Weapon: defending hero strikes back --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("krol_def", 3, 3, 1)
+	db.ally("bruiser_def", 2, 3)   # dies to the 3-dmg counter-strike
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p1", 1)
+	var bruiser := _add_ally(state, "bruiser", "bruiser_def", "p2")
+	bruiser.just_summoned = false
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "bruiser", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts (no p2 strike - ally attacker)
+	ok(state.combat_attack_window, "ds-a: no strike point for an ally attacker")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend strike point
+
+	eq(state.pending_strike_player, "p1", "ds-b: defend strike point opened for p1")
+	eq(state.pending_strike_side, "defend", "ds-b2: side is defend")
+	ok(not state.combat_defend_window, "ds-b3: defend window held until strike resolves")
+
+	StackResolver.choose_strike(state, "krol", db)
+	ok(state.combat_defend_window, "ds-c: defend window opened after strike")
+	eq(state.get_atk("p1_hero", db), 3, "ds-c2: defending hero has +3 ATK")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+
+	eq(state.get_card("p1_hero").damage_taken, 2, "ds-d: hero took the attacker's 2")
+	ok(not state.is_in_play("bruiser"),
+		"ds-d2: attacker died to the 3-damage counter-strike")
+
+
+# Declining, affordability gates, and the melee strike discount (Gorebelly).
+func _test_strike_gates_and_gorebelly_discount() -> void:
+	_buf.append("\n-- Weapon gates + Gorebelly's melee strike discount --")
+	var db := MockDB.new()
+	db.hero("gorebelly_def", 30, 1, "melee_strike_discount:3")
+	db.hero("p2_hero", 30)
+	db.weapon("bigaxe_def", 5, 4, 3)   # strike cost 3
+
+	var state := _base_state(db, "gorebelly_def", "p2_hero")
+
+	var axe := CardInstance.create("axe", "bigaxe_def", "p1", "p1_hero_row")
+	state.cards["axe"] = axe
+	state.zones["p1_hero_row"].card_ids.append("axe")
+
+	# sg-a: no resources -> can't strike -> 0-ATK hero isn't a legal attacker.
+	ok("gorebelly_def" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"sg-a: hero not a legal attacker when the strike is unaffordable")
+
+	_add_resources(state, "p1", 2)   # still < strike cost 3
+
+	# sg-b: flip Gorebelly (pay 1) -> discount 3 -> strike cost drops to 0.
+	var flip := PendingAction.make("activate_power", "p1",
+		{"hero_id": "gorebelly_def", "target_id": ""})
+	ok(StackResolver.can_submit(state, flip, db), "sg-b: flip power submittable")
+	StackResolver.submit_action(state, flip, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # flip resolves
+	eq(state.players["p1"].melee_strike_discount, 3, "sg-b2: discount stored")
+	eq(state.get_available_resources("p1"), 1, "sg-b3: flip cost 1 paid")
+	eq(StackResolver.get_strike_cost(state, "p1", db.get_def("bigaxe_def")), 0,
+		"sg-b4: discounted strike cost is 0")
+	ok("gorebelly_def" in StackResolver.get_legal_attackers(state, "p1", db),
+		"sg-b5: hero is a legal attacker with the discount")
+
+	# Attack and strike for free.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "gorebelly_def", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # strike point
+	StackResolver.choose_strike(state, "axe", db)
+	eq(state.get_available_resources("p1"), 1, "sg-c: strike was free (discount consumed)")
+	eq(state.players["p1"].melee_strike_discount, 0, "sg-c2: discount consumed by the strike")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("p2_hero").damage_taken, 4, "sg-d: 4 weapon damage dealt")
+
+	# sg-e: declining a strike just opens the window with no payment.
+	var state2 := _base_state(db, "gorebelly_def", "p2_hero")
+	_add_resources(state2, "p1", 5)
+	var axe2 := CardInstance.create("axe2", "bigaxe_def", "p1", "p1_hero_row")
+	state2.cards["axe2"] = axe2
+	state2.zones["p1_hero_row"].card_ids.append("axe2")
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "gorebelly_def", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # strike point
+	StackResolver.choose_strike(state2, "", db)
+	ok(state2.combat_attack_window, "sg-e: declined strike still opens the attack window")
+	ok(not state2.get_card("axe2").is_exhausted, "sg-e2: weapon untouched on decline")
+	eq(state2.get_available_resources("p1"), 5, "sg-e3: nothing paid on decline")
+
+
+# AI strike decisions: attack-side always strikes; defend-side strikes to kill
+# or against the opponent's last legal attacker, and holds otherwise.
+func _test_ai_strike_decisions() -> void:
+	_buf.append("\n-- AI: strike decision heuristics --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("krol_def", 3, 3, 1)
+	db.ally("tank_def", 2, 6)     # survives a 3-dmg strike
+	db.ally("runt_def", 2, 2)     # dies to a 3-dmg strike
+	var ai := BaseAI.new()
+
+	# ai-a: attacking — GenericAI proposes the hero attack; strike always taken.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p1"].has_used_hero_power = true   # blank flip would rank above combat
+	var gen := GenericAI.new()
+	var act := gen.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "propose_combat" \
+			and act.params.get("attacker_id") == "p1_hero",
+		"ai-a: GenericAI attacks with the weapon-bearing hero")
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # strike point
+	eq(ai.choose_strike_weapon(state, db, "p1"), "krol",
+		"ai-a2: attack-side strike always taken")
+	StackResolver.choose_strike(state, ai.choose_strike_weapon(state, db, "p1"), db)
+
+	# ai-b: defending vs a survivor with another attacker waiting -> hold.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p2"
+	state2.priority_player = "p2"
+	_add_resources(state2, "p1", 1)
+	var krol2 := CardInstance.create("krol2", "krol_def", "p1", "p1_hero_row")
+	state2.cards["krol2"] = krol2
+	state2.zones["p1_hero_row"].card_ids.append("krol2")
+	var tank := _add_ally(state2, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	var runt := _add_ally(state2, "runt", "runt_def", "p2")
+	runt.just_summoned = false
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "tank", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # combat starts, attack window
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # defend strike point
+	eq(state2.pending_strike_player, "p1", "ai-b0: defend strike point open")
+	eq(ai.choose_strike_weapon(state2, db, "p1"), "",
+		"ai-b: hold the strike — attacker survives and another attacker waits")
+	StackResolver.choose_strike(state2, "", db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # conclusion
+
+	# ai-c: next attack is the runt (dies to the strike) -> strike to kill.
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "runt", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # defend strike point
+	eq(ai.choose_strike_weapon(state2, db, "p1"), "krol2",
+		"ai-c: strike to kill the attacker")
+	StackResolver.choose_strike(state2, "krol2", db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # conclusion
+	ok(not state2.is_in_play("runt"), "ai-c2: attacker killed by the counter-strike")
+
+	# ai-d: defending vs a survivor that is the LAST legal attacker -> strike anyway.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	state3.turn_player     = "p2"
+	state3.priority_player = "p2"
+	_add_resources(state3, "p1", 1)
+	var krol3 := CardInstance.create("krol3", "krol_def", "p1", "p1_hero_row")
+	state3.cards["krol3"] = krol3
+	state3.zones["p1_hero_row"].card_ids.append("krol3")
+	var tank2 := _add_ally(state3, "tank2", "tank_def", "p2")
+	tank2.just_summoned = false
+	StackResolver.submit_action(state3, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "tank2", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # defend strike point
+	eq(ai.choose_strike_weapon(state3, db, "p1"), "krol3",
+		"ai-d: last legal attacker -> always strike back")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Golem Skull Helm (azeroth_290) — Armor—Plate, Head, 3 DEF, no powers.
+# Draconian Deflector (azeroth_285) — Armor—Shield, Off-Hand, 4 DEF,
+# "Your hero has protector."
+# ══════════════════════════════════════════════════════════════════════════════
+
+const HELM_EFFECTS      := "equipment:head:3"
+const DEFLECTOR_EFFECTS := "equipment:off_hand:4|hero_has_protector"
+
+
+func _test_golem_skull_helm_block() -> void:
+	_buf.append("\n-- Golem Skull Helm: 3 DEF armor block --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("helm_def", 3, HELM_EFFECTS, "Plate")
+	db.ally("smasher", 4, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_ally(state, "smasher_inst", "smasher", "p2")
+	var helm := CardInstance.create("helm", "helm_def", "p1", "p1_hero_row")
+	state.cards["helm"] = helm
+	state.zones["p1_hero_row"].card_ids.append("helm")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "smasher_inst", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts, attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window
+	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1
+	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "helm"})
+	ok(StackResolver.can_submit(state, block, db), "gh-a: helm block legal in defend window")
+	StackResolver.submit_action(state, block, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # block resolves
+	eq(state.players["p1"].damage_prevention, 3, "gh-b: prevention pool at 3")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("p1_hero").damage_taken, 1, "gh-c: hero took 4 − 3 = 1")
+
+
+func _test_deflector_hero_protects() -> void:
+	_buf.append("\n-- Draconian Deflector: hero has protector, retaliation strike --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("deflector_def", 4, DEFLECTOR_EFFECTS, "Shield")
+	db.weapon("krol_def", 3, 3, 1)
+	db.ally("guard_def", 1, 2)
+	db.ally("smasher_def", 3, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p1", 1)
+	var guard := _add_ally(state, "guard", "guard_def", "p1")
+	guard.just_summoned = false
+	var smasher := _add_ally(state, "smasher", "smasher_def", "p2")
+	smasher.just_summoned = false
+
+	# dd-a: without the deflector the hero is NOT a legal protector.
+	ok("p1_hero" not in StackResolver.get_legal_protectors(state, "smasher", "guard", db),
+		"dd-a: no grant → hero can't protect")
+
+	var deflector := CardInstance.create("deflector", "deflector_def", "p1", "p1_hero_row")
+	state.cards["deflector"] = deflector
+	state.zones["p1_hero_row"].card_ids.append("deflector")
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+
+	# dd-b: with the deflector in play the hero IS a legal protector.
+	ok("p1_hero" in StackResolver.get_legal_protectors(state, "smasher", "guard", db),
+		"dd-b: deflector grant → hero can protect")
+	# dd-c: 602.2b — the hero can't protect itself when it's the defender.
+	ok("p1_hero" not in StackResolver.get_legal_protectors(state, "smasher", "p1_hero", db),
+		"dd-c: hero can't protect itself")
+	# dd-d: an exhausted hero can't protect.
+	state.get_card("p1_hero").is_exhausted = true
+	ok("p1_hero" not in StackResolver.get_legal_protectors(state, "smasher", "guard", db),
+		"dd-d: exhausted hero can't protect")
+	state.get_card("p1_hero").is_exhausted = false
+
+	# p2 attacks the guard; hero protects at the protect point.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "smasher", "defender_id": "guard"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts, attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes → protect point
+	ok(state.in_protect_point, "dd-e: protect point opened")
+	StackResolver.choose_protector(state, "p1_hero", db)
+	ok(state.get_card("p1_hero").is_exhausted, "dd-f: hero exhausted to protect")
+	eq(state.combat_defender, "p1_hero", "dd-f2: hero is the defender now")
+	eq(state.combat_protector, "p1_hero", "dd-f3: combat_protector tracked")
+
+	# dd-g: the defend strike point opens for the protecting hero (602.3).
+	eq(state.pending_strike_player, "p1", "dd-g: defend strike point for p1")
+	StackResolver.choose_strike(state, "krol", db)
+	eq(state.get_atk("p1_hero", db), 3, "dd-g2: struck weapon gives the hero 3 ATK")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window closes → conclusion
+	ok(not state.is_in_play("smasher"), "dd-h: attacker died to the retaliation strike")
+	eq(state.get_card("p1_hero").damage_taken, 3, "dd-h2: hero soaked the 3 damage")
+	eq(state.get_card("guard").damage_taken, 0, "dd-h3: guard untouched")
+	eq(state.combat_protector, "", "dd-i: combat_protector cleared after combat")
+
+
+func _test_ai_hero_protect_decisions() -> void:
+	_buf.append("\n-- AI: hero-protect gate + always-retaliate strike --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("deflector_def", 4, DEFLECTOR_EFFECTS, "Shield")
+	db.weapon("krol_def", 3, 3, 1)
+	db.ally("guard_def", 1, 2)
+	db.ally("smasher_def", 3, 3)
+	db.ally("tank_def", 2, 6)
+	var gen := GenericAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p1", 1)
+	var guard := _add_ally(state, "guard", "guard_def", "p1")
+	guard.just_summoned = false
+	var smasher := _add_ally(state, "smasher", "smasher_def", "p2")
+	smasher.just_summoned = false
+	var deflector := CardInstance.create("deflector", "deflector_def", "p1", "p1_hero_row")
+	state.cards["deflector"] = deflector
+	state.zones["p1_hero_row"].card_ids.append("deflector")
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+
+	# hp-a: guard dies to the smasher; hero's affordable strike kills it back →
+	# GenericAI protects with the hero.
+	state.combat_attacker = "smasher"
+	state.combat_defender = "guard"
+	eq(gen.choose_protector(state, db, "p1"), "p1_hero",
+		"hp-a: hero protects when the retaliation strike kills the attacker")
+
+	# hp-b: strike unaffordable (no resources) and the dying ally isn't worth
+	# the face damage → don't protect.
+	state.zones["p1_resource_row"].card_ids.clear()
+	for cid in state.cards.keys():
+		if state.cards[cid].zone_id == "p1_resource_row":
+			state.cards[cid].zone_id = ""
+	eq(gen.choose_protector(state, db, "p1"), "",
+		"hp-b: no retaliation, cheap ally → hero doesn't protect")
+	_add_resources(state, "p1", 1)
+
+	# hp-c: an ally protector that safely kills the attacker is preferred.
+	db.ally("bodyguard_def", 3, 4, ["protector"] as Array[String])
+	var bodyguard := _add_ally(state, "bodyguard", "bodyguard_def", "p1")
+	bodyguard.just_summoned = false
+	eq(gen.choose_protector(state, db, "p1"), "bodyguard",
+		"hp-c: ally protector preferred over the hero")
+	state.get_card("bodyguard").is_exhausted = true
+
+	# hp-d: BaseAI.choose_strike_weapon — a protecting hero ALWAYS strikes,
+	# even when the strike doesn't kill and other attackers are waiting.
+	var tank := _add_ally(state, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	state.combat_attacker = "tank"          # 2/6 — survives the 3-dmg strike
+	state.combat_defender = "p1_hero"
+	state.combat_protector = "p1_hero"      # hero swapped in at the protect point
+	state.pending_strike_player     = "p1"
+	state.pending_strike_weapon_ids = ["krol"] as Array[String]
+	state.pending_strike_side       = "defend"
+	eq(gen.choose_strike_weapon(state, db, "p1"), "krol",
+		"hp-d: protecting hero always retaliates")
+	# hp-e: same spot but the hero was the ORIGINAL defender → hold the strike.
+	state.combat_protector = ""
+	eq(gen.choose_strike_weapon(state, db, "p1"), "",
+		"hp-e: non-protecting hero still holds vs a survivor")

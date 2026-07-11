@@ -164,6 +164,30 @@ static func defend_window_opened(attacker_id: String, defender_id: String) -> Ga
 		"attacker_id": attacker_id, "defender_id": defender_id,
 	})
 
+# Strike point (rules 602.1 / 602.3): the wielder's controller may strike with
+# a weapon. side = "attack" or "defend". Resolved via StackResolver.choose_strike().
+static func strike_point_opened(player_id: String, wielder_id: String,
+		weapon_ids: Array, side: String) -> GameEvent:
+	return make("strike_point_opened", {
+		"player":     player_id,
+		"wielder_id": wielder_id,
+		"weapon_ids": weapon_ids,
+		"side":       side,
+	})
+
+static func weapon_struck(player_id: String, wielder_id: String,
+		weapon_id: String, cost_paid: int) -> GameEvent:
+	return make("weapon_struck", {
+		"player":     player_id,
+		"wielder_id": wielder_id,
+		"weapon_id":  weapon_id,
+		"cost_paid":  cost_paid,
+	})
+
+# Gorebelly's flip: discount on the next melee weapon strike this turn.
+static func strike_discount_gained(player_id: String, amount: int) -> GameEvent:
+	return make("strike_discount_gained", {"player": player_id, "amount": amount})
+
 static func enter_play_target_required(card_id: String, dmg_type: String, amount: int) -> GameEvent:
 	return make("enter_play_target_required", {
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,

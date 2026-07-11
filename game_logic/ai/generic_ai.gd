@@ -121,7 +121,7 @@ func _trade_action(state: GameState, db, player_id: String) -> PendingAction:
 	var best: PendingAction = null
 	var best_key: Array = []
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		if state.get_atk(aid, db, true) <= 0:
+		if BaseAI.forecast_atk(state, db, aid) <= 0:
 			continue
 		for did in StackResolver.get_legal_defenders(state, aid, db):
 			# Enemy allies only — the hero is handled by _hero_chip_action.
@@ -191,7 +191,7 @@ func _hero_chip_action(state: GameState, db, player_id: String) -> PendingAction
 	var best: String = ""
 	var best_val: Array = []
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		if state.get_atk(aid, db, true) <= 0:
+		if BaseAI.forecast_atk(state, db, aid) <= 0:
 			continue
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
 			continue
@@ -238,6 +238,14 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 	var pool := StackResolver.get_legal_protectors(state, attacker, defender, db)
 	if pool.is_empty():
 		return ""
+	# The hero (Draconian Deflector grant) never competes in the ally buckets —
+	# its value key (no ally stats) would make it look like the cheapest fodder
+	# and it would chump-block everything. It gets its own gate at the end.
+	var ps_self := state.players.get(player_id) as PlayerState
+	var hero_id: String = ps_self.hero_instance_id if ps_self else ""
+	var hero_in_pool := hero_id != "" and hero_id in pool
+	if hero_in_pool:
+		pool.erase(hero_id)
 	var a_atk := state.get_atk(attacker, db, true)   # attacker's "while attacking" ATK
 	if a_atk <= 0:
 		return ""   # attacker deals no damage — nothing to prevent
@@ -285,6 +293,25 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 		if best == "" or pval < best_val:
 			best = p
 			best_val = pval
+
+	# Hero-protect gate (Draconian Deflector): only when no ally stepped in,
+	# and never into burst range (keep the hero above the all-out threshold
+	# after the hit). Worth it when:
+	#   • the hero's weapon retaliation KILLS the attacker (safe_lethal — the
+	#     defend strike point will fire and choose_strike_weapon always strikes
+	#     while protecting), unless the fight was already won for free; or
+	#   • an ally would die and it's worth at least the face damage taken
+	#     (cost >= incoming ATK) — trade hero HP for board presence.
+	if best == "" and hero_in_pool:
+		var hero_hp := state.get_current_hp(hero_id, db)
+		if hero_hp - a_atk > HERO_ALL_OUT_HP:
+			var retaliation_kills := BaseAI.combat_trade_value(
+				state, db, hero_id, attacker, false) == "safe_lethal"
+			if defender_dies:
+				if retaliation_kills or _def_cost(state, db, defender) >= a_atk:
+					best = hero_id
+			elif retaliation_kills and not attacker_dies_to_defender:
+				best = hero_id
 	return best
 
 
@@ -323,7 +350,7 @@ func _hero_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 	# Board attackers that can already swing this turn (forecast "while
 	# attacking" bonuses — they apply the moment combat is proposed).
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		if state.get_atk(aid, db, true) < hero_hp:
+		if BaseAI.forecast_atk(state, db, aid) < hero_hp:
 			continue
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
 			continue
@@ -387,7 +414,7 @@ func _all_out_hero_lethal_action(state: GameState, db, player_id: String) -> Pen
 	var attackers: Array[String] = []
 	var total_atk := 0
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		var atk := state.get_atk(aid, db, true)   # "while attacking" bonuses
+		var atk := BaseAI.forecast_atk(state, db, aid)   # "while attacking" bonuses + weapon strike
 		if atk <= 0:
 			continue
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
@@ -458,7 +485,7 @@ func _all_out_with_spell_hero_lethal_action(state: GameState, db, player_id: Str
 	var attackers: Array[String] = []
 	var total_atk := 0
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		var atk := state.get_atk(aid, db, true)   # "while attacking" bonuses
+		var atk := BaseAI.forecast_atk(state, db, aid)   # "while attacking" bonuses + weapon strike
 		if atk <= 0:
 			continue
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
@@ -552,7 +579,7 @@ func _safe_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 	var attackers: Array[String] = []
 	var from_hand: Dictionary = {}
 	for aid in StackResolver.get_legal_attackers(state, player_id, db):
-		if state.get_atk(aid, db, true) > 0:
+		if BaseAI.forecast_atk(state, db, aid) > 0:
 			attackers.append(aid)
 	for card in state.cards_in_zone(player_id + "_hand"):
 		var def := db.get_def(card.card_def_id) as CardDef

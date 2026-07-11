@@ -132,11 +132,6 @@
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
-    },
-    {
-      "card_def_id": "azeroth_234",
-      "count": 2,
-      "_card_name": "Deacon Johanna"
     }
   ],
   "recommended_ai_id": "ai_generic",

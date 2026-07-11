@@ -188,6 +188,9 @@ static func weapon_struck(player_id: String, wielder_id: String,
 static func strike_discount_gained(player_id: String, amount: int) -> GameEvent:
 	return make("strike_discount_gained", {"player": player_id, "amount": amount})
 
+static func ranged_weapon_bonus_gained(player_id: String, amount: int) -> GameEvent:
+	return make("ranged_weapon_bonus_gained", {"player": player_id, "amount": amount})
+
 static func enter_play_target_required(card_id: String, dmg_type: String, amount: int) -> GameEvent:
 	return make("enter_play_target_required", {
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,

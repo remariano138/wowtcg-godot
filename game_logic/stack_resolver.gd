@@ -2680,6 +2680,16 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					disc_ps.melee_strike_discount += disc_amount
 					events.append(GameEvent.strike_discount_gained(
 						action.source_player, disc_amount))
+			"ranged_weapon_atk_bonus":
+				# Elendril: "Your Ranged weapons have +3 ATK this turn." Player-
+				# tracked (PlayerState.ranged_weapon_atk_bonus), applied in
+				# GameState.get_atk; cleared at the start of every turn.
+				var rw_amount := int(parts[1]) if parts.size() > 1 else 0
+				var rw_ps := state.players.get(action.source_player) as PlayerState
+				if rw_ps and rw_amount != 0:
+					rw_ps.ranged_weapon_atk_bonus += rw_amount
+					events.append(GameEvent.ranged_weapon_bonus_gained(
+						action.source_player, rw_amount))
 			"shuffle_hand_draw":
 				events.append_array(
 					GameLogic.shuffle_hand_into_deck_and_draw(state, action.source_player))

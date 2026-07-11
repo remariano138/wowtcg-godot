@@ -124,6 +124,8 @@ func _ready() -> void:
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
 		_test_bone_bow_grants_long_range,
+		_test_elendril_ranged_bonus,
+		_test_ai_elendril_flip_for_lethal,
 		_test_strike_gates_and_gorebelly_discount,
 		_test_ai_strike_decisions,
 		_test_golem_skull_helm_block,
@@ -6314,6 +6316,111 @@ func _test_bone_bow_grants_long_range() -> void:
 	ok(state.is_in_play("bruiser"), "bb-b3: bruiser survived (5 HP)")
 	ok(state.combat_struck_weapons.is_empty(),
 		"bb-b4: association cleared — grant is per-combat")
+
+
+# Elendril's flip: "Your Ranged weapons have +3 ATK this turn." Applies to
+# Ranged weapons only, feeds the strike modifier live, and expires at turn start.
+func _test_elendril_ranged_bonus() -> void:
+	_buf.append("\n-- Elendril: +3 ATK to Ranged weapons this turn --")
+	var db := MockDB.new()
+	db.hero("elendril_def", 28, 1, "ranged_weapon_atk_bonus:3")
+	db.hero("p2_hero", 30)
+	db.weapon("bow_def", 3, 2, 2, "Ranged", "ranged_weapon")   # ATK 2, strike 2
+	db.weapon("axe_def", 3, 3, 1)                               # Melee, ATK 3, strike 1
+
+	var state := _base_state(db, "elendril_def", "p2_hero")
+	_add_resources(state, "p1", 5)
+	var bow := CardInstance.create("bow", "bow_def", "p1", "p1_hero_row")
+	state.cards["bow"] = bow
+	state.zones["p1_hero_row"].card_ids.append("bow")
+	var axe := CardInstance.create("axe", "axe_def", "p1", "p1_hero_row")
+	state.cards["axe"] = axe
+	state.zones["p1_hero_row"].card_ids.append("axe")
+
+	# el-a: flip the power (pay 1) -> bonus stored.
+	var flip := PendingAction.make("activate_power", "p1",
+		{"hero_id": "elendril_def", "target_id": ""})
+	ok(StackResolver.can_submit(state, flip, db), "el-a: flip power submittable")
+	StackResolver.submit_action(state, flip, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # flip resolves
+	eq(state.players["p1"].ranged_weapon_atk_bonus, 3, "el-a2: +3 bonus stored")
+	eq(state.get_available_resources("p1"), 4, "el-a3: flip cost 1 paid")
+
+	# el-b: the bonus only lifts the RANGED weapon's ATK, not the melee one.
+	eq(state.get_atk("bow", db), 5, "el-b: ranged bow is 2 + 3 = 5")
+	eq(state.get_atk("axe", db), 3, "el-b2: melee axe unaffected")
+
+	# el-c: strike with the bow -> hero swings for 5.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "elendril_def", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # strike point
+	StackResolver.choose_strike(state, "bow", db)
+	eq(state.get_atk("elendril_def", db), 5, "el-c: hero ATK = bow 2 + bonus 3")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("p2_hero").damage_taken, 5, "el-c2: 5 damage to enemy hero")
+
+	# el-d: the bonus is a "this turn" effect — gone after a turn boundary.
+	state.players["p1"].ranged_weapon_atk_bonus = 3   # pretend still up
+	var guard := 0
+	while state.turn_player == "p1" and guard < 20:
+		TurnManager.advance_phase(state, db)
+		guard += 1
+	eq(state.players["p1"].ranged_weapon_atk_bonus, 0,
+		"el-d: bonus cleared at the start of the next turn")
+
+
+# AI: Elendril flips the power to set up a lethal that only exists once the
+# Ranged weapon is pumped +3 — then swings for the kill next decision.
+func _test_ai_elendril_flip_for_lethal() -> void:
+	_buf.append("\n-- AI: Elendril flips to enable a ranged lethal --")
+	var db := MockDB.new()
+	db.hero("elendril_def", 28, 1, "ranged_weapon_atk_bonus:3")
+	db.hero("p2_hero", 30)
+	db.weapon("bow_def", 3, 2, 2, "Ranged", "ranged_weapon")   # ATK 2, strike 2
+
+	var ai := GenericAI.new()
+
+	# Enemy hero at 5 HP: bow alone (2) can't kill; bow + 3 bonus (5) can.
+	var state := _base_state(db, "elendril_def", "p2_hero")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	state.get_card("p2_hero").damage_taken = 25   # 30 - 25 = 5 HP left
+	var bow := CardInstance.create("bow", "bow_def", "p1", "p1_hero_row")
+	state.cards["bow"] = bow
+	state.zones["p1_hero_row"].card_ids.append("bow")
+
+	# ae-a: no lethal yet -> AI flips Elendril to enable it.
+	var act := ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "activate_power"
+			and act.params.get("hero_id") == "elendril_def",
+		"ae-a: AI flips Elendril to set up the ranged lethal")
+
+	# ae-b: after the flip resolves, the AI swings the hero for the kill.
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	var act2 := ai.decide_action(state, db, "p1")
+	ok(act2 != null and act2.action_type == "propose_combat"
+			and act2.params.get("attacker_id") == "elendril_def"
+			and act2.params.get("defender_id") == "p2_hero",
+		"ae-b: AI attacks the hero with the pumped weapon")
+
+	# ae-c: if the hero is already killable (2 HP), the AI does NOT waste the flip.
+	var state2 := _base_state(db, "elendril_def", "p2_hero")
+	_add_resources(state2, "p1", 5)
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.get_card("p2_hero").damage_taken = 28   # 2 HP — bow's 2 already kills
+	var bow2 := CardInstance.create("bow2", "bow_def", "p1", "p1_hero_row")
+	state2.cards["bow2"] = bow2
+	state2.zones["p1_hero_row"].card_ids.append("bow2")
+	var act3 := ai.decide_action(state2, db, "p1")
+	ok(act3 != null and act3.action_type == "propose_combat",
+		"ae-c: already lethal -> AI attacks directly, no flip")
 
 
 # Declining, affordability gates, and the melee strike discount (Gorebelly).

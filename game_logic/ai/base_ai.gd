@@ -838,12 +838,27 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 		if _hero_power_is(state, db, hero_id, "melee_strike_discount"):
 			if not _strike_discount_worth_it(state, db, player_id, hero_id):
 				return result
+			# Elendril: "Your Ranged weapons have +3 ATK this turn." Only flip when
+			# it turns a non-lethal board into a lethal one (subclass hook — see
+			# GenericAI._ranged_bonus_flip_worth_it). BaseAI/FullRandomAI never
+			# blind-flip it (no lethal reasoning → the resource would be wasted).
+			if _hero_power_is(state, db, hero_id, "ranged_weapon_atk_bonus"):
+				if not _ranged_bonus_flip_worth_it(state, db, player_id, hero_id):
+					return result
 		var action := PendingAction.make("activate_power", player_id,
 			{"hero_id": hero_id, "target_id": ""})
 		if StackResolver.can_submit(state, action, db):
 			result.append(action)
 
 	return result
+
+
+# Elendril's flip ("Your Ranged weapons have +3 ATK this turn"). Overridden by
+# GenericAI to flip only when the bonus enables a lethal that isn't there now.
+# BaseAI/FullRandomAI don't reason about lethal, so they never flip it.
+func _ranged_bonus_flip_worth_it(_state: GameState, _db, _player_id: String,
+		_hero_id: String) -> bool:
+	return false
 
 
 func _strike_discount_worth_it(state: GameState, db, player_id: String,

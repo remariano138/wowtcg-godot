@@ -90,6 +90,13 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var all_out_spell := _all_out_with_spell_hero_lethal_action(state, db, player_id)
 	if all_out_spell != null:
 		return all_out_spell
+	# 1.7. Win now via Elendril's flip: no lethal on the board yet, but pumping
+	# our Ranged weapons (+3 ATK this turn) creates one. Flip first; next call the
+	# bonus is live and the lethal detectors above execute the kill with the
+	# enhanced weapon. See _ranged_bonus_flip_worth_it.
+	var ranged_setup := _ranged_bonus_flip_action(state, db, player_id)
+	if ranged_setup != null:
+		return ranged_setup
 	# 2. Free kills (kill and survive).
 	var safe := _safe_lethal_action(state, db, player_id)
 	if safe != null:
@@ -373,6 +380,89 @@ func _hero_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 		if StackResolver.can_submit(state, play, db):
 			return play
 	return null
+
+
+# Elendril's flip ("[1] → Your Ranged weapons have +3 ATK this turn"). Flip only
+# when the board has NO lethal now but WOULD have one once the bonus lands — the
+# bonus only touches Ranged weapons, so it can only matter through a ranged
+# weapon strike. We temporarily apply the bonus and re-ask the same lethal
+# detectors the AI uses downstream (so after flipping, the regular hero-lethal /
+# all-out heuristics execute the kill with the enhanced weapon). Requires enough
+# resources for the flip PLUS at least one ranged strike, so the flip can't
+# strand the AI unable to actually swing.
+# The flip action itself, if flipping enables a lethal that isn't there now.
+func _ranged_bonus_flip_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "" or ps.has_used_hero_power:
+		return null
+	var hero_id := ps.hero_instance_id
+	if not _hero_power_is(state, db, hero_id, "ranged_weapon_atk_bonus"):
+		return null
+	if not _ranged_bonus_flip_worth_it(state, db, player_id, hero_id):
+		return null
+	var act := PendingAction.make("activate_power", player_id,
+			{"hero_id": hero_id, "target_id": ""})
+	return act if StackResolver.can_submit(state, act, db) else null
+
+
+func _ranged_bonus_flip_worth_it(state: GameState, db, player_id: String,
+		hero_id: String) -> bool:
+	if not db:
+		return false
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps:
+		return false
+	var hero := state.get_card(hero_id)
+	var hero_def := db.get_def(hero.card_def_id) as CardDef if hero else null
+	if not hero_def:
+		return false
+	var amount := 0
+	for entry in hero_def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "ranged_weapon_atk_bonus":
+			amount = int(parts[1]) if parts.size() > 1 else 0
+	if amount == 0:
+		return false
+	# Need a ready ranged weapon in play and resources for flip + a ranged strike.
+	var flip_cost: int = maxi(hero_def.cost, 0)
+	var cheapest_strike := _cheapest_ranged_strike_cost(state, db, player_id)
+	if cheapest_strike < 0:
+		return false
+	if flip_cost + cheapest_strike > state.get_available_resources(player_id):
+		return false
+	# Already lethal? Don't burn the flip — the normal heuristics win anyway.
+	if _has_hero_lethal(state, db, player_id):
+		return false
+	# Would the bonus create a lethal? Apply it live, re-check, restore.
+	ps.ranged_weapon_atk_bonus += amount
+	var enabled := _has_hero_lethal(state, db, player_id)
+	ps.ranged_weapon_atk_bonus -= amount
+	return enabled
+
+
+func _has_hero_lethal(state: GameState, db, player_id: String) -> bool:
+	return _hero_lethal_action(state, db, player_id) != null \
+		or _all_out_hero_lethal_action(state, db, player_id) != null
+
+
+# Cheapest strike cost among the player's ready Ranged weapons in play, or -1 if
+# none. Mirrors get_strike_cost (which applies any discounts).
+func _cheapest_ranged_strike_cost(state: GameState, db, player_id: String) -> int:
+	var best := -1
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.dmg_type != "Ranged":
+			continue
+		if StackResolver._weapon_info(def).is_empty():
+			continue
+		var cost := StackResolver.get_strike_cost(state, player_id, def)
+		if cost >= 0 and (best < 0 or cost < best):
+			best = cost
+	return best
 
 
 # "All out" — no single attacker is lethal (checked above), but attacking with

@@ -180,6 +180,7 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 			continue
 		atk += b.amount
 	# (2) This card's own printed continuous self-modifiers.
+	var is_weapon := false
 	for segment in def.effects.split("|"):
 		var parts := segment.split(":")
 		if parts[0] == "atk_per_ally":
@@ -189,6 +190,15 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 		elif parts[0] == "atk_per_damage_self":
 			var per_damage := int(parts[1]) if parts.size() > 1 else 1
 			atk += per_damage * inst.damage_taken
+		elif parts[0] == "weapon":
+			is_weapon = true
+	# (2b) Elendril's flip: "Your Ranged weapons have +3 ATK this turn."
+	# Player-tracked bonus (ranged_weapon_atk_bonus) applied to this player's
+	# Ranged weapons. Reads live so a struck weapon's contribution reflects it.
+	if is_weapon and def.dmg_type == "Ranged":
+		var wps := players.get(inst.controller) as PlayerState
+		if wps:
+			atk += wps.ranged_weapon_atk_bonus
 	# (3) Party auras granted by other cards in play (e.g. Zorm Stonefury).
 	atk += _aura_atk_mods(inst, is_attacking, db)
 	# (3b) Strike modifier (rule 303.2b): +X ATK per weapon associated with this

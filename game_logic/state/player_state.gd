@@ -38,6 +38,11 @@ var damage_prevention: int = 0
 # start of every turn (so it lasts exactly the turn it was gained in).
 var melee_strike_discount: int = 0
 
+# Elendril's flip power: "Your Ranged weapons have +3 ATK this turn." Applied
+# to this player's Ranged weapons in GameState.get_atk; cleared at the start of
+# every turn (so it lasts exactly the turn it was gained in).
+var ranged_weapon_atk_bonus: int = 0
+
 # Rule-condition tracking for quests like Torek's Assault: whether this
 # player's hero was dealt damage by an opposing ally this turn. Reset at the
 # start of each turn.

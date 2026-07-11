@@ -1616,6 +1616,18 @@ static func _has_effect_flag(def: CardDef, flag: String) -> bool:
 	return false
 
 
+# True if a weapon struck by wielder_id this combat carries the
+# "strike_grants_long_range" effects flag (Ancient Bone Bow).
+static func _struck_weapon_grants_long_range(state: GameState, wielder_id: String, db) -> bool:
+	if not db or wielder_id == "":
+		return false
+	for weapon_id in state.combat_struck_weapons.get(wielder_id, []) as Array:
+		var def := db.get_def(state.get_card(weapon_id).card_def_id) as CardDef
+		if def and "strike_grants_long_range" in def.effects.split("|"):
+			return true
+	return false
+
+
 static func _has_keyword(card: CardInstance, keyword: String, db) -> bool:
 	if keyword in card.granted_keywords:
 		return true
@@ -1764,7 +1776,9 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	var atk_dmg := state.get_atk(attacker_id, db)   # to defender
 	var def_dmg := state.get_atk(defender_id, db)   # to attacker (0 for heroes, per 205.1)
 	# Rule glossary "Long-Range": while attacking, defenders can't deal combat damage.
-	if _has_keyword(attacker, "long_range", db):
+	# Ancient Bone Bow grants long-range for the combat when the wielder strikes it.
+	if _has_keyword(attacker, "long_range", db) \
+			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
 	state.combat_attacker = ""
 	state.combat_defender = ""

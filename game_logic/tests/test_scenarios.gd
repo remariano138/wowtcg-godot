@@ -123,6 +123,7 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
+		_test_bone_bow_grants_long_range,
 		_test_strike_gates_and_gorebelly_discount,
 		_test_ai_strike_decisions,
 		_test_golem_skull_helm_block,
@@ -6269,6 +6270,50 @@ func _test_weapon_defend_strike() -> void:
 	eq(state.get_card("p1_hero").damage_taken, 2, "ds-d: hero took the attacker's 2")
 	ok(not state.is_in_play("bruiser"),
 		"ds-d2: attacker died to the 3-damage counter-strike")
+
+
+# Ancient Bone Bow: striking with it grants the attacking hero long-range for
+# the combat — the defender deals no combat damage back.
+func _test_bone_bow_grants_long_range() -> void:
+	_buf.append("\n-- Weapon: Ancient Bone Bow grants long-range on strike --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# ATK 2, strike cost 2, Ranged, + the long-range grant flag.
+	db.weapon("bow_def", 3, 2, 2, "Ranged", "ranged_weapon")
+	(db._defs["bow_def"] as CardDef).effects += "|strike_grants_long_range"
+	db.ally("bruiser_def", 4, 5, [], 3)   # 4 ATK, survives the bow, would hit back
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var bruiser := _add_ally(state, "bruiser", "bruiser_def", "p2")
+	bruiser.just_summoned = false
+	var bow := CardInstance.create("bow", "bow_def", "p1", "p1_hero_row")
+	state.cards["bow"] = bow
+	state.zones["p1_hero_row"].card_ids.append("bow")
+
+	# Hero attacks the 4-ATK ally; without long-range the hero would take 4 back.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "bruiser"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> attack strike point
+
+	eq(state.pending_strike_player, "p1", "bb-a: strike point opened")
+	StackResolver.choose_strike(state, "bow", db)
+	eq(state.get_available_resources("p1"), 0, "bb-a2: strike cost 2 paid")
+	eq(state.get_atk("p1_hero", db), 2, "bb-a3: hero has +2 ATK from the bow")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window -> defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window -> conclusion
+
+	eq(state.get_card("bruiser").damage_taken, 2, "bb-b: defender took the bow's 2")
+	eq(state.get_card("p1_hero").damage_taken, 0,
+		"bb-b2: long-range — hero took no combat damage back")
+	ok(state.is_in_play("bruiser"), "bb-b3: bruiser survived (5 HP)")
+	ok(state.combat_struck_weapons.is_empty(),
+		"bb-b4: association cleared — grant is per-combat")
 
 
 # Declining, affordability gates, and the melee strike discount (Gorebelly).

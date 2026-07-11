@@ -1,0 +1,145 @@
+{
+  "deck_id": "horde_gorebelly_test",
+  "display_name": "Horde_test (Gorebelly)",
+  "hero_card_def_id": "azeroth_9",
+  "card_entries": [
+    {
+      "card_def_id": "azeroth_360",
+      "count": 2,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 2,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_361",
+      "count": 2,
+      "_card_name": "Zapped Giants"
+    },
+    {
+      "card_def_id": "azeroth_345",
+      "count": 4,
+      "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "azeroth_347",
+      "count": 2,
+      "_card_name": "Battle of Darrowshire"
+    },
+    {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 4,
+      "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "azeroth_246",
+      "count": 4,
+      "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_260",
+      "count": 4,
+      "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_230",
+      "count": 1,
+      "_card_name": "Blood Guard Mal'wani"
+    },
+    {
+      "card_def_id": "azeroth_235",
+      "count": 2,
+      "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_242",
+      "count": 2,
+      "_card_name": "Hierophant Caydiem"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_165",
+      "count": 2,
+      "_card_name": "Quick Strike"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 1,
+      "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "azeroth_331",
+      "count": 3,
+      "_card_name": "Krol Blade"
+    },
+    {
+      "card_def_id": "azeroth_262",
+      "count": 4,
+      "_card_name": "Vaerik Proudhoof"
+    },
+    {
+      "card_def_id": "azeroth_264",
+      "count": 2,
+      "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "azeroth_240",
+      "count": 4,
+      "_card_name": "Guardian Steelhorn"
+    },
+    {
+      "card_def_id": "azeroth_252",
+      "count": 1,
+      "_card_name": "Moko Hunts-at-Dawn"
+    },
+    {
+      "card_def_id": "dark_portal_235",
+      "count": 1,
+      "_card_name": "Tanwa the Marksman"
+    },
+    {
+      "card_def_id": "azeroth_274",
+      "count": 2,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "azeroth_249",
+      "count": 4,
+      "_card_name": "Kulan Earthguard"
+    },
+    {
+      "card_def_id": "azeroth_234",
+      "count": 2,
+      "_card_name": "Deacon Johanna"
+    }
+  ],
+  "recommended_ai_id": "ai_generic",
+  "strategy": "Grennan shell on a Warrior hero: Tauren Protectors plus Krol Blade hero strikes",
+  "source": "recommended_ai",
+  "metadata": {
+    "author": "playtest",
+    "origin": "copied from horde_grennan_test; Shaman abilities swapped for Krol Blades"
+  },
+  "_hero_name": "Gorebelly"
+}

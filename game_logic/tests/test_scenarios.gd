@@ -144,6 +144,11 @@ func _ready() -> void:
 		_test_wazzuli_party_heal,
 		_test_windseer_ready_on_attack,
 		_test_windseer_ready_declined_and_unaffordable,
+		_test_kena_shadowbrand_power,
+		_test_kena_shadowbrand_self_lethal,
+		_test_bizzik_sparkcog_sacrifice_draw,
+		_test_augustus_destroys_with_graveyard_cost,
+		_test_augustus_blocked_too_few_graveyard_allies,
 		_test_stat_tracker_counts,
 	]
 
@@ -7517,3 +7522,160 @@ func _test_windseer_ready_declined_and_unaffordable() -> void:
 	ok(state2.get_card("windseer").is_exhausted, "wt-o: declining leaves Windseer exhausted")
 	eq(state2.get_available_resources("p1"), 2, "wt-p: no resources spent on decline")
 	ok(state2.combat_attack_window, "wt-q: attack window opens after declining")
+
+
+# ── Kena Shadowbrand: [Activate], put 1 damage on self → draw ──────────────────
+func _test_kena_shadowbrand_power() -> void:
+	_buf.append("\n-- Kena Shadowbrand: activate + self-damage → draw --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kena_def", 1, 3, [], 3, "activated_power:0:draw:1:::activate_put_damage_self:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var kena := _add_ally(state, "kena", "kena_def", "p1")
+	kena.just_summoned = false
+	# One card in deck to draw.
+	var deck_card := CardInstance.create("kena_deck", "kena_def", "p1", "p1_deck")
+	state.cards["kena_deck"] = deck_card
+	state.zones["p1_deck"].card_ids.append("kena_deck")
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "kena"})
+	ok(StackResolver.can_submit(state, use, db), "ke-a: Kena power legal")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("kena_deck").zone_id, "p1_hand", "ke-b: drew a card")
+	eq(state.get_card("kena").damage_taken, 1, "ke-c: 1 damage put on Kena")
+	ok(state.get_card("kena").is_exhausted, "ke-d: Kena exhausted (activate symbol)")
+	ok(not StackResolver.can_submit(state, use, db),
+		"ke-e: power not reusable while exhausted")
+
+
+func _test_kena_shadowbrand_self_lethal() -> void:
+	_buf.append("\n-- Kena Shadowbrand: self-damage may be exactly fatal (405.3) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kena_def", 1, 3, [], 3, "activated_power:0:draw:1:::activate_put_damage_self:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var kena := _add_ally(state, "kena", "kena_def", "p1")
+	kena.just_summoned = false
+	kena.damage_taken = 2   # 1 HP left — the power's 1 self-damage is lethal
+	var deck_card := CardInstance.create("kena_deck", "kena_def", "p1", "p1_deck")
+	state.cards["kena_deck"] = deck_card
+	state.zones["p1_deck"].card_ids.append("kena_deck")
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "kena"})
+	ok(StackResolver.can_submit(state, use, db),
+		"ks-a: power legal even when the self-damage is lethal")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("kena_deck").zone_id, "p1_hand", "ks-b: card still drawn")
+	eq(state.get_card("kena").zone_id, "p1_graveyard", "ks-c: Kena destroyed by her own cost")
+
+
+# ── Bizzik Sparkcog: [Activate], destroy an ally in your party → draw ──────────
+func _test_bizzik_sparkcog_sacrifice_draw() -> void:
+	_buf.append("\n-- Bizzik Sparkcog: sacrifice a friendly ally → draw --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bizzik_def", 2, 4, [], 4, "activated_power:0:draw:1::friendly_ally:sacrifice_ally")
+	db.ally("chump_def", 1, 1, [], 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bizzik := _add_ally(state, "bizzik", "bizzik_def", "p1")
+	bizzik.just_summoned = false
+	var chump := _add_ally(state, "chump", "chump_def", "p1")
+	chump.just_summoned = false
+	var enemy := _add_ally(state, "enemy", "chump_def", "p2")
+	enemy.just_summoned = false
+	var deck_card := CardInstance.create("bz_deck", "chump_def", "p1", "p1_deck")
+	state.cards["bz_deck"] = deck_card
+	state.zones["p1_deck"].card_ids.append("bz_deck")
+
+	# bz-a: can't sacrifice an ENEMY ally (friendly party only).
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "bizzik", "target_id": "enemy"}), db),
+		"bz-a: enemy ally is not a legal sacrifice")
+
+	# bz-b: sacrificing our own chump is legal.
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "bizzik", "target_id": "chump"})
+	ok(StackResolver.can_submit(state, use, db), "bz-b: friendly ally is a legal sacrifice")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("chump").zone_id, "p1_graveyard", "bz-c: chump sacrificed to graveyard")
+	eq(state.get_card("bz_deck").zone_id, "p1_hand", "bz-d: drew a card")
+	ok(state.get_card("bizzik").is_exhausted, "bz-e: Bizzik exhausted")
+
+
+# ── Augustus Corpsemonger: exile 3 graveyard allies → destroy target ally ──────
+func _test_augustus_destroys_with_graveyard_cost() -> void:
+	_buf.append("\n-- Augustus Corpsemonger: exile 3 graveyard allies → destroy target ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("augustus_def", 3, 4, [], 5, "activated_power:0:destroy_ally:0::ally:rfg_allies:3")
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var aug := _add_ally(state, "aug", "augustus_def", "p1")
+	aug.just_summoned = false
+	var victim := _add_ally(state, "victim", "body_def", "p2")
+	victim.just_summoned = false
+	# 3 ally cards in p1's graveyard (the cost).
+	for i in range(3):
+		var gid := "gy_%d" % i
+		var gc := CardInstance.create(gid, "body_def", "p1", "p1_graveyard")
+		state.cards[gid] = gc
+		state.zones["p1_graveyard"].card_ids.append(gid)
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "aug", "target_id": "victim"})
+	ok(StackResolver.can_submit(state, use, db), "au-a: Augustus power legal with 3 gy allies")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("victim").zone_id, "p2_graveyard", "au-b: target ally destroyed")
+	var rfg_count := state.cards_in_zone("p1_rfg").size()
+	eq(rfg_count, 3, "au-c: three graveyard allies removed from the game")
+	eq(state.cards_in_zone("p1_graveyard").size(), 0, "au-d: graveyard emptied of the paid allies")
+	ok(state.get_card("aug").is_exhausted, "au-e: Augustus exhausted")
+
+
+func _test_augustus_blocked_too_few_graveyard_allies() -> void:
+	_buf.append("\n-- Augustus Corpsemonger: illegal with fewer than 3 graveyard allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("augustus_def", 3, 4, [], 5, "activated_power:0:destroy_ally:0::ally:rfg_allies:3")
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var aug := _add_ally(state, "aug", "augustus_def", "p1")
+	aug.just_summoned = false
+	var victim := _add_ally(state, "victim", "body_def", "p2")
+	victim.just_summoned = false
+	# Only 2 ally cards in graveyard — cost cannot be paid.
+	for i in range(2):
+		var gid := "gy_%d" % i
+		var gc := CardInstance.create(gid, "body_def", "p1", "p1_graveyard")
+		state.cards[gid] = gc
+		state.zones["p1_graveyard"].card_ids.append(gid)
+
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "aug", "target_id": "victim"}), db),
+		"ab-a: Augustus power illegal with only 2 graveyard allies")

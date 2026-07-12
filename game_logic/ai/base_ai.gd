@@ -672,11 +672,16 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		elif not no_activate_symbol and (card.is_exhausted or card.just_summoned):
 			continue
 		# Don't draw into a full hand (the card would just be discarded at wrap-up).
-		if ap.get("effect", "") == "draw":
+		if ap.get("effect", "") == "draw" and ap.get("targets", "") != "friendly_ally":
 			var ps_hand := state.players.get(player_id) as PlayerState
 			var max_hand: int = ps_hand.max_hand_size if ps_hand else 7
 			if state.cards_in_zone(player_id + "_hand").size() >= max_hand:
 				continue
+			# Kena Shadowbrand pays with self-damage — don't draw herself to death.
+			if extra_cost_str.begins_with("activate_put_damage_self"):
+				var self_dmg := int(extra_cost_str.split(":")[1]) if extra_cost_str.split(":").size() > 1 else 1
+				if state.get_current_hp(card.instance_id, db) <= self_dmg:
+					continue
 		if ap.get("effect", "") == "buff_atk_target_attacking":
 			# Ryn Dreamstrider: friendly +ATK buff — never target the enemy.
 			# Pick our own highest-ATK ready attacker (ally or hero).
@@ -704,6 +709,41 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_id})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
+		elif ap.get("effect", "") == "destroy_ally":
+			# Augustus Corpsemonger: "Destroy target ally" (cost: exile 3 ally
+			# cards from your graveyard). Enemy allies only, and only when the
+			# kill is worth it (target cost >= 3, no friendly solo-kill available).
+			var opp_d := "p2" if player_id == "p1" else "p1"
+			var best_kill := ""
+			var best_kill_cost := -1
+			for enemy in state.cards_in_zone(opp_d + "_ally_row"):
+				if not _destroy_is_worth_it(state, db, player_id, enemy.instance_id, 3):
+					continue
+				var e_def := _card_def(state, db, enemy.instance_id)
+				var e_cost := e_def.cost if e_def else 0
+				if e_cost > best_kill_cost:
+					best_kill_cost = e_cost
+					best_kill = enemy.instance_id
+			if best_kill != "":
+				var act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_kill})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
+		elif ap.get("effect", "") == "draw" and ap.get("targets", "") == "friendly_ally":
+			# Bizzik Sparkcog: "Destroy an ally in your party: draw a card."
+			# Only sacrifice an ally that's already mortally wounded (about to die
+			# anyway) — never throw away a healthy body for a single card.
+			var ps_hand2 := state.players.get(player_id) as PlayerState
+			var max_hand2: int = ps_hand2.max_hand_size if ps_hand2 else 7
+			if state.cards_in_zone(player_id + "_hand").size() < max_hand2:
+				for own in state.cards_in_zone(player_id + "_ally_row"):
+					if state.get_current_hp(own.instance_id, db) > 0 and own.damage_taken == 0:
+						continue
+					var act := PendingAction.make("use_ally_power", player_id,
+						{"card_id": card.instance_id, "target_id": own.instance_id})
+					if StackResolver.can_submit(state, act, db):
+						result.append(act)
+						break
 		elif ap.get("targets", "") in ["hero_or_ally"]:
 			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []

@@ -1361,7 +1361,7 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		return false
 	# Extra, card-specific costs baked into the power (e.g. Mooncloth Robe also
 	# exhausts your hero). If the hero can't pay, the power can't be used.
-	if not _can_pay_extra_power_cost(state, action.source_player, ap.get("extra_cost", "")):
+	if not _can_pay_extra_power_cost(state, action.source_player, ap.get("extra_cost", ""), db):
 		return false
 	# Targeted effects require a valid in-play target. `_skip_target_check` (used
 	# by has_any_legal_play / highlight probes, mirroring the instant/quest
@@ -1371,13 +1371,19 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	var targets_kind: String = ap.get("targets", "")
 	if skip_target:
 		return true
-	if targets_kind in ["hero_or_ally", "ally"]:
+	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
 		var target_id: String = action.params.get("target_id", "")
 		if not _is_legal_target(state, target_id, db):
 			return false
-		# "ally" powers (e.g. Elder Moorf) may only target allies, not heroes.
-		if targets_kind == "ally" and not _is_ally(state, target_id):
+		# "ally" powers (Elder Moorf buff, Augustus destroy) may only target
+		# allies, not heroes. "friendly_ally" (Bizzik's sacrifice cost) further
+		# requires the ally be in the source player's own party.
+		if targets_kind in ["ally", "friendly_ally"] and not _is_ally(state, target_id):
 			return false
+		if targets_kind == "friendly_ally":
+			var t_card := state.get_card(target_id)
+			if not t_card or t_card.controller != action.source_player:
+				return false
 	elif targets_kind == "hero_or_ally_two":
 		# Hierophant Caydiem: damage target_id, heal a different heal_target_id
 		# (rule 706.1 — "another target" can't repeat the first).
@@ -1403,7 +1409,7 @@ static func _is_ally(state: GameState, card_id: String) -> bool:
 
 # Whether a power's extra cost token can currently be paid.
 static func _can_pay_extra_power_cost(state: GameState, player_id: String,
-		extra_cost: String) -> bool:
+		extra_cost: String, db = null) -> bool:
 	var token := extra_cost.split(":")[0] if extra_cost != "" else ""
 	match token:
 		"", null:
@@ -1415,12 +1421,35 @@ static func _can_pay_extra_power_cost(state: GameState, player_id: String,
 				return false
 			var hero := state.get_card(hero_id)
 			return hero != null and not hero.is_exhausted
-		"put_damage_self":
+		"put_damage_self", "activate_put_damage_self":
 			# Rule 405.3: damage put on a character can't exceed its remaining
 			# health, but it CAN be exactly fatal — always payable while the
-			# source is in play (checked by the caller).
+			# source is in play (checked by the caller). activate_put_damage_self
+			# (Kena Shadowbrand) is the same self-damage cost but keeps the
+			# [Activate] tap symbol (the source also exhausts).
 			return true
+		"rfg_allies":
+			# Augustus Corpsemonger: remove N ally cards in your graveyard from
+			# the game. Payable only if the graveyard holds at least N of them.
+			var need := int(extra_cost.split(":")[1]) if extra_cost.split(":").size() > 1 else 0
+			return _count_graveyard_allies(state, player_id, db) >= need
+		"sacrifice_ally":
+			# Bizzik Sparkcog: destroy an ally in your party as a cost. Payable
+			# while you control at least one ally (Bizzik himself qualifies).
+			return not state.cards_in_zone(player_id + "_ally_row").is_empty()
 	return true
+
+
+# Count ally cards sitting in player_id's graveyard (Augustus Corpsemonger cost).
+static func _count_graveyard_allies(state: GameState, player_id: String, db) -> int:
+	var n := 0
+	if not db:
+		return 0
+	for card in state.cards_in_zone(player_id + "_graveyard"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if def and def.card_type == "Ally":
+			n += 1
+	return n
 
 
 # ── Ally activated power — resolution ─────────────────────────────────────────
@@ -1460,13 +1489,35 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		var hero_id: String = ps.hero_instance_id if ps else ""
 		if hero_id != "":
 			events.append_array(GameLogic.exhaust_card(state, hero_id))
-	elif extra_cost.begins_with("put_damage_self"):
-		# Rule 405.3: put (not deal) damage on the source itself, e.g. Acolyte
-		# Demia. Can be exactly fatal — check destruction after paying it.
+	elif extra_cost.begins_with("put_damage_self") \
+			or extra_cost.begins_with("activate_put_damage_self"):
+		# Rule 405.3: put (not deal) damage on the source itself (Acolyte Demia;
+		# Kena Shadowbrand). Can be exactly fatal — check destruction after paying.
 		var put_parts := extra_cost.split(":")
 		var put_amount: int = int(put_parts[1]) if put_parts.size() > 1 else 1
 		events.append_array(GameLogic.put_damage(state, card_id, put_amount, db))
 		events.append_array(_check_destroyed_trigger(state, card_id, card_id, db))
+	elif extra_cost.begins_with("rfg_allies"):
+		# Augustus Corpsemonger: remove N ally cards in your graveyard from the
+		# game (rule 415.7a — owner's RFG zone). The specific cards are auto-
+		# chosen in graveyard order (see data/rules_deviations.md — the player
+		# doesn't pick which dead allies leave, only a cost is paid).
+		var rfg_n := int(extra_cost.split(":")[1]) if extra_cost.split(":").size() > 1 else 0
+		var removed := 0
+		for gy_card in state.cards_in_zone(action.source_player + "_graveyard"):
+			if removed >= rfg_n:
+				break
+			var gy_def := db.get_def(gy_card.card_def_id) as CardDef
+			if gy_def and gy_def.card_type == "Ally":
+				events.append_array(GameLogic.move_card(state, gy_card.instance_id, gy_card.owner + "_rfg"))
+				events.append(GameEvent.card_removed_from_game(gy_card.instance_id, action.source_player))
+				removed += 1
+	elif extra_cost == "sacrifice_ally":
+		# Bizzik Sparkcog: destroy a chosen ally in your party as a cost. The
+		# target_id names the sacrifice (may be Bizzik himself).
+		var sac_id: String = action.params.get("target_id", "")
+		if _is_ally(state, sac_id):
+			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
 	events.append(GameEvent.make("ally_power_used",
 		{"ally_id": card_id, "player": action.source_player,
 			"target_id": action.params.get("target_id", "")}))
@@ -1476,6 +1527,13 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var n: int = int(ap.get("amount", 1))
 			for _i in n:
 				events.append_array(_draw_one(state, card.controller))
+		"destroy_ally":
+			# Augustus Corpsemonger: "Destroy target ally." Re-check at resolution
+			# (rule 706 / glossary 4217) — fizzle if the target left play or
+			# became Untargetable after the announce.
+			var destroy_id: String = action.params.get("target_id", "")
+			if _is_legal_target(state, destroy_id, db) and _is_ally(state, destroy_id):
+				events.append_array(_destroy_card_trigger(state, destroy_id, card_id, db))
 		"deal_damage_aoe":
 			var amount: int = int(ap.get("amount", 0))
 			var opp := _other_player(state, card.controller)

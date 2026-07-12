@@ -1103,7 +1103,7 @@ func get_context_actions(instance_id: String) -> Array:
 			if zone.zone_type in ["ally_row", "hero_row"] and card.controller == local_player:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
-					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "hero_or_ally_two"]
+					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two"]
 					var ap_enabled: bool
 					if ap_needs_target:
 						# Check affordability only (target chosen after targeting mode starts).
@@ -1122,6 +1122,7 @@ func get_context_actions(instance_id: String) -> Array:
 							ap_ready_ok = not card.is_exhausted and not card.just_summoned
 						ap_enabled = ap_ready_ok \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
+							and StackResolver._can_pay_extra_power_cost(state, local_player, ap_extra_cost, db) \
 							and state.phase == "action" and state.priority_player == local_player \
 							and (state.pending_actions.is_empty() \
 								or not StackResolver._power_effect_is(def, "on_your_turn"))

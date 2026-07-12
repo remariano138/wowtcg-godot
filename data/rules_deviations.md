@@ -230,3 +230,26 @@ enforced in `get_legal_protectors`.
 `combat_instant_dmg`, so the AI plays them purely as targeted-damage combat
 instants — it does not value or plan around the "can't attack / protect"
 effect. Rules-correct in the engine; simply not modeled in AI scoring.
+
+---
+
+## Augustus Corpsemonger — the 3 exiled graveyard allies are auto-chosen
+
+**Card:** Augustus Corpsemonger (`azeroth_177`, 5-cost Ally). Printed text:
+"[Activate], Remove three ally cards in your graveyard from the game: Destroy
+target ally." Recipe `activated_power:0:destroy_ally:0::ally:rfg_allies:3`.
+
+**Deviation:** rule 216.2 lets the paying player choose *which* three ally
+cards leave their graveyard. The engine instead removes the first three ally
+cards in graveyard order automatically (`rfg_allies` payment in
+`_resolve_use_ally_power`) — the player picks only the destroy target, not the
+cost.
+
+**Why:** no implemented card cares which specific cards sit in the RFG zone
+vs. the graveyard (nothing recurs a *named* card from either), so exposing a
+second multi-select just for the cost adds UI/flow complexity with no
+observable difference. The count and the type filter (Ally only) are still
+enforced, so the cost's legality is exact — only the identity of the exiled
+cards is auto-picked. If a future card ever returns a specific card from
+either zone, wire the graveyard-select UI (already used by quests) to this
+cost and drop this deviation.

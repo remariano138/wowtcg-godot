@@ -39,6 +39,9 @@ static func submit_action(state: GameState, action: PendingAction,
 			if card_id != "":
 				events.append_array(GameLogic.move_card(state, card_id, "chain"))
 				events.append_array(_pay_cost(state, card_id, action.source_player, db))
+				# Stat tracking: a card was played from hand (excludes resources,
+				# which are a separate branch below). See StatTracker.
+				events.append(GameEvent.card_played(action.source_player, card_id))
 		"place_resource":
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":

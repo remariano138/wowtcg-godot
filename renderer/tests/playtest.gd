@@ -106,6 +106,7 @@ var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_r
 var _end_turn_dialog: ConfirmationDialog
 var _p1_played_this_action_phase: bool = false
 var _game_over: bool = false
+var _stats: StatTracker = StatTracker.new()   # per-match card draw/play stats
 var _last_p1_deck_id: String = ""
 var _last_p2_deck_id: String = ""
 
@@ -750,6 +751,8 @@ func _add_label(text: String, pos: Vector2, size: int, color: Color) -> Label:
 # ── Game state setup ───────────────────────────────────────────────────────────
 
 func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
+	_stats.reset()   # fresh match stats before any card_moved/card_played fires
+
 	# Real database — only engine_status=implemented cards are loaded.
 	_db = CardDatabase.new()
 	_db.load_csv("res://data/cards.csv")
@@ -1414,6 +1417,7 @@ func _do_ai_turn() -> void:
 
 func _on_game_event(event: GameEvent) -> void:
 	_log_event(event)
+	_stats.record_event(event)
 	match event.event_type:
 		"priority_passed":
 			if event.payload.get("player", "") == "p2":
@@ -2019,6 +2023,15 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 
 func _on_targeting_cancelled() -> void:
 	_set_status("")
+	# A totem trigger's damage is mandatory ("deals", not "may") — the player can't
+	# bow out of picking. If one is still pending after a cancel, restart targeting
+	# from the front queued trigger so the human is asked again instead of locked.
+	if _state and _state.pending_totem_target_player != "" \
+			and not _state.pending_ongoing_triggers.is_empty():
+		var trig: Dictionary = _state.pending_ongoing_triggers[0]
+		_router.start_totem_targeting(
+			trig.get("card_id", ""), trig.get("dmg_type", ""), int(trig.get("amount", 0)))
+		return
 	# If an enters-play effect is still pending, targeting is mandatory — restart it.
 	# Exception: if a choose_enter_play_target action is already on the chain, the human
 	# already picked a target; don't restart (pending_enter_play_effect clears later when
@@ -2650,13 +2663,23 @@ func _handle_game_over(payload: Dictionary) -> void:
 	var winner: String = payload.get("winner", "?")
 	var dialog := ConfirmationDialog.new()
 	dialog.title            = "Game Over"
-	dialog.dialog_text      = "★  %s  wins!" % winner.to_upper()
+	dialog.dialog_text      = "★  %s  wins!\n\n%s" % [winner.to_upper(), _stats_summary()]
 	dialog.get_ok_button().text     = "Rematch"
 	dialog.get_cancel_button().text = "Leave Game"
 	dialog.confirmed.connect(_on_rematch)
 	dialog.canceled.connect(func() -> void: get_tree().quit())
 	add_child(dialog)
 	dialog.popup_centered()
+
+
+# Compact per-player stat block for the Game Over dialog.
+func _stats_summary() -> String:
+	var lines := PackedStringArray()
+	lines.append("            Drawn   Played")
+	for pid in ["p1", "p2"]:
+		lines.append("%-8s  %5d   %6d" % [
+			pid.to_upper(), _stats.drawn(pid), _stats.played(pid)])
+	return "\n".join(lines)
 
 
 func _on_rematch() -> void:

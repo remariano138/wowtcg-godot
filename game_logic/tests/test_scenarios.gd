@@ -135,6 +135,7 @@ func _ready() -> void:
 		_test_searing_totem_fires_each_turn,
 		_test_searing_totem_can_be_attacked,
 		_test_searing_totem_instant_timing,
+		_test_stat_tracker_counts,
 	]
 
 	for t in tests:
@@ -189,6 +190,62 @@ func eq(a, b, label: String) -> void:
 		_fail += 1
 		_buf_had_fail = true
 		_buf.append("  FAIL  %s  [got %s, expected %s]" % [label, str(a), str(b)])
+
+
+# ── Stat tracker ────────────────────────────────────────────────────────────────
+
+func _test_stat_tracker_counts() -> void:
+	_buf.append("[b]--- stat_tracker: counts draws & plays per player ---[/b]")
+	var st := StatTracker.new()
+
+	# Draws: only deck→hand moves for the owning player count.
+	st.record_event(GameEvent.card_moved("c1", "p1_deck", "p1_hand"))
+	st.record_event(GameEvent.card_moved("c2", "p1_deck", "p1_hand"))
+	st.record_event(GameEvent.card_moved("c3", "p2_deck", "p2_hand"))
+	# Non-draw moves must be ignored (play to chain, discard, graveyard).
+	st.record_event(GameEvent.card_moved("c4", "p1_hand", "chain"))
+	st.record_event(GameEvent.card_moved("c5", "p1_hand", "p1_graveyard"))
+
+	# Plays: dedicated card_played events; resources never emit these.
+	st.record_event(GameEvent.card_played("p1", "c4"))
+	st.record_event(GameEvent.card_played("p1", "c6"))
+	st.record_event(GameEvent.card_played("p2", "c7"))
+
+	eq(st.drawn("p1"),  2, "p1 drawn")
+	eq(st.drawn("p2"),  1, "p2 drawn")
+	eq(st.played("p1"), 2, "p1 played")
+	eq(st.played("p2"), 1, "p2 played")
+
+	# reset() clears everything for a new match.
+	st.reset()
+	eq(st.drawn("p1"),  0, "reset clears drawn")
+	eq(st.played("p1"), 0, "reset clears played")
+
+	# Real submission emits card_played for a card play but NOT for a resource.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear", 2, 2, [], 0)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_hand_card(state, "play_me", "bear", "p1")
+	_add_hand_card(state, "res_me", "bear", "p1")
+	var st2 := StatTracker.new()
+
+	var play := PendingAction.new()
+	play.action_type   = "play_ally"
+	play.source_player = "p1"
+	play.params        = {"card_id": "play_me"}
+	for e in StackResolver.submit_action(state, play, db):
+		st2.record_event(e)
+
+	var res := PendingAction.new()
+	res.action_type   = "place_resource"
+	res.source_player = "p1"
+	res.params        = {"card_id": "res_me"}
+	for e in StackResolver.submit_action(state, res, db):
+		st2.record_event(e)
+
+	eq(st2.played("p1"), 1, "submit: play counts, resource excluded")
 
 
 # ── Mock database ──────────────────────────────────────────────────────────────

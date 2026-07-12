@@ -36,6 +36,12 @@ static func make(p_type: String, p_payload: Dictionary = {}) -> GameEvent:
 static func card_moved(card_id: String, from_zone: String, to_zone: String) -> GameEvent:
 	return make("card_moved", {"card": card_id, "from": from_zone, "to": to_zone})
 
+# A card was played from hand (ally / instant / ability / equipment). Emitted at
+# submission (rule 409.1, hand→chain). Placing a resource is deliberately NOT a
+# "play" and does not emit this. Consumed by StatTracker for match stats.
+static func card_played(player_id: String, card_id: String) -> GameEvent:
+	return make("card_played", {"player": player_id, "card": card_id})
+
 static func damage_dealt(source_id: String, target_id: String, amount: int) -> GameEvent:
 	return make("damage_dealt", {"source": source_id, "target": target_id, "amount": amount})
 

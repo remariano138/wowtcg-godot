@@ -130,6 +130,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_strike() before priority can move.
 	if state.pending_strike_player != "":
 		return []
+	# A pending ready-on-attack decision (Windseer Tarus) must be resolved via
+	# choose_ready_on_attack() before priority can move.
+	if state.pending_ready_player != "":
+		return []
 	# A pending Totem start-of-turn target choice (Searing Totem) must be resolved
 	# via choose_totem_target() before priority can move.
 	if state.pending_totem_target_player != "":
@@ -221,6 +225,11 @@ static func can_submit(state: GameState, action: PendingAction,
 
 	# Strike point (602.1 / 602.3) blocks everything until resolved via choose_strike().
 	if state.pending_strike_player != "":
+		return false
+
+	# Ready-on-attack point (Windseer Tarus) blocks everything until resolved via
+	# choose_ready_on_attack().
+	if state.pending_ready_player != "":
 		return false
 
 	# Ongoing Totem start-of-turn target choice blocks everything until resolved
@@ -678,6 +687,33 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						}
 						events.append(GameEvent.enter_play_target_required(
 							card_id, dmg_type, amount))
+
+	# Watcher Mal'wi: "When an opposing ally enters play, [this] deals N ranged
+	# damage to it." Any in-play card an OPPONENT of the entering ally controls
+	# with the `damage_opposing_ally_on_enter:AMOUNT:DMG_TYPE` flag reacts here.
+	# Resolved immediately (like the on_enter effects above), not via the chain —
+	# see data/rules_deviations.md "Watcher Mal'wi".
+	if db:
+		for other_pid in state.players:
+			if other_pid == card.controller:
+				continue
+			for watcher in state.cards_in_play(other_pid):
+				var wdef := db.get_def(watcher.card_def_id) as CardDef
+				if not wdef or wdef.effects == "":
+					continue
+				for seg in wdef.effects.split("|"):
+					var wp := seg.strip_edges().split(":")
+					if wp[0].strip_edges() != "damage_opposing_ally_on_enter":
+						continue
+					if not state.is_in_play(card_id):
+						break   # entering ally already destroyed by an earlier watcher
+					# wp[2] is the damage type (ranged) — flavor only; deal_damage
+					# doesn't track a combat/effect damage type.
+					var amt := int(wp[1]) if wp.size() > 1 else 1
+					events.append_array(GameLogic.deal_damage(
+						state, watcher.instance_id, card_id, amt, db))
+					events.append_array(_check_destroyed_trigger(
+						state, card_id, watcher.instance_id, db))
 
 	# Check pet uniqueness (414.3b) — must happen after the card is in play.
 	events.append_array(_check_pet_uniqueness(state, card_id, db))
@@ -1784,8 +1820,82 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	if not strike.is_empty():
 		events.append_array(strike)
 		return events
+	# Windseer Tarus: "When [this] attacks for the first time each turn, you may
+	# pay X. If you do, ready him." Opens a pending choice mirroring the strike
+	# point, before the attack window (the trigger fires as the combat step starts).
+	# Resolved immediately, not via the chain — see data/rules_deviations.md
+	# "Windseer Tarus".
+	var ready_pt := _open_ready_on_attack_point(state, attacker_id, db)
+	if not ready_pt.is_empty():
+		events.append_array(ready_pt)
+		return events
 	state.combat_attack_window = true
 	events.append(GameEvent.attack_window_opened(attacker_id, defender_id))
+	return events
+
+
+# Opens a ready-on-attack point (Windseer Tarus) for the attacker's controller if
+# the attacker has the `ready_on_attack:COST` flag, this is its first attack this
+# turn, and the controller can afford COST. Marks the once-per-turn trigger as
+# fired (whether or not the player ends up paying). Returns [] when nothing to
+# offer, so the caller falls through to opening the attack window directly.
+static func _open_ready_on_attack_point(state: GameState, attacker_id: String,
+		db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var atk := state.get_card(attacker_id)
+	if not atk:
+		return []
+	var def := db.get_def(atk.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return []
+	var cost := -1
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0].strip_edges() == "ready_on_attack":
+			cost = int(p[1]) if p.size() > 1 else 0
+			break
+	if cost < 0:
+		return []
+	# "for the first time each turn" — only offer once per turn.
+	if int(atk.counters.get("attacked_this_turn", 0)) > 0:
+		return []
+	atk.counters["attacked_this_turn"] = 1
+	if state.get_available_resources(atk.controller) < cost:
+		return []
+	state.pending_ready_player  = atk.controller
+	state.pending_ready_card_id = attacker_id
+	state.pending_ready_cost    = cost
+	return [GameEvent.ready_on_attack_opened(atk.controller, attacker_id, cost)]
+
+
+# Entry point for the ready-on-attack decision (NOT chain-based — called directly
+# by the scene, like choose_strike). pay == false means decline. Pays the cost and
+# readies the attacker (it stays the combat_attacker, so this combat proceeds; it's
+# ready again afterward to attack a second time), then opens the held attack window.
+static func choose_ready_on_attack(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_ready_player == "":
+		return []
+	var player_id := state.pending_ready_player
+	var card_id   := state.pending_ready_card_id
+	var cost      := state.pending_ready_cost
+	state.pending_ready_player  = ""
+	state.pending_ready_card_id = ""
+	state.pending_ready_cost    = 0
+
+	var events: Array[GameEvent] = []
+	if pay and state.is_in_play(card_id) \
+			and state.get_available_resources(player_id) >= cost:
+		if cost > 0:
+			events.append_array(_pay_resources(state, player_id, cost))
+		events.append_array(GameLogic.ready_card(state, card_id))
+		events.append(GameEvent.readied_on_attack(player_id, card_id, cost))
+
+	# Open the attack window this ready point was holding up.
+	state.combat_attack_window = true
+	events.append(GameEvent.attack_window_opened(
+		state.combat_attacker, state.combat_defender))
 	return events
 
 

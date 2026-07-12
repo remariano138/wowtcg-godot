@@ -128,6 +128,8 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	for pid in state.players:
 		for card in state.cards_in_play(pid):
 			card.used_this_turn = false
+			# "attacks for the first time each turn" trigger gate (Windseer Tarus).
+			card.counters.erase("attacked_this_turn")
 
 	# Triggered effects: "at the start of each turn" (all players' in-play chars).
 	for pid in state.players:
@@ -248,6 +250,17 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 		# via StackResolver.choose_control_discard / decline_control_discard.
 		# Resolved immediately with no priority window — see data/rules_deviations.md
 		# "Infernal" for why this deviates from rule 501.1a's chain-based trigger.
+		# Wazzuli Wildmender: "At the start of your turn, [this] heals AMOUNT damage
+		# from each hero and ally in your party."
+		if not each_turn and key == "heal_party_at_turn_start":
+			var heal_amt := int(parts[1]) if parts.size() > 1 else 1
+			var pid := card.controller
+			for ally in state.cards_in_zone(pid + "_ally_row"):
+				events.append_array(GameLogic.heal(state, ally.instance_id, heal_amt, db))
+			var party_hero := state.get_hero(pid)
+			if party_hero:
+				events.append_array(GameLogic.heal(state, party_hero.instance_id, heal_amt, db))
+			continue
 		if not each_turn and key == "turn_start_discard_or_give_control":
 			state.pending_control_discard_player = card.controller
 			state.pending_control_discard_ids.append(card.instance_id)

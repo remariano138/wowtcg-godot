@@ -190,6 +190,21 @@ static func weapon_struck(player_id: String, wielder_id: String,
 		"cost_paid":  cost_paid,
 	})
 
+# Windseer Tarus: ready-on-attack point opened (may pay to ready the attacker).
+static func ready_on_attack_opened(player_id: String, card_id: String, cost: int) -> GameEvent:
+	return make("ready_on_attack_opened", {
+		"player":  player_id,
+		"card_id": card_id,
+		"cost":    cost,
+	})
+
+static func readied_on_attack(player_id: String, card_id: String, cost_paid: int) -> GameEvent:
+	return make("readied_on_attack", {
+		"player":    player_id,
+		"card_id":   card_id,
+		"cost_paid": cost_paid,
+	})
+
 # Gorebelly's flip: discount on the next melee weapon strike this turn.
 static func strike_discount_gained(player_id: String, amount: int) -> GameEvent:
 	return make("strike_discount_gained", {"player": player_id, "amount": amount})

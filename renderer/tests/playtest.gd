@@ -155,6 +155,11 @@ var _in_strike_mode: bool = false
 var _strike_weapon_ids: Array = []
 var _strike_nodes: Array[Node] = []
 
+# Ready-on-attack point (Windseer Tarus) — inline "pay to ready" choice, mirrors
+# the strike-point UI.
+var _in_ready_mode: bool = false
+var _ready_nodes: Array[Node] = []
+
 # ── Combat window highlight (attacker/defender in red during attack/defend windows) ──
 var _combat_highlight_ids: Array = []
 
@@ -847,7 +852,7 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 func _refresh_ui() -> void:
 	_update_priority_label()
 	_update_phase_label()
-	if not _in_protect_mode and not _in_strike_mode:
+	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
 	_update_cancel_btn()
@@ -1503,6 +1508,15 @@ func _on_game_event(event: GameEvent) -> void:
 		"strike_point_opened":
 			_window_generation += 1
 			_handle_strike_point(event.payload)
+		"ready_on_attack_opened":
+			_window_generation += 1
+			_handle_ready_point(event.payload)
+		"readied_on_attack":
+			var r_card := _state.get_card(event.payload.get("card_id", ""))
+			var r_def: CardDef = _db.get_def(r_card.card_def_id) if r_card else null
+			_set_status("↻ %s readies %s" % [event.payload.get("player", "?"),
+				r_def.card_name if r_def else "an attacker"])
+			_refresh_ui()
 		"weapon_struck":
 			var w_card := _state.get_card(event.payload.get("weapon_id", ""))
 			var w_def: CardDef = _db.get_def(w_card.card_def_id) if w_card else null
@@ -2653,6 +2667,90 @@ func _resolve_strike(weapon_id: String) -> void:
 	# would re-read the just-held window as "already seen" and Layer-2 auto-pass it.
 
 
+# ── Ready-on-attack point (Windseer Tarus) ─────────────────────────────────────
+
+func _handle_ready_point(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		# AI decides immediately (BaseAI.choose_ready_on_attack).
+		var pay: bool = ai.choose_ready_on_attack(_state, _db, player)
+		var events := StackResolver.choose_ready_on_attack(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_ready_inline(payload)
+
+
+func _show_ready_inline(payload: Dictionary) -> void:
+	_in_ready_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var card_id: String = payload.get("card_id", "")
+	var cost: int       = payload.get("cost", 0)
+	var card := _state.get_card(card_id)
+	var card_name := "the attacker"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+
+	const CENTER_X := 960
+	const BTN_W    := 220
+	const SKIP_W   := 120
+	const GAP      := 20
+	var row_width: int = BTN_W + GAP + SKIP_W
+	@warning_ignore("integer_division")
+	var btn_x := CENTER_X - row_width / 2
+
+	var header := Label.new()
+	header.text = "%s attacks — pay %d to ready it?" % [card_name, cost]
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(0.5, 0.8, 0.9))
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.size     = Vector2(row_width + 100, 20)
+	@warning_ignore("integer_division")
+	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
+	add_child(header)
+	_ready_nodes.append(header)
+
+	var pay_btn := Button.new()
+	pay_btn.text     = "Pay %d: ready %s" % [cost, card_name]
+	pay_btn.position = Vector2(btn_x, 987)
+	pay_btn.size     = Vector2(BTN_W, 36)
+	pay_btn.pressed.connect(func() -> void: _resolve_ready(true))
+	add_child(pay_btn)
+	_ready_nodes.append(pay_btn)
+
+	var skip := Button.new()
+	skip.text     = "Decline"
+	skip.position = Vector2(btn_x + BTN_W + GAP, 987)
+	skip.size     = Vector2(SKIP_W, 36)
+	skip.pressed.connect(func() -> void: _resolve_ready(false))
+	add_child(skip)
+	_ready_nodes.append(skip)
+
+
+func _resolve_ready(pay: bool) -> void:
+	_in_ready_mode = false
+	for n in _ready_nodes:
+		n.queue_free()
+	_ready_nodes.clear()
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_ready_on_attack(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	# NOTE: no _drain_passes() here — same reasoning as _resolve_strike.
+	# choose_ready_on_attack opens the held attack window, whose handler drains
+	# synchronously inside emit_events above.
+
+
 # ── Game over ──────────────────────────────────────────────────────────────────
 
 func _handle_game_over(payload: Dictionary) -> void:
@@ -2692,6 +2790,8 @@ func _on_rematch() -> void:
 	_protect_nodes                = []
 	_in_strike_mode               = false
 	_strike_nodes                 = []
+	_in_ready_mode                = false
+	_ready_nodes                  = []
 	_p1_has_mulliganed            = false
 	_p1_ai = _make_ai(_p1_type, _last_p1_deck_id)
 	_p2_ai = _make_ai(_p2_type, _last_p2_deck_id)
@@ -2715,6 +2815,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the reveal-and-pick quest choice before advancing
 	if _state.pending_totem_target_player != "":
 		return  # wait for the Totem start-of-turn target choice before advancing
+	if _state.pending_ready_player != "":
+		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	if pid_type != "human" \
@@ -2722,7 +2824,9 @@ func _schedule_next_turn() -> void:
 			and not _state.in_protect_point \
 			and not _in_protect_mode \
 			and _state.pending_strike_player == "" \
-			and not _in_strike_mode:
+			and not _in_strike_mode \
+			and _state.pending_ready_player == "" \
+			and not _in_ready_mode:
 		_ai_timer.start()
 
 
@@ -2760,7 +2864,8 @@ func _drain_passes() -> void:
 	while limit > 0:
 		limit -= 1
 		if _game_over or _state.in_protect_point or _in_protect_mode \
-				or _state.pending_strike_player != "" or _in_strike_mode:
+				or _state.pending_strike_player != "" or _in_strike_mode \
+				or _state.pending_ready_player != "" or _in_ready_mode:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \

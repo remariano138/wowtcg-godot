@@ -614,6 +614,29 @@ func choose_strike_weapon(state: GameState, db, player_id: String) -> String:
 	return ""
 
 
+# Ready-on-attack decision (Windseer Tarus) — called by the scene on
+# ready_on_attack_opened when the pending player is an AI. Returns true to pay and
+# ready (attack again this turn). We pay only when the attacker will SURVIVE this
+# combat: attacking the opposing hero (heroes deal no combat damage back), or an
+# opposing ally whose counter-damage leaves the attacker alive. Otherwise the
+# resource is likely wasted (it dies before the second attack).
+func choose_ready_on_attack(state: GameState, db, _player_id: String) -> bool:
+	var card_id := state.pending_ready_card_id
+	if card_id == "" or not db:
+		return false
+	var defender_id := state.combat_defender
+	var defender := state.get_card(defender_id)
+	if not defender:
+		return false
+	# Attacking the hero: no combat damage back → the attacker always survives.
+	var def_zone := state.zones.get(defender.zone_id) as Zone
+	if def_zone and def_zone.zone_type == "hero_row":
+		return true
+	# Attacking an ally: only pay if we outlive the retaliation.
+	var counter := state.get_atk(defender_id, db)
+	return state.get_current_hp(card_id, db) > counter
+
+
 # Returns activate_power actions for the player's hero.
 func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
 	var result: Array[PendingAction] = []

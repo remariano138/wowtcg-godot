@@ -146,3 +146,64 @@ immediate-resolution mandatory-choice pattern.
 targeted-damage Totem uses the `ongoing|totem[:element]|ongoing_damage_each_turn:AMOUNT:TYPE`
 recipe. If a future trigger must be respondable, the same chain-based rework
 noted under Infernal applies here.
+
+---
+
+## Watcher Mal'wi (`azeroth_269`)
+
+**Printed text:** "When an opposing ally enters play, Watcher Mal'wi deals 1
+ranged damage to it."
+
+**Rule 501.1a / 410:** this is a triggered ability that, in paper play, is
+added to the chain when the opposing ally enters play, with a priority window
+before the 1 damage is dealt.
+
+**Deviation:** the engine resolves the ping immediately, inline in
+`StackResolver._bring_ally_into_play` (the same place the entering ally's own
+`on_enter` effects resolve), with no chain link or priority window. Any
+in-play card an *opponent of the entering ally* controls with the
+`damage_opposing_ally_on_enter:AMOUNT:DMG_TYPE` flag deals its damage, then the
+entering ally is checked for destruction.
+
+**Why:** identical reasoning to Infernal / Searing Totem — no implemented card
+can respond to a triggered ability before it resolves, and `on_enter` enter-play
+effects already resolve inline, so a chain-based implementation would add
+complexity with no observable difference. (`deal_damage` doesn't track a
+combat/effect damage type, so the `:ranged` field is flavor only.)
+
+**How to apply this pattern to future cards:** a "when an opposing ally enters
+play, deal N to it" trigger uses the data-driven
+`damage_opposing_ally_on_enter:N:TYPE` flag — no card id is hardcoded in
+`stack_resolver.gd`. If a future trigger must be respondable, the chain-based
+rework noted under Infernal applies here.
+
+---
+
+## Windseer Tarus (`azeroth_271`)
+
+**Printed text:** "When Windseer Tarus attacks for the first time each turn,
+you may pay (1). If you do, ready him."
+
+**Rule 501.1a / 602.1:** in paper play this triggered ability goes on the chain
+as the combat step starts, with a priority window before its "may pay (1)"
+choice is made.
+
+**Deviation:** the engine resolves it immediately as a mandatory-style pending
+choice, mirroring the weapon strike point (602.1). In
+`StackResolver._resolve_propose_combat`, after the attacker exhausts and before
+the attack window opens, `_open_ready_on_attack_point` sets
+`pending_ready_player`/`_card_id`/`_cost` and emits `ready_on_attack_opened`;
+`pending_ready_player` hard-blocks `can_submit` / `pass_priority` until resolved
+via `StackResolver.choose_ready_on_attack(state, pay, db)` (a direct call, like
+`choose_strike`). Readying happens inline (the attacker stays the
+`combat_attacker`, so this combat proceeds; it's ready again afterward). The
+"first time each turn" gate is the `attacked_this_turn` card counter, set when
+the point opens and cleared at each turn's ready step.
+
+**Why:** identical reasoning to the strike point it's modeled on — no
+implemented card responds to the trigger before its choice, so a chain-based
+implementation would add complexity with no observable difference.
+
+**How to apply this pattern to future cards:** a "when this attacks for the
+first time each turn, you may pay X to ready it" trigger uses the data-driven
+`ready_on_attack:COST` flag — no card id is hardcoded in `stack_resolver.gd`.

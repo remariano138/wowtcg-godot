@@ -50,8 +50,13 @@
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 4,
+      "count": 3,
       "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_269",
+      "count": 1,
+      "_card_name": "Watcher Mal'wi"
     },
     {
       "card_def_id": "azeroth_235",
@@ -125,8 +130,13 @@
     },    
     {
       "card_def_id": "azeroth_274",
-      "count": 2,
+      "count": 1,
       "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "azeroth_271",
+      "count": 1,
+      "_card_name": "Windseer Tarus"
     },
     {
       "card_def_id": "azeroth_249",

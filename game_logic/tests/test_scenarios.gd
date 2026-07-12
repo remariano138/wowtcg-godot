@@ -135,6 +135,11 @@ func _ready() -> void:
 		_test_searing_totem_fires_each_turn,
 		_test_searing_totem_can_be_attacked,
 		_test_searing_totem_instant_timing,
+		_test_watcher_malwi_pings_entering_opposing_ally,
+		_test_watcher_malwi_ignores_own_allies,
+		_test_wazzuli_party_heal,
+		_test_windseer_ready_on_attack,
+		_test_windseer_ready_declined_and_unaffordable,
 		_test_stat_tracker_counts,
 	]
 
@@ -7033,3 +7038,187 @@ func _test_searing_totem_instant_timing() -> void:
 	var play_plain := PendingAction.make("play_ability", "p1", {"card_id": "plain"})
 	ok(not StackResolver.can_submit(state, play_plain, db),
 		"st4-b: a non-instant ongoing Ability is NOT playable off-turn")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Watcher Mal'wi — when an opposing ally enters play, deal 1 ranged damage to it
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_watcher_malwi_pings_entering_opposing_ally() -> void:
+	_buf.append("\n-- Watcher Mal'wi: pings opposing allies as they enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("malwi_def", 3, 3, [], 4, "damage_opposing_ally_on_enter:1:ranged")
+	db.ally("wisp_def", 1, 1, [], 1)     # 1 health — dies to the ping
+	db.ally("bruiser_def", 2, 3, [], 2)  # survives with 1 damage
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# Mal'wi belongs to p1; p2 is the active player playing allies into it.
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 5)
+	var malwi := _add_ally(state, "malwi", "malwi_def", "p1")
+	malwi.just_summoned = false
+
+	_add_hand_card(state, "wisp", "wisp_def", "p2")
+	_add_hand_card(state, "bruiser", "bruiser_def", "p2")
+	# A friendly ally p2 plays should also get pinged (it's opposing to Mal'wi).
+
+	var p2_ai := ScriptedAI.new()
+	p2_ai.queue_action(PendingAction.make("play_ally", "p2", {"card_id": "wisp"}))
+	p2_ai.queue_action(PendingAction.make("play_ally", "p2", {"card_id": "bruiser"}))
+
+	_drive_turns(state, db, ScriptedAI.new(), p2_ai, 1)
+
+	ok(not state.is_in_play("wisp"), "wm-a: 1-health opposing ally destroyed by the ping")
+	ok(state.is_in_play("bruiser"), "wm-b: 3-health opposing ally survives")
+	eq(state.get_card("bruiser").damage_taken, 1, "wm-c: bruiser took exactly 1 damage")
+	eq(state.get_card("malwi").damage_taken, 0, "wm-d: Mal'wi itself untouched")
+
+
+func _test_watcher_malwi_ignores_own_allies() -> void:
+	_buf.append("\n-- Watcher Mal'wi: does not ping its controller's own allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("malwi_def", 3, 3, [], 4, "damage_opposing_ally_on_enter:1:ranged")
+	db.ally("wisp_def", 1, 1, [], 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	var malwi := _add_ally(state, "malwi", "malwi_def", "p1")
+	malwi.just_summoned = false
+	_add_hand_card(state, "wisp", "wisp_def", "p1")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_ally", "p1", {"card_id": "wisp"}))
+
+	_drive_turns(state, db, p1_ai, ScriptedAI.new(), 1)
+
+	ok(state.is_in_play("wisp"), "wm-e: a friendly ally entering is NOT pinged")
+	eq(state.get_card("wisp").damage_taken, 0, "wm-f: friendly ally took no damage")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Wazzuli Wildmender — start-of-turn party heal (each hero and ally in your party)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_wazzuli_party_heal() -> void:
+	_buf.append("\n-- Wazzuli Wildmender: heals your party at the start of your turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wazzuli_def", 3, 5, [], 5, "heal_party_at_turn_start:1")
+	db.ally("grunt_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# Set up so the next ready step is p1's turn.
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	state.phase           = "end"
+
+	var wazzuli := _add_ally(state, "wazzuli", "wazzuli_def", "p1")
+	wazzuli.just_summoned = false
+	wazzuli.damage_taken  = 2
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	grunt.damage_taken  = 1
+	state.get_card("p1_hero").damage_taken = 3
+	# An opposing ally must NOT be healed.
+	var enemy := _add_ally(state, "enemy", "grunt_def", "p2")
+	enemy.damage_taken = 2
+
+	# Advance from p2's end phase → p1's ready step (fires the start-of-turn heal).
+	TurnManager.advance_phase(state, db)
+
+	eq(state.turn_player, "p1", "wz-pre: it is now p1's turn")
+	eq(state.get_card("p1_hero").damage_taken, 2, "wz-a: your hero healed 1")
+	eq(state.get_card("wazzuli").damage_taken, 1, "wz-b: Wazzuli healed 1")
+	eq(state.get_card("grunt").damage_taken, 0,   "wz-c: friendly ally healed 1")
+	eq(state.get_card("enemy").damage_taken, 2,   "wz-d: opposing ally NOT healed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windseer Tarus — first attack each turn, may pay 1 to ready him
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_windseer_ready_on_attack() -> void:
+	_buf.append("\n-- Windseer Tarus: pay 1 to ready after the first attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("windseer_def", 3, 3, [], 4, "ready_on_attack:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var windseer := _add_ally(state, "windseer", "windseer_def", "p1")
+	windseer.just_summoned = false
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "windseer", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → ready-on-attack point
+
+	eq(state.pending_ready_player, "p1", "wt-a: ready-on-attack point opened for p1")
+	ok(state.get_card("windseer").is_exhausted, "wt-b: attacker exhausted before the choice")
+	ok(not state.combat_attack_window, "wt-c: attack window held until the choice resolves")
+	# Everything else is blocked while the choice is pending.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"wt-d: pass_priority blocked while ready choice pending")
+
+	StackResolver.choose_ready_on_attack(state, true, db)
+	ok(not state.get_card("windseer").is_exhausted, "wt-e: Windseer readied by paying 1")
+	eq(state.get_available_resources("p1"), 1, "wt-f: 1 resource paid")
+	ok(state.combat_attack_window, "wt-g: attack window opened after the choice")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window → defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window → conclusion
+
+	eq(state.get_card("p2_hero").damage_taken, 3, "wt-h: hero took Windseer's 3")
+	ok(not state.get_card("windseer").is_exhausted,
+		"wt-i: Windseer still ready after combat — can attack again")
+
+	# Second attack this turn: the trigger already fired, so NO ready point opens.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "windseer", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_ready_player, "", "wt-j: no ready point on the second attack")
+	ok(state.combat_attack_window, "wt-k: attack window opens directly the second time")
+
+
+func _test_windseer_ready_declined_and_unaffordable() -> void:
+	_buf.append("\n-- Windseer Tarus: decline, and no offer when unaffordable --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("windseer_def", 3, 3, [], 4, "ready_on_attack:1")
+
+	# No resources available → the point never opens (can't afford the 1).
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var windseer := _add_ally(state, "windseer", "windseer_def", "p1")
+	windseer.just_summoned = false
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "windseer", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_ready_player, "", "wt-l: no ready point when the cost is unaffordable")
+	ok(state.combat_attack_window, "wt-m: attack window opens directly")
+
+	# With resources: open the point but DECLINE — Windseer stays exhausted.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 2)
+	var w2 := _add_ally(state2, "windseer", "windseer_def", "p1")
+	w2.just_summoned = false
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "windseer", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.pending_ready_player, "p1", "wt-n: point opens when affordable")
+	StackResolver.choose_ready_on_attack(state2, false, db)
+	ok(state2.get_card("windseer").is_exhausted, "wt-o: declining leaves Windseer exhausted")
+	eq(state2.get_available_resources("p1"), 2, "wt-p: no resources spent on decline")
+	ok(state2.combat_attack_window, "wt-q: attack window opens after declining")

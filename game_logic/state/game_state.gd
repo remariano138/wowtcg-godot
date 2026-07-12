@@ -53,6 +53,13 @@ var combat_struck_weapons: Dictionary = {}
 var pending_strike_player: String = ""
 var pending_strike_weapon_ids: Array[String] = []  # strikeable weapons offered
 var pending_strike_side: String = ""  # "attack" (602.1) or "defend" (602.3)
+# Ready-on-attack point (Windseer Tarus, rule 601.x triggered ability): non-empty
+# while an attacker's controller may pay to ready it after it attacks for the
+# first time this turn. Opened at combat-step start (602.1), like the strike
+# point; resolved via StackResolver.choose_ready_on_attack() (direct call).
+var pending_ready_player: String = ""
+var pending_ready_card_id: String = ""
+var pending_ready_cost: int = 0
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending

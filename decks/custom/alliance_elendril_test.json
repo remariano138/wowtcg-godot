@@ -1,7 +1,7 @@
 {
-  "deck_id": "horde_senzir_test",
-  "display_name": "Horde_test (Sen'zir)",
-  "hero_card_def_id": "azeroth_14",
+  "deck_id": "alliance_elendril_test",
+  "display_name": "Alliance_test (Elendril)",
+  "hero_card_def_id": "azeroth_3",
   "card_entries": [
     {
       "card_def_id": "azeroth_360",
@@ -17,11 +17,6 @@
       "card_def_id": "dark_portal_316",
       "count": 2,
       "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
-      "card_def_id": "azeroth_345",
-      "count": 4,
-      "_card_name": "Torek's Assault"
     },
     {
       "card_def_id": "azeroth_351",
@@ -79,51 +74,6 @@
       "_card_name": "Ancient Bone Bow"
     },
     {
-      "card_def_id": "azeroth_260",
-      "count": 4,
-      "_card_name": "Taz'dingo"
-    },
-    {
-      "card_def_id": "azeroth_230",
-      "count": 2,
-      "_card_name": "Blood Guard Mal'wani"
-    },
-    {
-      "card_def_id": "azeroth_264",
-      "count": 4,
-      "_card_name": "Vesh'ral"
-    },
-    {
-      "card_def_id": "azeroth_236",
-      "count": 4,
-      "_card_name": "Fa'tafi"
-    },
-    {
-      "card_def_id": "azeroth_248",
-      "count": 4,
-      "_card_name": "Ka'tali Stonetusk"
-    },
-    {
-      "card_def_id": "azeroth_269",
-      "count": 1,
-      "_card_name": "Watcher Mal'wi"
-    },
-    {
-      "card_def_id": "azeroth_270",
-      "count": 1,
-      "_card_name": "Wazzuli Wildmender"
-    },
-    {
-      "card_def_id": "azeroth_246",
-      "count": 4,
-      "_card_name": "Kagra of the Crossroads"
-    },
-    {
-      "card_def_id": "azeroth_235",
-      "count": 1,
-      "_card_name": "Elder Moorf"
-    },
-    {
       "card_def_id": "azeroth_331",
       "count": 2,
       "_card_name": "Krol Blade"
@@ -134,16 +84,86 @@
       "_card_name": "Master of the Hunt"
     },
     {
-      "card_def_id": "azeroth_249",
+      "card_def_id": "azeroth_179",
+      "count": 1,
+      "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 1,
+      "_card_name": "Nerra Lifeboon"
+    },
+    {
+      "card_def_id": "azeroth_183",
+      "count": 2,
+      "_card_name": "Freya Lightsworn"
+    },
+    {
+      "card_def_id": "azeroth_197",
       "count": 4,
-      "_card_name": "Kulan Earthguard"
+      "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_212",
+      "count": 4,
+      "_card_name": "Parvink"
+    },
+    {
+      "card_def_id": "azeroth_222",
+      "count": 4,
+      "_card_name": "Warden Tonarin"
+    },
+    {
+      "card_def_id": "azeroth_340",
+      "count": 4,
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
+    },
+    {
+      "card_def_id": "azeroth_221",
+      "count": 2,
+      "_card_name": "Tristan Rapidstrike"
+    },
+    {
+      "card_def_id": "azeroth_176",
+      "count": 2,
+      "_card_name": "Apprentice Teep"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "azeroth_192",
+      "count": 3,
+      "_card_name": "Kor Cindervein"
+    },
+    {
+      "card_def_id": "azeroth_348",
+      "count": 2,
+      "_card_name": "Big Game Hunter"
+    },
+    {
+      "card_def_id": "azeroth_180",
+      "count": 2,
+      "_card_name": "Crazy Igvand"
+    },
+    {
+      "card_def_id": "azeroth_219",
+      "count": 1,
+      "_card_name": "Tracker Gallen"
     }
   ],
-  "recommended_ai_id": "ai_generic",
-  "source": "recommended_ai",
+  "recommended_ai_id": "",
+  "source": "custom",
   "metadata": {
     "author": "playtest",
-    "origin": "user deck list, 2026-07-08"
+    "origin": "neutral cards carried over from Sen'zir deck, 2026-07-12"
   },
-  "_hero_name": "Sen'zir Beastwalker"
+  "_hero_name": "Elendril"
 }

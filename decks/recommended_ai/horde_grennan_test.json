@@ -5,8 +5,13 @@
   "card_entries": [
     {
       "card_def_id": "azeroth_360",
-      "count": 2,
+      "count": 1,
       "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
     },
     {
       "card_def_id": "dark_portal_316",

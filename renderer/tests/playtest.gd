@@ -1071,6 +1071,12 @@ func _input(event: InputEvent) -> void:
 			_set_status("Press Ctrl+Space to give up control, or click a card to discard")
 			get_viewport().set_input_as_handled()
 			return
+		# Protect point: Space mirrors the "Don't protect" button (skip protecting),
+		# matching the pass button's behavior everywhere else in the window flow.
+		if _in_protect_mode:
+			_resolve_protection("")
+			get_viewport().set_input_as_handled()
+			return
 		_try_pass()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_cancel"):

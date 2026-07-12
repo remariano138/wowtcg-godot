@@ -1805,6 +1805,27 @@ static func _allies_attack_locked(state: GameState, player_id: String, db) -> bo
 	return false
 
 
+# Donna Calister (azeroth_181): "When an opposing hero or ally attacks, ready
+# Donna Calister." Called as a combat step starts. Readies every exhausted
+# in-play card carrying the `ready_on_opposing_attack` effect flag whose
+# controller is NOT the attacking player (i.e. the attacker is "opposing" to
+# them). Non-targeted, no cost — resolved immediately rather than via the chain.
+static func _ready_on_opposing_attack(state: GameState, attacker_id: String,
+		db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	var attacker := state.get_card(attacker_id)
+	if not attacker:
+		return events
+	var defender_side := _other_player(state, attacker.controller)
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(defender_side + zone_suffix):
+			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "ready_on_opposing_attack"):
+				events.append_array(GameLogic.ready_card(state, card.instance_id))
+	return events
+
+
 # Apply a damaged-target restriction rider (Frostbolt / Frost Shock). field is a
 # "+"-joined list of restriction names (e.g. "cannot_attack+cannot_protect").
 # Each becomes a restriction Buff lasting until the end of this turn (turns:1),
@@ -1939,6 +1960,12 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	state.combat_defender = defender_id
 	events.append_array(GameLogic.exhaust_card(state, attacker_id))
 	events.append(GameEvent.combat_started(attacker_id, defender_id))
+	# Donna Calister: "When an opposing hero or ally attacks, ready Donna
+	# Calister." Triggers off the attack (any attacker), for the non-attacking
+	# side. Non-targeted, no cost — resolved immediately as the combat step
+	# starts (before the strike point / attack window) so she's ready to
+	# protect this same combat. See data/rules_deviations.md "Donna Calister".
+	events.append_array(_ready_on_opposing_attack(state, attacker_id, db))
 	# Rule 602.1: the attacking player can strike with weapons now (and only
 	# now), before the attack window opens. Doesn't use the chain.
 	var strike := _open_strike_point(state, attacker_id, "attack", db)

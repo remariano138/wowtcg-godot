@@ -210,6 +210,33 @@ first time each turn, you may pay X to ready it" trigger uses the data-driven
 
 ---
 
+## Donna Calister (`azeroth_181`)
+
+**Printed text:** "When an opposing hero or ally attacks, ready Donna Calister."
+
+**Rule 703 / 708:** in paper play this triggered power creates a triggered
+effect that goes on the chain as the attack happens, resolving with a priority
+window.
+
+**Deviation:** the engine resolves it immediately in
+`StackResolver._resolve_propose_combat`, right after `combat_started` is emitted
+and before the strike point / attack window. `_ready_on_opposing_attack` scans
+the non-attacking player's ally_row + hero_row for the data-driven
+`ready_on_opposing_attack` effect flag and calls `GameLogic.ready_card` on each.
+No pending choice — the effect is non-targeted with no cost, so there is nothing
+to decide. Readying before the attack window means she is available to protect
+the very combat that triggered her (the intended use).
+
+**Why:** the effect has no target and no cost, and no implemented card responds
+to the trigger before it resolves, so a chain-based implementation would add
+complexity with no observable difference.
+
+**How to apply this pattern to future cards:** a "when an opposing hero/ally
+attacks, ready this" trigger uses the `ready_on_opposing_attack` effects flag —
+no card id is hardcoded in `stack_resolver.gd`.
+
+---
+
 ## Frostbolt / Frost Shock — AI ignores the "can't attack (or protect)" rider
 
 **Cards:** Frostbolt (`azeroth_56`, 3 frost) and Frost Shock (`azeroth_109`,

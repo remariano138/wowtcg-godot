@@ -25,12 +25,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_347",
-      "count": 2,
+      "count": 1,
       "_card_name": "Battle of Darrowshire"
     },
     {
@@ -119,9 +119,9 @@
       "_card_name": "Frostbolt"
     },
     {
-      "card_def_id": "azeroth_179",
+      "card_def_id": "azeroth_181",
       "count": 1,
-      "_card_name": "Braxiss the Sleeper"
+      "_card_name": "Donna Calister"
     },
     {
       "card_def_id": "azeroth_210",

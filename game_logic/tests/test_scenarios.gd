@@ -20,6 +20,7 @@ func _ready() -> void:
 
 	var tests: Array[Callable] = [
 		_test_protector_intercepts_attack,
+		_test_donna_calister_readies_on_opposing_attack,
 		_test_ferocity_attacks_turn_played,
 		_test_elusive_never_targetable,
 		_test_hand_size_wrap_up_discard,
@@ -773,6 +774,37 @@ func _test_protector_intercepts_attack() -> void:
 	eq(protector.damage_taken, 3, "sc1: protector took 3 damage")
 	ok(protector.is_exhausted,    "sc1: protector is exhausted after protecting")
 	ok(atk.is_exhausted if atk else true, "sc1: attacker is exhausted after attacking")
+
+
+# ── Donna Calister: readies when an opposing character attacks ────────────────
+
+func _test_donna_calister_readies_on_opposing_attack() -> void:
+	_buf.append("\n-- Donna Calister: readies on opposing attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 3, 4)
+	# Donna: 1/7 Protector, "ready_on_opposing_attack" flag.
+	db.ally("donna_def", 1, 7, (["protector"] as Array[String]), 5,
+		"ready_on_opposing_attack")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "atk", "attacker_def", "p1")
+	var donna := _add_ally(state, "donna", "donna_def", "p2")
+	# Pretend Donna already protected earlier this turn — she's exhausted.
+	donna.is_exhausted = true
+	state.players["p1"].resource_placed_this_turn = true
+
+	# P1 attacks the hero; P2 does NOT protect. The attack alone must ready Donna.
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"}))
+	var p2_ai := ScriptedAI.new()
+
+	_drive(state, db, p1_ai, p2_ai)
+
+	ok(not state.get_card("donna").is_exhausted,
+		"Donna readied by the opposing attack (though she didn't protect)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

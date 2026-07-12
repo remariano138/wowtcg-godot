@@ -25,6 +25,8 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
 	"azeroth_52":  "combat_instant_dmg",   # Fire Blast — 2 fire damage
+	"azeroth_56":  "combat_instant_dmg",   # Frostbolt — 3 frost damage (can't-attack rider not modeled for AI)
+	"azeroth_109": "combat_instant_dmg",   # Frost Shock — 2 frost damage (can't-attack/protect rider not modeled for AI)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 }
 

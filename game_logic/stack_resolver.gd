@@ -213,6 +213,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_equip_sacrifice_player != "":
 		return false
 
+	# Name-based (Unique tag) uniqueness violation blocks everything until resolved
+	# via choose_unique_sacrifice().
+	if state.pending_unique_sacrifice_player != "":
+		return false
+
 	# Infernal-style discard-or-give-control choice blocks everything until
 	# resolved via choose_control_discard() / decline_control_discard().
 	if state.pending_control_discard_player != "":
@@ -431,6 +436,7 @@ static func can_play_instant_no_target_check(state: GameState,
 	if not state.pending_enter_play_effect.is_empty(): return false
 	if state.pending_pet_sacrifice_player != "": return false
 	if state.pending_equip_sacrifice_player != "": return false
+	if state.pending_unique_sacrifice_player != "": return false
 	var card := state.get_card(card_id)
 	if not card: return false
 	var zone := state.zones.get(card.zone_id) as Zone
@@ -717,6 +723,8 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 
 	# Check pet uniqueness (414.3b) — must happen after the card is in play.
 	events.append_array(_check_pet_uniqueness(state, card_id, db))
+	# Check name-based (Unique tag) uniqueness (414.3a) — Lady Jaina Proudmoore.
+	events.append_array(_check_unique_uniqueness(state, card_id, db))
 
 	return events
 
@@ -746,6 +754,8 @@ static func _resolve_play_equipment(state: GameState,
 
 	# Check equipment slot uniqueness (414.3) — must happen after it's in play.
 	events.append_array(_check_equipment_uniqueness(state, card_id, db))
+	# Check name-based (Unique tag) uniqueness (414.3a) — e.g. a Unique weapon.
+	events.append_array(_check_unique_uniqueness(state, card_id, db))
 
 	return events
 
@@ -867,6 +877,14 @@ static func _resolve_play_instant(state: GameState,
 								else:
 									events.append_array(
 										_check_destroyed_trigger(state, target_id, hero_id, db))
+							else:
+								# Optional 4th field: restriction(s) applied to a character
+								# "dealt damage this way" that survives — Frostbolt
+								# (cannot_attack), Frost Shock (cannot_attack+cannot_protect).
+								# Restrictions last until end of the current turn (turns:1).
+								if parts.size() > 3 and state.is_in_play(target_id):
+									events.append_array(_apply_damage_riders(
+										state, target_id, hero_id, parts[3]))
 					"chain_lightning":
 						# "Your hero deals A1 <type> damage to target hero or ally. Your
 						# hero may deal A2 <type> damage to another hero or ally. Your
@@ -1577,6 +1595,9 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	if att_zone and att_zone.zone_type == "ally_row":
 		if attacker.just_summoned and not _has_keyword(attacker, "ferocity", db):
 			return false
+		# "Opposing allies can't attack." (Lady Jaina) — locks allies only, not heroes.
+		if _allies_attack_locked(state, attacker.controller, db):
+			return false
 	# Rule 305.3a: Totems can't be proposed as attackers.
 	if db and is_totem_def(db.get_def(attacker.card_def_id) as CardDef):
 		return false
@@ -1621,8 +1642,13 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 				and not _has_keyword(hero, "cant_attack", db) \
 				and not hero.has_restriction("cannot_attack"):
 			result.append(hero.instance_id)
+	# "Opposing allies can't attack." (Lady Jaina) locks ALL of this player's
+	# allies — evaluated once here, applied in the ally loop below.
+	var allies_locked := _allies_attack_locked(state, player_id, db)
 	# Allies (rule 302.2: just_summoned unless Ferocity).
 	for card in state.cards_in_zone(player_id + "_ally_row"):
+		if allies_locked:
+			continue
 		if card.is_exhausted:
 			continue
 		# Rule 305.3a: Totems can't be proposed as attackers.
@@ -1683,6 +1709,9 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 				continue  # 602.2b: a proposed defender can't protect itself
 			if card.is_exhausted:
 				continue  # must be ready (will be exhausted when it protects)
+			# "Can't protect this turn" restriction buff (Frost Shock).
+			if card.has_restriction("cannot_protect"):
+				continue
 			if _has_keyword(card, "protector", db):
 				result.append(card.instance_id)
 				continue
@@ -1701,6 +1730,44 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 				if cdef and _has_effect_flag(cdef, "protect_hero_only"):
 					result.append(card.instance_id)
 	return result
+
+
+# "Opposing allies can't attack." (Lady Jaina Proudmoore): true when the given
+# player's OPPONENT controls an in-play card carrying the opposing_allies_cant_attack
+# effect flag. A continuous static effect — evaluated live, never cached — that
+# stops the player's allies (not their hero) from being proposed as attackers.
+static func _allies_attack_locked(state: GameState, player_id: String, db) -> bool:
+	if not db:
+		return false
+	var opp := _other_player(state, player_id)
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(opp + zone_suffix):
+			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "opposing_allies_cant_attack"):
+				return true
+	return false
+
+
+# Apply a damaged-target restriction rider (Frostbolt / Frost Shock). field is a
+# "+"-joined list of restriction names (e.g. "cannot_attack+cannot_protect").
+# Each becomes a restriction Buff lasting until the end of this turn (turns:1),
+# reusing the same machinery as Litori Frostburn's target_cant_attack flip.
+static func _apply_damage_riders(state: GameState, target_id: String,
+		source_id: String, field: String) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var target := state.get_card(target_id)
+	if not target:
+		return events
+	for restriction in field.split("+"):
+		var r := restriction.strip_edges()
+		if r == "":
+			continue
+		target.active_buffs.append(Buff.make(
+			"frost_" + r + "_this_turn", source_id, r, 1, "turns", 1))
+		if r == "cannot_attack":
+			events.append(GameEvent.cant_attack_applied(target_id, source_id))
+		elif r == "cannot_protect":
+			events.append(GameEvent.cant_protect_applied(target_id, source_id))
+	return events
 
 
 # "Your hero has protector" (Draconian Deflector): true when any in-play card
@@ -3252,4 +3319,68 @@ static func choose_equipment_sacrifice(state: GameState, card_id: String,
 		typed_ids.assign(surviving)
 		events.append(GameEvent.equipment_sacrifice_required(
 			state.pending_equip_sacrifice_player, typed_ids))
+	return events
+
+
+# ── Name-based uniqueness (rule 414.3a — the "Unique" tag) ────────────────────
+# A player may not control two or more in-play cards that share a name and both
+# carry the Unique tag (keywords column "Unique"). On violation the controller
+# must destroy duplicates until only one same-named copy remains. Mirrors the Pet
+# / Equipment uniqueness immediate-choice flow (non-interruptible; resolved via
+# choose_unique_sacrifice(), a direct call — never through the chain).
+
+static func _check_unique_uniqueness(state: GameState, card_id: String, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var card := state.get_card(card_id)
+	if not card:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or "unique" not in def.keywords or def.card_name == "":
+		return []
+	# Gather every same-named Unique card this player controls in play. Unique
+	# characters/equipment live in the ally_row or hero_row (414.1 — "in play").
+	var dup_ids: Array[String] = []
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for c in state.cards_in_zone(card.controller + zone_suffix):
+			var d := db.get_def(c.card_def_id) as CardDef
+			if d and "unique" in d.keywords and d.card_name == def.card_name:
+				dup_ids.append(c.instance_id)
+	if dup_ids.size() <= 1:
+		return []
+	state.pending_unique_sacrifice_player = card.controller
+	state.pending_unique_sacrifice_ids.assign(dup_ids)
+	var typed_ids: Array[String] = []
+	typed_ids.assign(dup_ids)
+	return [GameEvent.unique_sacrifice_required(card.controller, typed_ids)]
+
+
+# Called directly by the scene (not via submit_action), like choose_pet_sacrifice.
+# card_id must be one of the same-named Unique cards in the violation set.
+static func choose_unique_sacrifice(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_unique_sacrifice_player == "":
+		return []
+	if card_id not in state.pending_unique_sacrifice_ids:
+		return []
+	var card := state.get_card(card_id)
+	if not card or card.controller != state.pending_unique_sacrifice_player:
+		return []
+	var events: Array[GameEvent] = []
+	events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
+	state.pending_unique_sacrifice_ids.erase(card_id)
+	# Re-check: still a violation if more than one same-named copy remains in play.
+	var surviving: Array[String] = []
+	for cid in state.pending_unique_sacrifice_ids:
+		if state.is_in_play(cid):
+			surviving.append(cid)
+	if surviving.size() <= 1:
+		state.pending_unique_sacrifice_player = ""
+		state.pending_unique_sacrifice_ids.clear()
+	else:
+		state.pending_unique_sacrifice_ids.assign(surviving)
+		var typed_ids: Array[String] = []
+		typed_ids.assign(surviving)
+		events.append(GameEvent.unique_sacrifice_required(
+			state.pending_unique_sacrifice_player, typed_ids))
 	return events

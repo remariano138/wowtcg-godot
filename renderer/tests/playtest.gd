@@ -260,6 +260,7 @@ func _build_scene() -> void:
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
 	_router.control_discard_mode_ended.connect(_on_control_discard_mode_ended)
 	_router.equipment_sacrifice_mode_ended.connect(_on_equipment_sacrifice_mode_ended)
+	_router.unique_sacrifice_mode_ended.connect(_on_unique_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
@@ -964,6 +965,7 @@ func _update_pass_btn() -> void:
 
 	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1" \
 		or _state.pending_equip_sacrifice_player == "p1" \
+		or _state.pending_unique_sacrifice_player == "p1" \
 		or _state.pending_control_discard_player == "p2"
 
 	if _state.pending_control_discard_player == "p1":
@@ -976,6 +978,9 @@ func _update_pass_btn() -> void:
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _state.pending_equip_sacrifice_player == "p1":
 		_pass_btn.text     = "Destroy equipment  [Space]"
+		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
+	elif _state.pending_unique_sacrifice_player == "p1":
+		_pass_btn.text     = "Destroy a duplicate  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _router.is_awaiting_chain_lightning_optional_target():
 		_pass_btn.text     = "Skip target  [Space]"
@@ -1537,6 +1542,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_control_discard(event.payload)
 		"equipment_sacrifice_required":
 			_handle_equipment_sacrifice(event.payload)
+		"unique_sacrifice_required":
+			_handle_unique_sacrifice(event.payload)
 		"reveal_pick_opened":
 			_handle_reveal_pick(event.payload)
 		"enter_play_target_required":
@@ -1712,6 +1719,36 @@ func _on_equipment_sacrifice_mode_ended() -> void:
 	_refresh_ui()
 	_schedule_next_turn()
 	_maybe_turbo_pass()
+
+
+func _on_unique_sacrifice_mode_ended() -> void:
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
+
+
+func _handle_unique_sacrifice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var candidates: Array = payload.get("candidates", [])
+	var player_type := _p1_type if player == "p1" else _p2_type
+	if player_type != "human":
+		# AI: the duplicates are the same card by name — keep the first, destroy
+		# the rest until only one same-named Unique copy remains.
+		var keep_id: String = candidates[0] if not candidates.is_empty() else ""
+		for cid: String in candidates:
+			if cid == keep_id:
+				continue
+			var events := StackResolver.choose_unique_sacrifice(_state, cid, _db)
+			if not events.is_empty():
+				EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: highlight the same-named Unique duplicates; click one to destroy it.
+		_router.start_unique_sacrifice_mode(candidates)
+		_set_status("Unique — click a highlighted duplicate to destroy it")
+		_refresh_ui()
 
 
 func _handle_equipment_sacrifice(payload: Dictionary) -> void:
@@ -2815,6 +2852,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for pet sacrifice before advancing
 	if _state.pending_equip_sacrifice_player != "":
 		return  # wait for equipment sacrifice before advancing
+	if _state.pending_unique_sacrifice_player != "":
+		return  # wait for the Unique-duplicate sacrifice before advancing
 	if _state.pending_control_discard_player != "":
 		return  # wait for the discard-or-give-control choice before advancing
 	if _state.pending_reveal_pick_player != "":
@@ -2875,6 +2914,7 @@ func _drain_passes() -> void:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \
+				or _state.pending_unique_sacrifice_player != "" \
 				or _state.pending_control_discard_player != "" \
 				or _state.pending_reveal_pick_player != "" \
 				or _state.pending_totem_target_player != "":
@@ -2983,6 +3023,9 @@ func _maybe_turbo_pass() -> void:
 		_wrap_up_active = false
 		return
 	if _state.pending_pet_sacrifice_player != "":
+		_wrap_up_active = false
+		return
+	if _state.pending_unique_sacrifice_player != "":
 		_wrap_up_active = false
 		return
 	if _state.pending_control_discard_player != "":
@@ -3109,7 +3152,8 @@ func _is_wrap_up_pass() -> bool:
 		return false
 	if _state.pending_control_discard_player == "p1" \
 			or _state.pending_pet_sacrifice_player == "p1" \
-			or _state.pending_equip_sacrifice_player == "p1":
+			or _state.pending_equip_sacrifice_player == "p1" \
+			or _state.pending_unique_sacrifice_player == "p1":
 		return false
 	if not _state.pending_actions.is_empty():
 		return false

@@ -207,3 +207,26 @@ implementation would add complexity with no observable difference.
 **How to apply this pattern to future cards:** a "when this attacks for the
 first time each turn, you may pay X to ready it" trigger uses the data-driven
 `ready_on_attack:COST` flag — no card id is hardcoded in `stack_resolver.gd`.
+
+---
+
+## Frostbolt / Frost Shock — AI ignores the "can't attack (or protect)" rider
+
+**Cards:** Frostbolt (`azeroth_56`, 3 frost) and Frost Shock (`azeroth_109`,
+2 frost). Printed text: "Your hero deals N frost damage to target hero or ally.
+A character dealt damage this way can't attack this turn." (Frost Shock adds
+"or protect".)
+
+**Implemented:** the damage AND the restriction rider. The recipe carries an
+optional 4th field on `deal_damage_to_target` — `deal_damage_to_target:3:frost:cannot_attack`
+(Frostbolt), `deal_damage_to_target:2:frost:cannot_attack+cannot_protect`
+(Frost Shock). On resolution, a character that survives the damage gets a
+restriction Buff (duration `turns:1`, swept at end of turn) via
+`_apply_damage_riders`, reusing the same `cannot_attack` / `cannot_protect`
+machinery as Litori Frostburn's `target_cant_attack` flip. `cannot_protect` is
+enforced in `get_legal_protectors`.
+
+**Deviation:** only the AI heuristic ignores the rider. Both cards stay tagged
+`combat_instant_dmg`, so the AI plays them purely as targeted-damage combat
+instants — it does not value or plan around the "can't attack / protect"
+effect. Rules-correct in the engine; simply not modeled in AI scoring.

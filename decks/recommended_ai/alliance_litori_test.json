@@ -110,8 +110,13 @@
     },
     {
       "card_def_id": "azeroth_175",
-      "count": 4,
+      "count": 2,
       "_card_name": "Anika Berlyn"
+    },
+    {
+      "card_def_id": "azeroth_56",
+      "count": 2,
+      "_card_name": "Frostbolt"
     },
     {
       "card_def_id": "azeroth_179",

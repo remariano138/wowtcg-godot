@@ -159,7 +159,7 @@
       "_card_name": "Tracker Gallen"
     }
   ],
-  "recommended_ai_id": "",
+  "recommended_ai_id": "ai_generic",
   "source": "custom",
   "metadata": {
     "author": "playtest",

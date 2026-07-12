@@ -123,6 +123,9 @@ static func pet_sacrifice_required(player_id: String, candidate_ids: Array[Strin
 static func equipment_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
 	return make("equipment_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
 
+static func unique_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
+	return make("unique_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
+
 static func armor_prevention_used(player_id: String, card_id: String,
 		def_value: int, total_prevention: int) -> GameEvent:
 	return make("armor_prevention_used", {
@@ -145,6 +148,10 @@ static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
 # "Can't attack this turn" restriction placed on a hero or ally (Litori Frostburn).
 static func cant_attack_applied(target_id: String, source_id: String) -> GameEvent:
 	return make("cant_attack_applied", {"target_id": target_id, "source_id": source_id})
+
+# "Can't protect this turn" restriction placed on a hero or ally (Frost Shock).
+static func cant_protect_applied(target_id: String, source_id: String) -> GameEvent:
+	return make("cant_protect_applied", {"target_id": target_id, "source_id": source_id})
 
 static func mulligan_phase_started(first_player: String, player_order: Array) -> GameEvent:
 	return make("mulligan_phase_started", {

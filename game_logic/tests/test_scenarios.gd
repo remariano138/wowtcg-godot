@@ -102,6 +102,10 @@ func _ready() -> void:
 		_test_arcane_shot,
 		_test_arcane_shot_combat_instant_tag,
 		_test_fire_blast,
+		_test_frost_instants,
+		_test_frost_riders,
+		_test_lady_jaina_aura,
+		_test_lady_jaina_unique,
 		_test_nerra_lifeboon_health_aura,
 		_test_nerra_death_triggers_aura_loss_death,
 		_test_master_of_the_hunt_ongoing,
@@ -5136,6 +5140,297 @@ func _test_fire_blast() -> void:
 		"sc40b-h: p2 hero took no combat damage (attacker died pre-conclusion)")
 	ok(st4.get_card("blast_ambush").zone_id == "p2_graveyard",
 		"sc40b-i: Fire Blast in graveyard after the ambush")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40c — Frostbolt (azeroth_56, 3 frost) & Frost Shock (azeroth_109,
+# 2 frost): same Quick-Strike shape (hero deals damage to an announced target).
+# Both are tagged combat instants — the AI holds them and only ambushes during
+# a combat window. The printed "can't attack (or protect) this turn" rider is
+# NOT modeled yet (see data/rules_deviations.md) — only the damage is live.
+#
+#   sc40c-a  Frostbolt: submission without a target is rejected
+#   sc40c-b  Frostbolt: 3 frost damage to the announced target, sourced from hero
+#   sc40c-c  Frostbolt: the card itself ends up in the graveyard
+#   sc40c-d  Frostbolt: get_legal_actions never blind-plays it outside combat
+#   sc40c-e  Frostbolt: attack window — 3 HP attacker dies → play targeting it
+#   sc40c-f  Frostbolt: attack window — 5 HP attacker survives → hold
+#   sc40c-g  Frost Shock: 2 frost damage to the announced target, sourced from hero
+#   sc40c-h  Frost Shock: attack window — 2 HP attacker dies → play targeting it
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_frost_instants() -> void:
+	_buf.append("\n-- Scenario 40c: Frostbolt (3 frost) & Frost Shock (2 frost) combat instants --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_ally_def", 2, 5, [], 3)   # 5 HP — survives 3 frost
+	# Registered under their REAL def ids so BaseAI.COMBAT_INSTANT_TAGS matches.
+	db.instant("azeroth_56",  3, "deal_damage_to_target:3:frost")
+	db.instant("azeroth_109", 2, "deal_damage_to_target:2:frost")
+
+	# ── Frostbolt: damage, source, and graveyard ──
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var fb := CardInstance.create("fb_inst", "azeroth_56", "p1", "p1_hand")
+	state.cards["fb_inst"] = fb
+	state.zones["p1_hand"].card_ids.append("fb_inst")
+	var enemy := CardInstance.create("enemy_ally", "target_ally_def", "p2", "p2_ally_row")
+	state.cards["enemy_ally"] = enemy
+	state.zones["p2_ally_row"].card_ids.append("enemy_ally")
+
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("play_instant", "p1", {"card_id": "fb_inst"}), db),
+		"sc40c-a: Frostbolt submission without a target is rejected")
+
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": "fb_inst", "target_id": "enemy_ally"})
+	var events: Array[GameEvent] = StackResolver.submit_action(state, act, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(enemy.damage_taken, 3, "sc40c-b: enemy ally took 3 frost damage")
+	var from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "enemy_ally":
+			from_hero = true
+	ok(from_hero, "sc40c-b2: Frostbolt damage sourced from p1's hero")
+	ok(state.get_card("fb_inst").zone_id == "p1_graveyard",
+		"sc40c-c: Frostbolt itself is in the graveyard")
+
+	# ── Hold outside combat: never a blind play on own action window ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 3)
+	var fb_hold := CardInstance.create("fb_hold", "azeroth_56", "p1", "p1_hand")
+	st3.cards["fb_hold"] = fb_hold
+	st3.zones["p1_hand"].card_ids.append("fb_hold")
+	var blind := false
+	for a in BaseAI.new().get_legal_actions(st3, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "fb_hold":
+			blind = true
+	ok(not blind, "sc40c-d: get_legal_actions never blind-plays a held combat instant")
+
+	# ── Attack-window ambush matrix (Frostbolt) ──
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.instant("azeroth_56", 3, "deal_damage_to_target:3:frost")
+	db2.ally("atk_worthy_def", 3, 3, [], 4)   # cost 4, 3 HP — dies to Frostbolt
+	db2.ally("atk_fat_def",    3, 5, [], 4)   # cost 4, 5 HP — survives 3 dmg
+
+	var ai := BaseAI.new()
+	var st := _base_state(db2, "p1_hero", "p2_hero")
+	st.turn_player     = "p2"
+	st.priority_player = "p1"
+	_add_resources(st, "p1", 3)
+	var fb_p1 := CardInstance.create("fb_p1", "azeroth_56", "p1", "p1_hand")
+	st.cards["fb_p1"] = fb_p1
+	st.zones["p1_hand"].card_ids.append("fb_p1")
+	_add_ally(st, "atk_worthy", "atk_worthy_def", "p2")
+	_add_ally(st, "atk_fat",    "atk_fat_def",    "p2")
+	st.combat_attack_window = true
+	st.combat_defender = "p1_hero"
+
+	st.combat_attacker = "atk_worthy"
+	var act2 := ai.combat_instant_action(st, db2, "p1")
+	ok(act2 != null and act2.params.get("card_id") == "fb_p1"
+			and act2.params.get("target_id") == "atk_worthy",
+		"sc40c-e: attack window — 3 HP attacker dies to Frostbolt → play targeting it")
+
+	st.combat_attacker = "atk_fat"
+	ok(ai.combat_instant_action(st, db2, "p1") == null,
+		"sc40c-f: attack window — 5 HP attacker survives 3 dmg → hold")
+
+	# ── Frost Shock: damage + source, then attack-window ambush ──
+	var fs_state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(fs_state, "p1", 2)
+	var fs := CardInstance.create("fs_inst", "azeroth_109", "p1", "p1_hand")
+	fs_state.cards["fs_inst"] = fs
+	fs_state.zones["p1_hand"].card_ids.append("fs_inst")
+	var fs_enemy := CardInstance.create("fs_enemy", "target_ally_def", "p2", "p2_ally_row")
+	fs_state.cards["fs_enemy"] = fs_enemy
+	fs_state.zones["p2_ally_row"].card_ids.append("fs_enemy")
+
+	var fs_act := PendingAction.make("play_instant", "p1",
+		{"card_id": "fs_inst", "target_id": "fs_enemy"})
+	var fs_events: Array[GameEvent] = StackResolver.submit_action(fs_state, fs_act, db)
+	fs_events.append_array(StackResolver.pass_priority(fs_state, db))
+	fs_events.append_array(StackResolver.pass_priority(fs_state, db))
+	eq(fs_enemy.damage_taken, 2, "sc40c-g: Frost Shock dealt 2 frost damage")
+	var fs_from_hero := false
+	for e in fs_events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "fs_enemy":
+			fs_from_hero = true
+	ok(fs_from_hero, "sc40c-g2: Frost Shock damage sourced from p1's hero")
+
+	var db3 := MockDB.new()
+	db3.hero("p1_hero", 30)
+	db3.hero("p2_hero", 30)
+	db3.instant("azeroth_109", 2, "deal_damage_to_target:2:frost")
+	db3.ally("fs_atk_def", 3, 2, [], 4)   # cost 4, 2 HP — dies to Frost Shock
+	var fs_st := _base_state(db3, "p1_hero", "p2_hero")
+	fs_st.turn_player     = "p2"
+	fs_st.priority_player = "p1"
+	_add_resources(fs_st, "p1", 2)
+	var fs_p1 := CardInstance.create("fs_p1", "azeroth_109", "p1", "p1_hand")
+	fs_st.cards["fs_p1"] = fs_p1
+	fs_st.zones["p1_hand"].card_ids.append("fs_p1")
+	_add_ally(fs_st, "fs_atk", "fs_atk_def", "p2")
+	fs_st.combat_attack_window = true
+	fs_st.combat_defender = "p1_hero"
+	fs_st.combat_attacker = "fs_atk"
+	var fs_act2 := ai.combat_instant_action(fs_st, db3, "p1")
+	ok(fs_act2 != null and fs_act2.params.get("card_id") == "fs_p1"
+			and fs_act2.params.get("target_id") == "fs_atk",
+		"sc40c-h: attack window — 2 HP attacker dies to Frost Shock → play targeting it")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40d — Frostbolt / Frost Shock "can't attack (or protect)" rider.
+# The damaged survivor gets a restriction Buff (turns:1) via the optional 4th
+# field on deal_damage_to_target. Frostbolt → cannot_attack; Frost Shock →
+# cannot_attack + cannot_protect (also enforced in get_legal_protectors).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_frost_riders() -> void:
+	_buf.append("\n-- Scenario 40d: Frostbolt / Frost Shock can't-attack-or-protect rider --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 5, [], 3)                       # 5 HP — survives 3 frost
+	db.ally("prot_def",  3, 5, (["protector"] as Array[String]), 3)  # protector, 5 HP
+	db.instant("azeroth_56",  3, "deal_damage_to_target:3:frost:cannot_attack")
+	db.instant("azeroth_109", 2, "deal_damage_to_target:2:frost:cannot_attack+cannot_protect")
+
+	# ── Frostbolt: surviving enemy ally can't attack this turn ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	var fb := _add_hand_card(st, "fb", "azeroth_56", "p1")
+	fb.zone_id = "p1_hand"
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p2")
+	grunt.just_summoned = false
+	ok("grunt" in StackResolver.get_legal_attackers(st, "p2", db),
+		"sc40d-a: enemy ally is a legal attacker before Frostbolt")
+
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "fb", "target_id": "grunt"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	ok(st.get_card("grunt").has_restriction("cannot_attack"),
+		"sc40d-b: Frostbolt put cannot_attack on the surviving target")
+	ok("grunt" not in StackResolver.get_legal_attackers(st, "p2", db),
+		"sc40d-c: the frozen ally is no longer a legal attacker")
+
+	# ── Frost Shock: surviving enemy protector can't attack OR protect ──
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 2)
+	_add_hand_card(st2, "fs", "azeroth_109", "p1")
+	var prot := _add_ally(st2, "prot", "prot_def", "p2")
+	prot.just_summoned = false
+	ok("prot" in StackResolver.get_legal_protectors(st2, "atk_dummy", "p2_hero", db),
+		"sc40d-d: enemy protector can protect its hero before Frost Shock")
+
+	StackResolver.submit_action(st2, PendingAction.make("play_instant", "p1",
+		{"card_id": "fs", "target_id": "prot"}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+
+	ok(st2.get_card("prot").has_restriction("cannot_attack"),
+		"sc40d-e: Frost Shock put cannot_attack on the survivor")
+	ok(st2.get_card("prot").has_restriction("cannot_protect"),
+		"sc40d-f: Frost Shock also put cannot_protect on the survivor")
+	ok("prot" not in StackResolver.get_legal_protectors(st2, "atk_dummy", "p2_hero", db),
+		"sc40d-g: the frozen protector can no longer protect")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40e — Lady Jaina Proudmoore: "Opposing allies can't attack." A live
+# static aura — while an opponent controls Jaina, none of your ALLIES may be
+# proposed as attackers (your hero is unaffected). Removing Jaina restores them.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_lady_jaina_aura() -> void:
+	_buf.append("\n-- Scenario 40e: Lady Jaina — opposing allies can't attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("azeroth_195", 7, 4, (["unique"] as Array[String]), 8, "opposing_allies_cant_attack")
+	db.ally("grunt_def", 3, 3, [], 2)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var jaina := _add_ally(st, "jaina", "azeroth_195", "p1")
+	jaina.just_summoned = false
+	var p1_grunt := _add_ally(st, "p1_grunt", "grunt_def", "p1")
+	p1_grunt.just_summoned = false
+	var p2_grunt := _add_ally(st, "p2_grunt", "grunt_def", "p2")
+	p2_grunt.just_summoned = false
+
+	# p2 (Jaina's opponent) has its allies locked; p1 (Jaina's controller) does not.
+	ok("p2_grunt" not in StackResolver.get_legal_attackers(st, "p2", db),
+		"sc40e-a: opposing ally can't be proposed as an attacker under Jaina")
+	ok("p1_grunt" in StackResolver.get_legal_attackers(st, "p1", db),
+		"sc40e-b: Jaina's own controller's allies are unaffected")
+
+	# Submission guard: propose_combat from a locked ally is rejected.
+	st.turn_player     = "p2"
+	st.priority_player = "p2"
+	ok(not StackResolver.can_submit(st, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "p2_grunt", "defender_id": "p1_hero"}), db),
+		"sc40e-c: propose_combat is rejected for the locked ally")
+
+	# Remove Jaina → the lock lifts.
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	GameLogic.move_card(st, "jaina", "p1_graveyard")
+	ok("p2_grunt" in StackResolver.get_legal_attackers(st, "p2", db),
+		"sc40e-d: removing Jaina restores opposing allies as legal attackers")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40f — Lady Jaina Proudmoore uniqueness (rule 414.3a — the Unique tag).
+# Playing a 2nd same-named Unique card forces the controller to destroy one.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_lady_jaina_unique() -> void:
+	_buf.append("\n-- Scenario 40f: Lady Jaina — name-based Unique uniqueness --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("azeroth_195", 7, 4, (["unique"] as Array[String]), 8, "opposing_allies_cant_attack")
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 8)
+	var jaina1 := _add_ally(st, "jaina1", "azeroth_195", "p1")
+	jaina1.just_summoned = false
+	_add_hand_card(st, "jaina2", "azeroth_195", "p1")
+
+	# Play the second Jaina; both players pass to resolve it into play.
+	StackResolver.submit_action(st, PendingAction.make("play_ally", "p1",
+		{"card_id": "jaina2"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	eq(st.pending_unique_sacrifice_player, "p1",
+		"sc40f-a: playing a 2nd same-named Unique card triggers a sacrifice")
+	ok("jaina1" in st.pending_unique_sacrifice_ids and "jaina2" in st.pending_unique_sacrifice_ids,
+		"sc40f-b: both copies are in the violation set")
+	# Nothing else may be submitted while the violation is pending — a combat that
+	# would otherwise be legal (jaina1 is ready, 7 ATK, chain empty) is blocked.
+	ok(not StackResolver.can_submit(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "jaina1", "defender_id": "p2_hero"}), db),
+		"sc40f-c: the pending violation hard-blocks other actions")
+
+	# Repair: destroy one copy.
+	StackResolver.choose_unique_sacrifice(st, "jaina2", db)
+	eq(st.pending_unique_sacrifice_player, "",
+		"sc40f-d: destroying a duplicate clears the violation")
+	ok(st.get_card("jaina2").zone_id == "p1_graveyard",
+		"sc40f-e: the chosen duplicate is destroyed")
+	ok(st.is_in_play("jaina1"),
+		"sc40f-f: the surviving copy stays in play")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

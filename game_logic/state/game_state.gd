@@ -74,6 +74,11 @@ var pending_pet_sacrifice_ids: Array[String] = []  # instance_ids of ALL pets cu
 # most one occupies the conflicting slot.
 var pending_equip_sacrifice_player: String = ""
 var pending_equip_sacrifice_ids: Array[String] = []  # instance_ids of same-slot equipment in play
+# Name-based uniqueness (rule 414.3a — the "Unique" tag): a player may not
+# control two or more in-play cards with the same name that both carry Unique.
+# On violation the player destroys duplicates until only one remains.
+var pending_unique_sacrifice_player: String = ""
+var pending_unique_sacrifice_ids: Array[String] = []  # instance_ids of the same-named Unique cards in play
 # Infernal-style start-of-turn choice: discard a card OR give the opponent
 # control of the source. Optional discard — declining is a legal resolution
 # (unlike pending_discard, which is mandatory).

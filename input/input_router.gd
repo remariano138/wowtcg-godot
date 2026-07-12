@@ -30,6 +30,8 @@ signal pet_sacrifice_mode_started(candidate_ids: Array)
 signal pet_sacrifice_mode_ended()
 signal equipment_sacrifice_mode_started(candidate_ids: Array)
 signal equipment_sacrifice_mode_ended()
+signal unique_sacrifice_mode_started(candidate_ids: Array)
+signal unique_sacrifice_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
@@ -61,6 +63,8 @@ var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet 
 var _in_equip_sacrifice_mode: bool = false  # true while player must choose equipment to destroy
 var _equip_sacrifice_candidates: Array[String] = []
 var _pet_sacrifice_candidates: Array[String] = []
+var _in_unique_sacrifice_mode: bool = false  # true while player must choose a Unique duplicate to destroy
+var _unique_sacrifice_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 # Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
@@ -114,6 +118,11 @@ func handle_card_click(instance_id: String) -> void:
 	# ── Equipment sacrifice mode: click destroys the chosen equipment ────────
 	if _in_equip_sacrifice_mode:
 		_handle_equip_sacrifice_click(instance_id)
+		return
+
+	# ── Unique sacrifice mode: click destroys the chosen Unique duplicate ────
+	if _in_unique_sacrifice_mode:
+		_handle_unique_sacrifice_click(instance_id)
 		return
 
 	# ── Discard mode: click discards the chosen hand card ─────────────────────
@@ -426,6 +435,35 @@ func _handle_equip_sacrifice_click(instance_id: String) -> void:
 		_equip_sacrifice_candidates.clear()
 		for cid: String in state.pending_equip_sacrifice_ids:
 			_equip_sacrifice_candidates.append(cid)
+	refresh_highlights()
+
+
+func start_unique_sacrifice_mode(candidate_ids: Array) -> void:
+	_in_unique_sacrifice_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)  # red — mandatory Unique-duplicate sacrifice
+	_unique_sacrifice_candidates.clear()
+	for cid in candidate_ids:
+		_unique_sacrifice_candidates.append(cid as String)
+	refresh_highlights()
+	unique_sacrifice_mode_started.emit(candidate_ids)
+
+
+func _handle_unique_sacrifice_click(instance_id: String) -> void:
+	if instance_id not in _unique_sacrifice_candidates:
+		return
+	var events := StackResolver.choose_unique_sacrifice(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	if state.pending_unique_sacrifice_player == "":
+		_in_unique_sacrifice_mode = false
+		_highlight_color = Color(0.2, 1.0, 0.3)
+		_unique_sacrifice_candidates.clear()
+		unique_sacrifice_mode_ended.emit()
+	else:
+		_unique_sacrifice_candidates.clear()
+		for cid: String in state.pending_unique_sacrifice_ids:
+			_unique_sacrifice_candidates.append(cid)
 	refresh_highlights()
 
 
@@ -804,6 +842,13 @@ func get_playable_card_ids() -> Array:
 		for cid: String in _equip_sacrifice_candidates:
 			equip_ids.append(cid)
 		return equip_ids
+
+	# Unique sacrifice mode: highlight the same-named Unique duplicates.
+	if _in_unique_sacrifice_mode and state.pending_unique_sacrifice_player == local_player:
+		var unique_ids: Array = []
+		for cid: String in _unique_sacrifice_candidates:
+			unique_ids.append(cid)
+		return unique_ids
 
 	# Control-discard mode (Infernal): all local hand cards are valid discard
 	# choices (declining goes through the pass button, not a card click).

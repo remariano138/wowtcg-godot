@@ -196,6 +196,17 @@ static func enter_play_target_required(card_id: String, dmg_type: String, amount
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,
 	})
 
+# An ongoing Totem "at the start of each turn" trigger (Searing Totem) must pick
+# a target hero or ally. Mandatory choice resolved by the totem's controller via
+# StackResolver.choose_totem_target() — a direct call, like the strike / reveal
+# choices, NOT a chain action.
+static func totem_target_required(card_id: String, player_id: String,
+		dmg_type: String, amount: int) -> GameEvent:
+	return make("totem_target_required", {
+		"card_id": card_id, "player": player_id,
+		"dmg_type": dmg_type, "amount": amount,
+	})
+
 static func card_returned_from_graveyard(card_id: String, player_id: String) -> GameEvent:
 	return make("card_returned_from_graveyard", {
 		"card_id": card_id, "player": player_id,

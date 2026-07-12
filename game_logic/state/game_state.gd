@@ -80,6 +80,15 @@ var pending_control_discard_ids: Array[String] = []  # source instance_ids, reso
 var pending_reveal_pick_player: String = ""
 var pending_reveal_pick_ids: Array[String] = []   # revealed cards matching the type — the selectable set
 var pending_reveal_pick_all: Array[String] = []   # every revealed card, in top→down order
+# Ongoing Totem "at the start of each turn" targeted-damage triggers (Searing
+# Totem) waiting to fire this ready step. Each entry is a dict
+# {card_id, amount, dmg_type}. They are drained one at a time: index 0 is the
+# ACTIVE trigger while pending_totem_target_player is non-empty, resolved by that
+# player via StackResolver.choose_totem_target() (a direct call, like the strike
+# and reveal-pick choices — NOT a chain action). Turn player's totems fire first
+# (rule 501.1a). pass_priority / can_submit hard-block while a totem choice is open.
+var pending_ongoing_triggers: Array = []
+var pending_totem_target_player: String = ""  # controller who must pick a target; "" = none
 
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.

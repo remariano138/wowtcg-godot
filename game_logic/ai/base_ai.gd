@@ -1211,31 +1211,58 @@ func _hero_power_cost(state: GameState, db, hero_id: String) -> int:
 	return def.cost if def else 0
 
 
-# ── sort_valuable_cards ─────────────────────────────────────────────────────
+# ── sort_valuable_cards / card_value_score ──────────────────────────────────
 # See game_logic/ai/ai_functions.md for the full contract.
-# Sorts card instance ids from most to least valuable (simple printed-stats
-# heuristic): rarity > cost > allies-before-non-allies > Protector > HP >
-# Ferocity > Elusive > ATK > random.
-const _RARITY_RANK := {"epic": 3, "rare": 2, "uncommon": 1, "common": 0}
+# Sorts card instance ids from most to least valuable. Primary criterion is
+# the numeric card_value_score; remaining ties fall back to the keyword
+# heuristic (allies-before-non-allies > Protector > HP > Ferocity > Elusive >
+# ATK > random). `bonus` is an optional {card_id: float} map of situational
+# score adjustments (e.g. +1 to specific cards in a given context).
+const _RARITY_RANK := {"epic": 4, "rare": 3, "uncommon": 2, "common": 1}
 
 static func sort_valuable_cards(state: GameState, db,
-		card_ids: Array[String]) -> Array[String]:
+		card_ids: Array[String], bonus: Dictionary = {}) -> Array[String]:
 	var result: Array[String] = card_ids.duplicate()
 	result.shuffle()   # random final tiebreak — everything else is deterministic
 	result.sort_custom(func(a: String, b: String) -> bool:
-		return _card_value_key(state, db, a) > _card_value_key(state, db, b))
+		var ka := _card_value_key(state, db, a)
+		var kb := _card_value_key(state, db, b)
+		ka[0] += float(bonus.get(a, 0.0))
+		kb[0] += float(bonus.get(b, 0.0))
+		return ka > kb)
 	return result
 
 
-# Lexicographic value key for sort_valuable_cards. Non-allies zero out the
-# combat fields, so at equal rarity+cost an ally always outranks a non-ally.
-# HP/ATK use current values for in-play cards (a 3-HP-left target is worth
-# more than a 1-HP-left one), printed values for out-of-play cards (graveyard).
+# Numeric base value of a card: cost + rarity (Common 1 … Epic 4) +
+# 0.2*(ATK+HP). ATK/HP use current values for in-play allies (a 3-HP-left
+# target is worth more than a 1-HP-left one), printed values otherwise
+# (graveyard, hand); non-allies contribute 0 so a hero's 30 HP doesn't
+# dominate and an ally outscores an equal-cost spell.
+static func card_value_score(state: GameState, db, cid: String) -> float:
+	var card := state.get_card(cid)
+	var def: CardDef = db.get_def(card.card_def_id) if (card and db) else null
+	if not def:
+		return 0.0
+	var score := float(def.cost) + float(_RARITY_RANK.get(def.rarity.to_lower(), 1))
+	if def.card_type == "Ally":
+		var hp  := def.printed_health
+		var atk := def.printed_atk
+		if state.is_in_play(cid):
+			hp  = state.get_current_hp(cid, db)
+			atk = state.get_atk(cid, db)
+		score += 0.2 * float(atk + hp)
+	return score
+
+
+# Lexicographic value key: card_value_score first, then the keyword tiebreaks.
+# Non-allies zero out the combat fields, so at an equal score an ally always
+# outranks a non-ally. HP/ATK resolve like card_value_score (current in play,
+# printed otherwise).
 static func _card_value_key(state: GameState, db, cid: String) -> Array:
 	var card := state.get_card(cid)
 	var def: CardDef = db.get_def(card.card_def_id) if (card and db) else null
 	if not def:
-		return [0, 0, 0, 0, 0, 0, 0, 0]
+		return [0.0, 0, 0, 0, 0, 0, 0]
 	var kw: Array[String] = []
 	for k in def.keywords:
 		kw.append(str(k).to_lower())
@@ -1246,8 +1273,7 @@ static func _card_value_key(state: GameState, db, cid: String) -> Array:
 		hp  = state.get_current_hp(cid, db)
 		atk = state.get_atk(cid, db)
 	return [
-		_RARITY_RANK.get(def.rarity.to_lower(), 0),
-		def.cost,
+		card_value_score(state, db, cid),
 		1 if is_ally else 0,
 		1 if is_ally and "protector" in kw else 0,
 		hp if is_ally else 0,
@@ -1802,6 +1828,12 @@ func _action_type_for(card: CardInstance, db) -> String:
 		return "play_ally"
 	if def.card_type == "Equipment":
 		return "play_equipment"
+	# An ongoing Ability (e.g. Searing Totem, an Instant Ability that ENTERS play)
+	# routes to play_ability even when Instant — play_instant would resolve-and-
+	# graveyard it instead of leaving it in play. Non-ongoing Instant Abilities
+	# (Quick Strike) still route to play_instant.
+	if def.card_type == "Ability" and StackResolver.is_ongoing_def(def):
+		return "play_ability"
 	if def.is_instant:
 		return "play_instant"
 	if def.card_type == "Ability":

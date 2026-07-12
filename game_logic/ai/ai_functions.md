@@ -39,24 +39,34 @@ Other properties:
 
 ---
 
-## `BaseAI.sort_valuable_cards(state, db, card_ids) -> Array[String]`
+## `BaseAI.sort_valuable_cards(state, db, card_ids, bonus = {}) -> Array[String]`
+## `BaseAI.card_value_score(state, db, cid) -> float`
 
 *Static — callable without a BaseAI instance.*
 
-Sorts a list of card **instance ids** from most valuable to least, using a
-simple printed-stats heuristic (no board-state awareness). Returns a new
-array; the input is not mutated. Intended as a generic building block —
+Sorts a list of card **instance ids** from most valuable to least. Returns a
+new array; the input is not mutated. Intended as a generic building block —
 e.g. fed the output of `find_lethal`, or a graveyard list.
 
-Sort order (lexicographic, each level breaks ties of the previous):
+The primary criterion is the numeric **`card_value_score`**:
 
-1. **Rarity** — Epic > Rare > Uncommon > Common (unknown/blank = Common).
-2. **Cost** — higher first (a 4-cost spell beats a 1-cost ally).
-3. **Ally before non-ally** — at equal rarity+cost, allies win (they're
-   easier for the AI to play). Non-allies only rank higher via cost/rarity.
-4. **Protector** first, then **HP**, then **Ferocity** (can strike
+```
+score = cost + rarity + 0.2 * (ATK + HP)
+rarity: Common 1, Uncommon 2, Rare 3, Epic 4 (unknown/blank = 1)
+```
+
+Non-allies contribute no ATK/HP term (so a hero's 30 HP doesn't dominate,
+and an ally outscores an equal-cost spell). The optional `bonus` argument is
+a `{card_id: float}` map of situational score adjustments — callers can say
+"in this context, these specific cards are worth +1" without touching the
+base formula.
+
+Remaining score ties break lexicographically:
+
+1. **Ally before non-ally** (allies are easier for the AI to play).
+2. **Protector** first, then **HP**, then **Ferocity** (can strike
    immediately if reanimated), then **Elusive**, then **ATK**.
-5. **Random** — remaining ties are shuffled.
+3. **Random** — remaining ties are shuffled.
 
 HP and ATK are resolved **per card**: current values
 (`get_current_hp`/`get_atk`, buffs and damage included) when the card is in

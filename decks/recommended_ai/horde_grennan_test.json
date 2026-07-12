@@ -54,11 +54,6 @@
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_230",
-      "count": 1,
-      "_card_name": "Blood Guard Mal'wani"
-    },
-    {
       "card_def_id": "azeroth_235",
       "count": 2,
       "_card_name": "Elder Moorf"
@@ -84,9 +79,9 @@
       "_card_name": "Quick Strike"
     },
     {
-      "card_def_id": "azeroth_236",
-      "count": 1,
-      "_card_name": "Fa'tafi"
+      "card_def_id": "dark_portal_213",
+      "count": 4,
+      "_card_name": "Quardian Steppestrider"
     },
     {
       "card_def_id": "azeroth_106",
@@ -100,13 +95,18 @@
     },
     {
       "card_def_id": "azeroth_262",
-      "count": 4,
+      "count": 1,
       "_card_name": "Vaerik Proudhoof"
     },
     {
       "card_def_id": "azeroth_264",
-      "count": 2,
+      "count": 1,
       "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "azeroth_116",
+      "count": 2,
+      "_card_name": "Searing Totem"
     },
     {
       "card_def_id": "azeroth_240",

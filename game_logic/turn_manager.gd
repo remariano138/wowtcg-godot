@@ -142,6 +142,12 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		"turn_number": state.turn_number,
 	}))
 	_open_window(state)
+
+	# Ongoing Totem "at the start of each turn" targeted damage (Searing Totem).
+	# Collected AFTER the window opens so the pending targeting choice sits on top
+	# of a normal ready window; the scene resolves it (choose_enter_play_target)
+	# before priority can advance. Turn player's totems fire first (rule 501.1a).
+	events.append_array(_collect_ongoing_turn_triggers(state, db))
 	return events
 
 
@@ -253,6 +259,42 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 		var amount := int(parts[1])
 		events.append_array(GameLogic.heal(state, card.instance_id, amount, db))
 	return events
+
+
+# Scan every in-play card for ongoing "at the start of each turn" targeted-damage
+# triggers (Totems). Build the queue in rule-501.1a order (turn player's totems
+# first), then open the first one (emits totem_target_required); the rest wait in
+# state.pending_ongoing_triggers.
+# The trigger resolves immediately (mandatory target choice, no priority window)
+# rather than going on the chain — see data/rules_deviations.md "Searing Totem".
+static func _collect_ongoing_turn_triggers(state: GameState, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	state.pending_ongoing_triggers.clear()
+	# Order: turn player first, then the other player(s).
+	var ordered_pids: Array = [state.turn_player]
+	for pid in state.players:
+		if pid != state.turn_player:
+			ordered_pids.append(pid)
+	for pid in ordered_pids:
+		for card in state.cards_in_play(pid):
+			var def := db.get_def(card.card_def_id) as CardDef
+			if not def or def.effects == "":
+				continue
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				if parts[0].strip_edges() != "ongoing_damage_each_turn":
+					continue
+				var amount := int(parts[1]) if parts.size() > 1 else 0
+				var dmg_type := parts[2].to_lower().strip_edges() if parts.size() > 2 else ""
+				if amount <= 0:
+					continue
+				state.pending_ongoing_triggers.append({
+					"card_id": card.instance_id,
+					"amount": amount,
+					"dmg_type": dmg_type,
+				})
+	return StackResolver._open_next_totem_trigger(state, db)
 
 
 # Parse the effects string and fire any end-of-turn triggers.

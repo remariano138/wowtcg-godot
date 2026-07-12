@@ -248,6 +248,7 @@ func _build_scene() -> void:
 	_renderer.set_input_router(_router)
 	_router.targeting_started.connect(_on_targeting_started)
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
+	_router.totem_target_resolved.connect(_on_totem_target_resolved)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
@@ -1437,6 +1438,11 @@ func _on_game_event(event: GameEvent) -> void:
 			var to_zone: String   = event.payload.get("to", "")
 			var from_zone: String = event.payload.get("from", "")
 			var moved_id: String  = event.payload.get("card", "")
+			# Sound: draw = deck→hand (card grab); play = hand→anywhere else.
+			if from_zone.ends_with("_deck") and to_zone.ends_with("_hand"):
+				SoundManager.play_random("SFX_CardGrab")
+			elif from_zone.ends_with("_hand") and not to_zone.ends_with("_hand"):
+				SoundManager.play_random("SFX_CardMoveFast")
 			# Show summoning-sickness badge when an ally enters the ally_row from hand.
 			if to_zone.ends_with("_ally_row") and from_zone.ends_with("_hand") and _state and _db:
 				var sick_card := _state.get_card(moved_id)
@@ -1511,6 +1517,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_reveal_pick(event.payload)
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)
+		"totem_target_required":
+			_handle_totem_target(event.payload)
 		"mulligan_phase_started":
 			_handle_mulligan_started(event.payload)
 		"mulligan_committed":
@@ -1944,6 +1952,58 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 		# Human: enter targeting mode to pick a target.
 		_router.start_enter_play_targeting(card_id, dmg_type, amount)
 		_refresh_ui()
+
+
+# Ongoing Totem "at the start of each turn" targeted damage (Searing Totem). The
+# totem's controller must pick a hero or ally. Mandatory, direct-call resolution.
+func _handle_totem_target(payload: Dictionary) -> void:
+	var card_id: String  = payload.get("card_id", "")
+	var ctrl: String     = payload.get("player", "")
+	var dmg_type: String = payload.get("dmg_type", "")
+	var amount: int      = payload.get("amount", 0)
+	var ctrl_type := _p1_type if ctrl == "p1" else _p2_type
+	if ctrl_type != "human":
+		# AI picks a target: prefer an opposing character it can kill with this
+		# damage, else the opposing hero. Never self-harm (AI convention).
+		var opp := "p2" if ctrl == "p1" else "p1"
+		var targets: Array[String] = []
+		var ps_opp := _state.players.get(opp) as PlayerState
+		if ps_opp and ps_opp.hero_instance_id != "":
+			targets.append(ps_opp.hero_instance_id)
+		for ally in _state.cards_in_zone(opp + "_ally_row"):
+			targets.append(ally.instance_id)
+		var legal := StackResolver.get_totem_targets(_state, _db)
+		targets = targets.filter(func(t): return t in legal)
+		var target_id := ""
+		if not targets.is_empty():
+			var lethal := BaseAI.find_lethal(_state, _db, ctrl, amount)
+			var pool: Array[String] = []
+			for tid in lethal:
+				if tid in targets:
+					pool.append(tid)
+			if not pool.is_empty():
+				var ai_obj: Object = _p1_ai if ctrl == "p1" else _p2_ai
+				if ai_obj is BaseAI:
+					pool = (ai_obj as BaseAI).rank_lethal_targets(_state, _db, pool)
+				target_id = pool[0]
+			else:
+				target_id = targets[0]   # default: opposing hero (first in list)
+		var events := StackResolver.choose_totem_target(_state, target_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: enter targeting mode to pick the target hero or ally.
+		_router.start_totem_targeting(card_id, dmg_type, amount)
+		_refresh_ui()
+
+
+# A human finished picking a Totem trigger's target (or the queue advanced). Resume
+# driving the turn; if another totem trigger is now pending, its handler already
+# restarted targeting and _schedule_next_turn no-ops on the pending guard.
+func _on_totem_target_resolved() -> void:
+	_refresh_ui()
+	_schedule_next_turn()
 
 
 func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int) -> void:
@@ -2448,7 +2508,14 @@ func _resolve_protection(protector_id: String) -> void:
 	var events := StackResolver.choose_protector(_state, protector_id, _db)
 	EventBus.emit_events(events)
 	_refresh_ui()
-	_drain_passes()
+	# NOTE: do NOT call _drain_passes() here. choose_protector's emitted events
+	# already self-drive: defend_window_opened / combat_concluded / strike_point_opened
+	# each run their own handler (which drains or schedules) synchronously inside
+	# emit_events above. A second drain here would re-evaluate the SAME defend window
+	# that drain #1 just deliberately held for the human — but drain #1 marked the
+	# window generation as seen, so drain #2 reads "nothing changed" and Layer-2
+	# auto-passes it, silently skipping the human's defend window (e.g. a held
+	# Freya Lightsworn heal after protecting with Igvand).
 
 
 func _on_card_clicked_scene(instance_id: String) -> void:
@@ -2474,7 +2541,17 @@ func _handle_strike_point(payload: Dictionary) -> void:
 		EventBus.emit_events(events)
 		_refresh_ui()
 		_schedule_next_turn()
+	elif side == "attack" and _router.preferred_strike_weapon in weapon_ids:
+		# Human attacked via a specific weapon's "Attack" menu — auto-strike with
+		# it instead of prompting again (the weapon was already the player's pick).
+		var weapon_id: String = _router.preferred_strike_weapon
+		_router.preferred_strike_weapon = ""
+		var events := StackResolver.choose_strike(_state, weapon_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_drain_passes()
 	else:
+		_router.preferred_strike_weapon = ""
 		_show_strike_inline(weapon_ids, side)
 
 
@@ -2557,7 +2634,10 @@ func _resolve_strike(weapon_id: String) -> void:
 	var events := StackResolver.choose_strike(_state, weapon_id, _db)
 	EventBus.emit_events(events)
 	_refresh_ui()
-	_drain_passes()
+	# NOTE: no _drain_passes() here — same reasoning as _resolve_protection.
+	# choose_strike opens the held window (attack_window_opened / defend_window_opened),
+	# whose handler drains synchronously inside emit_events above. A second drain
+	# would re-read the just-held window as "already seen" and Layer-2 auto-pass it.
 
 
 # ── Game over ──────────────────────────────────────────────────────────────────
@@ -2610,6 +2690,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the discard-or-give-control choice before advancing
 	if _state.pending_reveal_pick_player != "":
 		return  # wait for the reveal-and-pick quest choice before advancing
+	if _state.pending_totem_target_player != "":
+		return  # wait for the Totem start-of-turn target choice before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	if pid_type != "human" \
@@ -2660,7 +2742,8 @@ func _drain_passes() -> void:
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \
 				or _state.pending_control_discard_player != "" \
-				or _state.pending_reveal_pick_player != "":
+				or _state.pending_reveal_pick_player != "" \
+				or _state.pending_totem_target_player != "":
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window

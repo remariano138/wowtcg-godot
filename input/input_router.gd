@@ -19,6 +19,9 @@ signal conditional_highlights_updated(orange_ids: Array)
 # dmg_amount: damage shown on the cursor overlay; 0 = don't show
 signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 signal targeting_cancelled()
+# Emitted after a human resolves an ongoing Totem start-of-turn target choice
+# (Searing Totem) so the scene can resume driving the turn.
+signal totem_target_resolved()
 signal discard_mode_started(count: int)
 signal discard_mode_ended()
 signal control_discard_mode_started(source_id: String)
@@ -49,6 +52,9 @@ var local_player: String
 var _targeting_source:      String = ""   # instance_id of attacker / hero; "" = not targeting
 var _targeting_action_type: String = ""   # "propose_combat" or "activate_power"
 var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for crosshair)
+# Weapon chosen via a weapon's "Attack" menu: auto-struck when the attacker's
+# strike point opens (rule 602.1), instead of prompting. "" = prompt as usual.
+var preferred_strike_weapon: String = ""
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
 var _in_control_discard_mode: bool = false  # true while player chooses: discard OR give control (Infernal)
 var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet to sacrifice
@@ -438,6 +444,7 @@ func start_targeting(source_id: String, action_type: String,
 
 # Convenience wrapper: look up the attacker's dmg_type / ATK and enter combat targeting.
 func start_attack_targeting(attacker_id: String) -> void:
+	preferred_strike_weapon = ""   # default: prompt at the strike point (weapon menu overrides after)
 	var dmg_type   := ""   # default → crosshair; set only when card has an explicit dmg_type
 	var dmg_amount := 0
 	if db:
@@ -460,11 +467,17 @@ func start_enter_play_targeting(card_id: String, dmg_type: String, dmg_amount: i
 	start_targeting(card_id, "choose_enter_play_target", dmg_type, dmg_amount)
 
 
+# Convenience wrapper for an ongoing Totem start-of-turn target choice (Searing Totem).
+func start_totem_targeting(card_id: String, dmg_type: String, dmg_amount: int) -> void:
+	start_targeting(card_id, "choose_totem_target", dmg_type, dmg_amount)
+
+
 # Abort targeting — called by Escape key or scene logic.
 func cancel_targeting() -> void:
 	_targeting_source       = ""
 	_targeting_action_type  = ""
 	_targeting_dmg_type     = ""
+	preferred_strike_weapon = ""
 	_targeting_first_target = ""
 	_targeting_x_value      = 0
 	_chain_lightning_picked = []
@@ -478,6 +491,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"activate_power":            _handle_power_targeting_click(instance_id)
 		"activate_power_x":          _handle_x_power_targeting_click(instance_id)
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
+		"choose_totem_target":       _handle_totem_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
 		"use_ally_power":            _handle_ally_power_targeting_click(instance_id)
@@ -515,6 +529,17 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 		refresh_highlights()
 	elif instance_id == _targeting_source:
 		cancel_targeting()
+
+
+func _handle_totem_targeting_click(instance_id: String) -> void:
+	# Ongoing Totem start-of-turn damage (Searing Totem). Mandatory, direct-call
+	# resolution (no chain) — like the strike / reveal choices.
+	if instance_id in StackResolver.get_totem_targets(state, db):
+		var events := StackResolver.choose_totem_target(state, instance_id, db)
+		cancel_targeting()
+		EventBus.emit_events(events)
+		# The scene resumes driving the turn (and handles any next queued totem).
+		totem_target_resolved.emit()
 
 
 func _handle_ability_targeting_click(instance_id: String) -> void:
@@ -809,6 +834,8 @@ func get_playable_card_ids() -> Array:
 				return _get_x_power_targets(_targeting_source)
 			"choose_enter_play_target":
 				return _get_enter_play_targets(_targeting_source)
+			"choose_totem_target":
+				return StackResolver.get_totem_targets(state, db)
 			"play_instant":
 				return _get_instant_targets(_targeting_source)
 			"play_ability":
@@ -1000,9 +1027,22 @@ func get_context_actions(instance_id: String) -> Array:
 		if zone and zone.zone_type in ["ally_row", "hero_row"]:
 			var char_actions: Array = []
 
+			# For a weapon, "Attack" means strike with the hero wielding it —
+			# right-clicking the weapon is a shortcut for attacking with the hero
+			# (rule 303); the strike point then offers this weapon. Any other
+			# character attacks as itself.
+			var attacker_id := instance_id
+			var preferred_weapon := ""
+			if zone.zone_type == "hero_row" and card.controller == local_player \
+					and not StackResolver._weapon_info(def).is_empty():
+				var ps_w := state.players.get(local_player) as PlayerState
+				if ps_w and ps_w.hero_instance_id != "":
+					attacker_id = ps_w.hero_instance_id
+					preferred_weapon = instance_id   # auto-strike with this weapon
+
 			var legal_attackers := StackResolver.get_legal_attackers(state, local_player, db)
 			var can_attack := state.priority_player == local_player \
-				and instance_id in legal_attackers \
+				and attacker_id in legal_attackers \
 				and state.phase == "action" \
 				and state.turn_player == local_player \
 				and state.pending_actions.is_empty() \
@@ -1010,7 +1050,8 @@ func get_context_actions(instance_id: String) -> Array:
 				and not state.in_protect_point
 			char_actions.append({"label": "Attack",
 				"action": PendingAction.make("begin_attack_targeting",
-					local_player, {"attacker_id": instance_id}),
+					local_player, {"attacker_id": attacker_id,
+						"preferred_weapon_id": preferred_weapon}),
 				"enabled": can_attack})
 
 			# Activated power (allies in the ally row; equipment in the hero row).
@@ -1156,6 +1197,9 @@ func handle_context_action(action: PendingAction) -> void:
 		"begin_attack_targeting":
 			if state.priority_player == local_player:
 				start_attack_targeting(action.params.get("attacker_id", ""))
+				# Remember the weapon (if any) to auto-strike at the strike point.
+				# Set AFTER start_attack_targeting, which resets it to "".
+				preferred_strike_weapon = action.params.get("preferred_weapon_id", "")
 			return
 		"begin_power_targeting":
 			if state.priority_player == local_player:
@@ -1557,6 +1601,10 @@ func _action_type_for(instance_id: String) -> String:
 		return "play_ally"
 	if def.card_type == "Equipment":
 		return "play_equipment"
+	# Ongoing Ability that enters play (e.g. Searing Totem, an Instant Ability)
+	# routes to play_ability even when Instant — see base_ai._action_type_for.
+	if def.card_type == "Ability" and StackResolver.is_ongoing_def(def):
+		return "play_ability"
 	if def.is_instant:
 		return "play_instant"
 	if def.card_type == "Ability":

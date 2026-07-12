@@ -127,6 +127,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_strike() before priority can move.
 	if state.pending_strike_player != "":
 		return []
+	# A pending Totem start-of-turn target choice (Searing Totem) must be resolved
+	# via choose_totem_target() before priority can move.
+	if state.pending_totem_target_player != "":
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -214,6 +218,11 @@ static func can_submit(state: GameState, action: PendingAction,
 
 	# Strike point (602.1 / 602.3) blocks everything until resolved via choose_strike().
 	if state.pending_strike_player != "":
+		return false
+
+	# Ongoing Totem start-of-turn target choice blocks everything until resolved
+	# via choose_totem_target().
+	if state.pending_totem_target_player != "":
 		return false
 
 	match action.action_type:
@@ -352,10 +361,15 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 	var zone := state.zones.get(card.zone_id) as Zone
 	if not zone or zone.zone_type != "hand": return false
 	if card.controller != action.source_player: return false
-	if state.phase != "action": return false
-	if state.combat_attack_window or state.combat_defend_window: return false
-	if state.turn_player != action.source_player: return false
-	if not state.pending_actions.is_empty(): return false
+	# Instant Ability (e.g. Searing Totem): the Instant tag overrides non-instant
+	# timing (rule 409.1) — playable any time its controller has priority. A
+	# non-instant Ability keeps action-phase / turn-player / empty-chain timing.
+	var play_def := db.get_def(card.card_def_id) as CardDef if db else null
+	if play_def == null or not play_def.is_instant:
+		if state.phase != "action": return false
+		if state.combat_attack_window or state.combat_defend_window: return false
+		if state.turn_player != action.source_player: return false
+		if not state.pending_actions.is_empty(): return false
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
 		return false
 	if db:
@@ -382,10 +396,15 @@ static func can_play_ability_no_target_check(state: GameState,
 	var zone := state.zones.get(card.zone_id) as Zone
 	if not zone or zone.zone_type != "hand": return false
 	if card.controller != player_id: return false
-	if state.phase != "action": return false
-	if state.combat_attack_window or state.combat_defend_window: return false
-	if state.turn_player != player_id: return false
-	if not state.pending_actions.is_empty(): return false
+	# Instant Ability: priority-only timing (mirrors _can_play_ability above).
+	var play_def := db.get_def(card.card_def_id) as CardDef if db else null
+	if play_def == null or not play_def.is_instant:
+		if state.phase != "action": return false
+		if state.combat_attack_window or state.combat_defend_window: return false
+		if state.turn_player != player_id: return false
+		if not state.pending_actions.is_empty(): return false
+	else:
+		if state.priority_player != player_id: return false
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
 		return false
 	return true
@@ -701,8 +720,28 @@ static func _is_ongoing_ability(state: GameState, card_id: String, db) -> bool:
 	var def := db.get_def(card.card_def_id) as CardDef
 	if not def:
 		return false
+	return is_ongoing_def(def)
+
+
+# Static def-only variant of _is_ongoing_ability — used by the renderer / AI
+# action-type dispatch, which have a CardDef but no live card_id.
+static func is_ongoing_def(def: CardDef) -> bool:
+	if not def:
+		return false
 	for seg in def.effects.split("|"):
 		if seg.strip_edges() == "ongoing":
+			return true
+	return false
+
+
+# Rule 305.3: a Totem is an ability ally that enters the ally_row, can't be
+# proposed as an attacker, and can be attacked/targeted like an ally. We tag it
+# with a "totem[:element]" segment in the effects string.
+static func is_totem_def(def: CardDef) -> bool:
+	if not def:
+		return false
+	for seg in def.effects.split("|"):
+		if seg.strip_edges() == "totem" or seg.strip_edges().begins_with("totem:"):
 			return true
 	return false
 
@@ -726,7 +765,16 @@ static func _resolve_play_ongoing_ability(state: GameState,
 		return fizzle_events
 
 	var events: Array[GameEvent] = []
-	# Rule 305.2c: a non-attaching ongoing ability enters play in its
+	var def := db.get_def(card.card_def_id) as CardDef if db else null
+	# Rule 305.3: a Totem is an ability ALLY — it enters the controller's ally_row
+	# (so it can be attacked/targeted like an ally), not the hero row. It carries
+	# summoning sickness like any other ally (irrelevant to attacking — totems
+	# can't attack — but it means it isn't ready to be tapped for anything else).
+	if def and is_totem_def(def):
+		events.append_array(GameLogic.move_card(state, card_id, card.controller + "_ally_row"))
+		card.just_summoned = true
+		return events
+	# Rule 305.2c: any other non-attaching ongoing ability enters play in its
 	# controller's hero row and remains there (providing its continuous
 	# effect) until removed from play — it does not resolve-and-graveyard
 	# like a non-ongoing ability.
@@ -1095,6 +1143,18 @@ static func has_incoming_hero_damage(state: GameState, db, player_id: String) ->
 			and state.combat_defender == hero_id \
 			and state.is_in_play(state.combat_attacker):
 		return true
+	# Combat retaliation (rule 603.1) — our hero is the attacker (striking with a
+	# weapon) and the defender deals combat damage back at conclusion. Wait for
+	# the defend window (the defender is locked in after the protect point).
+	# Long-Range attackers take no retaliation, so there's nothing to block.
+	if state.combat_defend_window \
+			and state.combat_attacker == hero_id \
+			and state.is_in_play(state.combat_defender) \
+			and db and state.get_atk(state.combat_defender, db) > 0:
+		var atk_card := state.get_card(hero_id)
+		if not (_has_keyword(atk_card, "long_range", db) \
+				or _struck_weapon_grants_long_range(state, hero_id, db)):
+			return true
 	for act in state.pending_actions:
 		if act.source_player == player_id:
 			continue
@@ -1478,6 +1538,9 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	if att_zone and att_zone.zone_type == "ally_row":
 		if attacker.just_summoned and not _has_keyword(attacker, "ferocity", db):
 			return false
+	# Rule 305.3a: Totems can't be proposed as attackers.
+	if db and is_totem_def(db.get_def(attacker.card_def_id) as CardDef):
+		return false
 	# "can't attack" allies (e.g. Guardian Steelhorn) can never propose combat.
 	if _has_keyword(attacker, "cant_attack", db):
 		return false
@@ -1522,6 +1585,9 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 	# Allies (rule 302.2: just_summoned unless Ferocity).
 	for card in state.cards_in_zone(player_id + "_ally_row"):
 		if card.is_exhausted:
+			continue
+		# Rule 305.3a: Totems can't be proposed as attackers.
+		if db and is_totem_def(db.get_def(card.card_def_id) as CardDef):
 			continue
 		if card.just_summoned and not _has_keyword(card, "ferocity", db):
 			continue
@@ -2769,6 +2835,71 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 					events.append_array(
 						_check_destroyed_trigger(state, target_id, source_id, db))
 	return events
+
+
+# ── Ongoing Totem "start of each turn" targeted damage (Searing Totem) ──────────
+# A direct-call mandatory choice (like choose_strike / choose_reveal_pick), NOT a
+# chain action — the trigger fires during the ready step, outside normal priority.
+
+# Peek the front pending totem trigger, skipping any whose source left play
+# (711.1), and mark its controller as the player who must pick a target. Returns
+# the totem_target_required event, or [] (and clears the pending marker) when the
+# queue is empty. Called by turn-start collection and after each resolution.
+static func _open_next_totem_trigger(state: GameState, db) -> Array[GameEvent]:
+	while not state.pending_ongoing_triggers.is_empty():
+		var trigger: Dictionary = state.pending_ongoing_triggers[0]
+		var source_id: String = trigger.get("card_id", "")
+		var source := state.get_card(source_id)
+		if not source or not state.is_in_play(source_id):
+			state.pending_ongoing_triggers.pop_front()
+			continue
+		state.pending_totem_target_player = source.controller
+		return [GameEvent.totem_target_required(
+			source_id, source.controller,
+			trigger.get("dmg_type", ""), int(trigger.get("amount", 0)))]
+	state.pending_totem_target_player = ""
+	return []
+
+
+# Resolve the active totem trigger: the controller deals its damage to the chosen
+# hero or ally, then the next queued trigger (if any) opens. target_id must be a
+# legal hero or ally in play. Direct call — no chain, no priority pass.
+static func choose_totem_target(state: GameState, target_id: String, db) -> Array[GameEvent]:
+	if state.pending_totem_target_player == "" or state.pending_ongoing_triggers.is_empty():
+		return []
+	var trigger: Dictionary = state.pending_ongoing_triggers.pop_front()
+	state.pending_totem_target_player = ""
+	var source_id: String = trigger.get("card_id", "")
+	var amount := int(trigger.get("amount", 0))
+	var events: Array[GameEvent] = []
+	# 706 re-check: the source must still be in play and the target legal.
+	if state.is_in_play(source_id) and amount > 0 and _is_legal_target(state, target_id, db):
+		events.append_array(GameLogic.deal_damage(state, source_id, target_id, amount, db))
+		var t_card := state.get_card(target_id)
+		if t_card and state.get_current_hp(target_id, db) <= 0:
+			var t_zone := state.zones.get(t_card.zone_id) as Zone
+			if t_zone and t_zone.zone_type == "hero_row":
+				events.append(GameEvent.game_over(
+					_other_player(state, t_card.controller), t_card.controller))
+			else:
+				events.append_array(_check_destroyed_trigger(state, target_id, source_id, db))
+	# Open the next queued totem trigger, if any.
+	events.append_array(_open_next_totem_trigger(state, db))
+	return events
+
+
+# Legal targets for a totem trigger: every hero and ally in play (rule: "target
+# hero or ally"), subject to the standard targeting restrictions (untargetable).
+static func get_totem_targets(state: GameState, db) -> Array[String]:
+	var result: Array[String] = []
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "" and _is_legal_target(state, ps.hero_instance_id, db):
+			result.append(ps.hero_instance_id)
+		for ally in state.cards_in_zone(pid + "_ally_row"):
+			if _is_legal_target(state, ally.instance_id, db):
+				result.append(ally.instance_id)
+	return result
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

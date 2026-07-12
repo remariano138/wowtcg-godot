@@ -117,3 +117,32 @@ instant that says "in response to a triggered ability" — the immediate-
 resolution shortcut here and in the pet/equipment-sacrifice flows will need
 to be revisited to actually add the trigger to the chain instead of
 resolving it inline.
+
+---
+
+## Searing Totem (`azeroth_116`)
+
+**Printed text:** "Ongoing: At the start of each turn, Searing Totem deals 1
+fire damage to target hero or ally."
+
+**Rule 501.1a / 410:** like Infernal above, a paper "at the start of each
+turn" triggered ability is added to the chain during the ready step, with a
+priority window before it resolves and its target is chosen.
+
+**Deviation:** the engine resolves the trigger immediately, with no priority
+window — `TurnManager._collect_ongoing_turn_triggers` (called from
+`_enter_ready`) queues each in-play Totem's trigger and opens a mandatory
+target choice resolved via `StackResolver.choose_totem_target()` (a direct
+call, like the strike / reveal / control-discard choices;
+`pending_totem_target_player` hard-blocks `can_submit` / `pass_priority`
+while open). Turn player's totems fire first (501.1a ordering is preserved).
+
+**Why:** identical reasoning to Infernal — no implemented card can respond to
+a triggered ability before it resolves, so a chain-based implementation would
+add complexity with no observable difference. This reuses the established
+immediate-resolution mandatory-choice pattern.
+
+**How to apply this pattern to future cards:** an ongoing "start of each turn"
+targeted-damage Totem uses the `ongoing|totem[:element]|ongoing_damage_each_turn:AMOUNT:TYPE`
+recipe. If a future trigger must be respondable, the same chain-based rework
+noted under Infernal applies here.

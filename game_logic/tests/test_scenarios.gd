@@ -131,6 +131,10 @@ func _ready() -> void:
 		_test_golem_skull_helm_block,
 		_test_deflector_hero_protects,
 		_test_ai_hero_protect_decisions,
+		_test_searing_totem_enters_ally_row_cant_attack,
+		_test_searing_totem_fires_each_turn,
+		_test_searing_totem_can_be_attacked,
+		_test_searing_totem_instant_timing,
 	]
 
 	for t in tests:
@@ -267,6 +271,23 @@ class MockDB extends RefCounted:
 		d.cost           = cost
 		d.card_type      = "Ability"
 		d.is_instant     = false
+		d.effects        = effects
+		_defs[def_id] = d
+
+	# Totem (rule 305.3): an Instant Ability that enters play as an ability ally
+	# with an ATK/health value (Searing Totem). Recipe carries a totem[:element]
+	# segment plus its ongoing power.
+	func totem(def_id: String, cost: int, effects: String, health: int = 1,
+			dmg_type: String = "Fire") -> void:
+		var d := CardDef.new()
+		d.card_def_id    = def_id
+		d.card_name      = def_id
+		d.cost           = cost
+		d.card_type      = "Ability"
+		d.is_instant     = true
+		d.printed_atk    = 0
+		d.printed_health = health
+		d.dmg_type       = dmg_type
 		d.effects        = effects
 		_defs[def_id] = d
 
@@ -416,6 +437,12 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int) -> Array[G
 						all_events.append_array(_headless_discard(state, ae, db))
 					elif ae.event_type == "control_discard_choice_opened":
 						all_events.append_array(_headless_control_discard(state, db))
+					elif ae.event_type == "totem_target_required":
+						var t_ev := _headless_totem_target(state, db)
+						all_events.append_array(t_ev)
+						for te in t_ev:
+							if te.event_type == "game_over":
+								game_over = true
 			elif e.event_type == "control_discard_choice_opened":
 				all_events.append_array(_headless_control_discard(state, db))
 			elif e.event_type == "discard_choice_opened":
@@ -426,6 +453,12 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int) -> Array[G
 				all_events.append_array(_headless_equipment_sacrifice(state, e, db))
 			elif e.event_type == "enter_play_target_required":
 				all_events.append_array(_headless_enter_play_target(state, e, db))
+			elif e.event_type == "totem_target_required":
+				var t_ev := _headless_totem_target(state, db)
+				all_events.append_array(t_ev)
+				for te in t_ev:
+					if te.event_type == "game_over":
+						game_over = true
 			elif e.event_type == "protect_point_opened":
 				protect_pending = true
 				var def_card := state.get_card(e.payload.get("defender_id", ""))
@@ -530,6 +563,32 @@ func _headless_equipment_sacrifice(state: GameState, event: GameEvent, db) -> Ar
 			if e.event_type == "equipment_sacrifice_required":
 				events.append_array(_headless_equipment_sacrifice(state, e, db))
 		break
+	return events
+
+
+# ── Headless Totem start-of-turn target helper (Searing Totem) ───────────────
+# Resolves each queued totem trigger. If _totem_target_pref is set and legal it
+# is used; otherwise the acting player's opposing hero is targeted.
+var _totem_target_pref: String = ""
+
+func _headless_totem_target(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var guard := 8
+	while state.pending_totem_target_player != "" and guard > 0:
+		guard -= 1
+		var ctrl := state.pending_totem_target_player
+		var opp := "p2" if ctrl == "p1" else "p1"
+		var legal := StackResolver.get_totem_targets(state, db)
+		var target := ""
+		if _totem_target_pref != "" and _totem_target_pref in legal:
+			target = _totem_target_pref
+		else:
+			var ps_opp := state.players.get(opp) as PlayerState
+			if ps_opp and ps_opp.hero_instance_id in legal:
+				target = ps_opp.hero_instance_id
+			elif not legal.is_empty():
+				target = legal[0]
+		events.append_array(StackResolver.choose_totem_target(state, target, db))
 	return events
 
 
@@ -2953,8 +3012,8 @@ func _test_find_lethal_baseline_in_ai_actions() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCENARIO 29 — sort_valuable_cards: rarity > cost > ally > Protector > HP >
-# Ferocity > Elusive > ATK
+# SCENARIO 29 — sort_valuable_cards: card_value_score (cost + rarity +
+# 0.2*(atk+hp)) first, then ally > Protector > HP > Ferocity > Elusive > ATK
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_sort_valuable_cards() -> void:
@@ -2987,17 +3046,29 @@ func _test_sort_valuable_cards() -> void:
 		state.zones["p1_graveyard"].card_ids.append(did + "_i")
 		ids.append(did + "_i")
 
+	# Scores: rare_exp 5+3+0.4=8.4 > ally_4 4+1+1.0=6.0 > epic_cheap 1+4+0.4=5.4
+	# > spell_4 4+1+0=5.0 (non-ally: no stat term) > hp_2/atk_2 2+1+1.2=4.2
+	# (tie → HP) > the 3.6 pack (tie → Protector, Ferocity, Elusive).
 	var sorted_ids := BaseAI.sort_valuable_cards(state, db, ids)
-	eq(sorted_ids, ["epic_cheap_i", "rare_exp_i", "ally_4_i", "spell_4_i",
-			"prot_2_i", "hp_2_i", "fero_2_i", "elu_2_i", "atk_2_i", "plain_2_i"],
-		"sc29-a: full order — rarity, cost, ally-first, Protector, HP, Ferocity, Elusive, ATK")
+	eq(sorted_ids, ["rare_exp_i", "ally_4_i", "epic_cheap_i", "spell_4_i",
+			"hp_2_i", "atk_2_i", "prot_2_i", "fero_2_i", "elu_2_i", "plain_2_i"],
+		"sc29-a: full order — score first, keyword heuristic breaks ties")
 	eq(ids.size(), 10, "sc29-b: input list not mutated (still 10 entries)")
 	ok(ids[0] == "plain_2_i", "sc29-c: input order untouched")
+	ok(absf(BaseAI.card_value_score(state, db, "rare_exp_i") - 8.4) < 0.001,
+		"sc29-a2: card_value_score = cost + rarity + 0.2*(atk+hp)")
+
+	# Situational bonus: +3.5 lifts plain_2 (3.6) above ally_4 (6.0) but not
+	# rare_exp (8.4).
+	var boosted := BaseAI.sort_valuable_cards(state, db, ids,
+			{"plain_2_i": 3.5})
+	eq(boosted[0], "rare_exp_i", "sc29-g: bonus doesn't overtake a higher score")
+	eq(boosted[1], "plain_2_i", "sc29-h: per-card bonus lifts score in the sort")
 
 	# FullRandomAI hook: lethal pools come back value-sorted.
 	var fr := FullRandomAI.new()
 	var ranked := fr.rank_lethal_targets(state, db, ids)
-	eq(ranked[0], "epic_cheap_i",
+	eq(ranked[0], "rare_exp_i",
 		"sc29-d: FullRandomAI ranks the most valuable card first")
 
 	# In-play cards use CURRENT values: same def, one damaged → the healthy
@@ -5972,9 +6043,13 @@ func _test_generic_ai_all_out_with_spell_lethal() -> void:
 		"aos-a2: 8 ATK + 4 dmg clears 9 hp → attack first, least valuable attacker")
 
 	# aos-b: once every attacker has swung, the spell itself is returned as
-	# the finisher instead of being left to the develop step.
+	# the finisher instead of being left to the develop step. Simulate the
+	# attacks having actually connected (8 dmg) — exhausting the allies alone,
+	# without reducing the hero's HP, would leave 9 HP against a 4-dmg spell
+	# and correctly read as not-lethal.
 	st.get_card("small").is_exhausted = true
 	st.get_card("big").is_exhausted = true
+	st.get_card("p2_hero").damage_taken = 29   # 1 HP left after the 8-dmg swing
 	act = ai._all_out_with_spell_hero_lethal_action(st, db, "p1")
 	ok(act != null and act.action_type == "play_instant"
 			and act.params.get("card_id") == "bolt"
@@ -6759,3 +6834,145 @@ func _test_ai_hero_protect_decisions() -> void:
 	state.combat_protector = ""
 	eq(gen.choose_strike_weapon(state, db, "p1"), "",
 		"hp-e: non-protecting hero still holds vs a survivor")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Searing Totem: an Instant Ability Totem (rule 305.3) enters the
+# ally_row and can't be proposed as an attacker.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_searing_totem_enters_ally_row_cant_attack() -> void:
+	_buf.append("\n-- Searing Totem: enters ally_row, can't attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var totem := CardInstance.create("searing", "searing_def", "p1", "p1_hand")
+	state.cards["searing"] = totem
+	state.zones["p1_hand"].card_ids.append("searing")
+
+	# Play it (chain: submit, then both players pass to resolve).
+	var play := PendingAction.make("play_ability", "p1", {"card_id": "searing"})
+	ok(StackResolver.can_submit(state, play, db), "st1-a: play_ability is legal")
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(state.get_card("searing").zone_id == "p1_ally_row",
+		"st1-b: Totem entered p1_ally_row (not hero_row)")
+	ok(StackResolver.is_totem_def(db.get_def("searing_def")),
+		"st1-c: is_totem_def true")
+
+	# Even ready (no summoning sickness) it is never a legal attacker (305.3a).
+	state.get_card("searing").just_summoned = false
+	var legal := StackResolver.get_legal_attackers(state, "p1", db)
+	ok("searing" not in legal, "st1-d: Totem is NOT a legal attacker")
+	var propose := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "searing", "defender_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, propose, db),
+		"st1-e: propose_combat with the Totem is illegal")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Searing Totem: Ongoing "at the start of each turn" deals 1 fire
+# damage to a target hero (controller's choice). Fires on BOTH players' turns.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_searing_totem_fires_each_turn() -> void:
+	_buf.append("\n-- Searing Totem: fires at the start of each turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# Totem already in play, controlled by p1.
+	_add_ally(state, "searing", "searing_def", "p1")
+
+	_totem_target_pref = ""   # headless helper hits the opposing hero (p2)
+	var all_events := _drive_turns(state, db, ScriptedAI.new(), ScriptedAI.new(), 4)
+
+	var fired := 0
+	for e in all_events:
+		if e.event_type == "totem_target_required":
+			fired += 1
+	ok(fired >= 2, "st2-a: Totem fired on multiple turn starts (%d)" % fired)
+	ok(state.get_card("p2_hero").damage_taken == fired,
+		"st2-b: opposing hero took 1 damage per firing (%d)" % state.get_card("p2_hero").damage_taken)
+	ok(state.get_card("p1_hero").damage_taken == 0,
+		"st2-c: controller's own hero untouched (targets opponent)")
+	ok(state.pending_totem_target_player == "",
+		"st2-d: no lingering pending totem choice")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Searing Totem: "can be attacked or targeted like an ally" — it is a
+# legal defender and a legal target for targeted effects.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_searing_totem_can_be_attacked() -> void:
+	_buf.append("\n-- Searing Totem: can be attacked / targeted like an ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	db.ally("attacker_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_ally(state, "searing", "searing_def", "p2")
+
+	var defenders := StackResolver.get_legal_defenders(state, "atk", db)
+	ok("searing" in defenders, "st3-a: Totem is a legal defender (can be attacked)")
+	ok("searing" in StackResolver.get_totem_targets(state, db),
+		"st3-b: Totem is a legal target for targeted effects")
+
+	# Combat: the 2-ATK attacker kills the 0/1 Totem.
+	var propose := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "searing"})
+	state.players["p1"].resource_placed_this_turn = true
+	var evs := StackResolver.submit_action(state, propose, db)
+	ok(not evs.is_empty(), "st3-c: combat proposal accepted against the Totem")
+	# Drain the attack/defend windows to conclusion.
+	for _i in range(6):
+		StackResolver.pass_priority(state, db)
+	ok(state.get_card("searing").zone_id == "p2_graveyard",
+		"st3-d: Totem destroyed by combat damage → graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Searing Totem: as an Instant Ability it can be played with priority
+# outside the action phase / with a non-empty chain, unlike a normal Ability.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_searing_totem_instant_timing() -> void:
+	_buf.append("\n-- Searing Totem: instant-speed play timing --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	db.ability("plain_ongoing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	# It is p2's turn; p1 holds priority to respond (instant window).
+	state.turn_player     = "p2"
+	state.priority_player = "p1"
+
+	var totem := CardInstance.create("searing", "searing_def", "p1", "p1_hand")
+	state.cards["searing"] = totem
+	state.zones["p1_hand"].card_ids.append("searing")
+	var plain := CardInstance.create("plain", "plain_ongoing_def", "p1", "p1_hand")
+	state.cards["plain"] = plain
+	state.zones["p1_hand"].card_ids.append("plain")
+
+	var play_totem := PendingAction.make("play_ability", "p1", {"card_id": "searing"})
+	ok(StackResolver.can_submit(state, play_totem, db),
+		"st4-a: Instant-Ability Totem playable on opponent's turn with priority")
+	var play_plain := PendingAction.make("play_ability", "p1", {"card_id": "plain"})
+	ok(not StackResolver.can_submit(state, play_plain, db),
+		"st4-b: a non-instant ongoing Ability is NOT playable off-turn")

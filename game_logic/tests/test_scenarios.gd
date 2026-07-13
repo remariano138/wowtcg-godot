@@ -108,6 +108,7 @@ func _ready() -> void:
 		_test_frost_riders,
 		_test_lady_jaina_aura,
 		_test_lady_jaina_unique,
+		_test_hannah_cant_protect_aura,
 		_test_nerra_lifeboon_health_aura,
 		_test_nerra_death_triggers_aura_loss_death,
 		_test_master_of_the_hunt_ongoing,
@@ -5544,6 +5545,49 @@ func _test_lady_jaina_unique() -> void:
 		"sc40f-e: the chosen duplicate is destroyed")
 	ok(st.is_in_play("jaina1"),
 		"sc40f-f: the surviving copy stays in play")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40g — Hannah the Unstoppable: "Opposing heroes and allies can't
+# protect." A live static aura — while an opponent controls Hannah, that player
+# has NO legal protectors (neither their allies with Protector nor a hero grant).
+# Removing Hannah restores them.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_hannah_cant_protect_aura() -> void:
+	_buf.append("\n-- Scenario 40g: Hannah — opposing heroes and allies can't protect --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("azeroth_187", 3, 3, [], 5, "opposing_cant_protect")
+	db.ally("attacker_def", 3, 3)
+	db.ally("guard_def", 3, 4, (["protector"] as Array[String]))
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var hannah := _add_ally(st, "hannah", "azeroth_187", "p1")
+	hannah.just_summoned = false
+	_add_ally(st, "attacker", "attacker_def", "p1")
+	var guard := _add_ally(st, "guard", "guard_def", "p2")
+	guard.just_summoned = false
+	guard.is_exhausted  = false
+
+	# p2 (Hannah's opponent) can't protect: its Protector ally is not offered.
+	ok("guard" not in StackResolver.get_legal_protectors(st, "attacker", "p2_hero", db),
+		"sc40g-a: opposing Protector can't protect under Hannah")
+
+	# Sanity: without the aura the same guard WOULD be a legal protector.
+	GameLogic.move_card(st, "hannah", "p1_graveyard")
+	ok("guard" in StackResolver.get_legal_protectors(st, "attacker", "p2_hero", db),
+		"sc40g-b: removing Hannah restores the opposing Protector")
+
+	# Hannah's own controller is unaffected — p1 could still protect if attacked.
+	_add_ally(st, "hannah2", "azeroth_187", "p2")  # now p2 controls Hannah
+	st.get_card("hannah2").just_summoned = false
+	var p1_guard := _add_ally(st, "p1_guard", "guard_def", "p1")
+	p1_guard.just_summoned = false
+	p1_guard.is_exhausted  = false
+	ok("p1_guard" not in StackResolver.get_legal_protectors(st, "attacker", "p1_hero", db),
+		"sc40g-c: p2's Hannah now locks p1's protectors")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

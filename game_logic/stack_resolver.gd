@@ -1808,6 +1808,11 @@ static func get_legal_protectors(state: GameState, _attacker_id: String,
 	if not defender:
 		return []
 	var defending_player := defender.controller
+	# "Opposing heroes and allies can't protect." (Hannah the Unstoppable):
+	# if the defending player's opponent controls this aura, no character the
+	# defending player controls may protect — evaluated live, never cached.
+	if _protect_locked(state, defending_player, db):
+		return []
 	var defender_zone := state.zones.get(defender.zone_id) as Zone
 	var defender_is_hero := defender_zone and defender_zone.zone_type == "hero_row"
 	var result: Array[String] = []
@@ -1851,6 +1856,21 @@ static func _allies_attack_locked(state: GameState, player_id: String, db) -> bo
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(opp + zone_suffix):
 			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "opposing_allies_cant_attack"):
+				return true
+	return false
+
+
+# "Opposing heroes and allies can't protect." (Hannah the Unstoppable): true when
+# the given player's OPPONENT controls an in-play card carrying the
+# opposing_cant_protect effect flag. A continuous static effect — evaluated live,
+# never cached — that stops the player from protecting with any character.
+static func _protect_locked(state: GameState, player_id: String, db) -> bool:
+	if not db:
+		return false
+	var opp := _other_player(state, player_id)
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(opp + zone_suffix):
+			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "opposing_cant_protect"):
 				return true
 	return false
 

@@ -39,6 +39,16 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
+      "card_def_id": "azeroth_331",
+      "count": 2,
+      "_card_name": "Krol Blade"
+    },
+    {
+      "card_def_id": "dark_portal_260",
+      "count": 2,
+      "_card_name": "Pads of the Dread Wolf"
+    },
+    {
       "card_def_id": "azeroth_176",
       "count": 4,
       "_card_name": "Apprentice Teep"
@@ -55,8 +65,13 @@
     },
     {
       "card_def_id": "azeroth_174",
-      "count": 2,
+      "count": 1,
       "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "azeroth_187",
+      "count": 1,
+      "_card_name": "Hannah the Unstoppable"
     },
     {
       "card_def_id": "azeroth_171",
@@ -69,13 +84,13 @@
       "_card_name": "Quick Strike"
     },
     {
-      "card_def_id": "azeroth_183",
+      "card_def_id": "azeroth_184",
       "count": 2,
-      "_card_name": "Freya Lightsworn"
+      "_card_name": "Galahandra Keeper of the Silent Grove"
     },
     {
       "card_def_id": "azeroth_180",
-      "count": 4,
+      "count": 2,
       "_card_name": "Crazy Igvand"
     },
     {
@@ -87,11 +102,6 @@
       "card_def_id": "azeroth_192",
       "count": 2,
       "_card_name": "Kor Cindervein"
-    },
-    {
-      "card_def_id": "dark_portal_260",
-      "count": 2,
-      "_card_name": "Pads of the Dread Wolf"
     },
     {
       "card_def_id": "azeroth_197",

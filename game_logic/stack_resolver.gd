@@ -199,10 +199,14 @@ static func can_submit(state: GameState, action: PendingAction,
 	if action.source_player != state.priority_player:
 		return false
 
-	# Pending enters-play target choice blocks everything except resolving it.
+	# Pending enters-play target choice blocks everything except resolving it —
+	# but once the choice is announced (sitting on the chain), armor block is a
+	# legal response to the incoming damage (rule 304.3).
 	if not state.pending_enter_play_effect.is_empty() \
 			and action.action_type != "choose_enter_play_target":
-		return false
+		if not (action.action_type == "use_armor_prevention"
+				and _enter_play_choice_on_chain(state)):
+			return false
 
 	# Pet uniqueness violation blocks everything until resolved via choose_pet_sacrifice().
 	if state.pending_pet_sacrifice_player != "":
@@ -1227,6 +1231,15 @@ static func has_incoming_hero_damage(state: GameState, db, player_id: String) ->
 			continue
 		if not db:
 			continue
+		# Enter-play targeted damage (e.g. Taz'dingo) — the target choice sits on
+		# the chain as choose_enter_play_target; the effect lives in
+		# pending_enter_play_effect (cleared only at resolution).
+		if act.action_type == "choose_enter_play_target":
+			if act.params.get("target_id", "") == hero_id \
+					and (state.pending_enter_play_effect.get("effect", "") as String)\
+						.begins_with("deal_damage_to_target"):
+				return true
+			continue
 		var src := state.get_card(act.params.get("card_id", ""))
 		var def := db.get_def(src.card_def_id) as CardDef if src else null
 		if not def:
@@ -1245,6 +1258,13 @@ static func has_incoming_hero_damage(state: GameState, db, player_id: String) ->
 				var ap := _ally_activated_power(def)
 				if (ap.get("effect", "") as String) == "deal_damage_to_target":
 					return true
+	return false
+
+
+static func _enter_play_choice_on_chain(state: GameState) -> bool:
+	for a in state.pending_actions:
+		if (a as PendingAction).action_type == "choose_enter_play_target":
+			return true
 	return false
 
 
@@ -1555,6 +1575,15 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var destroy_id: String = action.params.get("target_id", "")
 			if _is_legal_target(state, destroy_id, db) and _is_ally(state, destroy_id):
 				events.append_array(_destroy_card_trigger(state, destroy_id, card_id, db))
+		"exhaust_target":
+			# Galahandra, Keeper of the Silent Grove: "1, [Activate] -> Exhaust
+			# target ally." Re-check at resolution (706): fizzles if the ally
+			# left play / became Untargetable. exhaust_card no-ops if already
+			# exhausted. Same interrupt role as Exhaustion (azeroth_159), but
+			# as a repeatable ally power instead of a one-shot instant.
+			var exhaust_id: String = action.params.get("target_id", "")
+			if _is_legal_target(state, exhaust_id, db) and _is_ally(state, exhaust_id):
+				events.append_array(GameLogic.exhaust_card(state, exhaust_id))
 		"deal_damage_aoe":
 			var amount: int = int(ap.get("amount", 0))
 			var opp := _other_player(state, card.controller)

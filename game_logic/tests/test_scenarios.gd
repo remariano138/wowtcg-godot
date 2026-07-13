@@ -37,6 +37,7 @@ func _ready() -> void:
 		_test_ai_plays_equipment,
 		_test_pads_block_combat,
 		_test_pads_block_instant,
+		_test_pads_block_enter_play_damage,
 		_test_pads_overblock_expires,
 		_test_ai_armor_block_heuristic,
 		_test_grimdron_ally_power,
@@ -128,6 +129,8 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_exhaustion_freezes_proposal,
 		_test_ai_exhaustion_freeze_save,
+		_test_galahandra_power_freezes_proposal,
+		_test_ai_galahandra_freeze_save,
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
 		_test_bone_bow_grants_long_range,
@@ -1671,6 +1674,62 @@ func _test_pads_block_instant() -> void:
 	# pi-b: hero took 2 − 1 = 1 damage; pool fully consumed.
 	eq(state.get_card("p1_hero").damage_taken, 1, "pi-b: hero took 1 (2 dmg − 1 blocked)")
 	eq(state.players["p1"].damage_prevention, 0, "pi-c: pool consumed to 0")
+
+
+# Armor block vs enter-play targeted damage (e.g. Taz'dingo): the target choice
+# sits on the chain as choose_enter_play_target, so the defender must be able to
+# respond with a block just like against Quick Strike.
+func _test_pads_block_enter_play_damage() -> void:
+	_buf.append("\n-- Armor block: enter-play targeted damage (Taz'dingo-style) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.ally("taz_def", 2, 2, [], 3, "on_enter:deal_damage_to_target:2:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 3)
+	var pads := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
+	state.cards["pads_inst"] = pads
+	state.zones["p1_hero_row"].card_ids.append("pads_inst")
+	var taz := CardInstance.create("taz_inst", "taz_def", "p2", "p2_hand")
+	state.cards["taz_inst"] = taz
+	state.zones["p2_hand"].card_ids.append("taz_inst")
+
+	# p2 plays the ally; it resolves and its enter-play effect wants a target.
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p2",
+		{"card_id": "taz_inst"}), db)
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → ally resolves, effect pending
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"ep-a: enter-play effect pending after the ally resolves")
+
+	# p2 announces the target: p1's hero. The choice goes on the chain.
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p2", {"source_card_id": "taz_inst", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p2 passes → p1 priority, chain non-empty
+
+	# ep-b: block legal as a response to the pending enter-play damage.
+	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "pads_inst"})
+	ok(StackResolver.can_submit(state, block, db),
+		"ep-b: block legal while enter-play damage choice is on the chain")
+
+	# ep-c: the AI heuristic sees the incoming damage too.
+	var ai := BaseAI.new()
+	var ai_block := ai.armor_prevention_action(state, db, "p1")
+	ok(ai_block != null and ai_block.params.get("card_id") == "pads_inst",
+		"ep-c: AI commits the armor against enter-play damage")
+
+	StackResolver.submit_action(state, block, db)
+	StackResolver.pass_priority(state, db)   # p1 passes
+	StackResolver.pass_priority(state, db)   # p2 passes → block resolves (pool 1)
+	StackResolver.pass_priority(state, db)   # turn player passes
+	StackResolver.pass_priority(state, db)   # p1 passes → enter-play damage resolves
+
+	eq(state.get_card("p1_hero").damage_taken, 1, "ep-d: hero took 1 (2 dmg − 1 blocked)")
+	eq(state.players["p1"].damage_prevention, 0, "ep-e: pool consumed to 0")
 
 
 func _test_pads_overblock_expires() -> void:
@@ -6784,6 +6843,123 @@ func _test_ai_exhaustion_freeze_save() -> void:
 	StackResolver.pass_priority(state2, db)
 	ok(ai.decide_action(state2, db, "p2") == null,
 		"ax-c: AI holds Exhaustion against a 2-ATK chip attack")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Galahandra, Keeper of the Silent Grove (azeroth_184, 0/1 Elusive Ally):
+# "1, [Activate] -> Exhaust target ally." Same interrupt role as Exhaustion,
+# but as a repeatable in-play ally power instead of a one-shot hand instant.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_galahandra_power_freezes_proposal() -> void:
+	_buf.append("\n-- Galahandra: freeze the ally attacker in response to a proposal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 4, [], 3)
+	db.ally("azeroth_184", 0, 1, ["elusive"], 2, "activated_power:1:exhaust_target:0::ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	var gala := _add_ally(state, "gala", "azeroth_184", "p2")
+	gala.just_summoned = false
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# Ally-only targeting: Galahandra's power can't be aimed at a hero.
+	var at_hero := PendingAction.make("use_ally_power", "p2",
+		{"card_id": "gala", "target_id": "p1_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"gp-a: Galahandra's power can't target a hero (ally-only)")
+
+	var all_events: Array[GameEvent] = []
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"})
+	all_events.append_array(StackResolver.submit_action(state, proposal, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 → p2
+
+	var cast := PendingAction.make("use_ally_power", "p2",
+		{"card_id": "gala", "target_id": "atk"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"gp-b: Galahandra's power on the attacker is legal in response to the proposal")
+	all_events.append_array(StackResolver.submit_action(state, cast, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p2 passes
+	all_events.append_array(StackResolver.pass_priority(state, db))  # power resolves
+
+	ok(atk.is_exhausted, "gp-c: attacker is exhausted after the power resolves")
+	ok(gala.is_exhausted, "gp-d: Galahandra herself exhausts (the [Activate] cost)")
+
+	# Both pass again → the proposal itself resolves and must fizzle (601.3).
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled":
+			saw_fizzle = true
+	ok(saw_fizzle, "gp-e: proposal fizzled at resolution")
+	ok(not state.combat_attack_window, "gp-f: no attack window opened")
+	eq(state.get_card("p2_hero").damage_taken, 0, "gp-g: hero took no damage")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI uses Galahandra's power to cancel a dangerous incoming attack while the
+# proposal is on the chain, and holds it against a chip attack. Her 0 ATK means
+# get_all_legal_actions never proposes an attack with her, and the AI never
+# blind-plays her power on its own turn — only in response to combat.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_galahandra_freeze_save() -> void:
+	_buf.append("\n-- AI uses Galahandra's power in response to a heavy attack proposal --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   5, 5, [], 4)
+	db.ally("small_def", 2, 2, [], 1)
+	db.ally("azeroth_184", 0, 1, ["elusive"], 2, "activated_power:1:exhaust_target:0::ally")
+
+	# ga-a: 5 ATK at our hero (>= 4 threshold) → the AI answers the proposal.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	var gala := _add_ally(state, "gala", "azeroth_184", "p2")
+	gala.just_summoned = false
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": "p2_hero"})
+	StackResolver.submit_action(state, proposal, db)
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "use_ally_power"
+			and act.params.get("card_id") == "gala"
+			and act.params.get("target_id") == "big",
+		"ga-a: AI uses Galahandra's power targeting the proposed attacker")
+
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # power resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal fizzles
+	ok(state.get_card("big").is_exhausted and not state.combat_attack_window,
+		"ga-b: proposal cancelled — attacker exhausted, no combat")
+
+	# ga-c: the AI never proposes an attack with Galahandra herself (0 ATK).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var gala2 := _add_ally(state2, "gala2", "azeroth_184", "p2")
+	gala2.just_summoned = false
+	state2.players["p2"].resource_placed_this_turn = true
+	var legal := ai.get_legal_actions(state2, db, "p2")
+	var proposed_gala := false
+	for a in legal:
+		if a.action_type == "propose_combat" and a.params.get("attacker_id") == "gala2":
+			proposed_gala = true
+	ok(not proposed_gala, "ga-c: AI never proposes an attack with Galahandra (0 ATK)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -68,6 +68,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var exhaust := exhaust_attacker_action(state, db, player_id)
 	if exhaust != null:
 		return exhaust
+	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
+	if power_exhaust != null:
+		return power_exhaust
 
 	# Everything below is our own action window only. Outside it (opponent's
 	# turn / a pending chain we don't want to answer), we simply pass — no random

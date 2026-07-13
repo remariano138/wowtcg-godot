@@ -54,6 +54,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var exhaust := exhaust_attacker_action(state, db, player_id)
 	if exhaust != null:
 		return exhaust
+	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
+	if power_exhaust != null:
+		return power_exhaust
 	return instant_protector_action(state, db, player_id)
 
 
@@ -113,6 +116,14 @@ func _incoming_hero_damage(state: GameState, db, player_id: String) -> int:
 		if act.source_player == player_id:
 			continue
 		if act.params.get("target_id", "") != hero_id:
+			continue
+		# Enter-play targeted damage (e.g. Taz'dingo) on the chain — effect and
+		# amount live in pending_enter_play_effect until resolution.
+		if act.action_type == "choose_enter_play_target":
+			var eff := state.pending_enter_play_effect.get("effect", "") as String
+			var eff_parts := eff.split(":")
+			if eff_parts[0] == "deal_damage_to_target" and eff_parts.size() > 1:
+				incoming += int(eff_parts[1])
 			continue
 		var src := state.get_card(act.params.get("card_id", ""))
 		var def := db.get_def(src.card_def_id) as CardDef if src else null
@@ -392,6 +403,68 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_exhaust":
 			continue
 		var act := PendingAction.make("play_instant", player_id,
+			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Galahandra, Keeper of the Silent Grove (activated_power:1:exhaust_target:0::ally):
+# same defensive role as exhaust_attacker_action above, but the exhaust comes
+# from an in-play ally's repeatable activated power (use_ally_power), not a
+# one-shot hand instant. Her 0 ATK means the AI never attacks with her, so the
+# power is always available to answer combat on either player's turn.
+func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.pending_actions.is_empty():
+		return null
+	var top: PendingAction = state.pending_actions.back()
+	if top.action_type != "propose_combat" or top.source_player == player_id:
+		return null
+
+	var attacker_id: String = top.params.get("attacker_id", "")
+	var defender_id: String = top.params.get("defender_id", "")
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var attacker := state.get_card(attacker_id)
+	if not attacker or not StackResolver._is_ally(state, attacker_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only save our own side
+
+	var a_atk := state.get_atk(attacker_id, db, true)
+	var a_hp  := state.get_current_hp(attacker_id, db)
+	var d_hp  := state.get_current_hp(defender_id, db)
+	var ps := state.players.get(player_id) as PlayerState
+	var worth := false
+	if ps and defender_id == ps.hero_instance_id:
+		worth = a_atk >= d_hp or a_atk >= 4
+	else:
+		var d_def := db.get_def(defender.card_def_id) as CardDef
+		var d_atk := state.get_atk(defender_id, db)
+		var kills_back := d_atk >= a_hp \
+			and not StackResolver._has_keyword(attacker, "long_range", db)
+		worth = a_atk >= d_hp and not kills_back and d_def != null and d_def.cost >= 2
+	if not worth:
+		return null
+
+	# A kill is strictly better than a freeze — hold if a combat instant answers it.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+			continue
+		var dmg_def := db.get_def(card.card_def_id) as CardDef
+		if dmg_def and _combat_instant_dmg(dmg_def) >= a_hp \
+				and dmg_def.cost <= state.get_available_resources(player_id):
+			return null
+
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var ap := StackResolver._ally_activated_power(def)
+		if ap.get("effect", "") != "exhaust_target" or ap.get("targets", "") != "ally":
+			continue
+		var act := PendingAction.make("use_ally_power", player_id,
 			{"card_id": card.instance_id, "target_id": attacker_id})
 		if StackResolver.can_submit(state, act, db):
 			return act
@@ -898,6 +971,11 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# Hierophant Caydiem: damage an enemy, heal a damaged friendly — two
 			# distinct targets. Mirrors _damage_and_heal_actions for hero powers.
 			result.append_array(_ally_damage_and_heal_actions(state, db, player_id, card.instance_id, int(ap.get("amount", 0))))
+		elif ap.get("effect", "") == "exhaust_target":
+			# Galahandra: held like Exhaustion, never blind-played on our own
+			# turn — only used in response to an opposing combat proposal, see
+			# exhaust_attacker_ally_power_action().
+			continue
 		elif ap.get("targets", "") == "ally":
 			# Friendly buff powers (Elder Moorf): target our own highest-ATK ally
 			# so the +ATK swing lands where it matters most. Never buffs the enemy.

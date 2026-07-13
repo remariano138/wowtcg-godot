@@ -4,6 +4,11 @@
   "hero_card_def_id": "azeroth_6",
   "card_entries": [
     {
+      "card_def_id": "azeroth_332",
+      "count": 1,
+      "_card_name": "Rod of the Ogre Magi"
+    },
+    {
       "card_def_id": "azeroth_360",
       "count": 1,
       "_card_name": "Your Fortune Awaits You"
@@ -15,7 +20,7 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
@@ -25,7 +30,7 @@
     },
     {
       "card_def_id": "azeroth_347",
-      "count": 2,
+      "count": 1,
       "_card_name": "Battle of Darrowshire"
     },
     {
@@ -90,13 +95,13 @@
     },
     {
       "card_def_id": "azeroth_173",
-      "count": 2,
+      "count": 1,
       "_card_name": "Acolyte Demia"
     },
     {
-      "card_def_id": "azeroth_192",
-      "count": 4,
-      "_card_name": "Kor Cindervein"
+      "card_def_id": "azeroth_217",
+      "count": 3,
+      "_card_name": "Sha'lin Nightwind"
     },
     {
       "card_def_id": "dark_portal_260",
@@ -115,7 +120,7 @@
     },
     {
       "card_def_id": "azeroth_179",
-      "count": 1,
+      "count": 2,
       "_card_name": "Braxiss the Sleeper"
     },
     {
@@ -135,6 +140,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
+  "strategy": "Guide elusive attackers to a swift victory",
   "source": "recommended_ai",
   "metadata": {
     "author": "playtest",

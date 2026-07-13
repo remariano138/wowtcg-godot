@@ -9,6 +9,11 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_332",
+      "count": 1,
+      "_card_name": "Rod of the Ogre Magi"
+    },
+    {
       "card_def_id": "azeroth_360",
       "count": 2,
       "_card_name": "Your Fortune Awaits You"
@@ -75,7 +80,7 @@
     },
     {
       "card_def_id": "azeroth_236",
-      "count": 4,
+      "count": 3,
       "_card_name": "Fa'tafi"
     },
     {

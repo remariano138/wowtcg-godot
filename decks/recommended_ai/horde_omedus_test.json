@@ -9,6 +9,11 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_327",
+      "count": 1,
+      "_card_name": "Hypnotic Blade"
+    },
+    {
       "card_def_id": "azeroth_360",
       "count": 1,
       "_card_name": "Your Fortune Awaits You"
@@ -75,7 +80,7 @@
     },
     {
       "card_def_id": "azeroth_165",
-      "count": 2,
+      "count": 1,
       "_card_name": "Quick Strike"
     },
     {

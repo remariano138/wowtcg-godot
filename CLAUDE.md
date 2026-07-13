@@ -243,7 +243,7 @@ Equipment implemented: **Mooncloth Robe** (`azeroth_298`, Armor—Cloth, Chest, 
 Block is committed BEFORE damage resolves (declared-pool model), not as an interrupt:
 
 - **Action `use_armor_prevention`** (`{card_id}`): exhaust a ready armor with DEF > 0 (hero_row, no summoning sickness). Exhaust happens at **submission** (cost); resolution adds DEF to `PlayerState.damage_prevention` ("current block") and emits `armor_prevention_used`.
-- **Legality** (`_can_use_armor_prevention`): priority + damage actually incoming — a combat window / protect point is open OR the chain is non-empty (responding to a damage effect like Quick Strike). Armor prevents effect damage too.
+- **Legality** (`_can_use_armor_prevention`): priority + damage actually incoming — a combat window / protect point is open OR the chain is non-empty (responding to a damage effect like Quick Strike). Armor prevents effect damage too, including enter-play targeted damage (Taz'dingo): a `choose_enter_play_target` link on the chain aimed at our hero counts as incoming (`has_incoming_hero_damage` + the AI's `_incoming_hero_damage`), and the `pending_enter_play_effect` blanket guard in `can_submit` exempts `use_armor_prevention` once the choice is announced on the chain (`_enter_play_choice_on_chain`). Test: `_test_pads_block_enter_play_damage`.
 - **Consumption:** `GameLogic.deal_damage` — if the target is the controller's **hero** (allies are never protected), the pool absorbs first (`damage_prevented` event), remainder is placed.
 - **Expiry:** `_clear_damage_prevention` at combat conclusion (both branches), at `priority_window_closed`, and at turn start (`_enter_ready`) — unspent block never carries over.
 - **AI heuristic** (`BaseAI.armor_prevention_action`, runs before combat-instant ambush in all AIs): `incoming = damage aimed at our hero − current pool` (combat: attacker ATK when our hero is `combat_defender`; chain: opposing damage actions targeting our hero). Exhaust the highest-DEF ready armor for which `incoming >= DEF − 1` (avoids wasting big armor on chip damage); one armor per priority pass, re-evaluated each time (6 incoming vs DEF 3 + DEF 1 → uses both).
@@ -309,7 +309,14 @@ human can also sit in the p2 seat vs an AI).
   `_enter_ambush_mode` points the InputRouter at them (rules make only instant-speed
   plays legal off-turn) with YELLOW highlights (`AMBUSH_HIGHLIGHT`), while the renderer
   perspective stays with the seat — their hand stays face-down, a playable card's front
-  shows only while hovered (`_on_card_hover_scene`). The top-right **Skip button**
+  shows only while hovered (`_on_card_hover_scene`). The stop covers combat windows AND
+  the CHAIN-response point right after a combat proposal (before the attack window) —
+  where Litori's freeze / Exhaustion can still fizzle the proposal via the 601.3 recheck.
+  Critical guard: the ambush stop re-points the router at the responder DURING the
+  submission's own event emission, so `InputRouter._pass_own_proposal` also checks
+  `action.source_player != local_player` — without it the proposer's auto-pass fires
+  through the re-pointed router, spends the responder's priority, and resolves the
+  proposal unanswered. The top-right **Skip button**
   (visible only during the stop) passes for them without revealing anything. Windows
   with no legal response still auto-skip. Mode exits when priority leaves the ambusher
   (`_refresh_ui` guard) or on Skip; `_drain_passes`/`_schedule_next_turn` freeze while

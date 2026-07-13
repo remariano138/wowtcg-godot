@@ -803,6 +803,13 @@ func retract_last_action() -> void:
 func _pass_own_proposal(action: PendingAction) -> void:
 	if not state or state.priority_player != local_player:
 		return
+	# The auto-pass belongs to the PROPOSER. Emitting the submission's events may
+	# have re-pointed this router at the OTHER seat (hotseat: the ambush stop for
+	# the off-screen responder fires inside the emit, e.g. right after a combat
+	# proposal so Litori's freeze / Exhaustion can still fizzle it) — passing then
+	# would spend the responder's priority and resolve the proposal unanswered.
+	if action.source_player != local_player:
+		return
 	if state.pending_actions.is_empty() or state.pending_actions.back() != action:
 		return
 	var pass_events := StackResolver.pass_priority(state, db)

@@ -135,6 +135,10 @@ func _ready() -> void:
 		_test_ai_elendril_flip_for_lethal,
 		_test_strike_gates_and_gorebelly_discount,
 		_test_ai_strike_decisions,
+		_test_rod_of_ogre_magi_power,
+		_test_rod_two_handed_off_hand_uniqueness,
+		_test_ai_power_weapon_never_strikes,
+		_test_hypnotic_blade_discard,
 		_test_golem_skull_helm_block,
 		_test_deflector_hero_protects,
 		_test_ai_hero_protect_decisions,
@@ -299,8 +303,12 @@ class MockDB extends RefCounted:
 
 	# Weapon (rule 303): Equipment with ATK, dmg_type, and a weapon:STRIKE_COST segment.
 	func weapon(def_id: String, cost: int, atk: int, strike_cost: int,
-			dmg_type: String = "Melee", slot: String = "melee_weapon") -> void:
-		equipment(def_id, cost, "equipment:%s:0|weapon:%d" % [slot, strike_cost])
+			dmg_type: String = "Melee", slot: String = "melee_weapon",
+			extra_effects: String = "") -> void:
+		var fx := "equipment:%s:0|weapon:%d" % [slot, strike_cost]
+		if extra_effects != "":
+			fx += "|" + extra_effects
+		equipment(def_id, cost, fx)
 		var d := _defs[def_id] as CardDef
 		d.printed_atk = atk
 		d.dmg_type    = dmg_type
@@ -7180,6 +7188,277 @@ func _test_ai_strike_decisions() -> void:
 	StackResolver.pass_priority(state3, db)   # defend strike point
 	eq(ai.choose_strike_weapon(state3, db, "p1"), "krol3",
 		"ai-d: last legal attacker -> always strike back")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Rod of the Ogre Magi (azeroth_332) — Two-Handed Weapon—Staff, Melee (1),
+# 1 ATK. "2, [Activate], Exhaust your hero → Your hero deals 1 damage to
+# target hero or ally." Flagged power_weapon: the AI uses the power, never
+# the strike.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const ROD_EXTRA := "two_handed|power_weapon|activated_power:2:deal_damage_to_target:1::hero_or_ally:exhaust_hero"
+
+
+func _test_rod_of_ogre_magi_power() -> void:
+	_buf.append("\n-- Rod of the Ogre Magi: activated ping power --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("rod_def", 4, 1, 1, "Melee", "melee_weapon", ROD_EXTRA)
+	db.ally("grunt_def", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var rod := CardInstance.create("rod", "rod_def", "p1", "p1_hero_row")
+	state.cards["rod"] = rod
+	state.zones["p1_hero_row"].card_ids.append("rod")
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p2")
+	grunt.just_summoned = false
+
+	# rm-a: power submittable, resolves for 1 damage; rod AND hero exhaust.
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "rod", "target_id": "grunt"})
+	ok(StackResolver.can_submit(state, use, db), "rm-a: rod power submittable")
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("grunt").damage_taken, 1, "rm-a2: 1 damage on the target")
+	ok(state.get_card("rod").is_exhausted, "rm-a3: rod exhausted (activate)")
+	ok(state.get_card("p1_hero").is_exhausted, "rm-a4: hero exhausted (extra cost)")
+	eq(state.get_available_resources("p1"), 1, "rm-a5: 2 resources paid")
+
+	# rm-b: rod exhausted -> power gone for the turn.
+	var again := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "rod", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, again, db),
+		"rm-b: power illegal while the rod is exhausted")
+
+	# rm-c: exhausted hero -> extra cost unpayable, even with a ready rod.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 3)
+	var rod2 := CardInstance.create("rod2", "rod_def", "p1", "p1_hero_row")
+	state2.cards["rod2"] = rod2
+	state2.zones["p1_hero_row"].card_ids.append("rod2")
+	state2.get_card("p1_hero").is_exhausted = true
+	ok(not StackResolver.can_submit(state2, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "rod2", "target_id": "p2_hero"}), db),
+		"rm-c: power illegal while the hero is exhausted")
+
+	# rm-d: the rod is still a real weapon — the strike point offers it.
+	state2.get_card("p1_hero").is_exhausted = false
+	state2.players["p1"].resource_placed_this_turn = true
+	ok("p1_hero" in StackResolver.get_legal_attackers(state2, "p1", db),
+		"rm-d: hero is a legal attacker via the strikeable rod")
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # strike point
+	ok("rod2" in state2.pending_strike_weapon_ids, "rm-d2: rod offered at the strike point")
+	StackResolver.choose_strike(state2, "rod2", db)
+	eq(state2.get_atk("p1_hero", db), 1, "rm-d3: hero ATK 1 while the rod is associated")
+
+
+func _test_rod_two_handed_off_hand_uniqueness() -> void:
+	_buf.append("\n-- Rod (Two-Handed) vs Off-Hand equipment: 414.3c uniqueness --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("rod_def", 4, 1, 1, "Melee", "melee_weapon", ROD_EXTRA)
+	db.equipment("shield_def", 2, "equipment:off_hand:4", "Shield")
+	db.equipment("helm_def", 2, "equipment:head:3", "Plate")
+
+	# tu-a: rod in play, off-hand shield enters -> uniqueness violation.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	var rod := CardInstance.create("rod", "rod_def", "p1", "p1_hero_row")
+	state.cards["rod"] = rod
+	state.zones["p1_hero_row"].card_ids.append("rod")
+	var shield := CardInstance.create("shield", "shield_def", "p1", "p1_hand")
+	state.cards["shield"] = shield
+	state.zones["p1_hand"].card_ids.append("shield")
+	StackResolver.submit_action(state, PendingAction.make("play_equipment", "p1",
+		{"card_id": "shield"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_equip_sacrifice_player, "p1",
+		"tu-a: Two-Handed + Off-Hand triggers the sacrifice choice")
+	ok("rod" in state.pending_equip_sacrifice_ids
+			and "shield" in state.pending_equip_sacrifice_ids,
+		"tu-a2: both conflicting cards offered")
+	StackResolver.choose_equipment_sacrifice(state, "shield", db)
+	eq(state.get_card("shield").zone_id, "p1_graveyard", "tu-a3: shield destroyed")
+	ok(state.is_in_play("rod"), "tu-a4: rod kept")
+
+	# tu-b: shield in play first, rod enters -> same violation the other way.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 4)
+	state2.players["p1"].resource_placed_this_turn = true
+	var shield2 := CardInstance.create("shield2", "shield_def", "p1", "p1_hero_row")
+	state2.cards["shield2"] = shield2
+	state2.zones["p1_hero_row"].card_ids.append("shield2")
+	var rod2 := CardInstance.create("rod2", "rod_def", "p1", "p1_hand")
+	state2.cards["rod2"] = rod2
+	state2.zones["p1_hand"].card_ids.append("rod2")
+	StackResolver.submit_action(state2, PendingAction.make("play_equipment", "p1",
+		{"card_id": "rod2"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.pending_equip_sacrifice_player, "p1",
+		"tu-b: rod entering over an off-hand also violates")
+	StackResolver.choose_equipment_sacrifice(state2, "shield2", db)
+
+	# tu-c: control — rod + head-slot armor coexist fine.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 2)
+	state3.players["p1"].resource_placed_this_turn = true
+	var rod3 := CardInstance.create("rod3", "rod_def", "p1", "p1_hero_row")
+	state3.cards["rod3"] = rod3
+	state3.zones["p1_hero_row"].card_ids.append("rod3")
+	var helm := CardInstance.create("helm", "helm_def", "p1", "p1_hand")
+	state3.cards["helm"] = helm
+	state3.zones["p1_hand"].card_ids.append("helm")
+	StackResolver.submit_action(state3, PendingAction.make("play_equipment", "p1",
+		{"card_id": "helm"}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)
+	eq(state3.pending_equip_sacrifice_player, "",
+		"tu-c: Two-Handed + head armor is no violation")
+
+
+func _test_ai_power_weapon_never_strikes() -> void:
+	_buf.append("\n-- AI: power weapon held for its power, never struck --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("rod_def", 4, 1, 1, "Melee", "melee_weapon", ROD_EXTRA)
+	db.weapon("krol_def", 3, 3, 1, "Melee", "off_slot_weapon")   # separate slot for the test
+	var ai := BaseAI.new()
+
+	# pw-a: forecast_atk ignores the rod — a 0-ATK hero with only the rod is
+	# never forecast as an attacker.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	var rod := CardInstance.create("rod", "rod_def", "p1", "p1_hero_row")
+	state.cards["rod"] = rod
+	state.zones["p1_hero_row"].card_ids.append("rod")
+	eq(BaseAI.forecast_atk(state, db, "p1_hero"), 0,
+		"pw-a: forecast_atk excludes the power weapon")
+
+	# pw-b: _get_ally_power_actions proposes the rod's ping at an enemy.
+	state.players["p1"].has_used_hero_power = true
+	var actions := ai._get_ally_power_actions(state, db, "p1")
+	var found := false
+	for a in actions:
+		if a.params.get("card_id") == "rod" and a.params.get("target_id") == "p2_hero":
+			found = true
+	ok(found, "pw-b: AI proposes the rod power at the enemy hero")
+
+	# pw-c: at a strike point offering rod + real weapon, the AI strikes with
+	# the real weapon; offering only the rod, it declines.
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # strike point
+	ok("rod" in state.pending_strike_weapon_ids and "krol" in state.pending_strike_weapon_ids,
+		"pw-c0: both weapons offered by the engine")
+	eq(ai.choose_strike_weapon(state, db, "p1"), "krol",
+		"pw-c: AI picks the real weapon over the power weapon")
+	state.pending_strike_weapon_ids.assign(["rod"])
+	eq(ai.choose_strike_weapon(state, db, "p1"), "",
+		"pw-c2: only the power weapon offered -> AI declines the strike")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hypnotic Blade (azeroth_327) — Weapon—Dagger, Melee (1), 1 ATK. "3,
+# [Activate], Exhaust your hero → Target player discards a card. Use only on
+# your turn." Power weapon; the discard reuses Mias the Putrid's pending-
+# discard machinery (target auto = opponent, see data/rules_deviations.md).
+# ══════════════════════════════════════════════════════════════════════════════
+
+const BLADE_EXTRA := "power_weapon|activated_power:3:discard_opponent:1:::exhaust_hero|on_your_turn"
+
+
+func _test_hypnotic_blade_discard() -> void:
+	_buf.append("\n-- Hypnotic Blade: forced discard power --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("blade_def", 2, 1, 1, "Melee", "melee_weapon", BLADE_EXTRA)
+	db.ally("grunt_def", 2, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	var blade := CardInstance.create("blade", "blade_def", "p1", "p1_hero_row")
+	state.cards["blade"] = blade
+	state.zones["p1_hero_row"].card_ids.append("blade")
+	for i in range(2):
+		var cid := "opp_card_%d" % i
+		var c := CardInstance.create(cid, "grunt_def", "p2", "p2_hand")
+		state.cards[cid] = c
+		state.zones["p2_hand"].card_ids.append(cid)
+
+	# hb-a: power resolves — blade + hero exhaust, 3 paid, opponent must discard.
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "blade", "target_id": ""})
+	ok(StackResolver.can_submit(state, use, db), "hb-a: blade power submittable")
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("blade").is_exhausted, "hb-a2: blade exhausted")
+	ok(state.get_card("p1_hero").is_exhausted, "hb-a3: hero exhausted")
+	eq(state.get_available_resources("p1"), 1, "hb-a4: 3 resources paid")
+	eq(state.pending_discard_player, "p2", "hb-a5: opponent owes a discard")
+	eq(state.pending_discard_count, 1, "hb-a6: exactly 1 card")
+
+	# hb-b: opponent resolves the discard via the shared machinery.
+	StackResolver.choose_discard(state, "opp_card_0", db)
+	eq(state.get_card("opp_card_0").zone_id, "p2_graveyard", "hb-b: card discarded")
+	eq(state.pending_discard_player, "", "hb-b2: pending discard cleared")
+
+	# hb-c: "Use only on your turn" — illegal during the opponent's turn.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 4)
+	var blade2 := CardInstance.create("blade2", "blade_def", "p1", "p1_hero_row")
+	state2.cards["blade2"] = blade2
+	state2.zones["p1_hero_row"].card_ids.append("blade2")
+	state2.turn_player     = "p2"
+	state2.priority_player = "p1"
+	ok(not StackResolver.can_submit(state2, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "blade2", "target_id": ""}), db),
+		"hb-c: power illegal off-turn (Use only on your turn)")
+
+	# hb-d: empty opponent hand — power resolves with nothing to discard.
+	state2.turn_player     = "p1"
+	StackResolver.submit_action(state2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "blade2", "target_id": ""}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.pending_discard_player, "", "hb-d: empty hand -> no pending discard")
+
+	# hb-e: AI proposes the power only while the opponent holds cards.
+	var ai := BaseAI.new()
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 4)
+	var blade3 := CardInstance.create("blade3", "blade_def", "p1", "p1_hero_row")
+	state3.cards["blade3"] = blade3
+	state3.zones["p1_hero_row"].card_ids.append("blade3")
+	var acts := ai._get_ally_power_actions(state3, db, "p1")
+	ok(acts.is_empty(), "hb-e: opponent hand empty -> AI holds the power")
+	var oc := CardInstance.create("oc", "grunt_def", "p2", "p2_hand")
+	state3.cards["oc"] = oc
+	state3.zones["p2_hand"].card_ids.append("oc")
+	acts = ai._get_ally_power_actions(state3, db, "p1")
+	var proposed := false
+	for a in acts:
+		if a.params.get("card_id") == "blade3":
+			proposed = true
+	ok(proposed, "hb-e2: opponent holds a card -> AI proposes the discard power")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -1537,6 +1537,17 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var n: int = int(ap.get("amount", 1))
 			for _i in n:
 				events.append_array(_draw_one(state, card.controller))
+		"discard_opponent":
+			# Hypnotic Blade: "Target player discards a card." The target is
+			# auto-chosen as the opponent (discarding yourself is never useful in
+			# a duel — see data/rules_deviations.md "Hypnotic Blade"). Reuses the
+			# Mias the Putrid pending-discard machinery.
+			var disc_n: int = int(ap.get("amount", 1))
+			var disc_opp := _other_player(state, card.controller)
+			if not state.cards_in_zone(disc_opp + "_hand").is_empty():
+				state.pending_discard_player = disc_opp
+				state.pending_discard_count  = disc_n
+				events.append(GameEvent.discard_choice_opened(disc_opp, disc_n, "card_effect"))
 		"destroy_ally":
 			# Augustus Corpsemonger: "Destroy target ally." Re-check at resolution
 			# (rule 706 / glossary 4217) — fizzle if the target left play or
@@ -3370,13 +3381,20 @@ static func _check_equipment_uniqueness(state: GameState, card_id: String, db) -
 	var slot: String = info.get("slot", "")
 	if slot == "":
 		return []
-	# Gather all equipment in the controller's hero row sharing this slot.
+	# Gather all equipment in the controller's hero row that conflicts with this
+	# card: same slot (414.3), or Two-Handed vs Off-Hand (414.3c — a Two-Handed
+	# weapon carries the `two_handed` effects flag and occupies both hands, so it
+	# can't coexist with an off_hand-slot equipment).
+	var two_handed := _has_effect_flag(def, "two_handed")
 	var same_slot_ids: Array[String] = []
 	for c in state.cards_in_zone(card.controller + "_hero_row"):
 		var d := db.get_def(c.card_def_id) as CardDef
 		if not d or d.card_type != "Equipment":
 			continue
-		if _equipment_info(d).get("slot", "") == slot:
+		var d_slot: String = _equipment_info(d).get("slot", "")
+		if d_slot == slot \
+				or (two_handed and d_slot == "off_hand") \
+				or (slot == "off_hand" and _has_effect_flag(d, "two_handed")):
 			same_slot_ids.append(c.instance_id)
 	if same_slot_ids.size() <= 1:
 		return []

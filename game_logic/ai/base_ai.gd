@@ -635,9 +635,23 @@ static func forecast_atk(state: GameState, db, attacker_id: String,
 	if card and db:
 		var best := 0
 		for wid in StackResolver.get_strikeable_weapons(state, card.controller, attacker_id, db):
+			if _is_power_weapon(state, db, wid):
+				continue   # held for its activated power, never forecast as strike ATK
 			best = maxi(best, state.get_atk(wid, db))
 		atk += best
 	return atk
+
+
+# "Power weapon" (effects flag `power_weapon`, e.g. Rod of the Ogre Magi):
+# a weapon whose real value is its activated power — striking with it is an
+# inefficient use of the exhaust (high cost, low ATK). The AI never strikes
+# with one and never counts it in forecast_atk; the engine still allows a
+# human to strike normally.
+static func _is_power_weapon(state: GameState, db, weapon_id: String) -> bool:
+	var card := state.get_card(weapon_id)
+	if not card or not db:
+		return false
+	return StackResolver._has_effect_flag(db.get_def(card.card_def_id) as CardDef, "power_weapon")
 
 
 # Strike decision — called by the scene on strike_point_opened when the pending
@@ -652,8 +666,15 @@ static func forecast_atk(state: GameState, db, attacker_id: String,
 #   Never strike defensively against a Long-Range attacker — the defender
 #   deals no combat damage back, so the strike would be wasted.
 func choose_strike_weapon(state: GameState, db, player_id: String) -> String:
-	var offered := state.pending_strike_weapon_ids
-	if offered.is_empty() or not db:
+	if state.pending_strike_weapon_ids.is_empty() or not db:
+		return ""
+	# Power weapons (Rod of the Ogre Magi) are held for their activated power —
+	# never strike with one.
+	var offered: Array[String] = []
+	for wid in state.pending_strike_weapon_ids:
+		if not _is_power_weapon(state, db, wid):
+			offered.append(wid)
+	if offered.is_empty():
 		return ""
 	var best := offered[0]
 	var best_atk := state.get_atk(best, db)
@@ -803,6 +824,15 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_kill})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
+		elif ap.get("effect", "") == "discard_opponent":
+			# Hypnotic Blade: force the opponent to discard. Only worth the cost
+			# while they actually hold cards.
+			var opp_disc := "p2" if player_id == "p1" else "p1"
+			if not state.cards_in_zone(opp_disc + "_hand").is_empty():
+				var disc_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": ""})
+				if StackResolver.can_submit(state, disc_act, db):
+					result.append(disc_act)
 		elif ap.get("effect", "") == "draw" and ap.get("targets", "") == "friendly_ally":
 			# Bizzik Sparkcog: "Destroy an ally in your party: draw a card."
 			# Only sacrifice an ally that's already mortally wounded (about to die

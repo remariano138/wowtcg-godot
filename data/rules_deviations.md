@@ -280,3 +280,23 @@ enforced, so the cost's legality is exact — only the identity of the exiled
 cards is auto-picked. If a future card ever returns a specific card from
 either zone, wire the graveyard-select UI (already used by quests) to this
 cost and drop this deviation.
+
+---
+
+## Hypnotic Blade — "target player" is auto-chosen as the opponent
+
+**Card:** Hypnotic Blade (`azeroth_327`, 2-cost Weapon—Dagger). Printed text:
+"3, [Activate], Exhaust your hero → Target player discards a card. Use only
+on your turn." Recipe
+`equipment:melee_weapon:0|weapon:1|power_weapon|activated_power:3:discard_opponent:1:::exhaust_hero|on_your_turn`.
+
+**Deviation:** the printed text targets any player — including yourself. The
+`discard_opponent` effect (shared with Mias the Putrid, whose printed text has
+the same wording) always targets the opponent, with no target choice.
+
+**Why:** in the duel format there are only two players, and forcing your OWN
+discard with a 3-cost activation is never useful; no implemented card rewards
+self-discard. If a discard-synergy card ever appears, generalize
+`discard_opponent` to a targeted `discard_player` with a real target pick and
+drop this deviation. Enforcement site: `_resolve_use_ally_power`
+("discard_opponent" branch) in `game_logic/stack_resolver.gd`.

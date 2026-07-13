@@ -1058,6 +1058,10 @@ func _ensure_hero_bar(player_id: String) -> void:
 	bg.size         = Vector2(BAR_W, BAR_H)
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bg.z_index      = 10
+	# TTS-style facing: P2's bar (label + fill direction) faces P2, like their
+	# cards. Rotation is about the bar's center, so positioning stays box-based.
+	bg.pivot_offset      = bg.size * 0.5
+	bg.rotation_degrees  = _facing_for_zone(player_id + "_hero_row")
 	add_child(bg)
 
 	var fill := ColorRect.new()

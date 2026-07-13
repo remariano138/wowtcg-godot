@@ -119,6 +119,8 @@ power_text, data_status, engine_status, effects, image_path
 | `hero_has_protector` | "Your hero has protector" (Draconian Deflector): while a card with this flag is in a player's hero_row, that player's ready hero is a legal protector (`get_legal_protectors`; 602.2b still applies — it can't protect itself). A hero that protects becomes the defender, so the 602.3 defend strike point fires for it — protecting heroes can retaliate with a weapon strike. `GameState.combat_protector` tracks who protected this combat (cleared at conclusion). AI: GenericAI protects with the hero only when no ally protector steps in, the hero stays above `HERO_ALL_OUT_HP` after the hit, and either the retaliation strike kills the attacker or a dying ally is worth the face damage (cost ≥ incoming ATK); BaseAI's highest-HP pick excludes the hero unless it's the only protector. `choose_strike_weapon` ALWAYS strikes while the hero is protecting (the opponent is attacking around the hero — likely the weapon's only use this turn); the Long-Range exception still holds (the strike would deal nothing) |
 | `weapon:STRIKE_COST` | Marks an Equipment card as a weapon (rule 303) — always paired with an `equipment:SLOT:DEF` segment (slot e.g. `melee_weapon` for uniqueness, DEF 0). ATK comes from the CSV `atk` column, damage type from `dmg_type` ("Melee" gates the strike discount). See "Weapons & striking" section |
 | `melee_strike_discount:N` | Hero flip power (Gorebelly): pay N less the next time you strike with a Melee weapon this turn (`PlayerState.melee_strike_discount`; consumed by the next melee strike, cleared at every turn start) |
+| `two_handed` | Marks a weapon as Two-Handed (rule 414.3c): violates uniqueness with any `off_hand`-slot equipment, checked both ways in `_check_equipment_uniqueness` (same sacrifice choice as a slot conflict). Rod of the Ogre Magi |
+| `power_weapon` | AI-only flag for "power weapons" — weapons whose value is their activated power, not the strike (Rod of the Ogre Magi, later Hypnotic Blade). The engine still offers the strike normally (a human may strike); the AI never strikes with one (`choose_strike_weapon` filters them out) and excludes it from `forecast_atk` (so it never proposes a hero attack on its account). Pair with an `activated_power` segment the AI already plays |
 | `elusive` | (keyword in keywords col, not effects) — can't be chosen as defender |
 | `protector` | (keyword) — can intercept attacks |
 | `ferocity` | (keyword) — no summoning sickness |
@@ -216,6 +218,8 @@ Notable implemented mechanics:
 - **Lady Jaina Proudmoore** (`azeroth_195`, 7/4 Ally, Unique) — "Opposing allies can't attack." Live static aura (`opposing_allies_cant_attack`) + first card exercising **name-based Unique uniqueness** (rule 414.3a — see Card uniqueness).
 - **Instant Ally** — Tristan Rapidstrike (azeroth_221, 3/3 Protector). The Instant tag (CSV `type` = "Instant Ally" → `CardDef.is_instant`) makes `play_ally` instant-speed in `_can_play_non_instant`: playable any time with priority (combat windows, opponent's turn, non-empty chain — rule 409.1). Resolves as a normal ally (summoning sickness, which does NOT block protecting — 601.2a restricts attackers only). AI: tagged `combat_instant_protector` in `BaseAI.COMBAT_INSTANT_TAGS` (held, never blind-played); `instant_protector_action` flashes it in during the ATTACK window only (never defend — the protect point is past) when being attacked, no board protector answers, and the protector decision tree would pick it (safe kill-and-survive block, or any block to save the hero); the normal `choose_protector` then uses it at the protect point.
 - **Ally activated powers with sacrifice-style costs** — Kena Shadowbrand (`azeroth_190`, 1/3): `[Activate]`, put 1 damage on herself → draw (`activate_put_damage_self:1`; keeps the tap/exhaust, may be self-lethal per 405.3; AI won't draw her to death). Bizzik Sparkcog (`azeroth_178`, 2/4): `[Activate]`, destroy an ally in your party → draw (`sacrifice_ally` cost + `friendly_ally` target picker; AI only sacrifices an already-damaged ally). Augustus Corpsemonger (`azeroth_177`, 3/4): `[Activate]`, remove three ally cards in your graveyard from the game → destroy target ally (`destroy_ally` effect + `rfg_allies:3` cost; the 3 exiled cards are auto-chosen — see `data/rules_deviations.md`; AI destroys enemy allies worth killing via `_destroy_is_worth_it`).
+- **Rod of the Ogre Magi** (`azeroth_332`, 4, Two-Handed Weapon—Staff, Melee (1), 1 ATK) — first "power weapon": `[Activate]`, exhaust your hero → deal 1 damage to target hero or ally (`activated_power:...:exhaust_hero`, same path as Mooncloth Robe + Grimdron). Carries `two_handed` (first 414.3c Two-Handed↔Off-Hand uniqueness card) and the `power_weapon` AI flag (AI uses the ping, never strikes with it) — see both effects-table rows.
+- **Hypnotic Blade** (`azeroth_327`, 2, Weapon—Dagger, Melee (1), 1 ATK) — power weapon #2: `3, [Activate]`, exhaust your hero → target player discards a card, use only on your turn (`activated_power:3:discard_opponent:1:::exhaust_hero` + standalone `on_your_turn` segment). The activated-power `discard_opponent` effect reuses Mias the Putrid's pending-discard machinery; "target player" is auto-chosen as the opponent — see `data/rules_deviations.md`. AI uses it whenever the opponent holds cards. In hotseat, the off-screen player's forced discard runs in **discard peek mode** (see Hotseat section).
 
 ### Playtested heroes (confirmed working)
 Alliance : Boris, Dizdemona, Moonshadow
@@ -310,6 +314,17 @@ human can also sit in the p2 seat vs an AI).
   with no legal response still auto-skip. Mode exits when priority leaves the ambusher
   (`_refresh_ui` guard) or on Skip; `_drain_passes`/`_schedule_next_turn` freeze while
   `_in_ambush_mode`. `_stance` survives rematches.
+- **Discard peek mode:** when the OFF-SCREEN human owes a mandatory discard (Mias
+  the Putrid / Hypnotic Blade), `_handle_discard_choice` calls
+  `_enter_discard_peek_mode(player)` before `start_discard_mode`: the router is
+  pointed at the discarding player (their hand highlights red and clicks discard
+  for them) while the renderer perspective stays with the seat — their hand stays
+  face-down, the hovered card alone shows its front (same peek as ambush mode,
+  social contract). `_try_pass` is hard-blocked while peeking (the seated player's
+  Space must not act through the re-pointed router); `_drain_passes` /
+  `_schedule_next_turn` / `_maybe_turbo_pass` already stall on
+  `pending_discard_count`. Exits via `_on_discard_mode_ended` → `_exit_discard_peek_mode`
+  (router back to `_local_player`, hand visibility re-hidden).
 - **Hand hover magnify:** the local player's own hand cards scale ×1.2 (`HOVER_MAGNIFY`
   on top of `HAND_CARD_SCALE`) + z-bump while hovered; hover/unhover signals are wired
   in `_spawn_card_node`.
@@ -351,6 +366,8 @@ Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non
   `place_card_in_zone`, `_animate_move` (side change = control change), and
   `reconcile_from_state` (`BoardRenderer._facing_for_zone`). Never write a card's
   `rotation_degrees` with a bare 0/90 — always compose with `facing_degrees`.
+  The hero HP bar follows the same facing: P2's bar is rotated 180° about its own
+  center (`_ensure_hero_bar`), so its label/fill read upright for P2.
 - Pass button shows **"Sacrifice a pet [Space]"** (disabled, no color change) when `pending_pet_sacrifice_player == "p1"`.
 
 ---

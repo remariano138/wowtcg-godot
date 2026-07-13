@@ -95,6 +95,11 @@ const HOVER_MAGNIFY := 1.2   # local player's own hand cards magnify on hover
 var _stance: Dictionary = {"p1": "ambush", "p2": "ambush"}
 var _in_ambush_mode: bool = false
 var _ambush_player: String = ""
+# Discard peek: in hotseat, when the OFF-SCREEN human must discard (Mias the
+# Putrid / Hypnotic Blade), the router acts for them ambush-style — their hand
+# stays face-down, hover peeks one card at a time, click discards it.
+var _in_discard_peek: bool = false
+var _discard_peek_player: String = ""
 var _skip_btn: Button
 var _stance_passive_btn: Button
 var _stance_ambush_btn: Button
@@ -989,6 +994,31 @@ func _exit_ambush_mode() -> void:
 	_set_status("")
 
 
+# ── Discard peek mode (off-screen player must discard) ─────────────────────────
+# Same idea as ambush mode, but for the MANDATORY discard of the off-screen
+# player: the router acts for them (their hand highlights red via discard
+# mode), the renderer perspective stays with the seat — cards stay face-down
+# and only the hovered one shows its front (social contract, one at a time).
+
+func _enter_discard_peek_mode(pid: String) -> void:
+	if _in_discard_peek:
+		return
+	_in_discard_peek = true
+	_discard_peek_player = pid
+	_ai_timer.stop()
+	_router.setup(_state, _db, pid)
+
+
+func _exit_discard_peek_mode() -> void:
+	if not _in_discard_peek:
+		return
+	_in_discard_peek = false
+	_discard_peek_player = ""
+	_router.setup(_state, _db, _local_player)
+	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
+	_router.refresh_highlights()
+
+
 func _on_skip_pressed() -> void:
 	if not _in_ambush_mode or _state.priority_player != _ambush_player:
 		return
@@ -1015,6 +1045,10 @@ func _on_card_hover_scene(instance_id: String) -> void:
 	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand" \
 			and instance_id in _router.get_playable_card_ids():
 		cn.show_card_front()
+	# Discard peek: the off-screen player choosing a mandatory discard peeks
+	# their face-down hand one card at a time.
+	if _in_discard_peek and card.zone_id == _discard_peek_player + "_hand":
+		cn.show_card_front()
 	# The local player's own hand magnifies on hover.
 	if card.zone_id == _local_player + "_hand":
 		cn.scale = Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY)
@@ -1029,6 +1063,8 @@ func _on_card_unhover_scene(instance_id: String) -> void:
 	if not card or not cn:
 		return
 	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand":
+		cn.show_card_back()
+	if _in_discard_peek and card.zone_id == _discard_peek_player + "_hand":
 		cn.show_card_back()
 	if card.zone_id.ends_with("_hand"):
 		cn.scale = Vector2.ONE * BoardRenderer.HAND_CARD_SCALE
@@ -1493,6 +1529,10 @@ func _on_pass_btn_pressed() -> void:
 # without having played a single card or instant this turn.
 func _try_pass(skip_confirm: bool = false) -> void:
 	if not _state or _handoff_pending or _type_of(_local_player) != "human":
+		return
+	# Discard peek: the router temporarily acts for the OFF-SCREEN discarding
+	# player — the seated player's Space must not pass (or discard) for them.
+	if _in_discard_peek:
 		return
 	# Infernal choice pending for the human: Space/pass = decline the discard
 	# and give the opponent control of the source.
@@ -2084,11 +2124,16 @@ func _on_context_menu_id_pressed(id: int) -> void:
 # ── Targeting ──────────────────────────────────────────────────────────────────
 
 func _on_discard_mode_started(count: int) -> void:
-	_set_status("Choose %d card(s) to discard — click a highlighted hand card" % count)
+	if _in_discard_peek:
+		_set_status("🃏 %s must discard %d card(s) — hover a red card to peek, click to discard"
+				% [_discard_peek_player.to_upper(), count])
+	else:
+		_set_status("Choose %d card(s) to discard — click a highlighted hand card" % count)
 	_refresh_ui()
 
 
 func _on_discard_mode_ended() -> void:
+	_exit_discard_peek_mode()
 	_set_status("")
 	_refresh_ui()
 	if _discard_reason == "wrap_up":
@@ -2216,7 +2261,12 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 		else:
 			_schedule_next_turn()
 	else:
-		# Human: enter discard mode — green highlights + click to resolve.
+		# Human: enter discard mode — red highlights + click to resolve. When the
+		# discarding human is NOT the seated player (hotseat: opponent played Mias
+		# the Putrid / used Hypnotic Blade), point the router at them first so the
+		# clicks act for them; their hand stays face-down with hover peek.
+		if player != _local_player:
+			_enter_discard_peek_mode(player)
 		_router.start_discard_mode(count)
 
 
@@ -3236,6 +3286,8 @@ func _on_rematch() -> void:
 	_camera_tween                 = null   # camera is rebuilt by _build_scene
 	_in_ambush_mode               = false  # _stance survives the rematch (player pref)
 	_ambush_player                = ""
+	_in_discard_peek              = false
+	_discard_peek_player          = ""
 	_handoff_pending              = false
 	_handoff_layer                = null   # freed with the other children above
 	_mulligan_queue               = []

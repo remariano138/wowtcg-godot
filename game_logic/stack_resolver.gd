@@ -134,6 +134,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_ready_on_attack() before priority can move.
 	if state.pending_ready_player != "":
 		return []
+	# A pending attack-exhaust decision (Chops / Voss Treebender) must be resolved
+	# via choose_attack_exhaust() before priority can move.
+	if state.pending_attack_exhaust_player != "":
+		return []
 	# A pending Green Whelp Armor bounce decision must be resolved via
 	# choose_whelp_bounce() before priority can move.
 	if state.pending_whelp_bounce_player != "":
@@ -243,6 +247,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Ready-on-attack point (Windseer Tarus) blocks everything until resolved via
 	# choose_ready_on_attack().
 	if state.pending_ready_player != "":
+		return false
+
+	# Attack-exhaust point (Chops / Voss Treebender) blocks everything until
+	# resolved via choose_attack_exhaust().
+	if state.pending_attack_exhaust_player != "":
 		return false
 
 	# Green Whelp Armor bounce point blocks everything until resolved via
@@ -374,7 +383,10 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db):
 				return false
-			if _instant_targets_ally_only(def):
+			if _instant_targets_protecting_ally_only(def):
+				if not _is_protecting_ally(state, target_id, db):
+					return false
+			elif _instant_targets_ally_only(def):
 				var t_zone := state.zones.get(state.get_card(target_id).zone_id) as Zone
 				if not t_zone or t_zone.zone_type != "ally_row":
 					return false
@@ -409,7 +421,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db): return false
-			if _instant_targets_ally_only(def):
+			if _instant_targets_protecting_ally_only(def):
+				if not _is_protecting_ally(state, target_id, db): return false
+			elif _instant_targets_ally_only(def):
 				var t_card := state.get_card(target_id)
 				if t_card:
 					var t_zone := state.zones.get(t_card.zone_id) as Zone
@@ -437,6 +451,8 @@ static func can_play_ability_no_target_check(state: GameState,
 		if state.priority_player != player_id: return false
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
 		return false
+	if db and play_def and not _targeted_play_has_legal_target(state, play_def, db):
+		return false
 	return true
 
 
@@ -457,6 +473,33 @@ static func can_play_instant_no_target_check(state: GameState,
 	if card.controller != player_id: return false
 	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
 		return false
+	if db:
+		var def := db.get_def(card.card_def_id) as CardDef
+		if def and not _targeted_play_has_legal_target(state, def, db):
+			return false
+	return true
+
+
+# A card that targets can't be announced without at least one legal target
+# (rule 706.2) — so the highlight probes must go dark when none exists.
+# First to Fall (`destroy_target:protecting_ally`): only the current
+# combat_protector qualifies, and only if it's an ally. Ally-only targets
+# (Exhaustion, Vanquish): some ally must be in play and targetable.
+# Hero-or-ally targets always have a target (heroes are always in play).
+static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db) -> bool:
+	if not _instant_needs_target(def):
+		return true
+	if _instant_targets_protecting_ally_only(def):
+		return _is_protecting_ally(state, state.combat_protector, db) \
+				and _is_legal_target(state, state.combat_protector, db)
+	if _instant_targets_ally_only(def):
+		for pid in ["p1", "p2"]:
+			var zone := state.zones.get(pid + "_ally_row") as Zone
+			if zone:
+				for cid in zone.card_ids:
+					if _is_legal_target(state, cid, db):
+						return true
+		return false
 	return true
 
 
@@ -475,6 +518,25 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 				and parts.size() > 1 and parts[1] == "ally":
 			return true
 	return false
+
+
+# First to Fall: "Destroy target protecting ally." (`destroy_target:protecting_ally`).
+# The only legal target is the single ally currently protecting this combat —
+# `state.combat_protector` — so the card is only playable in a defend window where
+# an opponent has protected with an ally (never the attack window, where no one is
+# protecting yet). A protecting HERO (Draconian Deflector) is not a legal target.
+static func _instant_targets_protecting_ally_only(def: CardDef) -> bool:
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "destroy_target" \
+				and parts.size() > 1 and parts[1] == "protecting_ally":
+			return true
+	return false
+
+
+static func _is_protecting_ally(state: GameState, target_id: String, db = null) -> bool:
+	return target_id != "" and target_id == state.combat_protector \
+			and state.is_in_play(target_id) and _is_ally(state, target_id)
 
 
 # Whether an in-play card is a legal "hero or ally" target: a hero (card_type
@@ -864,8 +926,15 @@ static func _resolve_play_instant(state: GameState,
 					"destroy_target":
 						# Re-check at resolution (rule 706 / glossary 4217): the
 						# effect fizzles if the target left play OR became
-						# Untargetable after the announce.
-						if _is_legal_target(state, target_id, db):
+						# Untargetable after the announce. For "protecting_ally"
+						# (First to Fall) the target must also still be the ally
+						# protecting this combat (combat_protector), which is why
+						# destroying it in the defend window ends the combat with no
+						# damage (603.1b) rather than passing the attack through.
+						var dt_ok := _is_legal_target(state, target_id, db)
+						if dt_ok and parts.size() > 1 and parts[1] == "protecting_ally":
+							dt_ok = _is_protecting_ally(state, target_id, db)
+						if dt_ok:
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
 					"exhaust_target":
@@ -2060,6 +2129,16 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	if not ready_pt.is_empty():
 		events.append_array(ready_pt)
 		return events
+	# Chops / Voss Treebender: "When [this] attacks, you may exhaust target hero
+	# or ally." The trigger fires as the combat step starts (602.1); it resolves
+	# BEFORE the attack window opens, so exhausting a ready Protector here denies
+	# the protect point (602.2 requires exhausting a ready character to protect).
+	# Direct-call choice, not the chain — see data/rules_deviations.md
+	# "Attack-exhaust triggers".
+	var exhaust_pt := _open_attack_exhaust_point(state, attacker_id, db)
+	if not exhaust_pt.is_empty():
+		events.append_array(exhaust_pt)
+		return events
 	state.combat_attack_window = true
 	events.append(GameEvent.attack_window_opened(attacker_id, defender_id))
 	return events
@@ -2123,11 +2202,77 @@ static func choose_ready_on_attack(state: GameState, pay: bool,
 		events.append_array(GameLogic.ready_card(state, card_id))
 		events.append(GameEvent.readied_on_attack(player_id, card_id, cost))
 
-	# Open the attack window this ready point was holding up.
+	# Fall through to the attack-exhaust point (a card carrying both flags),
+	# then open the attack window this ready point was holding up.
+	var exhaust_pt := _open_attack_exhaust_point(state, state.combat_attacker, db)
+	if not exhaust_pt.is_empty():
+		events.append_array(exhaust_pt)
+		return events
 	state.combat_attack_window = true
 	events.append(GameEvent.attack_window_opened(
 		state.combat_attacker, state.combat_defender))
 	return events
+
+
+# Opens an attack-exhaust point (Chops / Voss Treebender) for the attacker's
+# controller if the attacker has the `on_attack_exhaust_target` flag. The choice
+# is optional ("you may"), so it always opens when the flag is present — the
+# player may decline. Returns [] when the attacker has no such power, so the
+# caller falls through to opening the attack window directly.
+static func _open_attack_exhaust_point(state: GameState, attacker_id: String,
+		db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var atk := state.get_card(attacker_id)
+	if not atk:
+		return []
+	var def := db.get_def(atk.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return []
+	var has_flag := false
+	for seg in def.effects.split("|"):
+		if seg.strip_edges().split(":")[0].strip_edges() == "on_attack_exhaust_target":
+			has_flag = true
+			break
+	if not has_flag:
+		return []
+	state.pending_attack_exhaust_player    = atk.controller
+	state.pending_attack_exhaust_source_id = attacker_id
+	return [GameEvent.attack_exhaust_opened(atk.controller, attacker_id)]
+
+
+# Entry point for the attack-exhaust decision (NOT chain-based — called directly
+# by the scene, like choose_ready_on_attack). target_id == "" means decline.
+# Exhausts the chosen hero or ally (706 legality re-checked; exhausting an
+# already-exhausted target is a no-op), then opens the held attack window. Note
+# that exhausting the proposed DEFENDER does not stop the combat — 601.3 has
+# already passed and exhaustion is not a remove-from-combat effect.
+static func choose_attack_exhaust(state: GameState, target_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_attack_exhaust_player == "":
+		return []
+	var player_id := state.pending_attack_exhaust_player
+	var source_id := state.pending_attack_exhaust_source_id
+	state.pending_attack_exhaust_player    = ""
+	state.pending_attack_exhaust_source_id = ""
+
+	var events: Array[GameEvent] = []
+	if target_id != "" and _is_legal_target(state, target_id, db):
+		events.append_array(GameLogic.exhaust_card(state, target_id))
+		events.append(GameEvent.attack_exhaust_resolved(player_id, source_id, target_id))
+
+	# Open the attack window this exhaust point was holding up.
+	state.combat_attack_window = true
+	events.append(GameEvent.attack_window_opened(
+		state.combat_attacker, state.combat_defender))
+	return events
+
+
+# Legal targets for the attack-exhaust trigger: every hero and ally in play
+# ("target hero or ally"), subject to standard targeting restrictions — the
+# same set as a totem trigger.
+static func get_attack_exhaust_targets(state: GameState, db) -> Array[String]:
+	return get_totem_targets(state, db)
 
 
 # Entry point for the protect-point decision (NOT chain-based — called directly
@@ -2642,12 +2787,10 @@ static func _reveal_pick(state: GameState, player_id: String, want_type: String,
 		var d := db.get_def(c.card_def_id) as CardDef if c and db else null
 		if d and d.card_type == want_type:
 			selectable.append(cid)
-	if selectable.is_empty():
-		# Nothing of the required type — put every revealed card on the bottom in
-		# revealed order (deck→deck move erases from the top and appends to the end).
-		for cid in revealed:
-			events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
-		return events
+	# Always open the choice — even when nothing matches, the controller still
+	# gets to SEE the revealed cards before they go to the bottom of the deck
+	# (they acknowledge with an empty pick via choose_reveal_pick). selectable
+	# may be empty; the resolver then sends every revealed card to the bottom.
 	state.pending_reveal_pick_player = player_id
 	state.pending_reveal_pick_ids = selectable
 	state.pending_reveal_pick_all = revealed
@@ -2658,12 +2801,18 @@ static func _reveal_pick(state: GameState, player_id: String, want_type: String,
 # Entry point: the controller has chosen which revealed card to keep. The picked
 # card goes to hand; every other revealed card goes to the bottom of the deck in
 # revealed order. Called directly by the scene (not via submit_action), like
-# choose_pet_sacrifice. card_id must be one of the selectable (matching) cards.
+# choose_pet_sacrifice. card_id must be one of the selectable (matching) cards,
+# OR "" when nothing matched (pending_reveal_pick_ids empty) — the player merely
+# acknowledges and every revealed card goes to the bottom.
 static func choose_reveal_pick(state: GameState, card_id: String,
 		db = null) -> Array[GameEvent]:
 	if state.pending_reveal_pick_player == "":
 		return []
-	if card_id not in state.pending_reveal_pick_ids:
+	var no_pick := state.pending_reveal_pick_ids.is_empty()
+	if no_pick:
+		if card_id != "":
+			return []   # nothing was selectable — only the empty acknowledgement is valid
+	elif card_id not in state.pending_reveal_pick_ids:
 		return []   # must pick a card of the required type
 	var player_id := state.pending_reveal_pick_player
 	var revealed := state.pending_reveal_pick_all.duplicate()
@@ -2673,10 +2822,11 @@ static func choose_reveal_pick(state: GameState, card_id: String,
 	state.pending_reveal_pick_all = []
 
 	var events: Array[GameEvent] = []
-	events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
-	events.append(GameEvent.make("reveal_pick_resolved", {
-		"player": player_id, "card_id": card_id,
-	}))
+	if not no_pick:
+		events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
+		events.append(GameEvent.make("reveal_pick_resolved", {
+			"player": player_id, "card_id": card_id,
+		}))
 	for cid: String in revealed:
 		if cid == card_id:
 			continue

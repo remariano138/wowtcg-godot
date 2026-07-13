@@ -52,8 +52,12 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 
 	events.append(GameEvent.card_moved(card_id, from_zone_id, to_zone_id))
 
-	# Cards entering the graveyard are readied: exhausted state and damage
-	# cleared so the card starts fresh if it ever re-enters play.
+	# Cards entering the graveyard leave play (rule 400.6a): all continuous
+	# effects end, so the card is reset to a fresh state and starts clean if it
+	# ever re-enters play. This clears exhaustion, damage, buffs (including
+	# "this turn" buffs that would otherwise linger — e.g. an attack buff that
+	# survives a Finkle Einhorn recursion), granted keywords, counters, and
+	# per-turn/summon flags.
 	# No hp_changed event here — deal_damage already emitted it before calling
 	# move_card, and the card is leaving play so no renderer update is needed.
 	var dest_zone := state.zones.get(to_zone_id) as Zone
@@ -62,6 +66,12 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 			card.is_exhausted = false
 			events.append(GameEvent.card_readied(card_id))
 		card.damage_taken = 0
+		card.active_buffs.clear()
+		card.granted_keywords.clear()
+		card.counters.clear()
+		card.chosen_x = 0
+		card.just_summoned = false
+		card.used_this_turn = false
 
 	return events
 

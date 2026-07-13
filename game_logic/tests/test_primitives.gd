@@ -237,10 +237,19 @@ func _test_move_card_graveyard_resets() -> void:
 	var card := _add_card(state, "c2", "ally_3_4", "p1", "p1_ally_row")
 	card.is_exhausted = true
 	card.damage_taken = 3
+	# A lingering "this turn" attack buff must not survive into the graveyard
+	# (rule 400.6a) — otherwise a recursion effect (Finkle Einhorn) would bring
+	# the card back still buffed.
+	card.active_buffs.append(Buff.make("rush", "src", "atk", 2, "turns", 1))
+	card.granted_keywords.append("ferocity")
+	card.counters["wind"] = 2
 
 	var events := GameLogic.move_card(state, "c2", "p1_graveyard")
 	ok(not card.is_exhausted,   "graveyard: exhausted cleared")
 	eq(card.damage_taken, 0,    "graveyard: damage cleared")
+	eq(card.active_buffs.size(), 0, "graveyard: buffs cleared")
+	eq(card.granted_keywords.size(), 0, "graveyard: granted keywords cleared")
+	eq(card.counters.size(), 0, "graveyard: counters cleared")
 	# Events: card_moved + card_readied
 	var types := events.map(func(e: GameEvent) -> String: return e.event_type)
 	ok(types.has("card_moved"),   "graveyard: card_moved event")

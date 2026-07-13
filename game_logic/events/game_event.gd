@@ -224,6 +224,20 @@ static func whelp_bounce_opened(player_id: String, ally_id: String, cost: int) -
 static func whelp_bounce_resolved(player_id: String, ally_id: String) -> GameEvent:
 	return make("whelp_bounce_resolved", {"player": player_id, "ally_id": ally_id})
 
+# Chops / Voss Treebender: attack-exhaust point opened (attacker's controller MAY
+# exhaust target hero or ally), and resolved (target_id == "" = declined).
+static func attack_exhaust_opened(player_id: String, source_id: String) -> GameEvent:
+	return make("attack_exhaust_opened", {
+		"player":    player_id,
+		"source_id": source_id,
+	})
+
+static func attack_exhaust_resolved(player_id: String, source_id: String,
+		target_id: String) -> GameEvent:
+	return make("attack_exhaust_resolved", {
+		"player": player_id, "source_id": source_id, "target_id": target_id,
+	})
+
 # Gorebelly's flip: discount on the next melee weapon strike this turn.
 static func strike_discount_gained(player_id: String, amount: int) -> GameEvent:
 	return make("strike_discount_gained", {"player": player_id, "amount": amount})

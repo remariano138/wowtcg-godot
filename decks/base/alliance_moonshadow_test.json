@@ -9,6 +9,16 @@
       "_card_name": "Rod of the Ogre Magi"
     },
     {
+      "card_def_id": "azeroth_291",
+      "count": 1,
+      "_card_name": "Green Whelp Armor"
+    },
+    {
+      "card_def_id": "dark_portal_260",
+      "count": 1,
+      "_card_name": "Pads of the Dread Wolf"
+    },
+    {
       "card_def_id": "azeroth_360",
       "count": 1,
       "_card_name": "Your Fortune Awaits You"
@@ -60,7 +70,7 @@
     },
     {
       "card_def_id": "azeroth_187",
-      "count": 1,
+      "count": 2,
       "_card_name": "Hannah the Unstoppable"
     },
     {
@@ -74,20 +84,15 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "azeroth_165",
+      "card_def_id": "dark_portal_141",
       "count": 2,
-      "_card_name": "Quick Strike"
+      "_card_name": "First to Fall"
     },
     {
       "card_def_id": "azeroth_184",
-      "count": 2,
+      "count": 3,
       "_card_name": "Galahandra Keeper of the Silent Grove"
-    },
-    {
-      "card_def_id": "azeroth_291",
-      "count": 2,
-      "_card_name": "Green Whelp Armor"
-    },
+    },    
     {
       "card_def_id": "dark_portal_170",
       "count": 2,
@@ -102,11 +107,6 @@
       "card_def_id": "azeroth_217",
       "count": 3,
       "_card_name": "Sha'lin Nightwind"
-    },
-    {
-      "card_def_id": "dark_portal_260",
-      "count": 2,
-      "_card_name": "Pads of the Dread Wolf"
     },
     {
       "card_def_id": "azeroth_197",

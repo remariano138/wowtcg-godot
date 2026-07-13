@@ -47,6 +47,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
+	# Destroy the opponent's protecting ally (BaseAI, First to Fall) — deterministic.
+	var kill_protector := destroy_protector_action(state, db, player_id)
+	if kill_protector != null:
+		return kill_protector
 	var legal := get_legal_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false

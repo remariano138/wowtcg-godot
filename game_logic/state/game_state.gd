@@ -68,6 +68,14 @@ var pending_ready_cost: int = 0
 var pending_whelp_bounce_player: String = ""
 var pending_whelp_bounce_ally_id: String = ""
 var pending_whelp_bounce_cost: int = 0
+# Attack-exhaust point (Chops / Voss Treebender: "When [this] attacks, you may
+# exhaust target hero or ally."): non-empty while the attacker's controller may
+# pick a target to exhaust (or decline). Opened at combat-step start (602.1),
+# BEFORE the attack window — resolving it against a ready Protector denies the
+# protect point (602.2). Resolved via StackResolver.choose_attack_exhaust()
+# (direct call, like the ready-on-attack point). "" = none pending.
+var pending_attack_exhaust_player: String = ""
+var pending_attack_exhaust_source_id: String = ""
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending
@@ -219,6 +227,16 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 		elif parts[0] == "atk_per_damage_self":
 			var per_damage := int(parts[1]) if parts.size() > 1 else 1
 			atk += per_damage * inst.damage_taken
+		elif parts[0] == "atk_vs_exhausted_defender":
+			# Bala Silentblade: "+N ATK while attacking an exhausted hero or
+			# ally." Live continuous modifier — only while this card is the
+			# actual combat attacker AND the current defender is exhausted
+			# (re-read at every get_atk, so a defender exhausted or readied
+			# mid-combat changes the bonus immediately).
+			if instance_id == combat_attacker and combat_defender != "":
+				var dfd := get_card(combat_defender)
+				if dfd and dfd.is_exhausted:
+					atk += int(parts[1]) if parts.size() > 1 else 0
 		elif parts[0] == "weapon":
 			is_weapon = true
 	# (2b) Elendril's flip: "Your Ranged weapons have +3 ATK this turn."

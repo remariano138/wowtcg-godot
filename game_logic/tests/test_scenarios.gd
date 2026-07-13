@@ -130,6 +130,9 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_exhaustion_freezes_proposal,
 		_test_ai_exhaustion_freeze_save,
+		_test_first_to_fall_destroys_protector,
+		_test_ai_first_to_fall_destroys_protector,
+		_test_targeted_instant_highlight_requires_target,
 		_test_galahandra_power_freezes_proposal,
 		_test_ai_galahandra_freeze_save,
 		_test_weapon_attack_strike,
@@ -163,6 +166,12 @@ func _ready() -> void:
 		_test_stat_tracker_counts,
 		_test_green_whelp_armor_bounces_attacker,
 		_test_green_whelp_armor_decline_and_gates,
+		_test_attack_exhaust_denies_protector,
+		_test_attack_exhaust_decline_keeps_protect,
+		_test_attack_exhaust_defender_combat_proceeds,
+		_test_ai_attack_exhaust_choice,
+		_test_bala_atk_vs_exhausted,
+		_test_bala_bonus_turns_on_mid_combat,
 	]
 
 	for t in tests:
@@ -238,14 +247,14 @@ func _test_stat_tracker_counts() -> void:
 	st.record_event(GameEvent.card_played("p1", "c6"))
 	st.record_event(GameEvent.card_played("p2", "c7"))
 
-	eq(st.drawn("p1"),  2, "p1 drawn")
-	eq(st.drawn("p2"),  1, "p2 drawn")
+	eq(st.drawn("p1"),  9, "p1 drawn")
+	eq(st.drawn("p2"),  8, "p2 drawn")
 	eq(st.played("p1"), 2, "p1 played")
 	eq(st.played("p2"), 1, "p2 played")
 
-	# reset() clears everything for a new match.
+	# reset() clears everything for a new match (baseline 7 for opening hand).
 	st.reset()
-	eq(st.drawn("p1"),  0, "reset clears drawn")
+	eq(st.drawn("p1"),  7, "reset clears drawn to opening-hand baseline")
 	eq(st.played("p1"), 0, "reset clears played")
 
 	# Real submission emits card_played for a card play but NOT for a resource.
@@ -2809,7 +2818,7 @@ func _test_reveal_pick_takes_matching_card() -> void:
 
 
 func _test_reveal_pick_no_match_all_to_bottom() -> void:
-	_buf.append("\n-- Reveal-pick: no matching card → all revealed go to bottom, no choice --")
+	_buf.append("\n-- Reveal-pick: no matching card → choice still opens (empty), OK sends all to bottom --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2837,7 +2846,23 @@ func _test_reveal_pick_no_match_all_to_bottom() -> void:
 	events.append_array(StackResolver.pass_priority(state, db))
 	events.append_array(StackResolver.pass_priority(state, db))
 
-	eq(state.pending_reveal_pick_player, "", "revealpick-i: no pending choice when nothing matches")
+	# The choice still opens so the player can SEE the revealed cards, but with
+	# nothing selectable it's an empty acknowledgement (OK).
+	eq(state.pending_reveal_pick_player, "p1", "revealpick-i: choice opens even when nothing matches")
+	eq(state.pending_reveal_pick_ids, [], "revealpick-i2: nothing is selectable")
+	var opened := false
+	for ev in events:
+		if ev.event_type == "reveal_pick_opened":
+			opened = true
+	ok(opened, "revealpick-i3: reveal_pick_opened emitted with empty selectable")
+
+	# A non-empty pick is rejected (nothing matched); only the empty ack resolves.
+	var bad := StackResolver.choose_reveal_pick(state, "k_ab1", db)
+	eq(bad.size(), 0, "revealpick-i4: picking a non-matching card is refused")
+	eq(state.pending_reveal_pick_player, "p1", "revealpick-i5: still pending after refused pick")
+
+	StackResolver.choose_reveal_pick(state, "", db)
+	eq(state.pending_reveal_pick_player, "", "revealpick-i6: pending cleared after empty ack")
 	# The three revealed abilities cycle to the bottom; k_keep becomes the top.
 	eq(state.zones["p1_deck"].card_ids, ["k_keep", "k_ab1", "k_ab2", "k_ab3"],
 		"revealpick-j: all revealed cards pushed to the bottom in order")
@@ -6983,6 +7008,199 @@ func _test_ai_exhaustion_freeze_save() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# First to Fall (dark_portal_141, 2, Instant Ability): "Destroy target protecting
+# ally." Legal only in the defend window, aimed at the ally protecting this combat
+# (state.combat_protector). Destroying it ends the combat with no damage (603.1b).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_first_to_fall_destroys_protector() -> void:
+	_buf.append("\n-- First to Fall: destroy the ally protecting this combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("raider_def", 4, 4, [], 3)                 # p1 attacker
+	db.ally("guard_def",  2, 3, ["protector"], 3)      # p2 protector
+	db.instant("dark_portal_141", 2, "destroy_target:protecting_ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	var raider := _add_ally(state, "raider", "raider_def", "p1")
+	raider.just_summoned = false
+	var guard := _add_ally(state, "guard", "guard_def", "p2")
+	guard.just_summoned = false
+	_add_card_to_hand(state, "ftf", "dark_portal_141", "p1")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# ftf-a: with no combat/protector, there's no legal target — unplayable.
+	var no_combat := PendingAction.make("play_instant", "p1",
+		{"card_id": "ftf", "target_id": "guard"})
+	ok(not StackResolver.can_submit(state, no_combat, db),
+		"ftf-a: not playable outside combat (no protecting ally)")
+
+	# p1 attacks p2's hero; p2 will protect with the guard.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → attack window
+
+	# ftf-b: during the attack window nobody is protecting yet → still no target.
+	ok(state.combat_attack_window, "ftf-b0: attack window open")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ftf", "target_id": "guard"}), db),
+		"ftf-b: not playable in the attack window (no one is protecting)")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes → protect point
+	ok(state.in_protect_point, "ftf-c: protect point opened")
+	StackResolver.choose_protector(state, "guard", db)
+	eq(state.combat_protector, "guard", "ftf-d: guard is the protecting ally")
+	eq(state.combat_defender, "guard", "ftf-d2: guard became the defender")
+	ok(state.combat_defend_window, "ftf-d3: defend window open")
+	eq(state.priority_player, "p1", "ftf-d4: attacker (p1) has priority in the defend window")
+
+	# ftf-e: now it's legal on the protector, but NOT on the hero or a non-protector.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ftf", "target_id": "guard"}), db),
+		"ftf-e: playable on the protecting ally")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ftf", "target_id": "p2_hero"}), db),
+		"ftf-e2: not a legal target — the hero isn't a protecting ally")
+
+	# p1 plays First to Fall on the protector.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "ftf", "target_id": "guard"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # First to Fall resolves
+	ok(not state.is_in_play("guard"), "ftf-f: protector destroyed")
+	ok(state.get_card("guard").zone_id == "p2_graveyard", "ftf-f2: protector in graveyard")
+	ok(state.get_card("ftf").zone_id == "p1_graveyard", "ftf-f3: First to Fall in graveyard")
+
+	# Both pass → combat concludes with the defender gone: no damage anywhere (603.1b).
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 0, "ftf-g: hero took no damage (attack didn't pass through)")
+	eq(state.get_card("raider").damage_taken, 0, "ftf-g2: attacker untouched")
+	eq(state.combat_protector, "", "ftf-g3: combat_protector cleared after combat")
+
+
+# The renderer's highlight probe (can_play_instant_no_target_check) must go dark
+# when a targeted card has NO legal target (rule 706.2): First to Fall without a
+# protecting ally, Exhaustion with no ally in play.
+func _test_targeted_instant_highlight_requires_target() -> void:
+	_buf.append("\n-- Highlight probe: targeted instants need an existing legal target --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("raider_def", 4, 4, [], 3)
+	db.ally("guard_def",  2, 3, ["protector"], 3)
+	db.instant("dark_portal_141", 2, "destroy_target:protecting_ally")
+	db.instant("azeroth_159", 2, "exhaust_target:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	_add_card_to_hand(state, "ftf", "dark_portal_141", "p1")
+	_add_card_to_hand(state, "exh", "azeroth_159", "p1")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# tih-a: empty board — no protecting ally, no ally at all → neither highlights.
+	ok(not StackResolver.can_play_instant_no_target_check(state, "ftf", "p1", db),
+		"tih-a: First to Fall dark with no protecting ally")
+	ok(not StackResolver.can_play_instant_no_target_check(state, "exh", "p1", db),
+		"tih-a2: Exhaustion dark with no ally in play")
+
+	# An ally appears → Exhaustion lights up, First to Fall stays dark.
+	var raider := _add_ally(state, "raider", "raider_def", "p1")
+	raider.just_summoned = false
+	var guard := _add_ally(state, "guard", "guard_def", "p2")
+	guard.just_summoned = false
+	ok(StackResolver.can_play_instant_no_target_check(state, "exh", "p1", db),
+		"tih-b: Exhaustion lights up once an ally is in play")
+	ok(not StackResolver.can_play_instant_no_target_check(state, "ftf", "p1", db),
+		"tih-b2: First to Fall still dark (no one protecting)")
+
+	# Combat up to the defend window with the guard protecting → First to Fall lights.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window
+	ok(not StackResolver.can_play_instant_no_target_check(state, "ftf", "p1", db),
+		"tih-c: First to Fall dark in the attack window (no one protecting yet)")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # protect point
+	StackResolver.choose_protector(state, "guard", db)
+	ok(state.combat_defend_window, "tih-d0: defend window open")
+	ok(StackResolver.can_play_instant_no_target_check(state, "ftf", "p1", db),
+		"tih-d: First to Fall lights up while an ally is protecting")
+
+
+func _test_ai_first_to_fall_destroys_protector() -> void:
+	_buf.append("\n-- AI plays First to Fall on an opposing protector (cost gate) --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("cheap_def", 1, 1, ["protector"], 1)   # cost 1 — below First to Fall's cost
+	db.ally("pricey_def", 2, 3, ["protector"], 3)  # cost 3 — worth killing
+	db.instant("dark_portal_141", 2, "destroy_target:protecting_ally")
+
+	# Build a defend-window state directly: p1 (AI attacker) vs a protecting p2 ally.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	var pricey := _add_ally(state, "pricey", "pricey_def", "p2")
+	pricey.just_summoned = false
+	_add_card_to_hand(state, "ftf", "dark_portal_141", "p1")
+	_add_resources(state, "p1", 2)
+	state.combat_attacker   = "p1_hero"
+	state.combat_defender   = "pricey"
+	state.combat_protector  = "pricey"
+	state.combat_defend_window = true
+
+	# ff-a: cost-3 protector >= First to Fall's cost 2 → the AI destroys it.
+	var act := ai.destroy_protector_action(state, db, "p1")
+	ok(act != null and act.action_type == "play_instant"
+			and act.params.get("card_id") == "ftf"
+			and act.params.get("target_id") == "pricey",
+		"ff-a: AI plays First to Fall on the cost-3 protector")
+
+	# ff-b: a cost-1 protector is too cheap to be worth the card → hold.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p1"
+	state2.priority_player = "p1"
+	var cheap := _add_ally(state2, "cheap", "cheap_def", "p2")
+	cheap.just_summoned = false
+	_add_card_to_hand(state2, "ftf2", "dark_portal_141", "p1")
+	_add_resources(state2, "p1", 2)
+	state2.combat_attacker   = "p1_hero"
+	state2.combat_defender   = "cheap"
+	state2.combat_protector  = "cheap"
+	state2.combat_defend_window = true
+	ok(ai.destroy_protector_action(state2, db, "p1") == null,
+		"ff-b: AI holds First to Fall against a cost-1 protector")
+
+	# ff-c: never targets our OWN protecting ally (opponents only).
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	state3.turn_player     = "p2"
+	state3.priority_player = "p2"
+	var mine := _add_ally(state3, "mine", "pricey_def", "p1")   # p1's own protector
+	mine.just_summoned = false
+	_add_card_to_hand(state3, "ftf3", "dark_portal_141", "p1")
+	_add_resources(state3, "p1", 2)
+	state3.combat_attacker   = "p2_hero"
+	state3.combat_defender   = "mine"
+	state3.combat_protector  = "mine"
+	state3.combat_defend_window = true
+	ok(ai.destroy_protector_action(state3, db, "p1") == null,
+		"ff-c: AI never destroys its own protecting ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Galahandra, Keeper of the Silent Grove (azeroth_184, 0/1 Elusive Ally):
 # "1, [Activate] -> Exhaust target ally." Same interrupt role as Exhaustion,
 # but as a repeatable in-play ally power instead of a one-shot hand instant.
@@ -8437,3 +8655,263 @@ func _test_augustus_blocked_too_few_graveyard_allies() -> void:
 	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
 		{"card_id": "aug", "target_id": "victim"}), db),
 		"ab-a: Augustus power illegal with only 2 graveyard allies")
+
+
+# ── Chops / Voss Treebender: "When [this] attacks, you may exhaust target
+# hero or ally." ────────────────────────────────────────────────────────────────
+
+# The trigger opens before the attack window; exhausting the opposing Protector
+# denies the protect point (602.2 — protecting requires exhausting a ready
+# character).
+func _test_attack_exhaust_denies_protector() -> void:
+	_buf.append("\n-- Attack-exhaust (Chops/Voss): exhaust denies protector --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chops_def", 3, 4, [], 3, "on_attack_exhaust_target")
+	db.ally("guard_def", 2, 5, (["protector"] as Array[String]))
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "chops", "chops_def", "p1")
+	_add_ally(state, "guard", "guard_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chops", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p1 passes
+	StackResolver.pass_priority(state, db)   # p2 passes -> combat starts
+
+	eq(state.pending_attack_exhaust_player, "p1", "ae-a: exhaust point opened for p1")
+	eq(state.pending_attack_exhaust_source_id, "chops", "ae-a2: source is the attacker")
+	ok(state.get_card("chops").is_exhausted, "ae-a3: attacker exhausted before the point")
+	ok(not state.combat_attack_window, "ae-a4: attack window held until the choice")
+
+	# Everything else is blocked while the point is pending.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"ae-b: pass_priority blocked while exhaust point pending")
+	ok(not StackResolver.can_submit(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chops", "defender_id": "p2_hero"}), db),
+		"ae-b2: can_submit blocked while exhaust point pending")
+
+	StackResolver.choose_attack_exhaust(state, "guard", db)
+	ok(state.get_card("guard").is_exhausted, "ae-c: protector exhausted by the trigger")
+	ok(state.combat_attack_window, "ae-c2: attack window opened after the choice")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes
+	ok(not state.in_protect_point,
+		"ae-d: no protect point — the only protector is exhausted")
+	ok(state.combat_defend_window, "ae-d2: straight to the defend window")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("p2_hero").damage_taken, 3, "ae-e: hero took the attack unprotected")
+
+
+# Declining ("" target) leaves the protector ready — the protect point opens
+# normally. Also: a plain attacker without the flag never opens the point.
+func _test_attack_exhaust_decline_keeps_protect() -> void:
+	_buf.append("\n-- Attack-exhaust (Chops/Voss): decline keeps the protect point --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chops_def", 3, 4, [], 3, "on_attack_exhaust_target")
+	db.ally("plain_def", 2, 2)
+	db.ally("guard_def", 2, 5, (["protector"] as Array[String]))
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "chops", "chops_def", "p1")
+	_add_ally(state, "guard", "guard_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chops", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> exhaust point
+
+	eq(state.pending_attack_exhaust_player, "p1", "ad-a: exhaust point opened")
+	StackResolver.choose_attack_exhaust(state, "", db)   # decline
+	ok(not state.get_card("guard").is_exhausted, "ad-b: protector stays ready on decline")
+	ok(state.combat_attack_window, "ad-b2: attack window opened after decline")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes
+	ok(state.in_protect_point, "ad-c: protect point opens — protector still ready")
+	StackResolver.choose_protector(state, "guard", db)
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("p2_hero").damage_taken, 0, "ad-d: hero protected")
+	eq(state.get_card("guard").damage_taken, 3, "ad-d2: protector intercepted the damage")
+
+	# A plain attacker never opens the point (fresh state).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var plain := _add_ally(state2, "plain", "plain_def", "p1")
+	plain.just_summoned = false
+	state2.players["p1"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "plain", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.pending_attack_exhaust_player, "", "ad-e: no point for a flagless attacker")
+	ok(state2.combat_attack_window, "ad-e2: attack window opened directly")
+
+
+# Exhausting the proposed DEFENDER does not cancel the combat (601.3 already
+# passed) — the attack still lands and the exhausted defender still strikes back.
+func _test_attack_exhaust_defender_combat_proceeds() -> void:
+	_buf.append("\n-- Attack-exhaust (Chops/Voss): exhausting the defender doesn't stop combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chops_def", 3, 4, [], 3, "on_attack_exhaust_target")
+	db.ally("victim_def", 2, 5)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "chops", "chops_def", "p1")
+	_add_ally(state, "victim", "victim_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chops", "defender_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> exhaust point
+
+	StackResolver.choose_attack_exhaust(state, "victim", db)
+	ok(state.get_card("victim").is_exhausted, "ax-a: defender exhausted by the trigger")
+	eq(state.combat_defender, "victim", "ax-a2: still the defender — combat proceeds")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("victim").damage_taken, 3, "ax-b: defender took combat damage")
+	eq(state.get_card("chops").damage_taken, 2, "ax-b2: attacker took damage back")
+
+
+# AI: exhausts the most dangerous ready opposing protector; declines when the
+# defending side has no ready protector.
+func _test_ai_attack_exhaust_choice() -> void:
+	_buf.append("\n-- Attack-exhaust (Chops/Voss): AI picks the protector --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chops_def", 3, 4, [], 3, "on_attack_exhaust_target")
+	db.ally("small_guard_def", 1, 5, (["protector"] as Array[String]))
+	db.ally("big_guard_def", 4, 5, (["protector"] as Array[String]))
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "chops", "chops_def", "p1")
+	_add_ally(state, "small_guard", "small_guard_def", "p2")
+	_add_ally(state, "big_guard", "big_guard_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chops", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> exhaust point
+
+	var ai := BaseAI.new()
+	# big_guard's 4 ATK kills the 4-HP attacker in a protect — exhaust it.
+	eq(ai.choose_attack_exhaust(state, db, "p1"), "big_guard",
+		"aai-a: AI exhausts the protector that would kill the attacker")
+	StackResolver.choose_attack_exhaust(state, "big_guard", db)
+
+	# Second combat setup: no ready protectors left worth denying -> decline.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "chops2", "chops_def", "p1")
+	state2.players["p1"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chops2", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(ai.choose_attack_exhaust(state2, db, "p1"), "",
+		"aai-b: AI declines with no protector to deny")
+	StackResolver.choose_attack_exhaust(state2, "", db)
+	ok(state2.combat_attack_window, "aai-b2: window opened after decline")
+
+
+# ── Bala Silentblade: "+3 ATK while attacking an exhausted hero or ally." ──────
+
+# The bonus is a live continuous modifier: on only while Bala is the combat
+# attacker and the current defender is exhausted, off otherwise.
+func _test_bala_atk_vs_exhausted() -> void:
+	_buf.append("\n-- Bala Silentblade: +3 ATK vs exhausted defenders --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bala_def", 1, 4, [], 3, "atk_vs_exhausted_defender:3")
+	db.ally("victim_def", 0, 6)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bala", "bala_def", "p1")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.is_exhausted = true
+	state.players["p1"].resource_placed_this_turn = true
+
+	eq(state.get_atk("bala", db), 1, "bs-a: no bonus outside combat")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bala", "defender_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> attack window
+
+	eq(state.get_atk("bala", db), 4, "bs-b: +3 while attacking the exhausted ally")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("victim").damage_taken, 4, "bs-c: exhausted defender took 4")
+	eq(state.get_card("bala").damage_taken, 0, "bs-c2: 0-ATK defender dealt nothing back")
+	eq(state.get_atk("bala", db), 1, "bs-d: bonus gone after combat")
+
+	# Second combat next turn vs a READY defender: no bonus.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "bala2", "bala_def", "p1")
+	_add_ally(state2, "fresh", "victim_def", "p2")
+	state2.players["p1"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bala2", "defender_id": "fresh"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.get_atk("bala2", db), 1, "bs-e: no bonus vs a ready defender")
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.get_card("fresh").damage_taken, 1, "bs-e2: ready defender took only 1")
+
+
+# Combo with the attack-exhaust trigger (Chops/Voss): a Bala-style attacker that
+# ALSO carries on_attack_exhaust_target can exhaust its own defender before the
+# attack window, turning the bonus on. Also covers the live re-read: the defender
+# becomes exhausted AFTER the proposal resolved.
+func _test_bala_bonus_turns_on_mid_combat() -> void:
+	_buf.append("\n-- Bala Silentblade: bonus turns on when defender exhausts mid-combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("combo_def", 1, 4, [], 3,
+		"atk_vs_exhausted_defender:3|on_attack_exhaust_target")
+	db.ally("victim_def", 0, 6)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "combo", "combo_def", "p1")
+	_add_ally(state, "victim", "victim_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "combo", "defender_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> attack-exhaust point
+
+	eq(state.get_atk("combo", db), 1, "bc-a: defender still ready — no bonus yet")
+	StackResolver.choose_attack_exhaust(state, "victim", db)
+	eq(state.get_atk("combo", db), 4, "bc-b: bonus live once the defender exhausts")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("victim").damage_taken, 4, "bc-c: combo dealt the boosted 4")

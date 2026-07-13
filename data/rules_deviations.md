@@ -300,3 +300,28 @@ self-discard. If a discard-synergy card ever appears, generalize
 `discard_opponent` to a targeted `discard_player` with a real target pick and
 drop this deviation. Enforcement site: `_resolve_use_ally_power`
 ("discard_opponent" branch) in `game_logic/stack_resolver.gd`.
+
+---
+
+## Attack-exhaust triggers — resolved immediately, not on the chain
+
+**Cards:** Chops (`dark_portal_32`), Voss Treebender (`azeroth_266`). Printed
+text: "When [this] attacks, you may exhaust target hero or ally." Recipe flag
+`on_attack_exhaust_target`.
+
+**Deviation:** by the rules this is a triggered effect (703/708) that should
+be ADDED TO THE CHAIN as the attack window opens (602.1) — targeted at
+announce, respondable, resolvable after responses. The engine instead resolves
+it as a direct-call choice point (`pending_attack_exhaust_*`,
+`choose_attack_exhaust`) at combat-step start, after the strike /
+ready-on-attack points and BEFORE the attack window opens — the same
+immediate-resolution pattern as Windseer Tarus. The opponent cannot respond
+to the trigger itself (they still get the full attack window afterward).
+
+**Why:** the engine has no generic chain-based triggered-effect machinery yet;
+every triggered choice (strike, Windseer, Whelp Armor, totems) uses direct-call
+points. The gameplay-relevant timing is preserved exactly: the exhaust lands
+before the protect point (602.2), so exhausting a ready Protector denies the
+protect, and exhausting the proposed defender does NOT cancel the combat
+(601.3 already passed). Enforcement site: `_open_attack_exhaust_point` /
+`choose_attack_exhaust` in `game_logic/stack_resolver.gd`.

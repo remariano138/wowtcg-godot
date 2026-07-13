@@ -517,6 +517,13 @@ func start_totem_targeting(card_id: String, dmg_type: String, dmg_amount: int) -
 	start_targeting(card_id, "choose_totem_target", dmg_type, dmg_amount)
 
 
+# Convenience wrapper for the attack-exhaust trigger (Chops / Voss Treebender):
+# "When [this] attacks, you may exhaust target hero or ally." Optional — Esc
+# cancels, which the scene resolves as a decline.
+func start_attack_exhaust_targeting(card_id: String) -> void:
+	start_targeting(card_id, "choose_attack_exhaust", "", 0)
+
+
 # Abort targeting — called by Escape key or scene logic.
 func cancel_targeting() -> void:
 	_targeting_source       = ""
@@ -537,6 +544,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"activate_power_x":          _handle_x_power_targeting_click(instance_id)
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"choose_totem_target":       _handle_totem_targeting_click(instance_id)
+		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
 		"use_ally_power":            _handle_ally_power_targeting_click(instance_id)
@@ -585,6 +593,16 @@ func _handle_totem_targeting_click(instance_id: String) -> void:
 		EventBus.emit_events(events)
 		# The scene resumes driving the turn (and handles any next queued totem).
 		totem_target_resolved.emit()
+
+
+func _handle_attack_exhaust_targeting_click(instance_id: String) -> void:
+	# Chops / Voss Treebender attack-exhaust trigger. Optional, direct-call
+	# resolution (no chain) — like the ready-on-attack point. Resolving opens
+	# the held attack window, whose scene handler drains passes.
+	if instance_id in StackResolver.get_attack_exhaust_targets(state, db):
+		var events := StackResolver.choose_attack_exhaust(state, instance_id, db)
+		cancel_targeting()
+		EventBus.emit_events(events)
 
 
 func _handle_ability_targeting_click(instance_id: String) -> void:
@@ -895,6 +913,8 @@ func get_playable_card_ids() -> Array:
 				return _get_enter_play_targets(_targeting_source)
 			"choose_totem_target":
 				return StackResolver.get_totem_targets(state, db)
+			"choose_attack_exhaust":
+				return StackResolver.get_attack_exhaust_targets(state, db)
 			"play_instant":
 				return _get_instant_targets(_targeting_source)
 			"play_ability":

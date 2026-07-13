@@ -9,21 +9,23 @@ extends RefCounted
 # when the game ends (Game Over screen). Reset() at the start of each match.
 #
 # Definitions:
-#   cards_drawn  — any card that entered a player's hand from their deck
-#                  (turn draws, effect draws, mulligan redraw). The silent
-#                  opening-hand deal uses move_card_silent and is NOT counted.
+#   cards_drawn  — starts at STARTING_HAND_SIZE (7) to account for the silent
+#                  opening-hand deal (move_card_silent, not itself observed as
+#                  an event), then increments for any further card that enters
+#                  a player's hand from their deck (turn draws, effect draws,
+#                  mulligan redraw).
 #   cards_played — a card played from hand (ally / instant / ability /
 #                  equipment). Placing a resource is NOT a play and is excluded
 #                  (it is a separate action; see submit_action). Fed by the
 #                  dedicated "card_played" event.
 
 # player_id ("p1"/"p2") → count
-var cards_drawn:  Dictionary = {"p1": 0, "p2": 0}
+var cards_drawn:  Dictionary = {"p1": 7, "p2": 7}
 var cards_played: Dictionary = {"p1": 0, "p2": 0}
 
 
 func reset() -> void:
-	cards_drawn  = {"p1": 0, "p2": 0}
+	cards_drawn  = {"p1": 7, "p2": 7}
 	cards_played = {"p1": 0, "p2": 0}
 
 

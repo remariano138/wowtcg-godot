@@ -4,9 +4,9 @@
   "hero_card_def_id": "azeroth_7",
   "card_entries": [
     {
-      "card_def_id": "azeroth_360",
+      "card_def_id": "azeroth_348",
       "count": 1,
-      "_card_name": "Your Fortune Awaits You"
+      "_card_name": "Big Game Hunter"
     },
     {
       "card_def_id": "azeroth_342",
@@ -15,12 +15,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_347",
-      "count": 2,
+      "count": 1,
       "_card_name": "Battle of Darrowshire"
     },
     {
@@ -65,7 +65,7 @@
     },
     {
       "card_def_id": "azeroth_187",
-      "count": 1,
+      "count": 2,
       "_card_name": "Hannah the Unstoppable"
     },
     {
@@ -75,7 +75,7 @@
     },
     {
       "card_def_id": "azeroth_165",
-      "count": 3,
+      "count": 2,
       "_card_name": "Quick Strike"
     },
     {
@@ -94,9 +94,9 @@
       "_card_name": "Acolyte Demia"
     },
     {
-      "card_def_id": "azeroth_192",
+      "card_def_id": "dark_portal_141",
       "count": 2,
-      "_card_name": "Kor Cindervein"
+      "_card_name": "First to Fall"
     },
     {
       "card_def_id": "azeroth_197",
@@ -109,9 +109,9 @@
       "_card_name": "Ryn Dreamstrider"
     },
     {
-      "card_def_id": "azeroth_175",
+      "card_def_id": "azeroth_190",
       "count": 2,
-      "_card_name": "Anika Berlyn"
+      "_card_name": "Kena Shadowbrand"
     },
     {
       "card_def_id": "azeroth_179",

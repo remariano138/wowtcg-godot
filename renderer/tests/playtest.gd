@@ -155,6 +155,7 @@ var _gy_max:           int = 1
 var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
+var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). Empty = all selectable.
 var _end_turn_dialog: ConfirmationDialog
 var _played_this_action_phase: Dictionary = {}   # player_id -> bool
 var _game_over: bool = false
@@ -1942,6 +1943,15 @@ func _on_game_event(event: GameEvent) -> void:
 		"ready_on_attack_opened":
 			_window_generation += 1
 			_handle_ready_point(event.payload)
+		"attack_exhaust_opened":
+			_window_generation += 1
+			_handle_attack_exhaust(event.payload)
+		"attack_exhaust_resolved":
+			var ex_card := _state.get_card(event.payload.get("target_id", ""))
+			var ex_def: CardDef = _db.get_def(ex_card.card_def_id) if ex_card else null
+			_set_status("💤 %s exhausts %s" % [event.payload.get("player", "?"),
+				ex_def.card_name if ex_def else "a character"])
+			_refresh_ui()
 		"whelp_bounce_opened":
 			_window_generation += 1
 			_handle_whelp_bounce(event.payload)
@@ -2395,13 +2405,27 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 		_refresh_ui()
 		_schedule_next_turn()
 	else:
-		# Human: reuse the browser modal, but as a mandatory single pick (no cancel).
-		_open_gy_dialog(selectable, false,
-				"Revealed top %d — choose a %s card to keep (rest go to bottom of deck)"
-						% [revealed.size(), card_type], 1, 1)
+		# Human: reuse the browser modal. Show ALL revealed cards (like a graveyard
+		# pick); non-matching cards render red and can't be selected. A matching
+		# card MUST be chosen before OK (min 1); if none match, OK sends every
+		# revealed card to the bottom of the deck (min 0, no card to pick).
+		_gy_selectable.clear()
+		for cid: String in selectable:
+			_gy_selectable[cid] = true
+		var has_pick := not selectable.is_empty()
+		var title := "Revealed top %d — choose a %s card to keep (rest go to bottom of deck)" \
+				% [revealed.size(), card_type]
+		if not has_pick:
+			title = "Revealed top %d — no %s card to keep (all go to bottom of deck)" \
+					% [revealed.size(), card_type]
+		_open_gy_dialog(revealed, false, title, 1 if has_pick else 0, 1)
 		_gy_reveal_mode = true
 		_gy_cancel_btn.visible = false
-		_set_status("Choose a %s card to put into your hand" % card_type)
+		_gy_confirm_btn.text = "OK (C)"
+		if has_pick:
+			_set_status("Choose a %s card to put into your hand" % card_type)
+		else:
+			_set_status("No %s card revealed — click OK" % card_type)
 		_refresh_ui()
 
 
@@ -2545,6 +2569,13 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 
 func _on_targeting_cancelled() -> void:
 	_set_status("")
+	# Attack-exhaust trigger (Chops / Voss Treebender) is optional ("you may") —
+	# Esc while picking resolves it as a decline, opening the held attack window.
+	if _state and _state.pending_attack_exhaust_player != "":
+		var ex_events := StackResolver.choose_attack_exhaust(_state, "", _db)
+		EventBus.emit_events(ex_events)
+		_refresh_ui()
+		return
 	# A totem trigger's damage is mandatory ("deals", not "may") — the player can't
 	# bow out of picking. If one is still pending after a cancel, restart targeting
 	# from the front queued trigger so the human is asked again instead of locked.
@@ -2761,6 +2792,7 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 		_gy_card_grid.add_child(_make_gy_card_button(cid as String))
 
 	_gy_confirm_btn.visible = not view_only and modal
+	_gy_confirm_btn.text = "Confirm (C)"
 	_gy_cancel_btn.visible = modal
 	_gy_cancel_btn.text = "Close (Esc)" if view_only else "Cancel (Esc)"
 	# Peek mode must never block board input — no dimmer, and the panel itself
@@ -2782,9 +2814,12 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 func _make_gy_card_button(instance_id: String) -> Button:
 	var card := _state.get_card(instance_id)
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
+	# Reveal-pick: cards that fail the filter are shown (important context) but
+	# tinted red and non-selectable. Empty _gy_selectable ⇒ every card selectable.
+	var pickable := _gy_selectable.is_empty() or _gy_selectable.has(instance_id)
 	var btn := Button.new()
 	btn.custom_minimum_size = GY_CARD_SIZE
-	btn.toggle_mode = not _gy_view_only
+	btn.toggle_mode = not _gy_view_only and pickable
 	btn.clip_text = true
 	var tex_path := "res://" + def.image_path.replace("\\", "/") if def and def.image_path != "" else ""
 	if tex_path != "" and ResourceLoader.exists(tex_path):
@@ -2794,6 +2829,11 @@ func _make_gy_card_button(instance_id: String) -> Button:
 	else:
 		btn.text = "%s\n(%d) %s" % [def.card_name if def else instance_id,
 				def.cost if def else 0, def.card_type if def else ""]
+	if not pickable:
+		# Red overlay + no interaction — visible but not choosable.
+		btn.disabled = true
+		btn.modulate = Color(1.0, 0.45, 0.45)
+		return btn
 	if not _gy_view_only:
 		btn.toggled.connect(func(pressed: bool) -> void:
 			if pressed:
@@ -2841,6 +2881,7 @@ func _on_gy_cancel_pressed() -> void:
 
 func _close_gy_dialog() -> void:
 	_gy_reveal_mode = false
+	_gy_selectable.clear()
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
 	CardNode.input_blocked = false
@@ -3259,15 +3300,36 @@ func _resolve_ready(pay: bool) -> void:
 	# synchronously inside emit_events above.
 
 
+# ── Attack-exhaust point (Chops / Voss Treebender) ─────────────────────────────
+
+func _handle_attack_exhaust(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		# AI decides immediately (BaseAI.choose_attack_exhaust; "" = decline).
+		var target: String = ai.choose_attack_exhaust(_state, _db, player) if ai else ""
+		var events := StackResolver.choose_attack_exhaust(_state, target, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: enter targeting mode to pick the hero or ally to exhaust.
+		# Esc = decline (see _on_targeting_cancelled) — the trigger is optional.
+		_router.start_attack_exhaust_targeting(payload.get("source_id", ""))
+		_refresh_ui()
+
+
 # ── Green Whelp Armor bounce point ─────────────────────────────────────────────
 
 func _handle_whelp_bounce(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
 	var player_type := _p1_type if player == "p1" else _p2_type
 	var ai: Object = _p1_ai if player == "p1" else _p2_ai
-	# In hotseat the off-screen human also auto-resolves (social contract) unless
-	# they're the local seat; a null AI declines.
-	if player_type != "human" or (_hotseat and player != _local_player):
+	# The bounce choice is board-public (pay 2 or decline — nothing hidden), so
+	# like the protect/strike points any human decides inline, including the
+	# off-screen hotseat player. Only AI seats auto-resolve; a null AI declines.
+	if player_type != "human":
 		var pay: bool = ai.choose_whelp_bounce(_state, _db, player) if ai else false
 		var events := StackResolver.choose_whelp_bounce(_state, pay, _db)
 		EventBus.emit_events(events)
@@ -3301,7 +3363,9 @@ func _show_whelp_bounce_inline(payload: Dictionary) -> void:
 	var btn_x := CENTER_X - row_width / 2
 
 	var header := Label.new()
-	header.text = "Green Whelp Armor — pay %d to return %s to hand?" % [cost, card_name]
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	header.text = "%sGreen Whelp Armor — pay %d to return %s to hand?" % [prefix, cost, card_name]
 	header.add_theme_font_size_override("font_size", 12)
 	header.add_theme_color_override("font_color", Color(0.5, 0.9, 0.6))
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -3425,6 +3489,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Totem start-of-turn target choice before advancing
 	if _state.pending_ready_player != "":
 		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
+	if _state.pending_attack_exhaust_player != "":
+		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
 		return  # wait for the Green Whelp Armor bounce choice before advancing
 	var pid := _state.priority_player
@@ -3479,7 +3545,8 @@ func _drain_passes() -> void:
 			break
 		if _game_over or _state.in_protect_point or _in_protect_mode \
 				or _state.pending_strike_player != "" or _in_strike_mode \
-				or _state.pending_ready_player != "" or _in_ready_mode:
+				or _state.pending_ready_player != "" or _in_ready_mode \
+				or _state.pending_attack_exhaust_player != "":
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \

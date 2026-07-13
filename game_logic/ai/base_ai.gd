@@ -27,6 +27,12 @@ extends RefCounted
 #       proposal at the 601.3 recheck (an exhausted character can't attack). Same
 #       timing/role as Litori's target_cant_attack freeze — see
 #       exhaust_attacker_action(). Too late once the attack window is open.
+#   "combat_instant_destroy_protector" — Instant Ability that destroys the ally
+#       currently protecting this combat (effects: destroy_target:protecting_ally).
+#       Unlike the defensive tags above, this is played by the ATTACKER during the
+#       DEFEND window once the opponent has protected with an ally: destroying the
+#       protector ends the combat (603.1b). Played only on an opposing protecting
+#       ally whose cost >= this card's cost — see destroy_protector_action().
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
@@ -35,6 +41,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_109": "combat_instant_dmg",   # Frost Shock — 2 frost damage (can't-attack/protect rider not modeled for AI)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
+	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 }
 
 
@@ -57,6 +64,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
 	if power_exhaust != null:
 		return power_exhaust
+	var kill_protector := destroy_protector_action(state, db, player_id)
+	if kill_protector != null:
+		return kill_protector
 	return instant_protector_action(state, db, player_id)
 
 
@@ -404,6 +414,51 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 			continue
 		var act := PendingAction.make("play_instant", player_id,
 			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# ── Destroy the protecting ally (First to Fall) ───────────────────────────────
+# Offensive, not defensive: the AI is the ATTACKER. Once the opponent has
+# protected with an ally, the DEFEND window opens and the protector is
+# state.combat_protector. Destroying it ends the combat with no damage (603.1b),
+# clearing the blocker the opponent just spent. We play it only when:
+#   • we're in the defend window with an empty chain (respond on the floor),
+#   • an OPPONENT ally is protecting (never a protecting hero, never our own),
+#   • that protector's cost >= this card's cost (the standard "only spend removal
+#     on something at least as expensive as the removal" heuristic — cost 2 here).
+# The target is announced at submission: always state.combat_protector.
+func destroy_protector_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.combat_defend_window:
+		return null   # a protector only exists after the protect point
+	if not state.pending_actions.is_empty():
+		return null
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var protector_id := state.combat_protector
+	if protector_id == "" or not state.is_in_play(protector_id):
+		return null
+	if not StackResolver._is_ally(state, protector_id):
+		return null   # a protecting hero (Draconian Deflector) isn't a legal target
+	var prot := state.get_card(protector_id)
+	if not prot or prot.controller == player_id:
+		return null   # only opponents' protectors — never our own ally
+	var prot_def := db.get_def(prot.card_def_id) as CardDef
+	var prot_cost: int = prot_def.cost if prot_def else 0
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_destroy_protector":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		if prot_cost < def.cost:
+			continue   # not worth spending the card on a cheaper protector
+		var act := PendingAction.make("play_instant", player_id,
+			{"card_id": card.instance_id, "target_id": protector_id})
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
@@ -805,6 +860,35 @@ func choose_ready_on_attack(state: GameState, db, _player_id: String) -> bool:
 	# Attacking an ally: only pay if we outlive the retaliation.
 	var counter := state.get_atk(defender_id, db)
 	return state.get_current_hp(card_id, db) > counter
+
+
+# Chops / Voss Treebender: "When [this] attacks, you may exhaust target hero or
+# ally." Pick the target to exhaust, or "" to decline. The point of the trigger
+# is denying the protect point (602.2 — a protector must exhaust to protect), so
+# exhaust the most dangerous READY legal protector on the defending side: prefer
+# one whose retaliation would kill our attacker, else the highest-ATK one.
+# Exhausting anything else (e.g. the defender) buys nothing — decline instead.
+func choose_attack_exhaust(state: GameState, db, _player_id: String) -> String:
+	var attacker_id := state.combat_attacker
+	if attacker_id == "" or not db:
+		return ""
+	var protectors := StackResolver.get_legal_protectors(
+		state, attacker_id, state.combat_defender, db)
+	var targetable := StackResolver.get_attack_exhaust_targets(state, db)
+	var our_hp  := state.get_current_hp(attacker_id, db)
+	var best    := ""
+	var best_atk := -1
+	var best_kills := false
+	for pid in protectors:
+		if pid not in targetable:
+			continue
+		var p_atk := state.get_atk(pid, db)
+		var kills := p_atk >= our_hp
+		if (kills and not best_kills) or ((kills == best_kills) and p_atk > best_atk):
+			best       = pid
+			best_atk   = p_atk
+			best_kills = kills
+	return best
 
 
 # Green Whelp Armor: after an attacking ally damaged our hero, decide whether to

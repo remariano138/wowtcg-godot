@@ -1154,8 +1154,10 @@ func _refresh_deck_label(zone_id: String) -> void:
 		return
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if anchor:
-		lbl.global_position = anchor.global_position + Vector2(
-			-CardNode.W * 0.5, CardNode.H * 0.5 + 4)
+		var offset := Vector2(-CardNode.W * 0.5, CardNode.H * 0.5 + 4)
+		if zone_id.begins_with("p2"):
+			offset = Vector2(CardNode.W * 0.5, CardNode.H * 0.5 + 4)
+		lbl.global_position = anchor.global_position + offset
 	lbl.text = str(_deck_counts.get(zone_id, 0))
 
 

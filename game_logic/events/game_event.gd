@@ -212,6 +212,18 @@ static func readied_on_attack(player_id: String, card_id: String, cost_paid: int
 		"cost_paid": cost_paid,
 	})
 
+# Green Whelp Armor: bounce point opened (wielder MAY pay to return the attacking
+# ally to its owner's hand), and resolved (paid → ally bounced).
+static func whelp_bounce_opened(player_id: String, ally_id: String, cost: int) -> GameEvent:
+	return make("whelp_bounce_opened", {
+		"player":  player_id,
+		"ally_id": ally_id,
+		"cost":    cost,
+	})
+
+static func whelp_bounce_resolved(player_id: String, ally_id: String) -> GameEvent:
+	return make("whelp_bounce_resolved", {"player": player_id, "ally_id": ally_id})
+
 # Gorebelly's flip: discount on the next melee weapon strike this turn.
 static func strike_discount_gained(player_id: String, amount: int) -> GameEvent:
 	return make("strike_discount_gained", {"player": player_id, "amount": amount})

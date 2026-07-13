@@ -134,6 +134,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_ready_on_attack() before priority can move.
 	if state.pending_ready_player != "":
 		return []
+	# A pending Green Whelp Armor bounce decision must be resolved via
+	# choose_whelp_bounce() before priority can move.
+	if state.pending_whelp_bounce_player != "":
+		return []
 	# A pending Totem start-of-turn target choice (Searing Totem) must be resolved
 	# via choose_totem_target() before priority can move.
 	if state.pending_totem_target_player != "":
@@ -239,6 +243,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Ready-on-attack point (Windseer Tarus) blocks everything until resolved via
 	# choose_ready_on_attack().
 	if state.pending_ready_player != "":
+		return false
+
+	# Green Whelp Armor bounce point blocks everything until resolved via
+	# choose_whelp_bounce().
+	if state.pending_whelp_bounce_player != "":
 		return false
 
 	# Ongoing Totem start-of-turn target choice blocks everything until resolved
@@ -2187,11 +2196,26 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
+	# Green Whelp Armor trigger key facts, captured BEFORE damage lands (the
+	# attacker's zone / the defender's role may change once damage is applied).
+	var attacker_was_ally := _is_ally(state, attacker_id)
+	var defender_ps := state.players.get(defender.controller) as PlayerState
+	var defender_is_hero := defender_ps != null \
+			and defender_ps.hero_instance_id == defender_id
+
 	# Apply both damage packets first (deal_damage no longer auto-destroys),
 	# then check fatalities on both after — true simultaneity.
-	events.append_array(GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db))
+	var atk_events := GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db)
+	events.append_array(atk_events)
 	events.append_array(GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db))
 	_clear_damage_prevention(state)   # combat over — unspent block expires
+
+	# Did the attacker actually LAND combat damage on the hero? (armor DEF / block
+	# may have absorbed all of it — then the trigger doesn't fire.)
+	var hero_dmg_landed := 0
+	for ev in atk_events:
+		if ev.event_type == "damage_dealt" and ev.payload.get("target", "") == defender_id:
+			hero_dmg_landed += int(ev.payload.get("amount", 0))
 
 	# PPP: state-based destruction check after both packets have landed.
 	for cid in [defender_id, attacker_id]:
@@ -2207,6 +2231,67 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		else:
 			events.append_array(_check_destroyed_trigger(state, cid, attacker_id, db))
 
+	# Green Whelp Armor (rule 305.2 triggered equipment power): when an attacking
+	# ally deals combat damage to the wielder's hero, the wielder MAY pay to bounce
+	# that ally to its owner's hand. Opened here at conclusion; resolved directly
+	# via choose_whelp_bounce() (like the strike point). Both hero and attacker must
+	# still be in play, and the wielder must be able to afford the cost.
+	events.append_array(_maybe_open_whelp_bounce(
+		state, attacker_id, defender_id, defender.controller if defender else "",
+		attacker_was_ally, defender_is_hero, hero_dmg_landed, db))
+
+	return events
+
+
+# Opens the Green Whelp Armor bounce point if all conditions hold. Returns the
+# whelp_bounce_opened event (or []). See _do_combat_conclusion.
+static func _maybe_open_whelp_bounce(state: GameState, attacker_id: String,
+		defender_id: String, hero_controller: String, attacker_was_ally: bool,
+		defender_is_hero: bool, hero_dmg_landed: int, db) -> Array[GameEvent]:
+	if not attacker_was_ally or not defender_is_hero or hero_dmg_landed <= 0:
+		return []
+	if hero_controller == "" or not state.is_in_play(attacker_id) \
+			or not state.is_in_play(defender_id):
+		return []
+	# Wielder must control an in-play Green Whelp Armor in their hero_row.
+	var has_armor := false
+	for card in state.cards_in_zone(hero_controller + "_hero_row"):
+		if _has_effect_flag_prefix(db.get_def(card.card_def_id) as CardDef, "whelp_bounce"):
+			has_armor = true
+			break
+	if not has_armor:
+		return []
+	var cost := 2
+	if state.get_available_resources(hero_controller) < cost:
+		return []
+	state.pending_whelp_bounce_player  = hero_controller
+	state.pending_whelp_bounce_ally_id = attacker_id
+	state.pending_whelp_bounce_cost    = cost
+	return [GameEvent.whelp_bounce_opened(hero_controller, attacker_id, cost)]
+
+
+# Entry point for the Green Whelp Armor bounce decision (NOT chain-based — called
+# directly by the scene, like choose_strike). pay == false means decline. If paid,
+# spends the resources and moves the attacking ally to its owner's hand.
+static func choose_whelp_bounce(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_whelp_bounce_player == "":
+		return []
+	var player_id := state.pending_whelp_bounce_player
+	var ally_id   := state.pending_whelp_bounce_ally_id
+	var cost      := state.pending_whelp_bounce_cost
+	state.pending_whelp_bounce_player  = ""
+	state.pending_whelp_bounce_ally_id = ""
+	state.pending_whelp_bounce_cost    = 0
+
+	var events: Array[GameEvent] = []
+	if pay and state.is_in_play(ally_id) \
+			and state.get_available_resources(player_id) >= cost:
+		events.append_array(_pay_resources(state, player_id, cost))
+		var ally := state.get_card(ally_id)
+		var owner := ally.owner if ally else ""
+		events.append_array(GameLogic.move_card(state, ally_id, owner + "_hand"))
+		events.append(GameEvent.whelp_bounce_resolved(player_id, ally_id))
 	return events
 
 

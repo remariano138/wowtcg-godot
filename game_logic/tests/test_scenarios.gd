@@ -161,6 +161,8 @@ func _ready() -> void:
 		_test_augustus_destroys_with_graveyard_cost,
 		_test_augustus_blocked_too_few_graveyard_allies,
 		_test_stat_tracker_counts,
+		_test_green_whelp_armor_bounces_attacker,
+		_test_green_whelp_armor_decline_and_gates,
 	]
 
 	for t in tests:
@@ -271,6 +273,97 @@ func _test_stat_tracker_counts() -> void:
 		st2.record_event(e)
 
 	eq(st2.played("p1"), 1, "submit: play counts, resource excluded")
+
+
+# Green Whelp Armor: when an attacking ally deals combat damage to the wielder's
+# hero, the wielder may pay 2 to return that ally to its owner's hand.
+func _test_green_whelp_armor_bounces_attacker() -> void:
+	_buf.append("\n-- Green Whelp Armor: pay 2 to bounce the attacking ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("whelp_def", 4, "equipment:chest:1|whelp_bounce", "Armor")
+	db.ally("ogre_def", 3, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p1", 2)
+	var ogre := _add_ally(state, "ogre", "ogre_def", "p2")
+	ogre.just_summoned = false
+	var whelp := CardInstance.create("whelp", "whelp_def", "p1", "p1_hero_row")
+	state.cards["whelp"] = whelp
+	state.zones["p1_hero_row"].card_ids.append("whelp")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "ogre", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion -> whelp bounce point
+
+	eq(state.get_card("p1_hero").damage_taken, 3, "gw-a: hero took the ogre's 3")
+	eq(state.pending_whelp_bounce_player, "p1", "gw-b: bounce point opened for p1")
+	eq(state.pending_whelp_bounce_ally_id, "ogre", "gw-b2: on the attacking ogre")
+	eq(state.pending_whelp_bounce_cost, 2, "gw-b3: cost is 2")
+
+	StackResolver.choose_whelp_bounce(state, true, db)
+	eq(state.pending_whelp_bounce_player, "", "gw-c: bounce point cleared")
+	ok(not state.is_in_play("ogre"), "gw-c2: ogre left the ally row")
+	ok("ogre" in state.zones["p2_hand"].card_ids, "gw-c3: ogre returned to owner's hand")
+	eq(state.get_available_resources("p1"), 0, "gw-c4: paid the 2 cost")
+
+
+# Green Whelp Armor gates: declining leaves the ally in play; the point never
+# opens when the wielder can't afford 2, nor when a HERO (not an ally) attacks.
+func _test_green_whelp_armor_decline_and_gates() -> void:
+	_buf.append("\n-- Green Whelp Armor: decline + affordability/ally gates --")
+
+	# Gate 1 (decline): p1 can afford but chooses not to pay.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("whelp_def", 4, "equipment:chest:1|whelp_bounce", "Armor")
+	db.ally("ogre_def", 3, 3, [], 3)
+
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.turn_player     = "p2"
+	s1.priority_player = "p2"
+	_add_resources(s1, "p1", 2)
+	var ogre1 := _add_ally(s1, "ogre", "ogre_def", "p2")
+	ogre1.just_summoned = false
+	var w1 := CardInstance.create("whelp", "whelp_def", "p1", "p1_hero_row")
+	s1.cards["whelp"] = w1
+	s1.zones["p1_hero_row"].card_ids.append("whelp")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "ogre", "defender_id": "p1_hero"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(s1, db)
+	eq(s1.pending_whelp_bounce_player, "p1", "gw-d: bounce point opened")
+	StackResolver.choose_whelp_bounce(s1, false, db)   # decline
+	ok(s1.is_in_play("ogre"), "gw-d2: declined — ogre stays in play")
+	eq(s1.get_available_resources("p1"), 2, "gw-d3: declined — no resources spent")
+
+	# Gate 2 (unaffordable): p1 has only 1 resource — point never opens.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player     = "p2"
+	s2.priority_player = "p2"
+	_add_resources(s2, "p1", 1)
+	var ogre2 := _add_ally(s2, "ogre", "ogre_def", "p2")
+	ogre2.just_summoned = false
+	var w2 := CardInstance.create("whelp", "whelp_def", "p1", "p1_hero_row")
+	s2.cards["whelp"] = w2
+	s2.zones["p1_hero_row"].card_ids.append("whelp")
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "ogre", "defender_id": "p1_hero"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(s2, db)
+	eq(s2.pending_whelp_bounce_player, "", "gw-e: unaffordable — point never opens")
+	ok(s2.is_in_play("ogre"), "gw-e2: ogre unaffected")
 
 
 # ── Mock database ──────────────────────────────────────────────────────────────

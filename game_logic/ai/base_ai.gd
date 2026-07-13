@@ -807,6 +807,25 @@ func choose_ready_on_attack(state: GameState, db, _player_id: String) -> bool:
 	return state.get_current_hp(card_id, db) > counter
 
 
+# Green Whelp Armor: after an attacking ally damaged our hero, decide whether to
+# pay to bounce it to its owner's hand. Worth it when the ally is expensive enough
+# that costing the opponent a re-cast (and our 2 resources) is a good trade — and
+# especially when it's a strong repeat attacker we'd rather not face again.
+func choose_whelp_bounce(state: GameState, db, _player_id: String) -> bool:
+	var ally_id := state.pending_whelp_bounce_ally_id
+	if ally_id == "" or not db:
+		return false
+	var ally := state.get_card(ally_id)
+	if not ally:
+		return false
+	var def := db.get_def(ally.card_def_id) as CardDef
+	if not def:
+		return false
+	# Bounce allies whose cost is at least the 2 we spend (net tempo neutral or
+	# better; the opponent must also re-pay the full cost to redeploy it).
+	return def.cost >= 2
+
+
 # Returns activate_power actions for the player's hero.
 func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
 	var result: Array[PendingAction] = []

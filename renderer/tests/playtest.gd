@@ -213,6 +213,8 @@ var _strike_nodes: Array[Node] = []
 # the strike-point UI.
 var _in_ready_mode: bool = false
 var _ready_nodes: Array[Node] = []
+var _in_whelp_bounce_mode: bool = false
+var _whelp_bounce_nodes: Array[Node] = []
 
 # ── Combat window highlight (attacker/defender in red during attack/defend windows) ──
 var _combat_highlight_ids: Array = []
@@ -1221,7 +1223,8 @@ func _refresh_ui() -> void:
 		_exit_ambush_mode()
 	_update_priority_label()
 	_update_phase_label()
-	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode:
+	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
+			and not _in_whelp_bounce_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
 	_update_cancel_btn()
@@ -1939,6 +1942,15 @@ func _on_game_event(event: GameEvent) -> void:
 		"ready_on_attack_opened":
 			_window_generation += 1
 			_handle_ready_point(event.payload)
+		"whelp_bounce_opened":
+			_window_generation += 1
+			_handle_whelp_bounce(event.payload)
+		"whelp_bounce_resolved":
+			var b_card := _state.get_card(event.payload.get("ally_id", ""))
+			var b_def: CardDef = _db.get_def(b_card.card_def_id) if b_card else null
+			_set_status("↩ %s returns %s to hand" % [event.payload.get("player", "?"),
+				b_def.card_name if b_def else "an ally"])
+			_refresh_ui()
 		"readied_on_attack":
 			var r_card := _state.get_card(event.payload.get("card_id", ""))
 			var r_def: CardDef = _db.get_def(r_card.card_def_id) if r_card else null
@@ -3247,6 +3259,91 @@ func _resolve_ready(pay: bool) -> void:
 	# synchronously inside emit_events above.
 
 
+# ── Green Whelp Armor bounce point ─────────────────────────────────────────────
+
+func _handle_whelp_bounce(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	# In hotseat the off-screen human also auto-resolves (social contract) unless
+	# they're the local seat; a null AI declines.
+	if player_type != "human" or (_hotseat and player != _local_player):
+		var pay: bool = ai.choose_whelp_bounce(_state, _db, player) if ai else false
+		var events := StackResolver.choose_whelp_bounce(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_whelp_bounce_inline(payload)
+
+
+func _show_whelp_bounce_inline(payload: Dictionary) -> void:
+	_in_whelp_bounce_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var ally_id: String = payload.get("ally_id", "")
+	var cost: int       = payload.get("cost", 0)
+	var card := _state.get_card(ally_id)
+	var card_name := "the attacker"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+
+	const CENTER_X := 960
+	const BTN_W    := 240
+	const SKIP_W   := 120
+	const GAP      := 20
+	var row_width: int = BTN_W + GAP + SKIP_W
+	@warning_ignore("integer_division")
+	var btn_x := CENTER_X - row_width / 2
+
+	var header := Label.new()
+	header.text = "Green Whelp Armor — pay %d to return %s to hand?" % [cost, card_name]
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(0.5, 0.9, 0.6))
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.size     = Vector2(row_width + 160, 20)
+	@warning_ignore("integer_division")
+	header.position = Vector2(CENTER_X - (row_width + 160) / 2, 968)
+	_hud.add_child(header)
+	_whelp_bounce_nodes.append(header)
+
+	var pay_btn := Button.new()
+	pay_btn.text     = "Pay %d: bounce %s" % [cost, card_name]
+	pay_btn.position = Vector2(btn_x, 987)
+	pay_btn.size     = Vector2(BTN_W, 36)
+	pay_btn.pressed.connect(func() -> void: _resolve_whelp_bounce(true))
+	_hud.add_child(pay_btn)
+	_whelp_bounce_nodes.append(pay_btn)
+
+	var skip := Button.new()
+	skip.text     = "Decline"
+	skip.position = Vector2(btn_x + BTN_W + GAP, 987)
+	skip.size     = Vector2(SKIP_W, 36)
+	skip.pressed.connect(func() -> void: _resolve_whelp_bounce(false))
+	_hud.add_child(skip)
+	_whelp_bounce_nodes.append(skip)
+
+
+func _resolve_whelp_bounce(pay: bool) -> void:
+	_in_whelp_bounce_mode = false
+	for n in _whelp_bounce_nodes:
+		n.queue_free()
+	_whelp_bounce_nodes.clear()
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_whelp_bounce(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	# Combat already concluded; nothing reopens a window. Resume the normal flow.
+	_schedule_next_turn()
+	_drain_passes()
+
+
 # ── Game over ──────────────────────────────────────────────────────────────────
 
 func _handle_game_over(payload: Dictionary) -> void:
@@ -3328,6 +3425,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Totem start-of-turn target choice before advancing
 	if _state.pending_ready_player != "":
 		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
+	if _state.pending_whelp_bounce_player != "":
+		return  # wait for the Green Whelp Armor bounce choice before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	# Auto-drive AI players AND, in hotseat, the off-screen human (auto-pass).
@@ -3387,7 +3486,8 @@ func _drain_passes() -> void:
 				or _state.pending_unique_sacrifice_player != "" \
 				or _state.pending_control_discard_player != "" \
 				or _state.pending_reveal_pick_player != "" \
-				or _state.pending_totem_target_player != "":
+				or _state.pending_totem_target_player != "" \
+				or _state.pending_whelp_bounce_player != "":
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window

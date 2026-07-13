@@ -60,6 +60,14 @@ var pending_strike_side: String = ""  # "attack" (602.1) or "defend" (602.3)
 var pending_ready_player: String = ""
 var pending_ready_card_id: String = ""
 var pending_ready_cost: int = 0
+# Green Whelp Armor triggered bounce (rule 305.2 triggered equipment power): after
+# an attacking ally deals combat damage to the armor wielder's hero, the wielder
+# MAY pay to bounce that ally to its owner's hand. Opened at combat conclusion,
+# resolved via StackResolver.choose_whelp_bounce() (direct call, like the strike
+# point). "" = none pending.
+var pending_whelp_bounce_player: String = ""
+var pending_whelp_bounce_ally_id: String = ""
+var pending_whelp_bounce_cost: int = 0
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending

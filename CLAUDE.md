@@ -107,6 +107,7 @@ power_text, data_status, engine_status, effects, image_path
 | `ongoing_damage_each_turn:AMOUNT:DMG_TYPE` | Ongoing Totem power: at the start of **each** turn, the totem's controller deals AMOUNT DMG_TYPE damage to a chosen target hero or ally. Collected in `TurnManager._collect_ongoing_turn_triggers` (ready step, turn player's totems first — 501.1a); each opens a mandatory target choice resolved via `StackResolver.choose_totem_target()` (direct call, `pending_totem_target_player` hard-blocks `can_submit`/`pass_priority` — like the strike/reveal choices). Scene handles `totem_target_required`: AI auto-targets (opposing kill else opposing hero), human targets via `start_totem_targeting`. Resolves immediately, not on the chain — see `data/rules_deviations.md` "Searing Totem" |
 | `on_enter:EFFECT:AMOUNT:DMG_TYPE` | Enter-play triggered effect |
 | `destroy_target:ally` | Destroy a target ally (Vanquish-style) |
+| `exhaust_target:ally` | Exhaust a target ally (Exhaustion, `azeroth_159`, Instant Ability). Ally-only (`_instant_targets_ally_only`), instant speed; resolution re-checks 706 + `_is_ally`, then `GameLogic.exhaust_card` (no-op if already exhausted). Aimed at a proposed attacker while its combat proposal is on the chain, the 601.3 recheck (`attacker.is_exhausted`) fizzles the proposal — same interrupt path as Litori's `target_cant_attack`; too late once the attack window opens. AI: tagged `combat_instant_exhaust` in `BaseAI.COMBAT_INSTANT_TAGS` (held, never blind-played); `BaseAI.exhaust_attacker_action` answers an opposing propose_combat aimed at our side with Litori's worth math (attacker must be an **ally**, answer must be affordable), wired into both `decide_action`s after `hero_disable_action` |
 | `sarmoth_taunt` | Opposing characters that can attack this must attack only this |
 | `heal_x_from_target:DMG_TYPE` | Hero power: pay X resources → heal X from target hero or ally (Boris) |
 | `reveal_pick:CARD_TYPE:N` | Quest reward: reveal the top N cards; put a revealed card of `CARD_TYPE` (`Equipment`/`Ally`/`Ability`; matches the parsed `CardDef.card_type`, so `Instant Ally`→`Ally`) into hand, rest to the bottom of the deck in revealed order. If at least one matches, sets `pending_reveal_pick_*` and emits `reveal_pick_opened`; the scene resolves it via `StackResolver.choose_reveal_pick()` (direct call, not the stack — like pet sacrifice; `can_submit`/`pass_priority` hard-block while pending). No match → all revealed cards go straight to the bottom, no choice. Big Game Hunter (Equipment:4), Kibler's Exotic Pets (Ally:3), Zapped Giants (Ability:3) |
@@ -211,6 +212,7 @@ Notable implemented mechanics:
 - **Long-Range** (keyword) — Tanwa the Marksman (dark_portal_235, 4/3). While a Long-Range character is attacking, the defender deals no combat damage back (`_do_combat_conclusion` zeroes `def_dmg` when the attacker has `long_range`; has no effect when the character is defending instead).
 - **Weapons & striking** — Krol Blade (azeroth_331, first weapon) + Gorebelly (azeroth_9, melee strike discount flip). See "Weapons & striking" section
 - **Frostbolt / Frost Shock** (`azeroth_56`, 3 frost; `azeroth_109`, 2 frost) — Instant Abilities that deal frost damage to a target hero/ally, then apply a "can't attack" (Frostbolt) or "can't attack or protect" (Frost Shock) restriction to a surviving target (`deal_damage_to_target` 4th field → `_apply_damage_riders`). Tagged `combat_instant_dmg` like Quick Strike; AI plays them for the damage only.
+- **Exhaustion** (`azeroth_159`, 2, Instant Ability) — "Exhaust target ally" (`exhaust_target:ally`). A held combat instant the AI plays on an opposing **ally** attacker while its combat proposal is on the chain; exhausting it fizzles the proposal (601.3), the same interrupt/AI role as Litori's freeze but as an affordable hand card. Ally-only targeting; too late once the attack window opens. See the `exhaust_target` effects-table row.
 - **Lady Jaina Proudmoore** (`azeroth_195`, 7/4 Ally, Unique) — "Opposing allies can't attack." Live static aura (`opposing_allies_cant_attack`) + first card exercising **name-based Unique uniqueness** (rule 414.3a — see Card uniqueness).
 - **Instant Ally** — Tristan Rapidstrike (azeroth_221, 3/3 Protector). The Instant tag (CSV `type` = "Instant Ally" → `CardDef.is_instant`) makes `play_ally` instant-speed in `_can_play_non_instant`: playable any time with priority (combat windows, opponent's turn, non-empty chain — rule 409.1). Resolves as a normal ally (summoning sickness, which does NOT block protecting — 601.2a restricts attackers only). AI: tagged `combat_instant_protector` in `BaseAI.COMBAT_INSTANT_TAGS` (held, never blind-played); `instant_protector_action` flashes it in during the ATTACK window only (never defend — the protect point is past) when being attacked, no board protector answers, and the protector decision tree would pick it (safe kill-and-survive block, or any block to save the hero); the normal `choose_protector` then uses it at the protect point.
 - **Ally activated powers with sacrifice-style costs** — Kena Shadowbrand (`azeroth_190`, 1/3): `[Activate]`, put 1 damage on herself → draw (`activate_put_damage_self:1`; keeps the tap/exhaust, may be self-lethal per 405.3; AI won't draw her to death). Bizzik Sparkcog (`azeroth_178`, 2/4): `[Activate]`, destroy an ally in your party → draw (`sacrifice_ally` cost + `friendly_ally` target picker; AI only sacrifices an already-damaged ally). Augustus Corpsemonger (`azeroth_177`, 3/4): `[Activate]`, remove three ally cards in your graveyard from the game → destroy target ally (`destroy_ally` effect + `rfg_allies:3` cost; the 3 exiled cards are auto-chosen — see `data/rules_deviations.md`; AI destroys enemy allies worth killing via `_destroy_is_worth_it`).
@@ -259,6 +261,65 @@ First cards: **Krol Blade** (`azeroth_331`, Weapon—Sword, Melee 1H, 3 ATK, str
 
 ---
 
+## Hotseat / Duel Table (playtest.gd)
+
+Two humans on one screen: menu Player 2 type "Human (hotseat)" (both human ⇒ `_hotseat`).
+`_local_player` is the seat the screen belongs to — hand visibility (`BoardRenderer.set_perspective`
++ `refresh_hand_visibility`) and input (`InputRouter.setup`) follow it; every formerly
+p1-hardcoded UI/turbo/wrap-up check in playtest.gd now uses `_local_player` (so a single
+human can also sit in the p2 seat vs an AI).
+
+- **Rotating camera (TTS-style):** the board is world-space seen through `_camera`
+  (Camera2D, `ignore_rotation = false`); ALL UI lives in the `_hud` CanvasLayer (layer 10)
+  and never rotates. `_orient_camera(pid, animate)` turns the view 180° about
+  `BOARD_PIVOT` (960,475) for the p2 seat (rotated camera pos = `2*PIVOT − (960,540)`).
+  Called from `_begin_handoff` (animated, while the overlay is up), `_set_local_player`,
+  and game setup (a single human seated at p2 vs AI gets the flipped view all game).
+  `BoardRenderer.view_rotation_degrees` mirrors the camera so transient world overlays
+  (targeting cursor, floating damage/heal numbers) counter-rotate and drift up-screen;
+  the Alt+hover inspector lives in its own CanvasLayer (15). **Mouse → world must be
+  camera-aware:** `CardNode` uses `get_global_mouse_position()`, `BoardRenderer` (extends
+  Node, not CanvasItem) uses `_world_mouse()`; never use the raw viewport mouse position
+  for world positions. New UI elements go in `_hud` (`_add_label(..., hud=true)`), new
+  board elements in the scene root.
+- **Handoff timing:** in hotseat the handoff fires at the START of the outgoing player's
+  end phase (`phase_changed` → "end"), so the incoming player gets the wrap-up priority
+  window (instants with leftover resources) plus their ready/draw on their own screen.
+  `_stop_for_end_window` (set on confirm) keeps Turbo from auto-passing that window;
+  cleared on their pass or the next phase change. If the outgoing player is over max
+  hand size (wrap-up discard needs THEIR hand, rule 503.2a), the end-phase handoff is
+  skipped and the `turn_changed` handoff below covers the switch instead. Ctrl+Enter
+  is an alias for Ctrl+Space (wrap up / end turn).
+- **Handoff:** on `turn_changed` to the other human, `_begin_handoff` hides BOTH hands
+  (perspective sentinel `"__handoff__"` matches neither hand zone), sets `_handoff_pending`
+  (blocks `_try_pass`, `_schedule_next_turn`, `_drain_passes`, `_maybe_turbo_pass`,
+  `_do_ai_turn`, `_do_turbo_pass`, all key input; `CardNode.input_blocked` blocks clicks)
+  and shows a fullscreen confirm overlay. Confirming runs `_set_local_player` then resumes.
+- **Mulligan:** humans decide sequentially, each behind their own handoff
+  (`_mulligan_queue` / `_advance_mulligan_queue`; `_mulligan_current` owns the panel).
+- **Combat stance (per-player, set while seated; toggle next to Speed Mode):**
+  `"passive"` — the off-screen player's priority windows auto-pass, driven by
+  the same paths that drive AI (`_do_ai_turn` null-AI branch, `_drain_passes` hotseat
+  branch). `"ambush"` (default) — a window STOPS when the off-screen player has a legal instant
+  response (`_offscreen_has_play` probes the router with `local_player` swapped):
+  `_enter_ambush_mode` points the InputRouter at them (rules make only instant-speed
+  plays legal off-turn) with YELLOW highlights (`AMBUSH_HIGHLIGHT`), while the renderer
+  perspective stays with the seat — their hand stays face-down, a playable card's front
+  shows only while hovered (`_on_card_hover_scene`). The top-right **Skip button**
+  (visible only during the stop) passes for them without revealing anything. Windows
+  with no legal response still auto-skip. Mode exits when priority leaves the ambusher
+  (`_refresh_ui` guard) or on Skip; `_drain_passes`/`_schedule_next_turn` freeze while
+  `_in_ambush_mode`. `_stance` survives rematches.
+- **Hand hover magnify:** the local player's own hand cards scale ×1.2 (`HOVER_MAGNIFY`
+  on top of `HAND_CARD_SCALE`) + z-bump while hovered; hover/unhover signals are wired
+  in `_spawn_card_node`.
+  Protect / strike / ready points are board-public and still stop for the choice inline.
+  Known v1 limits: a totem trigger owned by the off-screen player is resolved on the
+  shared screen (social contract).
+- `_played_this_action_phase` is a per-player Dictionary (was `_p1_played_this_action_phase`).
+
+---
+
 ## Combat window rules (enforced in multiple layers)
 
 Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non-instants same) are enforced in three layers:
@@ -279,6 +340,17 @@ Rule 601.1 (combat only during non-combat action phase) and rule 502.1/1199 (non
 - All card spawn positions and deck back sprites are derived from `_renderer.zone_anchors` — **never hardcode a spawn Vector2**. `_spawn_zone_nodes(zone_id, color)` reads the anchor automatically. The deck back sprite loop does the same via `_renderer.zone_anchors.get("p1_deck"/"p2_deck")`.
 - At startup, `_spawn_zone_nodes` is called for every visible zone: hero_row, hand, ally_row, resource_row, graveyard, chain (deck excluded — back sprite only).
 - UI bar occupies y=960..1080. Board occupies y=0..950. `CENTER_X = 960`.
+- **Symmetric board (all modes, incl. vs AI):** each player's hero/deck/graveyard column
+  sits on THEIR right-hand side — P1 at screen-right (deck x=1820, grave x=1640,
+  hero_card (1820,620)), P2 at screen-left (deck x=100, grave x=280, hero_card (100,280)).
+  The game log is a HUD overlay on the left gutter (covers P2's column), hidden by
+  default — L toggles it.
+- **Card facing (all modes):** cards in `p2_*` zones render rotated 180° (facing P2,
+  TTS-style). `CardNode.facing_degrees` is the base every rotation write composes with:
+  exhaust = facing+90, ready/settle = facing. Facing is set from the zone prefix in
+  `place_card_in_zone`, `_animate_move` (side change = control change), and
+  `reconcile_from_state` (`BoardRenderer._facing_for_zone`). Never write a card's
+  `rotation_degrees` with a bare 0/90 — always compose with `facing_degrees`.
 - Pass button shows **"Sacrifice a pet [Space]"** (disabled, no color change) when `pending_pet_sacrifice_player == "p1"`.
 
 ---

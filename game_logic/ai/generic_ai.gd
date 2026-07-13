@@ -65,6 +65,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
+	var exhaust := exhaust_attacker_action(state, db, player_id)
+	if exhaust != null:
+		return exhaust
 
 	# Everything below is our own action window only. Outside it (opponent's
 	# turn / a pending chain we don't want to answer), we simply pass — no random

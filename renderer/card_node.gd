@@ -20,6 +20,10 @@ var _bg: ColorRect
 var _tex_rect: TextureRect   # shown when a real image is loaded
 var _front_texture: Texture2D = null
 var _is_face_down: bool = false
+# Which way the card faces: 0 = toward P1 (bottom of screen), 180 = toward P2
+# (top). Every rotation write (exhaust/ready/settle) composes with this base,
+# so P2's cards stay upside-down to the P1 viewer, Tabletop-Simulator style.
+var facing_degrees: float = 0.0
 var _base_color: Color = Color(0.25, 0.45, 0.75)
 var _mouse_inside: bool = false
 var _damage_badge: Label = null
@@ -385,13 +389,13 @@ func is_wiggling() -> bool:
 	return _wiggle_tween != null
 
 
-# Snap rotation to match authoritative state (exhausted = 90°, ready = 0°).
+# Snap rotation to match authoritative state (facing + 90° when exhausted).
 # No-op while wiggling. Also re-bases the wiggle so a later stop_wiggle() snaps
 # to the correct orientation instead of a stale/crooked angle. Visual-only.
 func settle_rotation(exhausted: bool) -> void:
 	if _wiggle_tween != null:
 		return
-	var target := 90.0 if exhausted else 0.0
+	var target := facing_degrees + (90.0 if exhausted else 0.0)
 	rotation_degrees = target
 	_wiggle_base = target
 
@@ -402,7 +406,9 @@ func _input(event: InputEvent) -> void:
 			_mouse_inside = false
 			card_unhovered.emit(instance_id)
 		return
-	var local: Vector2 = to_local(get_viewport().get_mouse_position())
+	# get_global_mouse_position is camera-aware (the board camera can be rotated
+	# 180° for the P2 view); the raw viewport mouse position is NOT.
+	var local: Vector2 = to_local(get_global_mouse_position())
 	var inside: bool   = abs(local.x) <= W * 0.5 and abs(local.y) <= H * 0.5
 
 	# Hover tracking — emit once on enter/leave.

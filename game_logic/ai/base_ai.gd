@@ -21,6 +21,12 @@ extends RefCounted
 #       would want to protect with it; the AI then protects with it at the
 #       following protect point via the normal choose_protector call.
 #       See instant_protector_action().
+#   "combat_instant_exhaust" — Instant Ability that exhausts a target ally
+#       (effects: exhaust_target:ally). Played on an opposing ALLY attacker while
+#       its combat proposal is still on the chain: exhausting it fizzles the
+#       proposal at the 601.3 recheck (an exhausted character can't attack). Same
+#       timing/role as Litori's target_cant_attack freeze — see
+#       exhaust_attacker_action(). Too late once the attack window is open.
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
@@ -28,6 +34,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_56":  "combat_instant_dmg",   # Frostbolt — 3 frost damage (can't-attack rider not modeled for AI)
 	"azeroth_109": "combat_instant_dmg",   # Frost Shock — 2 frost damage (can't-attack/protect rider not modeled for AI)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
+	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
 }
 
 
@@ -44,6 +51,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
+	var exhaust := exhaust_attacker_action(state, db, player_id)
+	if exhaust != null:
+		return exhaust
 	return instant_protector_action(state, db, player_id)
 
 
@@ -321,6 +331,70 @@ func hero_disable_action(state: GameState, db, player_id: String) -> PendingActi
 		{"hero_id": hero_id, "target_id": attacker_id})
 	if StackResolver.can_submit(state, act, db):
 		return act
+	return null
+
+
+# Exhaustion (combat_instant_exhaust): a held Instant Ability that exhausts a
+# target ally. Played in RESPONSE to an opposing combat proposal on the chain,
+# aimed at the attacker — exhausting it fizzles the proposal (601.3 recheck).
+# Same defensive role and "is the trade worth answering?" math as
+# hero_disable_action (Litori's freeze), with two extra constraints Exhaustion
+# imposes: the attacker must be an ALLY (it can't target an attacking hero), and
+# the answer is a hand card that costs resources (must be affordable).
+func exhaust_attacker_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.pending_actions.is_empty():
+		return null
+	var top: PendingAction = state.pending_actions.back()
+	if top.action_type != "propose_combat" or top.source_player == player_id:
+		return null
+
+	var attacker_id: String = top.params.get("attacker_id", "")
+	var defender_id: String = top.params.get("defender_id", "")
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	# Exhaustion targets allies only — an attacking hero can't be frozen this way.
+	var attacker := state.get_card(attacker_id)
+	if not attacker or not StackResolver._is_ally(state, attacker_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only save our own side
+
+	# Same worth heuristic as Litori (hero_disable_action): freeze when our hero
+	# takes lethal / a big hit, or when a costed ally of ours dies in a bad trade.
+	var a_atk := state.get_atk(attacker_id, db, true)
+	var a_hp  := state.get_current_hp(attacker_id, db)
+	var d_hp  := state.get_current_hp(defender_id, db)
+	var ps := state.players.get(player_id) as PlayerState
+	var worth := false
+	if ps and defender_id == ps.hero_instance_id:
+		worth = a_atk >= d_hp or a_atk >= 4
+	else:
+		var d_def := db.get_def(defender.card_def_id) as CardDef
+		var d_atk := state.get_atk(defender_id, db)
+		var kills_back := d_atk >= a_hp \
+			and not StackResolver._has_keyword(attacker, "long_range", db)
+		worth = a_atk >= d_hp and not kills_back and d_def != null and d_def.cost >= 2
+	if not worth:
+		return null
+
+	# A kill is strictly better than a freeze — hold if a combat instant answers it.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+			continue
+		var dmg_def := db.get_def(card.card_def_id) as CardDef
+		if dmg_def and _combat_instant_dmg(dmg_def) >= a_hp \
+				and dmg_def.cost <= state.get_available_resources(player_id):
+			return null
+
+	# Find an affordable Exhaustion in hand and aim it at the attacker.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_exhaust":
+			continue
+		var act := PendingAction.make("play_instant", player_id,
+			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
 	return null
 
 

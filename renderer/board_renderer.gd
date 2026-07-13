@@ -97,6 +97,19 @@ const PLAY_ZONES := ["p1_ally_row", "p2_ally_row",
 	"p1_resource_row", "p2_resource_row"]
 
 
+# Current view rotation (matches the scene camera: 0 = P1 view, 180 = P2 view).
+# Transient world-space overlays (targeting cursor, floating damage/heal numbers)
+# counter-compose with it so they stay readable on a rotated board.
+var view_rotation_degrees: float = 0.0
+
+# Mouse position in WORLD coordinates, accounting for the board camera (which
+# can be rotated 180° for the P2 view). BoardRenderer extends Node (not
+# CanvasItem), so it can't use get_global_mouse_position() directly.
+func _world_mouse() -> Vector2:
+	return get_viewport().get_canvas_transform().affine_inverse() \
+			* get_viewport().get_mouse_position()
+
+
 func _ready() -> void:
 	EventBus.game_event.connect(_on_game_event)
 	_build_inspector()
@@ -144,7 +157,7 @@ const _LINE_COLOR_VALID   := Color(0.2, 1.0, 0.3, 0.9)     # green — matches c
 func _process(_delta: float) -> void:
 	if not _targeting_active:
 		return
-	var mouse := get_viewport().get_mouse_position()
+	var mouse := _world_mouse()
 	if _targeting_line:
 		_targeting_line.set_point_position(1, mouse)
 		var cn := card_nodes.get(_targeting_source_id) as Node2D
@@ -155,9 +168,15 @@ func _process(_delta: float) -> void:
 		_targeting_line.default_color = _LINE_COLOR_VALID if over_valid else _LINE_COLOR_DEFAULT
 	if _targeting_cursor:
 		_targeting_cursor.global_position = mouse
+		_targeting_cursor.rotation_degrees = view_rotation_degrees   # stay upright on screen
 
 
+# The inspector lives in its own CanvasLayer: it's a screen-space reading aid,
+# so it must not rotate with the board camera.
 func _build_inspector() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 15
+	add_child(layer)
 	_inspector = TextureRect.new()
 	_inspector.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	_inspector.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
@@ -165,7 +184,7 @@ func _build_inspector() -> void:
 	_inspector.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_inspector.visible      = false
 	_inspector.z_index      = 100
-	add_child(_inspector)
+	layer.add_child(_inspector)
 
 
 func _input(event: InputEvent) -> void:
@@ -267,6 +286,12 @@ func register_zone(zone_id: String, anchor: Node2D) -> void:
 		_create_row_placeholder(zone_id, anchor)
 
 
+# Which way cards in a zone face: P2's zones point at P2 (180°, upside-down to
+# the P1 viewer), everything else (P1's zones, the chain) at P1.
+static func _facing_for_zone(zone_id: String) -> float:
+	return 180.0 if zone_id.begins_with("p2_") else 0.0
+
+
 # Tell the renderer that a card starts in a zone (call after register_card for
 # cards that are already in play at scene start, before any events fire).
 func place_card_in_zone(instance_id: String, zone_id: String) -> void:
@@ -281,6 +306,8 @@ func place_card_in_zone(instance_id: String, zone_id: String) -> void:
 			cn.show_card_front()
 		else:
 			cn.show_card_back()
+		cn.facing_degrees = _facing_for_zone(zone_id)
+		cn.rotation_degrees = cn.facing_degrees   # fresh placements are ready; reconcile re-adds exhaust
 	_apply_zone_scale(instance_id, zone_id)
 
 
@@ -300,6 +327,23 @@ func set_status_label(label: Label) -> void:
 # are placed. Omit (or pass "") for test/spectator mode — all cards show their front.
 func set_perspective(player_id: String) -> void:
 	_perspective_player = player_id
+
+
+# Re-apply hand face-up/face-down to every card already in a hand zone. Call
+# after set_perspective changes mid-game (hotseat handoff). Non-hand zones are
+# untouched (face-down resources are driven by resource_placed separately).
+func refresh_hand_visibility() -> void:
+	for zone_id: String in _zone_cards:
+		if not zone_id.ends_with("_hand"):
+			continue
+		var show_front := _should_show_front(zone_id)
+		for cid: String in _zone_cards[zone_id]:
+			var cn := card_nodes.get(cid) as CardNode
+			if cn:
+				if show_front:
+					cn.show_card_front()
+				else:
+					cn.show_card_back()
 
 
 # Returns true if a card in this zone should show its front face from the current
@@ -539,6 +583,13 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 			cn.show_card_front()
 		else:
 			cn.show_card_back()
+	# Re-face the card if it changed sides (e.g. control change moves it to the
+	# other player's row). Moving cards are ready in practice; the reconcile
+	# tick reasserts the exhausted angle if not.
+	if cn and cn.facing_degrees != _facing_for_zone(to_zone):
+		cn.facing_degrees = _facing_for_zone(to_zone)
+		if not cn.is_wiggling():
+			cn.rotation_degrees = cn.facing_degrees
 
 	# Re-centre source zone (closes the gap).
 	_relayout_zone(from_zone)
@@ -573,12 +624,12 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 
 
 func _animate_exhaust(card_id: String) -> void:
-	var card_node := card_nodes.get(card_id) as Node2D
+	var card_node := card_nodes.get(card_id) as CardNode
 	if not card_node:
 		return
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(card_node, "rotation_degrees", 90.0, 0.2)
+	tween.tween_property(card_node, "rotation_degrees", card_node.facing_degrees + 90.0, 0.2)
 
 
 func _animate_ready(card_id: String) -> void:
@@ -590,7 +641,7 @@ func _animate_ready(card_id: String) -> void:
 		card_node.hide_sick_badge()
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(card_node, "rotation_degrees", 0.0, 0.2)
+	tween.tween_property(card_node, "rotation_degrees", card_node.facing_degrees, 0.2)
 
 
 func _animate_attack(attacker_id: String, defender_id: String) -> void:
@@ -834,6 +885,7 @@ func reconcile_from_state(state) -> void:
 		var card = state.get_card(card_id)
 		if card == null:
 			continue
+		cn.facing_degrees = _facing_for_zone(card.zone_id)
 		cn.settle_rotation(card.is_exhausted)
 
 
@@ -904,9 +956,9 @@ func _on_targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 		wcn.start_wiggle()
 	if _targeting_line:
 		var cn := card_nodes.get(source_id) as Node2D
-		var src := cn.global_position if cn else get_viewport().get_mouse_position()
+		var src := cn.global_position if cn else _world_mouse()
 		_targeting_line.set_point_position(0, src)
-		_targeting_line.set_point_position(1, get_viewport().get_mouse_position())
+		_targeting_line.set_point_position(1, _world_mouse())
 		_targeting_line.visible = true
 	_update_targeting_cursor(dmg_type, dmg_amount)
 	Input.set_default_cursor_shape(Input.CURSOR_CROSS)
@@ -965,8 +1017,9 @@ func _update_targeting_cursor(dmg_type: String, dmg_amount: int) -> void:
 		else:
 			lbl.visible = false
 
-	_targeting_cursor.global_position = get_viewport().get_mouse_position()
-	_targeting_cursor.visible         = true
+	_targeting_cursor.global_position  = _world_mouse()
+	_targeting_cursor.rotation_degrees = view_rotation_degrees
+	_targeting_cursor.visible          = true
 
 
 func _set_status(text: String) -> void:
@@ -1116,9 +1169,11 @@ func _show_heal_number(card_id: String, amount: int) -> void:
 	label.add_theme_constant_override("outline_size", 2)
 	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	label.global_position = origin
+	label.rotation_degrees = view_rotation_degrees   # upright + up-screen drift in either view
 	get_tree().root.add_child(label)
 	var tween := create_tween()
-	tween.tween_property(label, "global_position", origin + Vector2(0, -60), 0.9)
+	tween.tween_property(label, "global_position",
+			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), 0.9)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.9)
 	await tween.finished
 	label.queue_free()
@@ -1150,9 +1205,11 @@ func _show_damage_number(card_id: String, amount: int) -> void:
 	label.add_theme_constant_override("outline_size", 2)
 	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	label.global_position = origin
+	label.rotation_degrees = view_rotation_degrees   # upright + up-screen drift in either view
 	get_tree().root.add_child(label)
 	var tween := create_tween()
-	tween.tween_property(label, "global_position", origin + Vector2(0, -60), 0.9)
+	tween.tween_property(label, "global_position",
+			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), 0.9)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.9)
 	await tween.finished
 	label.queue_free()

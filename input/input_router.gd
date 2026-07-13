@@ -85,6 +85,13 @@ func setup(p_state: GameState, p_db, p_player: String) -> void:
 	local_player = p_player
 
 
+# Highlight color override — the playtest ambush mode paints the off-screen
+# player's playable instants yellow. Mandatory modes (discard/sacrifice) still
+# set their own red and reset to green when they end.
+func set_highlight_color(color: Color) -> void:
+	_highlight_color = color
+
+
 # ── Input handling ─────────────────────────────────────────────────────────────
 
 func _unhandled_input(event: InputEvent) -> void:

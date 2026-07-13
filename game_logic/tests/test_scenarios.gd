@@ -126,6 +126,8 @@ func _ready() -> void:
 		_test_litori_freeze_fizzles_proposal,
 		_test_litori_too_late_in_window,
 		_test_ai_litori_freeze_save,
+		_test_exhaustion_freezes_proposal,
+		_test_ai_exhaustion_freeze_save,
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
 		_test_bone_bow_grants_long_range,
@@ -728,6 +730,13 @@ func _add_ally(state: GameState, inst_id: String, def_id: String, ctrl: String) 
 	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_ally_row")
 	state.cards[inst_id] = card
 	state.zones[ctrl + "_ally_row"].card_ids.append(inst_id)
+	return card
+
+
+func _add_card_to_hand(state: GameState, inst_id: String, def_id: String, ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_hand")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_hand"].card_ids.append(inst_id)
 	return card
 
 
@@ -6642,6 +6651,131 @@ func _test_ai_litori_freeze_save() -> void:
 	StackResolver.pass_priority(state2, db)
 	ok(ai.decide_action(state2, db, "p2") == null,
 		"af-c: AI holds the flip against a 2-ATK chip attack")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Exhaustion (azeroth_159, Instant Ability — "Exhaust target ally"): played in
+# response to a combat proposal and aimed at the ally attacker, exhausting it
+# fizzles the proposal (601.3 recheck), exactly like Litori's freeze. Ally-only,
+# and too late once the attack window has opened.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_exhaustion_freezes_proposal() -> void:
+	_buf.append("\n-- Exhaustion: freeze the ally attacker in response to a proposal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 4, [], 3)
+	db.instant("azeroth_159", 2, "exhaust_target:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "exh", "azeroth_159", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# Ally-only targeting: Exhaustion can't be aimed at a hero.
+	var at_hero := PendingAction.make("play_instant", "p2",
+		{"card_id": "exh", "target_id": "p1_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"ex-a: Exhaustion can't target a hero (ally-only)")
+
+	var all_events: Array[GameEvent] = []
+	# p1 proposes combat vs p2's hero; the proposal sits on the chain.
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"})
+	all_events.append_array(StackResolver.submit_action(state, proposal, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 → p2
+
+	# p2 plays Exhaustion targeting the proposed attacker, in response.
+	var cast := PendingAction.make("play_instant", "p2",
+		{"card_id": "exh", "target_id": "atk"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"ex-b: Exhaustion on the attacker is legal in response to the proposal")
+	all_events.append_array(StackResolver.submit_action(state, cast, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p2 passes
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 passes → cast resolves
+
+	ok(atk.is_exhausted, "ex-c: attacker is exhausted after Exhaustion resolves")
+
+	# Both pass again → the proposal itself resolves and must fizzle (601.3).
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled":
+			saw_fizzle = true
+	ok(saw_fizzle, "ex-d: proposal fizzled at resolution")
+	ok(not state.combat_attack_window, "ex-e: no attack window opened")
+	eq(state.get_card("p2_hero").damage_taken, 0, "ex-f: hero took no damage")
+	# Exhaustion went to the graveyard.
+	ok(state.get_card("exh").zone_id == "p2_graveyard", "ex-g: Exhaustion is in the graveyard")
+
+	# The exhausted attacker can't be proposed again (it's exhausted, not readied).
+	ok("atk" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"ex-h: exhausted attacker is not a legal attacker")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI uses Exhaustion to cancel a dangerous incoming attack while the proposal is
+# on the chain (and holds it against a chip attack).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_exhaustion_freeze_save() -> void:
+	_buf.append("\n-- AI plays Exhaustion in response to a heavy attack proposal --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   5, 5, [], 4)
+	db.ally("small_def", 2, 2, [], 1)
+	db.instant("azeroth_159", 2, "exhaust_target:ally")
+
+	# ax-a: 5 ATK at our hero (>= 4 threshold) → the AI answers the proposal.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	_add_card_to_hand(state, "exh", "azeroth_159", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": "p2_hero"})
+	StackResolver.submit_action(state, proposal, db)
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_instant"
+			and act.params.get("card_id") == "exh"
+			and act.params.get("target_id") == "big",
+		"ax-a: AI plays Exhaustion targeting the proposed attacker")
+
+	# Play it out: the proposal must fizzle and the attacker ends up exhausted.
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # cast resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal fizzles
+	ok(state.get_card("big").is_exhausted and not state.combat_attack_window,
+		"ax-b: proposal cancelled — attacker exhausted, no combat")
+
+	# ax-c: chip attack (2 ATK, hero at full) → hold Exhaustion.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var small := _add_ally(state2, "small", "small_def", "p1")
+	small.just_summoned = false
+	_add_card_to_hand(state2, "exh2", "azeroth_159", "p2")
+	_add_resources(state2, "p2", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+
+	var proposal2 := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "small", "defender_id": "p2_hero"})
+	StackResolver.submit_action(state2, proposal2, db)
+	StackResolver.pass_priority(state2, db)
+	ok(ai.decide_action(state2, db, "p2") == null,
+		"ax-c: AI holds Exhaustion against a 2-ATK chip attack")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

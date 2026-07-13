@@ -52,6 +52,53 @@ var _p2_type: String = "recommended"
 var _p1_ai:   Object = null
 var _p2_ai:   Object = null
 
+# ── Hotseat (Duel Table) ───────────────────────────────────────────────────────
+# Both players human on one screen. _local_player is the seat the screen currently
+# belongs to: only that player's hand is face-up and the InputRouter acts for them.
+# At every turn change to the OTHER human, both hands go face-down and a fullscreen
+# handoff overlay blocks everything until the incoming player confirms.
+# The perspective sentinel "__handoff__" matches neither hand zone, hiding both.
+var _hotseat: bool = false
+var _local_player: String = "p1"
+var _handoff_pending: bool = false
+var _handoff_layer: CanvasLayer = null
+var _mulligan_queue: Array[String] = []   # human players still to decide (hotseat)
+var _mulligan_current: String = "p1"      # player the mulligan panel belongs to
+var _mulligan_first: String = ""          # first_player, for the order label
+
+# ── Camera / HUD split (TTS-style rotating view) ──────────────────────────────
+# The board (card nodes, zone anchors, deck sprites, side labels) lives in the
+# world and is seen through _camera; all UI lives in the _hud CanvasLayer, which
+# ignores the camera. The camera rotates 180° about the board centre when the
+# screen is handed to P2, so each player sees their own side at the bottom.
+const BOARD_PIVOT := Vector2(960, 475)   # centre of the board area (y=0..950)
+var _hud: CanvasLayer
+var _camera: Camera2D
+var _camera_tween: Tween = null
+# One-shot: hold the end-phase (wrap-up) priority window open for the incoming
+# hotseat player right after the handoff, so Turbo doesn't auto-pass the window
+# they were just handed the screen for (playing instants with leftover resources).
+var _stop_for_end_window: bool = false
+
+# ── Combat stance / ambush (off-screen hotseat player reactions) ──────────────
+# Per-player stance, set by each player while they hold the screen:
+#   "passive" — priority windows during the opponent's turn auto-pass (default).
+#   "ambush"  — a window STOPS when this player has a legal instant response:
+#     their playable instants highlight YELLOW in their face-down hand (front
+#     shown only while hovered), the InputRouter temporarily acts for them so
+#     they can play, and the top-right Skip button passes without revealing
+#     anything. Windows with no legal response still auto-skip (nothing would
+#     be playable, and stopping would only leak "no response" the slow way).
+const AMBUSH_HIGHLIGHT := Color(1.0, 0.9, 0.2)
+const HOVER_MAGNIFY := 1.2   # local player's own hand cards magnify on hover
+# Ambush is the default; a player switches to Passive when they know they won't react.
+var _stance: Dictionary = {"p1": "ambush", "p2": "ambush"}
+var _in_ambush_mode: bool = false
+var _ambush_player: String = ""
+var _skip_btn: Button
+var _stance_passive_btn: Button
+var _stance_ambush_btn: Button
+
 # ── Menu ───────────────────────────────────────────────────────────────────────
 var _menu_layer:  CanvasLayer
 var _p1_type_opt: OptionButton
@@ -104,7 +151,7 @@ var _gy_view_only:     bool = false     # true = examine mode (no selection, no 
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
 var _end_turn_dialog: ConfirmationDialog
-var _p1_played_this_action_phase: bool = false
+var _played_this_action_phase: Dictionary = {}   # player_id -> bool
 var _game_over: bool = false
 var _stats: StatTracker = StatTracker.new()   # per-match card draw/play stats
 var _last_p1_deck_id: String = ""
@@ -113,7 +160,9 @@ var _last_p2_deck_id: String = ""
 # ── Game log ───────────────────────────────────────────────────────────────────
 var _log: RichTextLabel
 var _log_bg: ColorRect
-var _log_visible: bool = true  # press L to toggle
+# Press L to toggle. Hidden by default: the log is a HUD overlay and now sits
+# on top of P2's deck/graveyard column (screen-left since the board went symmetric).
+var _log_visible: bool = false
 var _log_in_mulligan: bool = false
 var _pending_exhaust: Dictionary = {}  # player_id -> count of resources exhausted, not yet logged
 
@@ -173,10 +222,25 @@ func _ready() -> void:
 
 func _build_scene() -> void:
 	# Scene is 1920×1080: board occupies y=0..950, UI strip y=960..1080.
+	# Oversized so it still covers the viewport in the rotated (P2) camera view.
 	var bg := ColorRect.new()
 	bg.color = Color(0.10, 0.13, 0.16)
-	bg.size  = Vector2(1920, 1080)
+	bg.position = Vector2(-480, -270)
+	bg.size  = Vector2(2880, 1620)
 	add_child(bg)
+
+	# HUD layer — everything UI goes here so the board camera never rotates it.
+	_hud = CanvasLayer.new()
+	_hud.layer = 10
+	add_child(_hud)
+
+	# Board camera. Default = P1 view (identical to a camera-less scene);
+	# _orient_camera flips it 180° about BOARD_PIVOT for the P2 view.
+	_camera = Camera2D.new()
+	_camera.position = Vector2(960, 540)
+	_camera.ignore_rotation = false
+	add_child(_camera)
+	_camera.make_current()
 
 	# ── Game log panel (left gutter, replaces zone labels) ────────────────────────
 	_log_bg = ColorRect.new()
@@ -184,7 +248,7 @@ func _build_scene() -> void:
 	_log_bg.position = Vector2(5, 5)
 	_log_bg.size     = Vector2(248, 950)
 	_log_bg.visible  = _log_visible
-	add_child(_log_bg)
+	_hud.add_child(_log_bg)
 
 	_log = RichTextLabel.new()
 	_log.bbcode_enabled  = true
@@ -193,17 +257,19 @@ func _build_scene() -> void:
 	_log.size            = Vector2(242, 944)
 	_log.add_theme_font_size_override("normal_font_size", 10)
 	_log.visible         = _log_visible
-	add_child(_log)
+	_hud.add_child(_log)
 
-	# ── Right column labels (graveyard x=1590, deck x=1750) ──────────────────────
-	_add_label("P2 grave",  Vector2(1590,  52), 11, Color(0.5, 0.4, 0.4))
-	_add_label("P2 deck",   Vector2(1750,  52), 11, Color(0.4, 0.4, 0.5))
+	# ── Side column labels ─────────────────────────────────────────────────────
+	# Symmetric board: each player's hero column sits on THEIR right-hand side —
+	# P1 (facing up) on screen-right, P2 (facing down) on screen-left.
+	_add_label("P2 deck",   Vector2(65,   95), 11, Color(0.4, 0.4, 0.5))
+	_add_label("P2 grave",  Vector2(245,  95), 11, Color(0.5, 0.4, 0.4))
 	_add_label("P1 grave",  Vector2(1590, 832), 11, Color(0.4, 0.5, 0.4))
 	_add_label("P1 deck",   Vector2(1750, 832), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
 	# Positioned under the pass button (centered) once the control panel is built below.
-	_status = _add_label("", Vector2(760, 1025), 15, Color(0.5, 0.8, 0.5))
+	_status = _add_label("", Vector2(760, 1025), 15, Color(0.5, 0.8, 0.5), true)
 	_status.size = Vector2(400, 40)
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
@@ -216,8 +282,9 @@ func _build_scene() -> void:
 	#   → p1_ally → p1_hero → p1_resource → p1_hand
 	# hero_row sits between ally_row and resource_row (rule 415.8a: hero card,
 	# equipment, and non-attaching ongoing abilities all live in the hero row).
-	# Right column (x=1820): p2_deck at top; p1_deck at bottom.
-	# Graveyard at x=1640, same y as the player's hand.
+	# Side columns are mirrored (each player's hero/deck/graveyard on their own
+	# right-hand side): P1 column at screen-right (deck x=1820, grave x=1640),
+	# P2 column at screen-left (deck x=100, grave x=280).
 	# Row centres are spaced CardNode.H + 10px apart so full rows never overlap
 	# a neighbouring row, regardless of which rows are empty or filled. Every
 	# row anchor is a fixed constant — no runtime repositioning depends on
@@ -231,14 +298,14 @@ func _build_scene() -> void:
 	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1000, 620)))
 	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 735)))
 	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 895)))
-	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2(1640,  35)))
-	_renderer.register_zone("p2_deck",         _make_anchor(Vector2(1820,  35)))
+	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2( 280,  35)))
+	_renderer.register_zone("p2_deck",         _make_anchor(Vector2( 100,  35)))
 	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 875)))
 	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 875)))
 
-	# Hero card itself stays pinned to the side column, above the deck, at the
-	# same height as its hero_row (equipment / ongoing abilities live there instead).
-	_renderer.register_zone("p2_hero_card",    _make_anchor(Vector2(1820, 280)))
+	# Hero card itself stays pinned to the player's side column, above the deck,
+	# at the same height as its hero_row (equipment / ongoing abilities live there).
+	_renderer.register_zone("p2_hero_card",    _make_anchor(Vector2( 100, 280)))
 	_renderer.register_zone("p1_hero_card",    _make_anchor(Vector2(1820, 620)))
 
 	_renderer.set_status_label(_status)
@@ -247,7 +314,9 @@ func _build_scene() -> void:
 	for deck_zone in ["p1_deck", "p2_deck"]:
 		var deck_anchor := _renderer.zone_anchors.get(deck_zone) as Node2D
 		if deck_anchor:
-			_add_deck_back_sprite(deck_anchor.global_position)
+			# Deck backs face their owner, like every other card on that side.
+			_add_deck_back_sprite(deck_anchor.global_position,
+					180.0 if deck_zone.begins_with("p2") else 0.0)
 
 	_router = InputRouter.new()
 	add_child(_router)
@@ -271,29 +340,42 @@ func _build_scene() -> void:
 
 	# ── Control panel (y=960..1080) ───────────────────────────────────────────────
 	# Panel background — added before labels/buttons so it renders behind them.
+	# Oversized past both edges so the strip always spans the full window, even
+	# when a wide display (stretch aspect=expand) shows more table than 1920px.
 	var ctrl_panel := Panel.new()
-	ctrl_panel.position = Vector2(0, 960)
-	ctrl_panel.size     = Vector2(1920, 120)
-	add_child(ctrl_panel)
+	ctrl_panel.position = Vector2(-480, 960)
+	ctrl_panel.size     = Vector2(3360, 120)
+	_hud.add_child(ctrl_panel)
 
 	var sep_line := ColorRect.new()
 	sep_line.color    = Color(0.28, 0.33, 0.38)
-	sep_line.position = Vector2(0, 960)
-	sep_line.size     = Vector2(1920, 2)
-	add_child(sep_line)
+	sep_line.position = Vector2(-480, 960)
+	sep_line.size     = Vector2(3360, 2)
+	_hud.add_child(sep_line)
+
+	# ── Skip button (top-right, free since P2's column moved screen-left) ──────
+	# The OFF-SCREEN player's pass during an ambush stop: skips the window
+	# without revealing their hand. Only visible while an ambush stop is active.
+	_skip_btn = Button.new()
+	_skip_btn.text     = "Skip window  (opponent)"
+	_skip_btn.position = Vector2(1650, 15)
+	_skip_btn.size     = Vector2(250, 44)
+	_skip_btn.visible  = false
+	_skip_btn.pressed.connect(_on_skip_pressed)
+	_hud.add_child(_skip_btn)
 
 	# ── Left section: Turn / Priority / Announcer ──────────────────────────────
-	_phase_label    = _add_label("", Vector2(16, 971), 19, Color(0.9, 0.85, 0.45))
-	_priority_label = _add_label("", Vector2(120, 1003), 15, Color(0.9, 0.85, 0.3))
+	_phase_label    = _add_label("", Vector2(16, 971), 19, Color(0.9, 0.85, 0.45), true)
+	_priority_label = _add_label("", Vector2(120, 1003), 15, Color(0.9, 0.85, 0.3), true)
 	# _status now lives under the pass button (centre section) instead of here.
-	_add_label("Log [L]", Vector2(16, 1003), 13, Color(0.55, 0.55, 0.6))
+	_add_label("Log [L]", Vector2(16, 1003), 13, Color(0.55, 0.55, 0.6), true)
 
 	# ── VSep 1 ─────────────────────────────────────────────────────────────────
 	var vsep1 := ColorRect.new()
 	vsep1.color    = Color(0.28, 0.33, 0.38)
 	vsep1.position = Vector2(624, 968)
 	vsep1.size     = Vector2(2, 110)
-	add_child(vsep1)
+	_hud.add_child(vsep1)
 
 	# ── Centre section: Cancel + Pass ──────────────────────────────────────────
 	_cancel_btn = Button.new()
@@ -302,17 +384,17 @@ func _build_scene() -> void:
 	_cancel_btn.size     = Vector2(160, 40)
 	_cancel_btn.visible  = false
 	_cancel_btn.pressed.connect(_on_cancel_btn_pressed)
-	add_child(_cancel_btn)
+	_hud.add_child(_cancel_btn)
 
 	_pass_btn = Button.new()
 	_pass_btn.text     = "Pass Priority  [Space]"
 	_pass_btn.position = Vector2(845, 981)
 	_pass_btn.size     = Vector2(230, 40)
 	_pass_btn.pressed.connect(_on_pass_btn_pressed)
-	add_child(_pass_btn)
+	_hud.add_child(_pass_btn)
 
 	# Resource-placement indicator (aligned with the pass button, to its left).
-	_resource_label = _add_label("", Vector2(648, 981), 15, Color(1.0, 0.3, 0.3))
+	_resource_label = _add_label("", Vector2(648, 981), 15, Color(1.0, 0.3, 0.3), true)
 	_resource_label.size = Vector2(190, 40)
 	_resource_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_resource_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -322,7 +404,7 @@ func _build_scene() -> void:
 	_mulligan_panel.position = Vector2(760, 420)
 	_mulligan_panel.custom_minimum_size = Vector2(400, 110)
 	_mulligan_panel.visible  = false
-	add_child(_mulligan_panel)
+	_hud.add_child(_mulligan_panel)
 
 	_mulligan_order_label = Label.new()
 	_mulligan_order_label.add_theme_font_size_override("font_size", 14)
@@ -345,10 +427,10 @@ func _build_scene() -> void:
 	vsep2.color    = Color(0.28, 0.33, 0.38)
 	vsep2.position = Vector2(1296, 968)
 	vsep2.size     = Vector2(2, 110)
-	add_child(vsep2)
+	_hud.add_child(vsep2)
 
 	# ── Right section: Speed Mode selector ─────────────────────────────────────
-	_add_label("SPEED MODE  [T]", Vector2(1330, 971), 10, Color(0.55, 0.55, 0.55))
+	_add_label("SPEED MODE  [T]", Vector2(1330, 971), 10, Color(0.55, 0.55, 0.55), true)
 
 	var mode_group := ButtonGroup.new()
 
@@ -360,7 +442,7 @@ func _build_scene() -> void:
 	_turbo_btn.button_group  = mode_group
 	_turbo_btn.button_pressed = true
 	_turbo_btn.toggled.connect(func(on: bool) -> void: if on: _set_turbo_mode(true))
-	add_child(_turbo_btn)
+	_hud.add_child(_turbo_btn)
 
 	_tactical_btn = Button.new()
 	_tactical_btn.text         = "Tactical"
@@ -369,17 +451,44 @@ func _build_scene() -> void:
 	_tactical_btn.toggle_mode  = true
 	_tactical_btn.button_group = mode_group
 	_tactical_btn.toggled.connect(func(on: bool) -> void: if on: _set_turbo_mode(false))
-	add_child(_tactical_btn)
+	_hud.add_child(_tactical_btn)
 
 	_mode_desc_label = _add_label("Auto-pass all 'no legal play'",
-		Vector2(1330, 1067), 10, Color(0.42, 0.52, 0.42))
+		Vector2(1330, 1067), 10, Color(0.42, 0.52, 0.42), true)
 
-	# Mirrors the resource-placement indicator on the other side of the pass button
-	# (resource label: x=648, same y as the button); now docked to the right of
-	# the speed mode selector.
+	# ── Combat stance selector (next to Speed Mode) ─────────────────────────────
+	# Each player sets THEIR stance while they hold the screen; it governs their
+	# priority windows during the opponent's turn (see _stance docs above).
+	_add_label("COMBAT STANCE", Vector2(1470, 971), 10, Color(0.55, 0.55, 0.55), true)
+
+	var stance_group := ButtonGroup.new()
+
+	_stance_ambush_btn = Button.new()
+	_stance_ambush_btn.text           = "Ambush"
+	_stance_ambush_btn.position       = Vector2(1470, 987)
+	_stance_ambush_btn.size           = Vector2(110, 36)
+	_stance_ambush_btn.toggle_mode    = true
+	_stance_ambush_btn.button_group   = stance_group
+	_stance_ambush_btn.button_pressed = true
+	_stance_ambush_btn.toggled.connect(func(on: bool) -> void:
+		if on: _stance[_local_player] = "ambush")
+	_hud.add_child(_stance_ambush_btn)
+
+	_stance_passive_btn = Button.new()
+	_stance_passive_btn.text         = "Passive"
+	_stance_passive_btn.position     = Vector2(1470, 1027)
+	_stance_passive_btn.size         = Vector2(110, 36)
+	_stance_passive_btn.toggle_mode  = true
+	_stance_passive_btn.button_group = stance_group
+	_stance_passive_btn.toggled.connect(func(on: bool) -> void:
+		if on: _stance[_local_player] = "passive")
+	_hud.add_child(_stance_passive_btn)
+
+	# Control indications: docked at the far right, past the speed slider (in the
+	# extra strip that wide displays reveal — the panel above covers it).
 	_mulligan_hint_label = _add_label(
-		"Left-click = play/place\nRight-click = options\nEsc = retract\nCtrl+Space = wrap up / end turn\nF = auto-pass combat windows",
-		Vector2(1470, 979), 11, Color(0.38, 0.38, 0.38))
+		"Left-click = play/place\nRight-click = options\nEsc = retract\nCtrl+Space/Enter = wrap up / end turn\nF = auto-pass combat windows",
+		Vector2(1930, 979), 11, Color(0.38, 0.38, 0.38), true)
 	_mulligan_hint_label.size = Vector2(200, 96)
 	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -387,7 +496,7 @@ func _build_scene() -> void:
 
 	# ── Far right: Animation speed slider (scales every GameTiming pause live) ──
 	# animation_speed: 0 = instant (no pauses), 1 = base timing, up to 3x slower.
-	var speed_lbl := _add_label("Speed", Vector2(1690, 971), 10, Color(0.55, 0.55, 0.55))
+	var speed_lbl := _add_label("Speed", Vector2(1690, 971), 10, Color(0.55, 0.55, 0.55), true)
 	speed_lbl.size = Vector2(180, 16)
 	_speed_slider = HSlider.new()
 	_speed_slider.position   = Vector2(1690, 995)
@@ -400,9 +509,9 @@ func _build_scene() -> void:
 		GameTiming.animation_speed = v
 		if _speed_value_label:
 			_speed_value_label.text = "%.1fx" % v)
-	add_child(_speed_slider)
+	_hud.add_child(_speed_slider)
 	_speed_value_label = _add_label("%.1fx" % GameTiming.animation_speed,
-		Vector2(1690, 1025), 11, Color(0.6, 0.6, 0.65))
+		Vector2(1690, 1025), 11, Color(0.6, 0.6, 0.65), true)
 
 	_ai_timer = Timer.new()
 	_ai_timer.wait_time = AI_THINK_TIME
@@ -480,12 +589,12 @@ func _build_menu() -> void:
 	var ai_ids := DeckManager.list_ai_profile_ids()
 	_p1_ai_types = ["human", "recommended"]
 	_p1_ai_types.append_array(ai_ids)
-	_p2_ai_types = ["recommended"]
+	_p2_ai_types = ["human", "recommended"]
 	_p2_ai_types.append_array(ai_ids)
 	var p1_labels: Array[String] = ["Human", "Recommended AI"]
 	for id in ai_ids:
 		p1_labels.append(_ai_profile_label(id))
-	var p2_labels: Array[String] = ["Recommended AI"]
+	var p2_labels: Array[String] = ["Human (hotseat)", "Recommended AI"]
 	for id in ai_ids:
 		p2_labels.append(_ai_profile_label(id))
 
@@ -494,8 +603,9 @@ func _build_menu() -> void:
 		func(opt): _p1_type_opt = opt, func(opt): _p1_cat_opt = opt, func(opt): _p1_deck_opt = opt))
 	_p1_strategy_label = _make_strategy_label()
 	inner.add_child(_p1_strategy_label)
+	# Default match-up is human vs human hotseat (Quick Start stays human vs AI).
 	inner.add_child(_player_row("Player 2", p2_labels, 0,
-		CAT_RECOMMENDED,
+		CAT_ALL,
 		func(opt): _p2_type_opt = opt, func(opt): _p2_cat_opt = opt, func(opt): _p2_deck_opt = opt))
 	_p2_strategy_label = _make_strategy_label()
 	inner.add_child(_p2_strategy_label)
@@ -504,7 +614,7 @@ func _build_menu() -> void:
 	_p1_deck_opt.item_selected.connect(func(_idx): _update_strategy_label("p1"))
 	_p2_deck_opt.item_selected.connect(func(_idx): _update_strategy_label("p2"))
 	_repopulate_deck_opt("p1", CAT_ALL)
-	_repopulate_deck_opt("p2", CAT_RECOMMENDED)
+	_repopulate_deck_opt("p2", CAT_ALL)
 
 	_avoid_mirror_cb = CheckBox.new()
 	_avoid_mirror_cb.text = "Avoid mirror matches"
@@ -704,12 +814,19 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 	_menu_layer.visible = false
 	_p1_type = p1_type
 	_p2_type = p2_type
+	_hotseat = p1_type == "human" and p2_type == "human"
+	_local_player = "p1" if p1_type == "human" else ("p2" if p2_type == "human" else "p1")
 	_last_p1_deck_id = p1_deck_id
 	_last_p2_deck_id = p2_deck_id
 	_p1_ai   = _make_ai(p1_type, p1_deck_id)
 	_p2_ai   = _make_ai(p2_type, p2_deck_id)
 	_setup_game_state(DeckManager.get_runtime_deck(p1_deck_id),
 					  DeckManager.get_runtime_deck(p2_deck_id))
+
+
+# Player type string for a player id ("human", "recommended", or an ai_id).
+func _type_of(pid: String) -> String:
+	return _p1_type if pid == "p1" else _p2_type
 
 
 # type is "" / "human" (no AI), "recommended" (deck's recommended_ai_id), or
@@ -723,7 +840,202 @@ func _make_ai(type: String, deck_id: String) -> Object:
 			return profile.make_ai() if profile else null
 
 
-func _add_deck_back_sprite(pos: Vector2) -> void:
+# ── Hotseat handoff ────────────────────────────────────────────────────────────
+
+# Hide both hands, block every driver (passes, AI, card input) and show a
+# fullscreen overlay until `next_player` confirms they have the screen.
+# `on_confirm` runs after the perspective/router switch to that player.
+func _begin_handoff(next_player: String, reason: String, on_confirm: Callable) -> void:
+	_handoff_pending = true
+	_wrap_up_active = false   # the outgoing player's wrap-up burst ends at the handoff
+	_ai_timer.stop()
+	_renderer.set_perspective("__handoff__")
+	_renderer.refresh_hand_visibility()
+	CardNode.input_blocked = true
+	# The table turns to the incoming player while the overlay is up.
+	_orient_camera(next_player, true)
+
+	_handoff_layer = CanvasLayer.new()
+	_handoff_layer.layer = 25
+	add_child(_handoff_layer)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.03, 0.05, 0.07, 0.97)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_handoff_layer.add_child(dim)
+
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.position = Vector2(-260, -90)
+	box.custom_minimum_size = Vector2(520, 180)
+	box.add_theme_constant_override("separation", 22)
+	_handoff_layer.add_child(box)
+
+	var title := Label.new()
+	title.text = "%s — %s" % [next_player.to_upper(), reason]
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 28)
+	title.add_theme_color_override("font_color", Color(0.9, 0.85, 0.45))
+	box.add_child(title)
+
+	var hint := Label.new()
+	hint.text = "Both hands are hidden. Pass the screen over —\nthe other player should look away now."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 14)
+	hint.add_theme_color_override("font_color", Color(0.65, 0.65, 0.7))
+	box.add_child(hint)
+
+	var btn := Button.new()
+	btn.text = "I'm %s — show my hand" % next_player.to_upper()
+	btn.custom_minimum_size = Vector2(280, 46)
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	btn.pressed.connect(func() -> void: _confirm_handoff(next_player, on_confirm))
+	box.add_child(btn)
+
+
+func _confirm_handoff(next_player: String, on_confirm: Callable) -> void:
+	if _handoff_layer:
+		_handoff_layer.queue_free()
+		_handoff_layer = null
+	CardNode.input_blocked = false
+	_handoff_pending = false
+	_set_local_player(next_player)
+	on_confirm.call()
+
+
+# Switch the screen's seat: hand visibility + input routing follow `pid`.
+func _set_local_player(pid: String) -> void:
+	_local_player = pid
+	_router.setup(_state, _db, pid)
+	_renderer.set_perspective(pid)
+	_renderer.refresh_hand_visibility()
+	_orient_camera(pid, false)   # no-op if _begin_handoff already turned it
+	# Stance toggle shows the seated player's own stance.
+	if _stance_passive_btn and _stance_ambush_btn:
+		var ambush: bool = _stance.get(pid, "ambush") == "ambush"
+		_stance_ambush_btn.set_pressed_no_signal(ambush)
+		_stance_passive_btn.set_pressed_no_signal(not ambush)
+
+
+# Turn the board camera to `pid`'s side of the table (TTS-style). The camera
+# rotates 180° about BOARD_PIVOT, so the board flips within its own region and
+# the HUD layer is untouched. Rotated camera position derivation:
+# world BOARD_PIVOT must stay at the same screen point → pos' = 2*PIVOT - pos.
+func _orient_camera(pid: String, animate: bool) -> void:
+	if not _camera:
+		return
+	var flipped := pid == "p2"
+	var target_rot: float = 180.0 if flipped else 0.0
+	var target_pos: Vector2 = (BOARD_PIVOT * 2.0 - Vector2(960, 540)) if flipped \
+			else Vector2(960, 540)
+	if _camera_tween:
+		_camera_tween.kill()
+		_camera_tween = null
+	if _camera.rotation_degrees == target_rot and _camera.position == target_pos:
+		return
+	if animate:
+		_camera_tween = create_tween().set_parallel()
+		_camera_tween.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_CUBIC)
+		_camera_tween.tween_property(_camera, "rotation_degrees", target_rot, 0.7)
+		_camera_tween.tween_property(_camera, "position", target_pos, 0.7)
+	else:
+		_camera.rotation_degrees = target_rot
+		_camera.position = target_pos
+	# Transient world overlays (targeting cursor, damage numbers) counter-rotate.
+	_renderer.view_rotation_degrees = target_rot
+
+
+# ── Ambush mode (off-screen player instant responses) ──────────────────────────
+
+# True when the off-screen player `pid` has at least one legal play right now
+# (instants / board powers / armor blocks — only instant-speed things are legal
+# off-turn anyway). Probes via the router with local_player briefly swapped.
+func _offscreen_has_play(pid: String) -> bool:
+	var prev := _router.local_player
+	_router.local_player = pid
+	var has := _router.has_any_legal_play()
+	_router.local_player = prev
+	return has
+
+
+# Stop the window for the off-screen ambusher: the router acts for them (their
+# playable instants highlight yellow; rules make everything else illegal
+# off-turn), but the renderer perspective is untouched — their hand stays
+# face-down, fronts shown only on hover (_on_card_hover_scene).
+func _enter_ambush_mode(pid: String) -> void:
+	if _in_ambush_mode:
+		return
+	_in_ambush_mode = true
+	_ambush_player = pid
+	_ai_timer.stop()
+	_router.setup(_state, _db, pid)
+	_router.set_highlight_color(AMBUSH_HIGHLIGHT)
+	_router.refresh_highlights()
+	_skip_btn.visible = true
+	_set_status("⚡ %s may respond — hover a yellow card to peek, Skip to pass"
+			% _ambush_player.to_upper())
+
+
+func _exit_ambush_mode() -> void:
+	if not _in_ambush_mode:
+		return
+	_in_ambush_mode = false
+	_ambush_player = ""
+	_skip_btn.visible = false
+	_router.set_highlight_color(Color(0.2, 1.0, 0.3))
+	_router.setup(_state, _db, _local_player)
+	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
+	_router.refresh_highlights()
+	_set_status("")
+
+
+func _on_skip_pressed() -> void:
+	if not _in_ambush_mode or _state.priority_player != _ambush_player:
+		return
+	_exit_ambush_mode()
+	var events := StackResolver.pass_priority(_state, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_drain_passes()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
+
+
+# ── Hand hover (magnify + ambush peek) ─────────────────────────────────────────
+
+func _on_card_hover_scene(instance_id: String) -> void:
+	if not _state or _handoff_pending:
+		return
+	var card := _state.get_card(instance_id)
+	var cn := _renderer.card_nodes.get(instance_id) as CardNode
+	if not card or not cn:
+		return
+	# Ambush peek: a playable (yellow) instant in the ambusher's hidden hand
+	# shows its face only while hovered.
+	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand" \
+			and instance_id in _router.get_playable_card_ids():
+		cn.show_card_front()
+	# The local player's own hand magnifies on hover.
+	if card.zone_id == _local_player + "_hand":
+		cn.scale = Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY)
+		cn.z_index = 5
+
+
+func _on_card_unhover_scene(instance_id: String) -> void:
+	if not _state:
+		return
+	var card := _state.get_card(instance_id)
+	var cn := _renderer.card_nodes.get(instance_id) as CardNode
+	if not card or not cn:
+		return
+	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand":
+		cn.show_card_back()
+	if card.zone_id.ends_with("_hand"):
+		cn.scale = Vector2.ONE * BoardRenderer.HAND_CARD_SCALE
+		cn.z_index = 0
+
+
+func _add_deck_back_sprite(pos: Vector2, facing: float = 0.0) -> void:
 	var back: Texture2D = load(CardNode.CARD_BACK_PATH)
 	if not back:
 		return
@@ -733,6 +1045,8 @@ func _add_deck_back_sprite(pos: Vector2) -> void:
 	tex.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
 	tex.size         = Vector2(CardNode.W, CardNode.H)
 	tex.position     = pos - Vector2(CardNode.W * 0.5, CardNode.H * 0.5)
+	tex.pivot_offset = tex.size * 0.5
+	tex.rotation_degrees = facing
 	tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(tex)
 
@@ -744,13 +1058,19 @@ func _make_anchor(pos: Vector2) -> Node2D:
 	return a
 
 
-func _add_label(text: String, pos: Vector2, size: int, color: Color) -> Label:
+# hud=true parents the label to the _hud CanvasLayer (screen-fixed, never
+# rotated by the board camera); hud=false leaves it in the world (board labels
+# like the deck/graveyard tags, which must travel and turn with the board).
+func _add_label(text: String, pos: Vector2, size: int, color: Color, hud: bool = false) -> Label:
 	var lbl := Label.new()
 	lbl.text = text
 	lbl.position = pos
 	lbl.add_theme_font_size_override("font_size", size)
 	lbl.add_theme_color_override("font_color", color)
-	add_child(lbl)
+	if hud:
+		_hud.add_child(lbl)
+	else:
+		add_child(lbl)
 	return lbl
 
 
@@ -758,6 +1078,11 @@ func _add_label(text: String, pos: Vector2, size: int, color: Color) -> Label:
 
 func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	_stats.reset()   # fresh match stats before any card_moved/card_played fires
+
+	# Hotseat: hide BOTH hands from the start — the first handoff overlay (mulligan)
+	# reveals the right one. Must run before any card node is placed.
+	if _hotseat:
+		_renderer.set_perspective("__handoff__")
 
 	# Real database — only engine_status=implemented cards are loaded.
 	_db = CardDatabase.new()
@@ -771,8 +1096,8 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	# decks, draws 7-card starting hands.
 	_gm = GameManager.new()
 	_gm.setup(_db)
-	_gm.add_player("p1", GameManager.HUMAN, deck_p1)
-	_gm.add_player("p2", GameManager.AI,    deck_p2)
+	_gm.add_player("p1", GameManager.HUMAN if _p1_type == "human" else GameManager.AI, deck_p1)
+	_gm.add_player("p2", GameManager.HUMAN if _p2_type == "human" else GameManager.AI, deck_p2)
 	_state = _gm.build_state()
 
 	# Seed deck counts before any card_moved events fire.
@@ -803,7 +1128,8 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	_renderer.relayout_zone("p1_hand")
 	_renderer.relayout_zone("p2_hand")
 
-	_router.setup(_state, _db, "p1")
+	_router.setup(_state, _db, _local_player)
+	_orient_camera(_local_player, false)   # e.g. single human seated at p2 vs AI
 
 	# Randomize who goes first.
 	var first_player: String = "p1" if randi() % 2 == 0 else "p2"
@@ -843,6 +1169,8 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 		var stats := "%d/%d" % [def.printed_atk, def.printed_health]
 		node = CardNode.create(inst_id, def.card_name, stats, color, def.image_path)
 	node.global_position = spawn_pos
+	node.card_hovered.connect(_on_card_hover_scene)
+	node.card_unhovered.connect(_on_card_unhover_scene)
 	add_child(node)
 	_renderer.register_card(inst_id, node)
 	_renderer.place_card_in_zone(inst_id, card.zone_id)
@@ -851,6 +1179,10 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 # ── UI refresh ─────────────────────────────────────────────────────────────────
 
 func _refresh_ui() -> void:
+	# Ambush stop is over the moment priority leaves the ambusher (they played
+	# and passed, or their link fizzled) — restore router/highlights to the seat.
+	if _in_ambush_mode and _state and _state.priority_player != _ambush_player:
+		_exit_ambush_mode()
 	_update_priority_label()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode:
@@ -895,7 +1227,7 @@ func _update_priority_label() -> void:
 		chain_str = "Chain : " + ", ".join(items)
 	_priority_label.text = "Priority: %s\n%s" % [who, chain_str]
 	_priority_label.add_theme_color_override("font_color",
-		Color(0.4, 0.9, 0.4) if who == "p1" else Color(0.9, 0.5, 0.4))
+		Color(0.4, 0.9, 0.4) if who == _local_player else Color(0.9, 0.5, 0.4))
 
 
 func _describe_pending_action(action: PendingAction) -> String:
@@ -934,17 +1266,17 @@ func _pending_action_card_name(action: PendingAction) -> String:
 
 
 func _update_cancel_btn() -> void:
-	_cancel_btn.visible = StackResolver.can_retract(_state, "p1")
+	_cancel_btn.visible = StackResolver.can_retract(_state, _local_player)
 
 
 func _update_resource_label() -> void:
 	if not _resource_label:
 		return
-	if _state.turn_player != "p1":
+	if _state.turn_player != _local_player:
 		_resource_label.text = "not my turn"
 		_resource_label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 		return
-	var ps: PlayerState = _state.players.get("p1")
+	var ps: PlayerState = _state.players.get(_local_player)
 	if ps and ps.resource_placed_this_turn:
 		_resource_label.text = "resource placed"
 		_resource_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.35))
@@ -955,31 +1287,32 @@ func _update_resource_label() -> void:
 
 func _update_pass_btn() -> void:
 	_update_resource_label()
-	var my_turn    := _state.priority_player == "p1"
+	var my_turn    := _state.priority_player == _local_player
 	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
 	var in_action  := _state.phase == "action"
 	var in_attack  := _state.combat_attack_window
 	var in_defend  := _state.combat_defend_window
-	var is_p1_turn := _state.turn_player == "p1"
+	var is_p1_turn := _state.turn_player == _local_player
 
-	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == "p1" \
-		or _state.pending_equip_sacrifice_player == "p1" \
-		or _state.pending_unique_sacrifice_player == "p1" \
-		or _state.pending_control_discard_player == "p2"
+	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == _local_player \
+		or _state.pending_equip_sacrifice_player == _local_player \
+		or _state.pending_unique_sacrifice_player == _local_player \
+		or (_state.pending_control_discard_player != "" \
+			and _state.pending_control_discard_player != _local_player)
 
-	if _state.pending_control_discard_player == "p1":
+	if _state.pending_control_discard_player == _local_player:
 		# Infernal choice: the pass button is the DECLINE option (give control).
 		_pass_btn.disabled = false
 		_pass_btn.text     = "Give up control  [Ctrl+Space]"
 		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
-	elif _state.pending_pet_sacrifice_player == "p1":
+	elif _state.pending_pet_sacrifice_player == _local_player:
 		_pass_btn.text     = "Sacrifice a pet  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
-	elif _state.pending_equip_sacrifice_player == "p1":
+	elif _state.pending_equip_sacrifice_player == _local_player:
 		_pass_btn.text     = "Destroy equipment  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
-	elif _state.pending_unique_sacrifice_player == "p1":
+	elif _state.pending_unique_sacrifice_player == _local_player:
 		_pass_btn.text     = "Destroy a duplicate  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _router.is_awaiting_chain_lightning_optional_target():
@@ -1023,6 +1356,11 @@ func _update_pass_btn() -> void:
 # ── Button handlers ────────────────────────────────────────────────────────────
 
 func _input(event: InputEvent) -> void:
+	# Handoff overlay owns ALL input except its own confirm button.
+	if _handoff_pending:
+		if event is InputEventKey and event.pressed:
+			get_viewport().set_input_as_handled()
+		return
 	# Intercept spacebar here (via _input, not _unhandled_input) so we can gate
 	# the pass through _try_pass() before InputRouter's _unhandled_input fires.
 	# Godot 4 processes _unhandled_input children-first, so InputRouter would
@@ -1032,8 +1370,8 @@ func _input(event: InputEvent) -> void:
 	# by accident. Ctrl+Space is a deliberate two-key combo → skip the confirm dialog.
 	# (A modifier makes the physical event stop matching the plain-Space "ui_accept"
 	# action, so it needs its own branch by keycode.)
-	if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE \
-			and event.ctrl_pressed:
+	if event is InputEventKey and event.pressed and event.ctrl_pressed \
+			and (event.keycode == KEY_SPACE or event.keycode == KEY_ENTER):
 		if (_x_dialog and _x_dialog.visible) \
 				or (_gy_dialog and _gy_dialog.visible and not _gy_peek_active):
 			get_viewport().set_input_as_handled()
@@ -1042,7 +1380,7 @@ func _input(event: InputEvent) -> void:
 		# Ctrl so a stray plain-Space can't hand the card to the opponent by mistake.
 		# Handled on its own (NOT via the wrap-up burst) so giving up control doesn't
 		# also try to end the turn — it's a start-of-turn choice, the turn continues.
-		if _state.pending_control_discard_player == "p1":
+		if _state.pending_control_discard_player == _local_player:
 			_router.decline_control_discard()
 			_refresh_ui()
 			_schedule_next_turn()
@@ -1072,7 +1410,7 @@ func _input(event: InputEvent) -> void:
 		# Same protection for Infernal's give-up-control: plain Space must not
 		# hand the card to the opponent. Ctrl+Space (or clicking the pass
 		# button / a hand card to discard) is required.
-		if _state.pending_control_discard_player == "p1":
+		if _state.pending_control_discard_player == _local_player:
 			_set_status("Press Ctrl+Space to give up control, or click a card to discard")
 			get_viewport().set_input_as_handled()
 			return
@@ -1154,26 +1492,27 @@ func _on_pass_btn_pressed() -> void:
 # Gate for human passing: shows a confirmation if they'd end their action phase
 # without having played a single card or instant this turn.
 func _try_pass(skip_confirm: bool = false) -> void:
-	if not _state or _p1_type != "human":
+	if not _state or _handoff_pending or _type_of(_local_player) != "human":
 		return
 	# Infernal choice pending for the human: Space/pass = decline the discard
 	# and give the opponent control of the source.
-	if _state.pending_control_discard_player == "p1":
+	if _state.pending_control_discard_player == _local_player:
 		_router.decline_control_discard()
 		_refresh_ui()
 		_schedule_next_turn()
 		return
-	if _state.priority_player != "p1":
+	if _state.priority_player != _local_player:
 		return
-	var needs_confirm := (
-		_state.turn_player == "p1"
+	var needs_confirm: bool = (
+		_state.turn_player == _local_player
 		and _state.phase == "action"
 		and _state.pending_actions.is_empty()
-		and not _p1_played_this_action_phase
+		and not _played_this_action_phase.get(_local_player, false)
 	)
 	if needs_confirm and not skip_confirm:
 		_end_turn_dialog.popup_centered()
 	else:
+		_stop_for_end_window = false   # the held wrap-up window is used up by a pass
 		_router.pass_priority_action()
 		_blink_pass_btn()
 		# The pass may have resolved a chained action (quest, hero/ally power…)
@@ -1410,20 +1749,30 @@ func _log_event(event: GameEvent) -> void:
 # ── AI ─────────────────────────────────────────────────────────────────────────
 
 func _do_ai_turn() -> void:
-	if _game_over:
+	if _game_over or _handoff_pending:
 		return
 	if _state.in_protect_point or _in_protect_mode:
 		return
 	var pid := _state.priority_player
 	var ai: Object = _p1_ai if pid == "p1" else _p2_ai
-	if ai == null:
-		return   # human's turn
-	var action: PendingAction = ai.decide_action(_state, _db, pid)
 	var events: Array[GameEvent]
-	if action != null:
-		events = StackResolver.submit_action(_state, action, _db)
-	else:
+	if ai == null:
+		# Hotseat: the OFF-SCREEN human's priority windows auto-pass (their hand
+		# is hidden; protect/strike points are handled separately and still stop)
+		# — unless their stance is Ambush and they have a legal instant response,
+		# in which case the window stops for them (yellow highlights + Skip).
+		if not (_hotseat and pid != _local_player):
+			return   # local human's turn — wait for input
+		if _stance.get(pid, "ambush") == "ambush" and _offscreen_has_play(pid):
+			_enter_ambush_mode(pid)
+			return
 		events = StackResolver.pass_priority(_state, _db)
+	else:
+		var action: PendingAction = ai.decide_action(_state, _db, pid)
+		if action != null:
+			events = StackResolver.submit_action(_state, action, _db)
+		else:
+			events = StackResolver.pass_priority(_state, _db)
 	await EventBus.emit_events(events)
 	_refresh_ui()
 	_schedule_next_turn()
@@ -1435,8 +1784,18 @@ func _on_game_event(event: GameEvent) -> void:
 	_log_event(event)
 	_stats.record_event(event)
 	match event.event_type:
+		"turn_changed":
+			# Hotseat: the turn passed to the OTHER human — hide both hands and
+			# block everything until they confirm they have the screen.
+			var next_tp: String = event.payload.get("player", "")
+			if _hotseat and not _game_over and next_tp != _local_player \
+					and _type_of(next_tp) == "human":
+				_begin_handoff(next_tp, "your turn", func() -> void:
+					_refresh_ui()
+					_schedule_next_turn()
+					_maybe_turbo_pass())
 		"priority_passed":
-			if event.payload.get("player", "") == "p2":
+			if event.payload.get("player", "") != _local_player:
 				_blink_pass_btn()
 			_refresh_ui()
 			var _in_chain := not _state.pending_actions.is_empty()
@@ -1446,8 +1805,7 @@ func _on_game_event(event: GameEvent) -> void:
 				_schedule_next_turn()
 				_maybe_turbo_pass()
 		"action_proposed":
-			if event.payload.get("player") == "p1":
-				_p1_played_this_action_phase = true
+			_played_this_action_phase[event.payload.get("player", "")] = true
 			if event.payload.get("action_type", "") == "propose_combat":
 				_set_proposed_combat_highlight(
 					event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
@@ -1497,8 +1855,27 @@ func _on_game_event(event: GameEvent) -> void:
 			_refresh_ui()
 			_maybe_turbo_pass()
 		"phase_changed":
-			if event.payload.get("new") == "action" and event.payload.get("player") == "p1":
-				_p1_played_this_action_phase = false
+			if event.payload.get("new") == "action":
+				_played_this_action_phase[event.payload.get("player", "")] = false
+			if event.payload.get("new", "") != "end":
+				_stop_for_end_window = false   # one-shot hold expires with the end phase
+			# Hotseat: hand the screen over at the START of the outgoing player's
+			# end phase — the incoming player uses the wrap-up window to play
+			# instants with leftover resources, then sees their own ready/draw.
+			# Skipped when the outgoing player must still discard to hand size
+			# (that choice needs THEIR hand); then the turn_changed handoff below
+			# covers the switch instead.
+			if event.payload.get("new", "") == "end" and _hotseat and not _game_over:
+				var outgoing := _state.turn_player
+				var incoming := "p2" if outgoing == "p1" else "p1"
+				if outgoing == _local_player and _type_of(incoming) == "human":
+					var ps_out := _state.players.get(outgoing) as PlayerState
+					var max_hand: int = ps_out.max_hand_size if ps_out else 7
+					if _state.cards_in_zone(outgoing + "_hand").size() <= max_hand:
+						_begin_handoff(incoming, "opponent is wrapping up", func() -> void:
+							_stop_for_end_window = true
+							_refresh_ui()
+							_schedule_next_turn())
 			_refresh_ui()
 			_maybe_turbo_pass()
 		"priority_window_closed":
@@ -1595,38 +1972,63 @@ func _on_window_closed() -> void:
 func _handle_mulligan_started(payload: Dictionary) -> void:
 	var first: String = payload.get("first_player", "")
 	_p1_has_mulliganed = false
+	_mulligan_first    = first
 
-	# Show the mulligan panel for the human player; hide the normal pass button.
-	if _p1_type == "human":
-		_pass_btn.visible        = false
-		_mulligan_panel.visible  = true
-		_mulligan_btn.disabled   = false
-		_mulligan_order_label.text = \
-			"You go first!" if first == "p1" else "Opponent goes first."
-
-	# All AI players commit immediately (always keep — simple heuristic).
 	var player_order: Array = payload.get("player_order", [])
 	if player_order.is_empty():
 		for pid in _state.players:
 			player_order.append(pid)
+
+	# Queue every undecided human (turn order); AI players commit immediately.
+	_mulligan_queue.clear()
 	for pid in player_order:
 		if _state.mulligan_decided.get(pid, false):
 			continue   # already committed (e.g. chain reaction)
-		var pid_type := _p1_type if pid == "p1" else _p2_type
-		if pid_type != "human":
+		if _type_of(pid) == "human":
+			_mulligan_queue.append(pid)
+		else:
 			var pid_ai: Object = _p1_ai if pid == "p1" else _p2_ai
 			var wants: bool = pid_ai.wants_mulligan(_state, _db, pid) if pid_ai else false
 			var events := TurnManager.commit_mulligan(_state, pid, wants, _db)
 			_emit_mulligan_events(events)
+
+	if _hotseat:
+		_advance_mulligan_queue()
+	elif not _mulligan_queue.is_empty():
+		# Single human: show the panel directly, no handoff needed.
+		_mulligan_current = _mulligan_queue.pop_front()
+		_show_mulligan_panel()
+
+
+# Hotseat: hand the screen to the next undecided human, then show their panel.
+func _advance_mulligan_queue() -> void:
+	if _mulligan_queue.is_empty():
+		return
+	_mulligan_current = _mulligan_queue.pop_front()
+	_begin_handoff(_mulligan_current, "mulligan decision", _show_mulligan_panel)
+
+
+func _show_mulligan_panel() -> void:
+	_pass_btn.visible        = false
+	_mulligan_panel.visible  = true
+	_mulligan_btn.disabled   = false
+	_mulligan_order_label.text = \
+		"You go first!" if _mulligan_first == _mulligan_current else "Opponent goes first."
+	_refresh_ui()
 
 
 func _commit_mulligan(wants: bool) -> void:
 	if wants:
 		_p1_has_mulliganed    = true
 		_mulligan_btn.disabled = true
-	var events := TurnManager.commit_mulligan(_state, "p1", wants, _db)
+	var events := TurnManager.commit_mulligan(_state, _mulligan_current, wants, _db)
 	_emit_mulligan_events(events)
 	_refresh_ui()
+	# Hotseat: the next human's decision needs its own handoff. Hide this
+	# player's panel first so it isn't visible behind the overlay.
+	if _hotseat and not _mulligan_queue.is_empty():
+		_mulligan_panel.visible = false
+		_advance_mulligan_queue()
 
 
 # Emit mulligan events in two phases separated by mulligan_shuffle_done.
@@ -1792,15 +2194,16 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
 	var count: int     = payload.get("count", 1)
 	_discard_reason    = payload.get("reason", "card_effect")
-	if player == "p2":
+	if _type_of(player) != "human":
 		# AI: the AI instance picks each discard (BaseAI: lowest-cost non-quest;
 		# GenericAI: least valuable via sort_valuable_cards).
+		var ai: Object = _p1_ai if player == "p1" else _p2_ai
 		for _i in count:
 			var pick_id := ""
-			if _p2_ai is BaseAI:
-				pick_id = (_p2_ai as BaseAI).choose_discard_card(_state, _db, "p2")
+			if ai is BaseAI:
+				pick_id = (ai as BaseAI).choose_discard_card(_state, _db, player)
 			else:
-				var pick := _pick_ai_discard("p2")
+				var pick := _pick_ai_discard(player)
 				pick_id = pick.instance_id if pick else ""
 			if pick_id == "":
 				break
@@ -1813,7 +2216,7 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 		else:
 			_schedule_next_turn()
 	else:
-		# Human (p1): enter discard mode — green highlights + click to resolve.
+		# Human: enter discard mode — green highlights + click to resolve.
 		_router.start_discard_mode(count)
 
 
@@ -2134,7 +2537,7 @@ func _build_x_dialog() -> void:
 	_x_ok_btn.pressed.connect(_on_x_ok_pressed)
 	vbox.add_child(_x_ok_btn)
 
-	add_child(_x_dialog)
+	_hud.add_child(_x_dialog)
 
 
 func _on_x_select_requested(hero_id: String, max_x: int) -> void:
@@ -2189,12 +2592,12 @@ func _build_graveyard_dialog() -> void:
 	_gy_dimmer.size = Vector2(1920, 1080)
 	_gy_dimmer.visible = false
 	_gy_dimmer.z_index = 19
-	add_child(_gy_dimmer)
+	_hud.add_child(_gy_dimmer)
 
 	_gy_dialog = Panel.new()
 	_gy_dialog.visible = false
 	_gy_dialog.z_index = 20
-	add_child(_gy_dialog)
+	_hud.add_child(_gy_dialog)
 
 	var vbox := VBoxContainer.new()
 	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 16)
@@ -2253,7 +2656,7 @@ func _on_graveyard_select_requested(quest_id: String, candidate_ids: Array,
 
 
 func _on_graveyard_examine_requested(graveyard_player: String, card_ids: Array) -> void:
-	var who := "Your" if graveyard_player == "p1" else "Opponent's"
+	var who := "Your" if graveyard_player == _local_player else "Opponent's"
 	_open_gy_dialog(card_ids, true,
 			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0)
 
@@ -2262,7 +2665,7 @@ func _on_graveyard_examine_requested(graveyard_player: String, card_ids: Array) 
 # so it can't steal hover away from the graveyard card driving it, and closes
 # the instant Alt is released or the cursor leaves the pile.
 func _on_graveyard_peek_requested(graveyard_player: String, card_ids: Array) -> void:
-	var who := "Your" if graveyard_player == "p1" else "Opponent's"
+	var who := "Your" if graveyard_player == _local_player else "Opponent's"
 	_open_gy_dialog(card_ids, true,
 			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0, false)
 
@@ -2516,7 +2919,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	header.size     = Vector2(row_width + 100, 20)
 	@warning_ignore("integer_division")
 	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	add_child(header)
+	_hud.add_child(header)
 	_protect_nodes.append(header)
 
 	# One button per legal protector.
@@ -2533,7 +2936,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 		btn.size     = Vector2(BTN_W, 36)
 		var captured_id: String = cid
 		btn.pressed.connect(func() -> void: _resolve_protection(captured_id))
-		add_child(btn)
+		_hud.add_child(btn)
 		_protect_nodes.append(btn)
 		btn_x += BTN_W + BTN_GAP
 
@@ -2543,7 +2946,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
 	skip.size     = Vector2(SKIP_W, 36)
 	skip.pressed.connect(func() -> void: _resolve_protection(""))
-	add_child(skip)
+	_hud.add_child(skip)
 	_protect_nodes.append(skip)
 
 	# Defer outline setup one frame so it lands after any synchronous _refresh_ui
@@ -2652,7 +3055,7 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 	header.size     = Vector2(row_width + 100, 20)
 	@warning_ignore("integer_division")
 	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	add_child(header)
+	_hud.add_child(header)
 	_strike_nodes.append(header)
 
 	for cid in weapon_ids:
@@ -2669,7 +3072,7 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 		btn.size     = Vector2(BTN_W, 36)
 		var captured_id: String = cid
 		btn.pressed.connect(func() -> void: _resolve_strike(captured_id))
-		add_child(btn)
+		_hud.add_child(btn)
 		_strike_nodes.append(btn)
 		btn_x += BTN_W + BTN_GAP
 
@@ -2678,7 +3081,7 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
 	skip.size     = Vector2(SKIP_W, 36)
 	skip.pressed.connect(func() -> void: _resolve_strike(""))
-	add_child(skip)
+	_hud.add_child(skip)
 	_strike_nodes.append(skip)
 
 	# Highlight the strikeable weapons (deferred, same reason as protect outlines).
@@ -2758,7 +3161,7 @@ func _show_ready_inline(payload: Dictionary) -> void:
 	header.size     = Vector2(row_width + 100, 20)
 	@warning_ignore("integer_division")
 	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	add_child(header)
+	_hud.add_child(header)
 	_ready_nodes.append(header)
 
 	var pay_btn := Button.new()
@@ -2766,7 +3169,7 @@ func _show_ready_inline(payload: Dictionary) -> void:
 	pay_btn.position = Vector2(btn_x, 987)
 	pay_btn.size     = Vector2(BTN_W, 36)
 	pay_btn.pressed.connect(func() -> void: _resolve_ready(true))
-	add_child(pay_btn)
+	_hud.add_child(pay_btn)
 	_ready_nodes.append(pay_btn)
 
 	var skip := Button.new()
@@ -2774,7 +3177,7 @@ func _show_ready_inline(payload: Dictionary) -> void:
 	skip.position = Vector2(btn_x + BTN_W + GAP, 987)
 	skip.size     = Vector2(SKIP_W, 36)
 	skip.pressed.connect(func() -> void: _resolve_ready(false))
-	add_child(skip)
+	_hud.add_child(skip)
 	_ready_nodes.append(skip)
 
 
@@ -2828,7 +3231,18 @@ func _on_rematch() -> void:
 		child.queue_free()
 	await get_tree().process_frame
 	_game_over                    = false
-	_p1_played_this_action_phase  = false
+	_played_this_action_phase     = {}
+	_stop_for_end_window          = false
+	_camera_tween                 = null   # camera is rebuilt by _build_scene
+	_in_ambush_mode               = false  # _stance survives the rematch (player pref)
+	_ambush_player                = ""
+	_handoff_pending              = false
+	_handoff_layer                = null   # freed with the other children above
+	_mulligan_queue               = []
+	_local_player                 = "p1" if _p1_type == "human" \
+			else ("p2" if _p2_type == "human" else "p1")
+	_mulligan_current             = _local_player
+	CardNode.input_blocked        = false
 	_in_protect_mode              = false
 	_protect_nodes                = []
 	_in_strike_mode               = false
@@ -2844,7 +3258,7 @@ func _on_rematch() -> void:
 
 
 func _schedule_next_turn() -> void:
-	if _draining or _game_over:
+	if _draining or _game_over or _handoff_pending or _in_ambush_mode:
 		return
 	if _state.pending_discard_count > 0:
 		return  # wait for discard resolution before advancing
@@ -2864,7 +3278,9 @@ func _schedule_next_turn() -> void:
 		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
-	if pid_type != "human" \
+	# Auto-drive AI players AND, in hotseat, the off-screen human (auto-pass).
+	var auto_driven := pid_type != "human" or (_hotseat and pid != _local_player)
+	if auto_driven \
 			and not _ai_timer.time_left > 0 \
 			and not _state.in_protect_point \
 			and not _in_protect_mode \
@@ -2908,6 +3324,8 @@ func _drain_passes() -> void:
 	var limit := 30
 	while limit > 0:
 		limit -= 1
+		if _handoff_pending or _in_ambush_mode:
+			break
 		if _game_over or _state.in_protect_point or _in_protect_mode \
 				or _state.pending_strike_player != "" or _in_strike_mode \
 				or _state.pending_ready_player != "" or _in_ready_mode:
@@ -2927,14 +3345,21 @@ func _drain_passes() -> void:
 		var pid := _state.priority_player
 		var pid_type := _p1_type if pid == "p1" else _p2_type
 		var events: Array[GameEvent] = []
-		if pid_type == "human":
+		if pid_type == "human" and _hotseat and pid != _local_player:
+			# Hotseat off-screen human: auto-pass (hand hidden), unless Ambush
+			# stance + a legal instant response — then stop the window for them.
+			if _stance.get(pid, "ambush") == "ambush" and _offscreen_has_play(pid):
+				_enter_ambush_mode(pid)
+				break
+			events = StackResolver.pass_priority(_state, _db)
+		elif pid_type == "human":
 			# Turbo auto-passes the human's own just-added top chain link even when they
 			# hold a legal instant (LIFO — they'll regain priority if the opponent reacts).
 			var owns_top := _player_owns_top_of_chain(pid)
 			# C one-shot: auto-pass this player's combat windows until the opponent
 			# responds. An opponent link on the chain (not owned by us) means they
 			# played something → stop, clear the flag, and hand control back.
-			if _auto_pass_combat and pid == "p1":
+			if _auto_pass_combat and pid == _local_player:
 				if chain_pending and not owns_top:
 					_auto_pass_combat = false
 					break
@@ -3015,7 +3440,8 @@ func _drain_passes() -> void:
 
 
 func _maybe_turbo_pass() -> void:
-	if _draining or not (_turbo_mode or _wrap_up_active) or not _state or not _router:
+	if _draining or _handoff_pending or not (_turbo_mode or _wrap_up_active) \
+			or not _state or not _router:
 		return
 	if _in_protect_mode:
 		return
@@ -3031,7 +3457,13 @@ func _maybe_turbo_pass() -> void:
 	if _state.pending_control_discard_player != "":
 		_wrap_up_active = false
 		return
-	if _state.priority_player != "p1" or _p1_type != "human":
+	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
+		return
+	# Post-handoff hold: the incoming hotseat player was handed the screen FOR
+	# this end-phase window (play instants with leftover resources) — never
+	# auto-pass it. Cleared when they pass or the phase moves on.
+	if _stop_for_end_window and _state.phase == "end" \
+			and _state.pending_actions.is_empty():
 		return
 	# Combat windows and a non-empty chain are _drain_passes's exclusive domain
 	# (it owns the full Layer 2 / Layer 3 decision there — hold, or Turbo-skip
@@ -3059,8 +3491,8 @@ func _maybe_turbo_pass() -> void:
 	# Auto-pass when there's nothing to play, during ready/draw (instants are so rare
 	# there that Turbo skips them — switch to Tactical to play powers early), OR when
 	# the human just added the top chain link themselves (see _player_owns_top_of_chain).
-	if not _human_has_new_info("p1") or phase == "ready" or phase == "draw" \
-			or _player_owns_top_of_chain("p1"):
+	if not _human_has_new_info(_local_player) or phase == "ready" or phase == "draw" \
+			or _player_owns_top_of_chain(_local_player):
 		call_deferred("_do_turbo_pass")
 	else:
 		# A new opponent chain link or a combat window transition happened
@@ -3115,7 +3547,7 @@ func _human_has_new_info(pid: String) -> bool:
 func _describe_priority_stop_reason() -> String:
 	if not _state.pending_actions.is_empty():
 		var top: PendingAction = _state.pending_actions.back()
-		if top != null and top.source_player != "p1" \
+		if top != null and top.source_player != _local_player \
 				and top.action_type != "place_resource" \
 				and top.get_instance_id() != _last_seen_chain_top_iid:
 			if top.action_type == "propose_combat":
@@ -3148,12 +3580,13 @@ func _mark_priority_info_seen() -> void:
 # a stray Space tap can't skip the turn. Pending choices (control-discard decline,
 # sacrifices) are NOT wrap-ups — those keep their own Space handling.
 func _is_wrap_up_pass() -> bool:
-	if not _state or _state.priority_player != "p1" or _state.turn_player != "p1":
+	if not _state or _state.priority_player != _local_player \
+			or _state.turn_player != _local_player:
 		return false
-	if _state.pending_control_discard_player == "p1" \
-			or _state.pending_pet_sacrifice_player == "p1" \
-			or _state.pending_equip_sacrifice_player == "p1" \
-			or _state.pending_unique_sacrifice_player == "p1":
+	if _state.pending_control_discard_player == _local_player \
+			or _state.pending_pet_sacrifice_player == _local_player \
+			or _state.pending_equip_sacrifice_player == _local_player \
+			or _state.pending_unique_sacrifice_player == _local_player:
 		return false
 	if not _state.pending_actions.is_empty():
 		return false
@@ -3165,14 +3598,15 @@ func _is_wrap_up_pass() -> bool:
 # True when the human currently holds priority in one of their own combat
 # windows — the moment pressing C to auto-pass the rest of combat makes sense.
 func _can_auto_pass_combat() -> bool:
-	return _state != null and _p1_type == "human" \
-		and _state.priority_player == "p1" \
+	return _state != null and _type_of(_local_player) == "human" \
+		and _state.priority_player == _local_player \
 		and (_state.combat_attack_window or _state.combat_defend_window)
 
 
+# The LOCAL human's own main action window (chain empty, no combat).
 func _is_p1_main_action_window() -> bool:
 	return _state.phase == "action" \
-		and _state.turn_player == "p1" \
+		and _state.turn_player == _local_player \
 		and _state.pending_actions.is_empty() \
 		and not _state.combat_attack_window \
 		and not _state.combat_defend_window \
@@ -3181,7 +3615,7 @@ func _is_p1_main_action_window() -> bool:
 
 func _is_opponent_action_window() -> bool:
 	return _state.phase == "action" \
-		and _state.turn_player != "p1" \
+		and _state.turn_player != _local_player \
 		and _state.pending_actions.is_empty() \
 		and not _state.combat_attack_window \
 		and not _state.combat_defend_window \
@@ -3189,21 +3623,23 @@ func _is_opponent_action_window() -> bool:
 
 
 func _do_turbo_pass() -> void:
-	if not (_turbo_mode or _wrap_up_active) or not _state or not _router:
+	if not (_turbo_mode or _wrap_up_active) or not _state or not _router or _handoff_pending:
 		return
-	if _state.priority_player != "p1" or _p1_type != "human":
+	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
 		return
 	var phase := _state.phase
 	# Re-check at fire time — state may have changed since the deferred was scheduled.
+	if _stop_for_end_window and phase == "end" and _state.pending_actions.is_empty():
+		return   # held wrap-up window for the just-seated hotseat player
 	if _is_p1_main_action_window():
 		_wrap_up_active = false
 		return
 	# Hold only when something changed AND you have a legal response. With no
 	# legal play, Turbo passes through even on new info (its "auto-pass all
 	# 'no legal play'" contract) — matching Layer 3 in _drain_passes.
-	if _human_has_new_info("p1") and _router.has_any_legal_play() \
+	if _human_has_new_info(_local_player) and _router.has_any_legal_play() \
 			and phase != "ready" and phase != "draw" \
-			and not _player_owns_top_of_chain("p1"):
+			and not _player_owns_top_of_chain(_local_player):
 		_mark_priority_info_seen()
 		_wrap_up_active = false
 		return

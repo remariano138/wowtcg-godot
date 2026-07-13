@@ -450,7 +450,7 @@ static func can_play_instant_no_target_check(state: GameState,
 static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "deal_damage_to_target"]:
+		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target"]:
 			return true
 	return false
 
@@ -458,7 +458,8 @@ static func _instant_needs_target(def: CardDef) -> bool:
 static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] == "destroy_target" and parts.size() > 1 and parts[1] == "ally":
+		if parts[0] in ["destroy_target", "exhaust_target"] \
+				and parts.size() > 1 and parts[1] == "ally":
 			return true
 	return false
 
@@ -854,6 +855,15 @@ static func _resolve_play_instant(state: GameState,
 						if _is_legal_target(state, target_id, db):
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
+					"exhaust_target":
+						# "Exhaust target ally." (Exhaustion). Re-check at resolution
+						# (706): fizzles if the ally left play / became Untargetable.
+						# exhaust_card no-ops if it's already exhausted. Played in
+						# response to a combat proposal and aimed at the attacker, the
+						# 601.3 recheck then fizzles the proposal (attacker not ready).
+						if _is_legal_target(state, target_id, db) \
+								and _is_ally(state, target_id):
+							events.append_array(GameLogic.exhaust_card(state, target_id))
 					"deal_damage_to_target":
 						# "Your hero deals N <type> damage to target hero or ally."
 						# (Quick Strike). Target is announced at play time (rule 601-style;

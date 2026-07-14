@@ -379,7 +379,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 	# Validate target for targeted effects.
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
-		if def and _instant_needs_target(def):
+		if def and _has_effect_flag_prefix(def, "multi_shot"):
+			if not _can_play_multi_shot(state, action, db): return false
+		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db):
 				return false
@@ -623,6 +625,41 @@ static func _can_play_chain_lightning(state: GameState, action: PendingAction, d
 		# allow_untargetable: this slot selects rather than targets
 		# (card-specific exception — see comment above).
 		if not _is_legal_target(state, target_id_3, db, true):
+			return false
+	return true
+
+
+# Validates a Multi-Shot announcement (azeroth_41 — see CLAUDE.md). "Your hero
+# deals N ranged damage to each of up to three target heroes and/or allies."
+# Up to 3 distinct hero-or-ally targets in announce order (target_id mandatory;
+# target_id_2/_3 optional, _3 requires _2). Unlike Chain Lightning, ALL three
+# slots select rather than target — every slot MAY be Untargetable
+# (allow_untargetable, card-specific 706 exception).
+static func _can_play_multi_shot(state: GameState, action: PendingAction, db) -> bool:
+	var t1: String = action.params.get("target_id",   "")
+	var t2: String = action.params.get("target_id_2", "")
+	var t3: String = action.params.get("target_id_3", "")
+	if t1 == "":
+		return false
+	if not _is_hero_or_ally(state, t1, db):
+		return false
+	if not _is_legal_target(state, t1, db, true):
+		return false
+	if t3 != "" and t2 == "":
+		return false
+	if t2 != "":
+		if t2 == t1:
+			return false
+		if not _is_hero_or_ally(state, t2, db):
+			return false
+		if not _is_legal_target(state, t2, db, true):
+			return false
+	if t3 != "":
+		if t3 == t1 or t3 == t2:
+			return false
+		if not _is_hero_or_ally(state, t3, db):
+			return false
+		if not _is_legal_target(state, t3, db, true):
 			return false
 	return true
 
@@ -1015,6 +1052,34 @@ static func _resolve_play_instant(state: GameState,
 									else:
 										events.append_array(_check_destroyed_trigger(
 											state, cl_target_id, cl_hero_id, db))
+					"multi_shot":
+						# "Your hero deals N ranged damage to each of up to three
+						# target heroes and/or allies." (Multi-Shot). Recipe
+						# multi_shot:N:TYPE. Up to 3 targets announced at play time
+						# (target_id/_2/_3); each takes the same N damage, resolved in
+						# printed order with its own destruction/game-over check (a
+						# target killed by an earlier wave just can't be hit again,
+						# 711.1). All slots select rather than target, so every wave
+						# allows an Untargetable target (706 exception — see CLAUDE.md).
+						var ms_amount := int(parts[1]) if parts.size() > 1 else 0
+						var ms_ps := state.players.get(action.source_player) as PlayerState
+						var ms_hero_id: String = ms_ps.hero_instance_id if ms_ps else ""
+						var ms_targets := _chain_lightning_targets(action)
+						if ms_hero_id != "" and ms_amount > 0:
+							for ms_target_id in ms_targets:
+								if not _is_legal_target(state, ms_target_id, db, true):
+									continue
+								events.append_array(GameLogic.deal_damage(
+									state, ms_hero_id, ms_target_id, ms_amount, db))
+								var ms_t_card := state.get_card(ms_target_id)
+								if ms_t_card and state.get_current_hp(ms_target_id, db) <= 0:
+									var ms_t_zone := state.zones.get(ms_t_card.zone_id) as Zone
+									if ms_t_zone and ms_t_zone.zone_type == "hero_row":
+										events.append(GameEvent.game_over(
+											_other_player(state, ms_t_card.controller), ms_t_card.controller))
+									else:
+										events.append_array(_check_destroyed_trigger(
+											state, ms_target_id, ms_hero_id, db))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
@@ -1328,6 +1393,9 @@ static func has_incoming_hero_damage(state: GameState, db, player_id: String) ->
 						and _has_effect_flag_prefix(def, "deal_damage_to_target"):
 					return true
 				if _has_effect_flag_prefix(def, "chain_lightning") \
+						and hero_id in _chain_lightning_targets(act):
+					return true
+				if _has_effect_flag_prefix(def, "multi_shot") \
 						and hero_id in _chain_lightning_targets(act):
 					return true
 			"use_ally_power":

@@ -13,7 +13,9 @@ extends RefCounted
 #                  opening-hand deal (move_card_silent, not itself observed as
 #                  an event), then increments for any further card that enters
 #                  a player's hand from their deck (turn draws, effect draws,
-#                  mulligan redraw).
+#                  mulligan redraw). Cards moved from hand back to deck (the
+#                  mulligan return) decrement, keeping the count symmetric so
+#                  the base-7 opening deal isn't double-counted on a mulligan.
 #   cards_played — a card played from hand (ally / instant / ability /
 #                  equipment). Placing a resource is NOT a play and is excluded
 #                  (it is a separate action; see submit_action). Fed by the
@@ -37,6 +39,11 @@ func record_event(event: GameEvent) -> void:
 			var to_zone:   String = event.payload.get("to", "")
 			if from_zone.ends_with("_deck") and to_zone.ends_with("_hand"):
 				_bump(cards_drawn, _player_of_zone(to_zone))
+			# Symmetric un-draw: cards returned from hand to deck (mulligan
+			# redraw, rule 103.4) decrement so the base-7 opening deal isn't
+			# double-counted when the redrawn 7 come back as card_moved events.
+			elif from_zone.ends_with("_hand") and to_zone.ends_with("_deck"):
+				_unbump(cards_drawn, _player_of_zone(from_zone))
 		"card_played":
 			_bump(cards_played, event.payload.get("player", ""))
 
@@ -53,6 +60,12 @@ func _bump(counter: Dictionary, player_id: String) -> void:
 	if player_id == "":
 		return
 	counter[player_id] = int(counter.get(player_id, 0)) + 1
+
+
+func _unbump(counter: Dictionary, player_id: String) -> void:
+	if player_id == "":
+		return
+	counter[player_id] = int(counter.get(player_id, 0)) - 1
 
 
 # "p1_hand" → "p1"

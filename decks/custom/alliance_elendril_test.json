@@ -140,8 +140,13 @@
     },
     {
       "card_def_id": "azeroth_192",
-      "count": 3,
+      "count": 2,
       "_card_name": "Kor Cindervein"
+    },
+    {
+      "card_def_id": "azeroth_41",
+      "count": 1,
+      "_card_name": "Multi-Shot"
     },
     {
       "card_def_id": "azeroth_348",

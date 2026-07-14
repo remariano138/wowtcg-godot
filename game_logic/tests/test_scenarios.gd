@@ -116,6 +116,7 @@ func _ready() -> void:
 		_test_starfire,
 		_test_flamestrike,
 		_test_chain_lightning,
+		_test_multi_shot,
 		_test_untargetable_keyword,
 		_test_infernal_discard_keeps_control,
 		_test_infernal_decline_gives_control,
@@ -6199,6 +6200,146 @@ func _test_chain_lightning() -> void:
 		var t3: String = act8.params.get("target_id_3", "")
 		ok(t2 in ["f1", "f2"] and t3 in ["f1", "f2"] and t2 != t3,
 			"sc46-m3: waves 2 and 1 kill the two 1-HP allies")
+
+
+func _test_multi_shot() -> void:
+	_buf.append("\n-- Scenario 46b: Multi-Shot — up to 3 targets, flat 2 ranged each --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ms_victim_a", 2, 6, [], 3)
+	db.ally("ms_victim_b", 2, 6, [], 3)
+	db.ally("ms_victim_c", 2, 6, [], 3)
+	db.ally("ms_frail",    2, 2, [], 1)   # dies to 2 ranged
+	db.ally("ms_untarget", 0, 6, (["untargetable"] as Array[String]), 2)
+	db.instant("multishot_def", 5, "multi_shot:2:ranged")
+
+	# sc46b-a: no target at all → illegal.
+	var state0 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state0, "p1", 5)
+	var ms0 := CardInstance.create("ms0", "multishot_def", "p1", "p1_hand")
+	state0.cards["ms0"] = ms0
+	state0.zones["p1_hand"].card_ids.append("ms0")
+	ok(not StackResolver.can_submit(state0,
+		PendingAction.make("play_instant", "p1", {"card_id": "ms0"}), db),
+		"sc46b-a: no target at all is illegal")
+
+	# sc46b-b: single-target cast — 2 dmg from p1's hero, card to graveyard.
+	var state1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state1, "p1", 5)
+	var ms1 := CardInstance.create("ms1", "multishot_def", "p1", "p1_hand")
+	state1.cards["ms1"] = ms1
+	state1.zones["p1_hand"].card_ids.append("ms1")
+	_add_ally(state1, "ma1", "ms_victim_a", "p2")
+
+	var p1_ai1 := ScriptedAI.new()
+	p1_ai1.queue_action(PendingAction.make("play_instant", "p1",
+		{"card_id": "ms1", "target_id": "ma1"}))
+	var events1 := _drive_turns(state1, db, p1_ai1, ScriptedAI.new(), 3)
+	eq(state1.get_card("ma1").damage_taken, 2, "sc46b-b: single target took 2 dmg")
+	var dmg_source1 := ""
+	for e in events1:
+		if e.event_type == "damage_dealt":
+			dmg_source1 = e.payload.get("source", dmg_source1)
+	eq(dmg_source1, "p1_hero", "sc46b-b2: damage source is p1's hero")
+	ok(state1.get_card("ms1").zone_id == "p1_graveyard", "sc46b-b3: Multi-Shot in graveyard")
+
+	# sc46b-c: three-target cast — every target takes the same 2 dmg.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 5)
+	var ms3 := CardInstance.create("ms3", "multishot_def", "p1", "p1_hand")
+	state3.cards["ms3"] = ms3
+	state3.zones["p1_hand"].card_ids.append("ms3")
+	_add_ally(state3, "ma3", "ms_victim_a", "p2")
+	_add_ally(state3, "mb3", "ms_victim_b", "p2")
+	_add_ally(state3, "mc3", "ms_victim_c", "p2")
+
+	var p1_ai3 := ScriptedAI.new()
+	p1_ai3.queue_action(PendingAction.make("play_instant", "p1",
+		{"card_id": "ms3", "target_id": "ma3", "target_id_2": "mb3", "target_id_3": "mc3"}))
+	_drive_turns(state3, db, p1_ai3, ScriptedAI.new(), 3)
+	eq(state3.get_card("ma3").damage_taken, 2, "sc46b-c: 1st target took 2 dmg")
+	eq(state3.get_card("mb3").damage_taken, 2, "sc46b-c2: 2nd target took 2 dmg")
+	eq(state3.get_card("mc3").damage_taken, 2, "sc46b-c3: 3rd target took 2 dmg")
+
+	# sc46b-d: illegal target combinations.
+	var state4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state4, "p1", 5)
+	var ms4 := CardInstance.create("ms4", "multishot_def", "p1", "p1_hand")
+	state4.cards["ms4"] = ms4
+	state4.zones["p1_hand"].card_ids.append("ms4")
+	_add_ally(state4, "ma4", "ms_victim_a", "p2")
+	_add_ally(state4, "mb4", "ms_victim_b", "p2")
+	ok(not StackResolver.can_submit(state4, PendingAction.make("play_instant", "p1",
+		{"card_id": "ms4", "target_id": "ma4", "target_id_3": "mb4"}), db),
+		"sc46b-d: target_id_3 without target_id_2 is illegal")
+	ok(not StackResolver.can_submit(state4, PendingAction.make("play_instant", "p1",
+		{"card_id": "ms4", "target_id": "ma4", "target_id_2": "ma4"}), db),
+		"sc46b-d2: repeated (non-distinct) target is illegal")
+
+	# sc46b-e: Untargetable can be selected in ANY slot (all three slots select
+	# rather than target — card-specific override, unlike Chain Lightning's 1st wave).
+	var state6 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state6, "p1", 5)
+	var ms6 := CardInstance.create("ms6", "multishot_def", "p1", "p1_hand")
+	state6.cards["ms6"] = ms6
+	state6.zones["p1_hand"].card_ids.append("ms6")
+	_add_ally(state6, "mu6", "ms_untarget",  "p2")
+	_add_ally(state6, "mv6", "ms_victim_a",  "p2")
+	ok(StackResolver.can_submit(state6, PendingAction.make("play_instant", "p1",
+		{"card_id": "ms6", "target_id": "mu6"}), db),
+		"sc46b-e: Untargetable CAN be the 1st (mandatory) target of Multi-Shot")
+
+	var p1_ai6 := ScriptedAI.new()
+	p1_ai6.queue_action(PendingAction.make("play_instant", "p1",
+		{"card_id": "ms6", "target_id": "mu6", "target_id_2": "mv6"}))
+	_drive_turns(state6, db, p1_ai6, ScriptedAI.new(), 3)
+	eq(state6.get_card("mu6").damage_taken, 2, "sc46b-e2: Untargetable 1st target took 2 dmg")
+	eq(state6.get_card("mv6").damage_taken, 2, "sc46b-e3: 2nd target took 2 dmg")
+
+	# sc46b-f: a target that dies to an earlier hit doesn't block the others.
+	var state5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state5, "p1", 5)
+	var ms5 := CardInstance.create("ms5", "multishot_def", "p1", "p1_hand")
+	state5.cards["ms5"] = ms5
+	state5.zones["p1_hand"].card_ids.append("ms5")
+	_add_ally(state5, "mfrail5", "ms_frail",    "p2")   # 2 HP — dies to its 2 dmg
+	_add_ally(state5, "mvb5",    "ms_victim_b",  "p2")
+
+	var p1_ai5 := ScriptedAI.new()
+	p1_ai5.queue_action(PendingAction.make("play_instant", "p1",
+		{"card_id": "ms5", "target_id": "mfrail5", "target_id_2": "mvb5"}))
+	_drive_turns(state5, db, p1_ai5, ScriptedAI.new(), 3)
+	ok(state5.get_card("mfrail5").zone_id == "p2_graveyard",
+		"sc46b-f: 1st target destroyed by its 2 dmg")
+	eq(state5.get_card("mvb5").damage_taken, 2,
+		"sc46b-f2: 2nd target still took its 2 dmg")
+
+	# sc46b-g: AI targeting — prefers killable allies, then soak, then hero,
+	# and always targets opponents only.
+	db.ally("ms_hp2", 1, 2, [], 1)   # killed by 2
+	db.ally("ms_hp5", 1, 5, [], 2)   # soak
+	var state7 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state7, "p1", 5)
+	var ms7 := CardInstance.create("ms7", "multishot_def", "p1", "p1_hand")
+	state7.cards["ms7"] = ms7
+	state7.zones["p1_hand"].card_ids.append("ms7")
+	_add_ally(state7, "k7", "ms_hp2", "p2")
+	_add_ally(state7, "s7", "ms_hp5", "p2")
+	# A friendly ally that must NEVER be targeted.
+	_add_ally(state7, "friend7", "ms_hp2", "p1")
+
+	var ai7 := BaseAI.new()
+	var act7 := ai7._multi_shot_action(state7, db, "p1", "ms7", "play_instant")
+	ok(act7 != null, "sc46b-g: AI produced a Multi-Shot action")
+	if act7:
+		var picked := [act7.params.get("target_id", ""),
+			act7.params.get("target_id_2", ""), act7.params.get("target_id_3", "")]
+		ok("friend7" not in picked, "sc46b-g2: AI never targets its own ally")
+		eq(act7.params.get("target_id", ""), "k7",
+			"sc46b-g3: AI shoots the killable ally first")
+		ok("s7" in picked and "p2_hero" in picked,
+			"sc46b-g4: AI also hits the soak ally and the enemy hero")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

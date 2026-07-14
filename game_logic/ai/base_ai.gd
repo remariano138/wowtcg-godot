@@ -571,6 +571,13 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 				if cl_action:
 					result.append(cl_action)
 				continue
+			if def and StackResolver._has_effect_flag_prefix(def, "multi_shot"):
+				# Multi-Shot: up to 3 enemy targets, each takes the same damage.
+				# AI always targets opponents only.
+				var ms_action := _multi_shot_action(state, db, player_id, card.instance_id, action_type)
+				if ms_action:
+					result.append(ms_action)
+				continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
@@ -1881,6 +1888,58 @@ func _other_player_id(state: GameState, player_id: String) -> String:
 		if pid != player_id:
 			return pid
 	return player_id
+
+
+# Multi-Shot (azeroth_41): builds a single action announcing up to 3 distinct
+# enemy targets, each taking the same N damage. AI targets opponents only.
+# Candidate order: allies the shot KILLS first (efficient removal), then the
+# remaining allies (highest HP soak), then the opposing hero. Each candidate is
+# validated with an incremental can_submit probe (announce order enforced).
+func _multi_shot_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var amount := 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "multi_shot" and parts.size() > 1:
+			amount = int(parts[1])
+	var opp := _other_player_id(state, player_id)
+	var opp_ps := state.players.get(opp) as PlayerState
+	var kills: Array[String] = []
+	var soak:  Array[String] = []
+	for ally in state.cards_in_zone(opp + "_ally_row"):
+		if state.get_current_hp(ally.instance_id, db) <= amount:
+			kills.append(ally.instance_id)
+		else:
+			soak.append(ally.instance_id)
+	# Higher-HP allies soak the shots that won't kill anything.
+	soak.sort_custom(func(a, b):
+		return state.get_current_hp(a, db) > state.get_current_hp(b, db))
+	var ordered: Array[String] = []
+	ordered.append_array(kills)
+	ordered.append_array(soak)
+	if opp_ps and opp_ps.hero_instance_id != "":
+		ordered.append(opp_ps.hero_instance_id)
+	if ordered.is_empty():
+		return null
+	var keys := ["target_id", "target_id_2", "target_id_3"]
+	var params := {"card_id": card_id}
+	var chosen := 0
+	for cand in ordered:
+		if chosen >= 3:
+			break
+		var probe_params := params.duplicate()
+		probe_params[keys[chosen]] = cand
+		var probe := PendingAction.make(action_type, player_id, probe_params)
+		if StackResolver.can_submit(state, probe, db):
+			params = probe_params
+			chosen += 1
+	if chosen == 0:
+		return null
+	return PendingAction.make(action_type, player_id, params)
 
 
 # Parses "chain_lightning:A1:A2:A3:DMG_TYPE" into [A1, A2, A3].

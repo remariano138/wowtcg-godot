@@ -4,9 +4,9 @@
   "hero_card_def_id": "azeroth_14",
   "card_entries": [
     {
-      "card_def_id": "azeroth_360",
+      "card_def_id": "azeroth_355",
       "count": 1,
-      "_card_name": "Your Fortune Awaits You"
+      "_card_name": "Kibler's Exotic Pets"
     },
     {
       "card_def_id": "azeroth_352",
@@ -35,8 +35,13 @@
     },
     {
       "card_def_id": "azeroth_36",
-      "count": 3,
+      "count": 2,
       "_card_name": "Bloodclaw"
+    },
+    {
+      "card_def_id": "dark_portal_32",
+      "count": 2,
+      "_card_name": "Chops"
     },
     {
       "card_def_id": "azeroth_38",
@@ -49,24 +54,24 @@
       "_card_name": "Rayder"
     },
     {
-      "card_def_id": "azeroth_42",
-      "count": 1,
-      "_card_name": "Old Bones"
-    },
-    {
       "card_def_id": "azeroth_33",
       "count": 2,
       "_card_name": "Arcane Shot"
     },
     {
       "card_def_id": "dark_portal_260",
-      "count": 2,
+      "count": 1,
       "_card_name": "Pads of the Dread Wolf"
     },
     {
       "card_def_id": "azeroth_165",
       "count": 2,
       "_card_name": "Quick Strike"
+    },
+    {
+      "card_def_id": "azeroth_41",
+      "count": 1,
+      "_card_name": "Multi-Shot"
     },
     {
       "card_def_id": "azeroth_171",
@@ -84,9 +89,9 @@
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_230",
+      "card_def_id": "azeroth_266",
       "count": 2,
-      "_card_name": "Blood Guard Mal'wani"
+      "_card_name": "Voss Treebender"
     },
     {
       "card_def_id": "azeroth_264",
@@ -104,9 +109,9 @@
       "_card_name": "Ka'tali Stonetusk"
     },
     {
-      "card_def_id": "azeroth_269",
+      "card_def_id": "azeroth_226",
       "count": 1,
-      "_card_name": "Watcher Mal'wi"
+      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_270",

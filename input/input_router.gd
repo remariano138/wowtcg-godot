@@ -608,7 +608,7 @@ func _handle_attack_exhaust_targeting_click(instance_id: String) -> void:
 func _handle_ability_targeting_click(instance_id: String) -> void:
 	# Chain Lightning: up to 3 targets, one click per wave — see
 	# _handle_chain_lightning_click / _submit_chain_lightning below.
-	if _is_chain_lightning(_targeting_source):
+	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
 		return
 	var action := PendingAction.make("play_ability", local_player, {
@@ -635,12 +635,18 @@ func _handle_ability_targeting_click(instance_id: String) -> void:
 # source card again before any target is picked cancels, same as other
 # targeting modes.
 
-func _is_chain_lightning(card_id: String) -> bool:
+# True for any multi-target announced-in-order spell: Chain Lightning
+# (play_ability) and Multi-Shot (play_instant). Both drive the same picking
+# flow below; the action_type is looked up per card via _action_type_for.
+func _is_multi_target(card_id: String) -> bool:
 	if not db or card_id == "":
 		return false
 	var card := state.get_card(card_id)
 	var def := db.get_def(card.card_def_id) as CardDef if card else null
-	return def != null and StackResolver._has_effect_flag_prefix(def, "chain_lightning")
+	if not def:
+		return false
+	return StackResolver._has_effect_flag_prefix(def, "chain_lightning") \
+		or StackResolver._has_effect_flag_prefix(def, "multi_shot")
 
 
 func _chain_lightning_params(extra_target_id: String = "") -> Dictionary:
@@ -664,7 +670,7 @@ func _handle_chain_lightning_click(instance_id: String) -> void:
 		return
 	if _chain_lightning_picked.size() >= 3 or instance_id in _chain_lightning_picked:
 		return
-	var probe := PendingAction.make("play_ability", local_player,
+	var probe := PendingAction.make(_action_type_for(_targeting_source), local_player,
 		_chain_lightning_params(instance_id))
 	if not StackResolver.can_submit(state, probe, db):
 		return
@@ -680,7 +686,7 @@ func _handle_chain_lightning_click(instance_id: String) -> void:
 
 
 func _submit_chain_lightning() -> void:
-	var action := PendingAction.make("play_ability", local_player,
+	var action := PendingAction.make(_action_type_for(_targeting_source), local_player,
 		_chain_lightning_params())
 	_targeting_source       = ""
 	_chain_lightning_picked = []
@@ -694,6 +700,9 @@ func _submit_chain_lightning() -> void:
 
 
 func _handle_instant_targeting_click(instance_id: String) -> void:
+	if _is_multi_target(_targeting_source):
+		_handle_chain_lightning_click(instance_id)
+		return
 	var action := PendingAction.make("play_instant", local_player, {
 		"card_id": _targeting_source, "target_id": instance_id,
 	})
@@ -1486,7 +1495,7 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 
 
 func _get_ability_targets(card_id: String) -> Array:
-	if _is_chain_lightning(card_id):
+	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
 	var result: Array = []
 	for pid in state.players:
@@ -1510,15 +1519,16 @@ func _get_ability_targets(card_id: String) -> Array:
 # candidates on the 1st wave only, and excludes already-picked candidates.
 func _get_chain_lightning_targets(card_id: String) -> Array:
 	var result: Array = []
+	var atype := _action_type_for(card_id)
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
-			var probe := PendingAction.make("play_ability", local_player,
+			var probe := PendingAction.make(atype, local_player,
 				_chain_lightning_params(card.instance_id))
 			if StackResolver.can_submit(state, probe, db):
 				result.append(card.instance_id)
 		var ps := state.players.get(pid) as PlayerState
 		if ps and ps.hero_instance_id != "":
-			var probe := PendingAction.make("play_ability", local_player,
+			var probe := PendingAction.make(atype, local_player,
 				_chain_lightning_params(ps.hero_instance_id))
 			if StackResolver.can_submit(state, probe, db):
 				result.append(ps.hero_instance_id)
@@ -1526,6 +1536,8 @@ func _get_chain_lightning_targets(card_id: String) -> Array:
 
 
 func _get_instant_targets(card_id: String) -> Array:
+	if _is_multi_target(card_id):
+		return _get_chain_lightning_targets(card_id)
 	var result: Array = []
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
@@ -1551,6 +1563,8 @@ func _instant_needs_target(card_id: String) -> bool:
 	var def := db.get_def(card.card_def_id) as CardDef
 	if not def:
 		return false
+	if _is_multi_target(card_id):
+		return true
 	return StackResolver._instant_needs_target(def)
 
 
@@ -1616,6 +1630,9 @@ func _card_dmg_type(card_id: String) -> String:
 			"chain_lightning":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 4: return parts[4].to_lower()
+			"multi_shot":
+				var parts := entry.strip_edges().split(":")
+				if parts.size() > 2: return parts[2].to_lower()
 			"heal_target": return "heal"
 	return ""
 
@@ -1632,6 +1649,9 @@ func _chain_lightning_amount_for(card_id: String, picked_count: int) -> int:
 		var parts := entry.strip_edges().split(":")
 		if parts[0].strip_edges() == "chain_lightning" and parts.size() > 1 + picked_count:
 			return int(parts[1 + picked_count])
+		# Multi-Shot deals the same amount to every target (recipe multi_shot:N:TYPE).
+		if parts[0].strip_edges() == "multi_shot" and parts.size() > 1:
+			return int(parts[1])
 	return 0
 
 
@@ -1649,6 +1669,8 @@ func _card_dmg_amount(card_id: String) -> int:
 			"deal_damage_to_target":
 				if parts.size() > 1: return int(parts[1])
 			"chain_lightning":
+				if parts.size() > 1: return int(parts[1])
+			"multi_shot":
 				if parts.size() > 1: return int(parts[1])
 	return 0
 
@@ -1693,7 +1715,7 @@ func _action_type_for(instance_id: String) -> String:
 
 
 func _ability_needs_target(card_id: String) -> bool:
-	if _is_chain_lightning(card_id):
+	if _is_multi_target(card_id):
 		return true
 	return _instant_needs_target(card_id)
 

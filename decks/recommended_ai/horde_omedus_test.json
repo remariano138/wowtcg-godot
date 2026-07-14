@@ -59,9 +59,9 @@
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_230",
+      "card_def_id": "azeroth_82",
       "count": 2,
-      "_card_name": "Blood Guard Mal'wani"
+      "_card_name": "Mind Spike"
     },
     {
       "card_def_id": "azeroth_274",
@@ -70,8 +70,13 @@
     },
     {
       "card_def_id": "azeroth_225",
-      "count": 2,
+      "count": 1,
       "_card_name": "Arnold Flem"
+    },
+    {
+      "card_def_id": "dark_portal_204",
+      "count": 1,
+      "_card_name": "Dark Cleric Ismantal"
     },
     {
       "card_def_id": "azeroth_171",
@@ -115,8 +120,13 @@
     },
     {
       "card_def_id": "azeroth_264",
-      "count": 4,
+      "count": 2,
       "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "dark_portal_201",
+      "count": 2,
+      "_card_name": "Boneshanks"
     },
     {
       "card_def_id": "azeroth_228",
@@ -125,8 +135,13 @@
     },
     {
       "card_def_id": "azeroth_252",
-      "count": 2,
+      "count": 1,
       "_card_name": "Moko Hunts-at-Dawn"
+    },
+    {
+      "card_def_id": "azeroth_80",
+      "count": 1,
+      "_card_name": "Mind Blast"
     },
     {
       "card_def_id": "azeroth_234",

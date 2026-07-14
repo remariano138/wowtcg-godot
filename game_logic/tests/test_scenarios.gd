@@ -107,6 +107,9 @@ func _ready() -> void:
 		_test_frost_instants,
 		_test_frost_riders,
 		_test_steal_essence,
+		_test_mind_damage_discard,
+		_test_ismantal_ally_power_discard,
+		_test_boneshanks_death_trigger,
 		_test_lady_jaina_aura,
 		_test_lady_jaina_unique,
 		_test_hannah_cant_protect_aura,
@@ -5699,6 +5702,218 @@ func _test_steal_essence() -> void:
 	ok(amb != null and amb.params.get("card_id") == "se6"
 			and amb.params.get("target_id") == "atk_frail",
 		"sc40f-l: attack window — 2 HP attacker dies to Steal Essence → ambush it")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40g — Mind Spike / Mind Blast: "Your hero deals N shadow damage to
+# target hero or ally. Its controller discards a card for each damage dealt."
+# (deal_damage_to_target:N:shadow|discard_per_damage:1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_mind_damage_discard() -> void:
+	_buf.append("\n-- Scenario 40g: Mind Spike / Mind Blast — damage then discard-per-damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 5, [], 3)     # 5 HP — survives 2 shadow
+	db.ally("wisp_def",  1, 1, [], 1)     # 1 HP — only 1 damage placed
+	db.ally("junk_def",  1, 1, [], 1)     # filler hand cards to discard
+	db.ability("mind_blast_def", 5, "deal_damage_to_target:2:shadow|discard_per_damage:1")
+	db.ability("mind_spike_def", 2, "deal_damage_to_target:1:shadow|discard_per_damage:1")
+
+	# ── Mind Blast: 2 dealt to a surviving enemy ally → its controller discards 2 ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 5)
+	_add_card_to_hand(st, "mb", "mind_blast_def", "p1")
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p2")
+	_add_card_to_hand(st, "j1", "junk_def", "p2")
+	_add_card_to_hand(st, "j2", "junk_def", "p2")
+	_add_card_to_hand(st, "j3", "junk_def", "p2")
+
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "mb", "target_id": "grunt"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	eq(grunt.damage_taken, 2, "sc40g-a: target ally took 2 shadow damage")
+	eq(st.pending_discard_player, "p2", "sc40g-b: the target's controller (p2) owes the discard")
+	eq(st.pending_discard_count, 2, "sc40g-c: discard count equals damage dealt (2)")
+	# Resolve the two discards (scene calls choose_discard directly).
+	StackResolver.choose_discard(st, "j1", db)
+	StackResolver.choose_discard(st, "j2", db)
+	eq(st.zones["p2_hand"].card_ids.size(), 1, "sc40g-d: p2 discarded 2 cards (1 left)")
+	eq(st.pending_discard_count, 0, "sc40g-e: no discards left pending")
+
+	# ── Mind Spike on a 1-HP ally: only 1 damage placed → discard exactly 1 ──
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 2)
+	_add_card_to_hand(st2, "ms", "mind_spike_def", "p1")
+	_add_ally(st2, "wisp", "wisp_def", "p2")
+	_add_card_to_hand(st2, "k1", "junk_def", "p2")
+
+	StackResolver.submit_action(st2, PendingAction.make("play_ability", "p1",
+		{"card_id": "ms", "target_id": "wisp"}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+
+	ok(st2.get_card("wisp").zone_id == "p2_graveyard", "sc40g-f: 1-HP target destroyed")
+	eq(st2.pending_discard_player, "p2", "sc40g-g: destroyed ally's controller still discards")
+	eq(st2.pending_discard_count, 1, "sc40g-h: exactly 1 discard (1 damage placed)")
+
+	# ── Empty hand: damage still lands, no discard is set up (no crash) ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 5)
+	_add_card_to_hand(st3, "mb3", "mind_blast_def", "p1")
+	StackResolver.submit_action(st3, PendingAction.make("play_ability", "p1",
+		{"card_id": "mb3", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	eq(st3.get_card("p2_hero").damage_taken, 2, "sc40g-i: hero takes 2 damage")
+	eq(st3.pending_discard_player, "", "sc40g-j: empty-handed controller owes no discard")
+
+	# ── Self-target: "its controller" is the caster → the CASTER discards ──
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 2)
+	_add_card_to_hand(st4, "ms4", "mind_spike_def", "p1")
+	_add_ally(st4, "own", "grunt_def", "p1")
+	_add_card_to_hand(st4, "own_junk", "junk_def", "p1")
+	StackResolver.submit_action(st4, PendingAction.make("play_ability", "p1",
+		{"card_id": "ms4", "target_id": "own"}), db)
+	StackResolver.pass_priority(st4, db)
+	StackResolver.pass_priority(st4, db)
+	eq(st4.pending_discard_player, "p1", "sc40g-k: targeting own ally makes the caster discard")
+	eq(st4.pending_discard_count, 1, "sc40g-l: 1 discard owed by p1")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40h — Dark Cleric Ismantal: "4, [Activate]: deals 1 shadow damage to
+# target hero or ally. That character's controller discards a card for each
+# damage dealt. Use only on your turn." (activated_power + discard_per_damage +
+# on_your_turn). Reuses the ally-power path.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ismantal_ally_power_discard() -> void:
+	_buf.append("\n-- Scenario 40h: Dark Cleric Ismantal ally power — damage then discard --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ismantal_def", 1, 3, [], 3,
+		"activated_power:4:deal_damage_to_target:1:shadow:hero_or_ally|discard_per_damage:1|on_your_turn")
+	db.ally("grunt_def", 3, 5, [], 3)
+	db.ally("junk_def", 1, 1, [], 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var isman := _add_ally(state, "isman", "ismantal_def", "p1")
+	isman.just_summoned = false
+	isman.is_exhausted  = false
+	_add_ally(state, "target", "grunt_def", "p2")
+	_add_card_to_hand(state, "e1", "junk_def", "p2")
+	_add_card_to_hand(state, "e2", "junk_def", "p2")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "isman", "target_id": "target"})
+	ok(StackResolver.can_submit(state, use, db),
+		"sc40h-a: Ismantal power legal on your turn with 4 resources")
+
+	# "Use only on your turn": illegal on the opponent's turn.
+	var opp_turn := state.duplicate(true) as GameState
+	opp_turn.turn_player = "p2"
+	ok(not StackResolver.can_submit(opp_turn, use, db),
+		"sc40h-b: power illegal on the opponent's turn (on_your_turn)")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("target").damage_taken, 1, "sc40h-c: target took 1 shadow damage")
+	eq(state.pending_discard_player, "p2", "sc40h-d: target's controller (p2) owes the discard")
+	eq(state.pending_discard_count, 1, "sc40h-e: 1 discard (1 damage dealt)")
+	ok(state.get_card("isman").is_exhausted, "sc40h-f: Ismantal exhausted after activating")
+	StackResolver.choose_discard(state, "e1", db)
+	eq(state.zones["p2_hand"].card_ids.size(), 1, "sc40h-g: p2 discarded a card")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40i — Boneshanks: "When Boneshanks is destroyed, destroy target ally."
+# A mandatory targeted death trigger (on_destroyed:destroy_target:ally) resolved
+# by the destroyed card's controller via choose_death_target (direct call).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_boneshanks_death_trigger() -> void:
+	_buf.append("\n-- Scenario 40i: Boneshanks — on-destroy destroy target ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bone_def", 3, 2, [], 3, "on_destroyed:destroy_target:ally")
+	db.ally("grunt_def", 3, 5, [], 3)
+	db.ally("wisp_def",  1, 1, [], 1)
+
+	# ── Case A: Boneshanks dies → its controller must destroy a target ally ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var bone := _add_ally(st, "bone", "bone_def", "p1")
+	var enemy := _add_ally(st, "enemy", "grunt_def", "p2")
+	var events := StackResolver._destroy_card_trigger(st, "bone", "bone", db)
+	ok(bone.zone_id == "p1_graveyard", "sc40i-a: Boneshanks is in the graveyard")
+	eq(st.pending_death_target_player, "p1",
+		"sc40i-b: its controller (p1) must pick a target ally")
+	var saw_req := false
+	for e in events:
+		if e.event_type == "death_target_required":
+			saw_req = true
+	ok(saw_req, "sc40i-c: death_target_required event emitted")
+	# Everything else is blocked while the choice is pending.
+	ok(not StackResolver.can_submit(st,
+		PendingAction.make("place_resource", "p1", {"card_id": "x"}), db),
+		"sc40i-d: can_submit blocked while a death-target choice is pending")
+	ok(StackResolver.pass_priority(st, db).is_empty(),
+		"sc40i-e: pass_priority is hard-blocked while pending")
+	# Resolve: destroy the enemy ally.
+	StackResolver.choose_death_target(st, "enemy", db)
+	ok(enemy.zone_id == "p2_graveyard", "sc40i-f: chosen enemy ally destroyed")
+	eq(st.pending_death_target_player, "", "sc40i-g: no death-target choice left pending")
+
+	# ── Case B: no allies in play when Boneshanks dies → trigger fizzles ──
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st2, "bone2", "bone_def", "p1")
+	StackResolver._destroy_card_trigger(st2, "bone2", "bone2", db)
+	eq(st2.pending_death_target_player, "",
+		"sc40i-h: no legal ally → no choice opened (trigger fizzles)")
+
+	# ── Case C: AI picks the highest-value enemy ally ──
+	var ai := BaseAI.new()
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st3, "bone3", "bone_def", "p1")
+	_add_ally(st3, "weak", "wisp_def", "p2")     # low value
+	_add_ally(st3, "strong", "grunt_def", "p2")  # high value
+	StackResolver._destroy_card_trigger(st3, "bone3", "bone3", db)
+	eq(ai.choose_death_target(st3, db, "p1"), "strong",
+		"sc40i-i: AI destroys the most valuable enemy ally")
+
+	# ── Case D: only friendly allies remain → AI is forced to destroy its own ──
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st4, "bone4", "bone_def", "p1")
+	_add_ally(st4, "friend", "grunt_def", "p1")
+	StackResolver._destroy_card_trigger(st4, "bone4", "bone4", db)
+	eq(ai.choose_death_target(st4, db, "p1"), "friend",
+		"sc40i-j: AI forced to destroy its own ally when no enemy ally exists")
+
+	# ── Case E: chained death — destroying another Boneshanks opens a 2nd choice ──
+	var st5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st5, "boneA", "bone_def", "p1")
+	_add_ally(st5, "boneB", "bone_def", "p2")
+	_add_ally(st5, "victim", "grunt_def", "p2")
+	StackResolver._destroy_card_trigger(st5, "boneA", "boneA", db)
+	eq(st5.pending_death_target_player, "p1", "sc40i-k: p1's Boneshanks trigger opens")
+	# p1 chooses to destroy p2's Boneshanks → ITS trigger now fires for p2.
+	StackResolver.choose_death_target(st5, "boneB", db)
+	ok(not st5.is_in_play("boneB"), "sc40i-l: p2's Boneshanks destroyed")
+	eq(st5.pending_death_target_player, "p2",
+		"sc40i-m: chained Boneshanks trigger opens a choice for p2")
+	StackResolver.choose_death_target(st5, "victim", db)
+	ok(not st5.is_in_play("victim"), "sc40i-n: p2 forced to destroy its remaining ally")
+	eq(st5.pending_death_target_player, "", "sc40i-o: queue fully drained")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

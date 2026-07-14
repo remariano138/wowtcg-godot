@@ -32,8 +32,8 @@ var _hero_card_ids: Dictionary = {}
 var _attachment_hosts: Dictionary = {}
 
 # How far an attachment peeks out past its host (toward the opponent side, so
-# it reads as tucked underneath from the controller's seat).
-const ATTACH_PEEK := 46.0
+# it reads as tucked underneath from the controller's seat). 1/5 card height.
+const ATTACH_PEEK := 21.0
 const ATTACH_STACK_GAP := 26.0   # extra peek per additional attachment
 
 
@@ -700,12 +700,18 @@ func _animate_attack(attacker_id: String, defender_id: String) -> void:
 # ── Zone layout helpers ────────────────────────────────────────────────────────
 
 # Hand cards render bigger than table cards (see HAND_CARD_SCALE) — apply
-# the right scale whenever a card enters or leaves a hand zone.
+# the right scale whenever a card enters or leaves a hand zone. Hands also sit
+# in front of the board (rows now overlap the bottom of the hand cards) — give
+# them a baseline z_index so they never render behind a board zone.
+const HAND_Z_INDEX := 3
+
 func _apply_zone_scale(card_id: String, zone_id: String) -> void:
 	var node := card_nodes.get(card_id) as Node2D
 	if not node:
 		return
-	node.scale = Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if zone_id.ends_with("_hand") else Vector2.ONE
+	var is_hand := zone_id.ends_with("_hand")
+	node.scale = Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if is_hand else Vector2.ONE
+	node.z_index = HAND_Z_INDEX if is_hand else 0
 
 
 func _add_to_zone(card_id: String, zone_id: String) -> void:

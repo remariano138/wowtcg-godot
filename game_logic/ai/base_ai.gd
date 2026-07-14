@@ -903,6 +903,35 @@ func choose_attack_exhaust(state: GameState, db, _player_id: String) -> String:
 	return best
 
 
+# Boneshanks death trigger: "When [this] is destroyed, destroy target ally."
+# The choice is MANDATORY if any ally is in play, so this never declines. Prefer
+# the most valuable OPPOSING ally; only if the opponent has none, destroy our own
+# least valuable ally (forced — the trigger must resolve). `player_id` is the
+# destroyed Boneshanks' controller.
+func choose_death_target(state: GameState, db, player_id: String) -> String:
+	if not db:
+		return ""
+	var legal := StackResolver.get_death_target_targets(state, db)
+	if legal.is_empty():
+		return ""
+	var opp := "p2" if player_id == "p1" else "p1"
+	var enemy: Array[String] = []
+	var own:   Array[String] = []
+	for tid in legal:
+		var card := state.get_card(tid)
+		if card and card.controller == opp:
+			enemy.append(tid)
+		else:
+			own.append(tid)
+	if not enemy.is_empty():
+		# Highest-value enemy ally first.
+		var ranked := sort_valuable_cards(state, db, enemy)
+		return ranked[0]
+	# Forced to hit our own board: give up the least valuable ally.
+	var ranked_own := sort_valuable_cards(state, db, own)
+	return ranked_own[ranked_own.size() - 1]
+
+
 # Green Whelp Armor: after an attacking ally damaged our hero, decide whether to
 # pay to bounce it to its owner's hand. Worth it when the ally is expensive enough
 # that costing the opponent a re-cast (and our 2 resources) is a good trade — and

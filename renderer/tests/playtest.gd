@@ -298,15 +298,16 @@ func _build_scene() -> void:
 	# Row centres are spaced CardNode.H + 10px apart so full rows never overlap
 	# a neighbouring row, regardless of which rows are empty or filled. Every
 	# row anchor is a fixed constant — no runtime repositioning depends on
-	# another zone's contents.
+	# another zone's contents. Each player's three rows are shifted 1/4 card
+	# height (26px) toward that player's hand, widening the gap around the chain.
 	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(1000,  35)))
-	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(1000, 165)))
-	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1000, 280)))
-	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(1000, 395)))
+	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(1000, 139)))
+	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1000, 254)))
+	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(1000, 369)))
 	_renderer.register_zone("chain",           _make_anchor(Vector2(1000, 455)))
-	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(1000, 505)))
-	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1000, 620)))
-	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 735)))
+	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(1000, 531)))
+	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1000, 646)))
+	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 761)))
 	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 895)))
 	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2( 280,  35)))
 	_renderer.register_zone("p2_deck",         _make_anchor(Vector2( 100,  35)))
@@ -315,8 +316,8 @@ func _build_scene() -> void:
 
 	# Hero card itself stays pinned to the player's side column, above the deck,
 	# at the same height as its hero_row (equipment / ongoing abilities live there).
-	_renderer.register_zone("p2_hero_card",    _make_anchor(Vector2( 100, 280)))
-	_renderer.register_zone("p1_hero_card",    _make_anchor(Vector2(1820, 620)))
+	_renderer.register_zone("p2_hero_card",    _make_anchor(Vector2( 100, 254)))
+	_renderer.register_zone("p1_hero_card",    _make_anchor(Vector2(1820, 646)))
 
 	_renderer.set_status_label(_status)
 
@@ -334,6 +335,7 @@ func _build_scene() -> void:
 	_router.targeting_started.connect(_on_targeting_started)
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
 	_router.totem_target_resolved.connect(_on_totem_target_resolved)
+	_router.death_target_resolved.connect(_on_death_target_resolved)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
@@ -1060,7 +1062,7 @@ func _on_card_hover_scene(instance_id: String) -> void:
 	# The local player's own hand magnifies on hover.
 	if card.zone_id == _local_player + "_hand":
 		cn.scale = Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY)
-		cn.z_index = 5
+		cn.z_index = BoardRenderer.HAND_Z_INDEX + 1
 
 
 func _on_card_unhover_scene(instance_id: String) -> void:
@@ -1076,7 +1078,7 @@ func _on_card_unhover_scene(instance_id: String) -> void:
 		cn.show_card_back()
 	if card.zone_id.ends_with("_hand"):
 		cn.scale = Vector2.ONE * BoardRenderer.HAND_CARD_SCALE
-		cn.z_index = 0
+		cn.z_index = BoardRenderer.HAND_Z_INDEX
 
 
 func _add_deck_back_sprite(pos: Vector2, facing: float = 0.0) -> void:
@@ -2064,6 +2066,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_enter_play_target(event.payload)
 		"totem_target_required":
 			_handle_totem_target(event.payload)
+		"death_target_required":
+			_handle_death_target(event.payload)
 		"mulligan_phase_started":
 			_handle_mulligan_started(event.payload)
 		"mulligan_committed":
@@ -2637,6 +2641,48 @@ func _on_totem_target_resolved() -> void:
 	_schedule_next_turn()
 
 
+# Boneshanks: "When [this] is destroyed, destroy target ally." Mandatory targeted
+# death trigger resolved by the destroyed card's controller. AI auto-picks; a
+# HUMAN controller (either seat) is always PROMPTED to choose — even in hotseat,
+# since the choice is board-public (no hidden information). The choice is
+# resolved on the shared screen with the router acting for the controller.
+func _handle_death_target(payload: Dictionary) -> void:
+	var card_id: String = payload.get("card_id", "")
+	var ctrl: String    = payload.get("player", "")
+	var ctrl_type := _p1_type if ctrl == "p1" else _p2_type
+	if ctrl_type != "human":
+		var ai_obj: Object = _p1_ai if ctrl == "p1" else _p2_ai
+		var target_id := ""
+		if ai_obj is BaseAI:
+			target_id = (ai_obj as BaseAI).choose_death_target(_state, _db, ctrl)
+		else:
+			# Non-BaseAI fallback: destroy the first legal ally.
+			var legal := StackResolver.get_death_target_targets(_state, _db)
+			target_id = legal[0] if not legal.is_empty() else ""
+		var events := StackResolver.choose_death_target(_state, target_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: enter targeting mode to pick the ally to destroy. In hotseat, point
+		# the router at the controller so their pick resolves even off-seat (the
+		# board is public, so no hand-hiding handoff is needed).
+		if _hotseat and ctrl != _local_player:
+			_router.setup(_state, _db, ctrl)
+		_router.start_death_target_targeting(card_id)
+		_refresh_ui()
+
+
+# A human finished picking a Boneshanks death-trigger target (or the queue
+# advanced). Restore the router to the seated player, then resume driving; if
+# another death trigger is now pending, its handler restarts targeting.
+func _on_death_target_resolved() -> void:
+	if _hotseat and _router.local_player != _local_player:
+		_router.setup(_state, _db, _local_player)
+	_refresh_ui()
+	_schedule_next_turn()
+
+
 func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int) -> void:
 	var card := _state.get_card(source_id) as CardInstance
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
@@ -2665,6 +2711,13 @@ func _on_targeting_cancelled() -> void:
 		var trig: Dictionary = _state.pending_ongoing_triggers[0]
 		_router.start_totem_targeting(
 			trig.get("card_id", ""), trig.get("dmg_type", ""), int(trig.get("amount", 0)))
+		return
+	# A Boneshanks death trigger is mandatory ("destroy target ally") whenever a
+	# legal ally exists — the player can't bow out. Restart targeting if still pending.
+	if _state and _state.pending_death_target_player != "" \
+			and not _state.pending_death_triggers.is_empty():
+		var dtrig: Dictionary = _state.pending_death_triggers[0]
+		_router.start_death_target_targeting(dtrig.get("card_id", ""))
 		return
 	# If an enters-play effect is still pending, targeting is mandatory — restart it.
 	# Exception: if a choose_enter_play_target action is already on the chain, the human
@@ -3570,6 +3623,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the reveal-and-pick quest choice before advancing
 	if _state.pending_totem_target_player != "":
 		return  # wait for the Totem start-of-turn target choice before advancing
+	if _state.pending_death_target_player != "":
+		return  # wait for the Boneshanks death-trigger target choice before advancing
 	if _state.pending_ready_player != "":
 		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
 	if _state.pending_attack_exhaust_player != "":
@@ -3637,6 +3692,7 @@ func _drain_passes() -> void:
 				or _state.pending_control_discard_player != "" \
 				or _state.pending_reveal_pick_player != "" \
 				or _state.pending_totem_target_player != "" \
+				or _state.pending_death_target_player != "" \
 				or _state.pending_whelp_bounce_player != "":
 			_wrap_up_active = false
 			break

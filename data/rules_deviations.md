@@ -325,3 +325,56 @@ before the protect point (602.2), so exhausting a ready Protector denies the
 protect, and exhausting the proposed defender does NOT cancel the combat
 (601.3 already passed). Enforcement site: `_open_attack_exhaust_point` /
 `choose_attack_exhaust` in `game_logic/stack_resolver.gd`.
+
+---
+
+## Mind Spike / Mind Blast / Dark Cleric Ismantal — AI ignores the discard rider
+
+**Cards:** Mind Spike (`azeroth_82`, 1 shadow), Mind Blast (`azeroth_80`, 2
+shadow), Dark Cleric Ismantal (`dark_portal_204`, ally power, 1 shadow).
+Printed text: "…deals N shadow damage to target hero or ally. Its controller
+discards a card for each damage dealt." Recipe: a `discard_per_damage:1`
+segment paired with a `deal_damage_to_target` segment (Mind cards) or an
+`activated_power:...:deal_damage_to_target` power (Ismantal).
+
+**Deviation:** the discard is implemented faithfully (the damaged character's
+controller discards a card per damage actually DEALT — armor prevention and
+405.3 excess-beyond-fatal reduce the count, exactly like Steal Essence's drain
+heal). But the AI, which plays these cards for the damage via the normal
+targeted-damage machinery (`_targeted_instant_actions` / ally-power actions),
+does NOT model the extra discard when scoring — it treats them as plain damage.
+
+**Why:** the discard is a strict bonus on a card the AI already values for its
+damage, so ignoring it never causes a wrong play, only a slight undervaluation.
+Enforcement site: `_apply_discard_per_damage` in `game_logic/stack_resolver.gd`
+(called from the `deal_damage_to_target` branches of `_resolve_play_instant`
+and `_resolve_use_ally_power`).
+
+---
+
+## Boneshanks — death trigger resolved immediately, not on the chain
+
+**Card:** Boneshanks (`dark_portal_201`, 3-cost 3/2 Horde Undead Warrior Ally).
+Printed text: "When Boneshanks is destroyed, destroy target ally." Recipe flag
+`on_destroyed:destroy_target:ally`.
+
+**Deviation:** by the rules this is a triggered ability (703) that should be
+ADDED TO THE CHAIN when Boneshanks is destroyed — targeted at trigger time,
+respondable, resolved after responses. The engine instead resolves it as a
+direct-call mandatory choice (`pending_death_triggers` queue +
+`pending_death_target_player`, resolved via `choose_death_target`) fired at the
+moment of destruction, the same immediate-resolution pattern as the totem
+start-of-turn trigger. The opponent cannot respond to the trigger itself. The
+choice is mandatory whenever any ally is in play (it may be forced onto the
+controller's own board); it fizzles only when no ally exists.
+
+**Hotseat:** unlike some off-screen choices that auto-resolve on the shared
+screen, this one is PROMPTED for a human controller even when they are the
+off-screen player — the router is pointed at the controller for the pick. This
+is safe because the choice is fully board-public (no hidden hand information).
+
+**Why:** the engine has no generic chain-based triggered-effect machinery yet;
+every triggered choice (strike, totems, Whelp Armor, attack-exhaust) uses
+direct-call points. Enforcement site: `_fire_on_destroyed` (`destroy_target`
+branch) / `_open_next_death_trigger` / `choose_death_target` in
+`game_logic/stack_resolver.gd`.

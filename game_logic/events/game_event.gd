@@ -266,6 +266,15 @@ static func totem_target_required(card_id: String, player_id: String,
 		"dmg_type": dmg_type, "amount": amount,
 	})
 
+# A death-triggered "destroy target ally" effect (Boneshanks) must pick an ally
+# to destroy. Mandatory choice resolved by the destroyed card's controller via
+# StackResolver.choose_death_target() — a direct call, like the totem / strike
+# choices, NOT a chain action. Prompted for a human controller even in hotseat.
+static func death_target_required(card_id: String, player_id: String) -> GameEvent:
+	return make("death_target_required", {
+		"card_id": card_id, "player": player_id,
+	})
+
 static func card_returned_from_graveyard(card_id: String, player_id: String) -> GameEvent:
 	return make("card_returned_from_graveyard", {
 		"card_id": card_id, "player": player_id,

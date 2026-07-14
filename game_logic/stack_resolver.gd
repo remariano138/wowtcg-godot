@@ -146,6 +146,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# via choose_totem_target() before priority can move.
 	if state.pending_totem_target_player != "":
 		return []
+	# A pending death-triggered target choice (Boneshanks) must be resolved via
+	# choose_death_target() before priority can move.
+	if state.pending_death_target_player != "":
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -262,6 +266,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Ongoing Totem start-of-turn target choice blocks everything until resolved
 	# via choose_totem_target().
 	if state.pending_totem_target_player != "":
+		return false
+
+	# Death-triggered target choice (Boneshanks) blocks everything until resolved
+	# via choose_death_target().
+	if state.pending_death_target_player != "":
 		return false
 
 	match action.action_type:
@@ -1067,6 +1076,10 @@ static func _resolve_play_instant(state: GameState,
 								if dealt > 0:
 									events.append_array(GameLogic.heal(
 										state, hero_id, dealt * heal_per, db, card_id))
+							# Paired discard_per_damage:N segment (Mind Spike/Blast): the damaged
+							# character's controller discards N cards per damage actually dealt.
+							events.append_array(_apply_discard_per_damage(
+								state, target_id, dmg_events, _discard_per_damage(def)))
 							var t_card := state.get_card(target_id)
 							if t_card and state.get_current_hp(target_id, db) <= 0:
 								var t_zone := state.zones.get(t_card.zone_id) as Zone
@@ -1494,6 +1507,47 @@ static func _drain_heal_per_damage(def: CardDef) -> int:
 	return 0
 
 
+# discard_per_damage:N — paired with a deal_damage_to_target segment (Mind Spike,
+# Mind Blast) or an activated_power:deal_damage_to_target power (Dark Cleric
+# Ismantal): the DAMAGED character's controller discards N cards for each damage
+# actually dealt. Reuses the pending-discard machinery (choose_discard).
+static func _discard_per_damage(def: CardDef) -> int:
+	for segment in def.effects.split("|"):
+		var parts := segment.strip_edges().split(":")
+		if parts[0] == "discard_per_damage":
+			return int(parts[1]) if parts.size() > 1 else 1
+	return 0
+
+
+# Sets up a pending discard for the controller of a character that was just dealt
+# `dmg_events` worth of damage. `per` cards per damage point. No-op if the
+# controller's hand is empty. Returns the events to append (the choice-opened).
+# AI scores these cards for the damage only, not the discard — see
+# data/rules_deviations.md "Mind Spike / Mind Blast / Dark Cleric Ismantal".
+static func _apply_discard_per_damage(state: GameState, target_id: String,
+		dmg_events: Array, per: int) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if per <= 0:
+		return events
+	var dealt := 0
+	for de in dmg_events:
+		if (de as GameEvent).event_type == "damage_dealt":
+			dealt += int((de as GameEvent).payload.get("amount", 0))
+	if dealt <= 0:
+		return events
+	var t_card := state.get_card(target_id)
+	if not t_card:
+		return events
+	var discarder: String = t_card.controller
+	var count := dealt * per
+	if state.cards_in_zone(discarder + "_hand").is_empty():
+		return events
+	state.pending_discard_player = discarder
+	state.pending_discard_count  = count
+	events.append(GameEvent.discard_choice_opened(discarder, count, "card_effect"))
+	return events
+
+
 static func _has_effect_flag_prefix(def: CardDef, prefix: String) -> bool:
 	for segment in def.effects.split("|"):
 		if segment.strip_edges().split(":")[0] == prefix:
@@ -1834,7 +1888,12 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var target_id: String = action.params.get("target_id", "")
 			# Rule 706 re-check: fizzle if the target left play or became Untargetable.
 			if _is_legal_target(state, target_id, db):
-				events.append_array(GameLogic.deal_damage(state, card_id, target_id, amount, db))
+				var dd_events := GameLogic.deal_damage(state, card_id, target_id, amount, db)
+				events.append_array(dd_events)
+				# Paired discard_per_damage:N segment (Dark Cleric Ismantal): the
+				# damaged character's controller discards N cards per damage dealt.
+				events.append_array(_apply_discard_per_damage(
+					state, target_id, dd_events, _discard_per_damage(def)))
 				var t_card := state.get_card(target_id)
 				if t_card and state.get_current_hp(target_id, db) <= 0:
 					var t_zone := state.zones.get(t_card.zone_id) as Zone
@@ -3679,7 +3738,70 @@ static func _fire_on_destroyed(state: GameState, card_id: String, db) -> Array[G
 							# No recursive on_destroyed for AoE secondary kills.
 							events.append_array(
 								GameLogic.check_destroyed(state, t_id, card_id, db))
+			"destroy_target":
+				# on_destroyed:destroy_target:ally (Boneshanks: "When [this] is
+				# destroyed, destroy target ally."). Mandatory targeted death
+				# trigger: queue it and open the choice for the destroyed card's
+				# controller (a direct-call choice, like a totem trigger — NOT the
+				# chain). If no ally is in play there is no legal target, so the
+				# trigger does nothing. The chosen ally is destroyed in
+				# choose_death_target(); chained deaths queue behind it.
+				if not get_death_target_targets(state, db).is_empty():
+					state.pending_death_triggers.append({
+						"card_id": card_id, "controller": card.controller})
+					events.append_array(_open_next_death_trigger(state, db))
 	return events
+
+
+# Peek the front queued death trigger and mark its controller as the player who
+# must pick a target ally. Returns the death_target_required event, or [] (and
+# clears the marker) when the queue is empty or no legal target remains.
+static func _open_next_death_trigger(state: GameState, db) -> Array[GameEvent]:
+	# Only open one at a time; a choice is already active.
+	if state.pending_death_target_player != "":
+		return []
+	while not state.pending_death_triggers.is_empty():
+		if get_death_target_targets(state, db).is_empty():
+			# No legal ally left to destroy — the remaining triggers fizzle.
+			state.pending_death_triggers.clear()
+			break
+		var trigger: Dictionary = state.pending_death_triggers[0]
+		state.pending_death_target_player = trigger.get("controller", "")
+		return [GameEvent.death_target_required(
+			trigger.get("card_id", ""), trigger.get("controller", ""))]
+	state.pending_death_target_player = ""
+	return []
+
+
+# Resolve the active death trigger (Boneshanks): destroy the chosen ally, then
+# open the next queued trigger (if any). target_id must be a legal ally in play.
+# Direct call — no chain, no priority pass. A chained death (destroying another
+# Boneshanks) queues behind this one.
+static func choose_death_target(state: GameState, target_id: String, db) -> Array[GameEvent]:
+	if state.pending_death_target_player == "" or state.pending_death_triggers.is_empty():
+		return []
+	var trigger: Dictionary = state.pending_death_triggers.pop_front()
+	var source_id: String = trigger.get("card_id", "")
+	state.pending_death_target_player = ""
+	var events: Array[GameEvent] = []
+	# 706 re-check: the target must still be a legal ally in play.
+	if _is_legal_target(state, target_id, db) and _is_ally(state, target_id):
+		events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
+	# Open the next queued death trigger, if any (may have been added by the
+	# destruction above).
+	events.append_array(_open_next_death_trigger(state, db))
+	return events
+
+
+# Legal targets for a death-triggered "destroy target ally" effect: every ally
+# in play (either party), subject to the standard targeting restrictions.
+static func get_death_target_targets(state: GameState, db) -> Array[String]:
+	var result: Array[String] = []
+	for pid in state.players:
+		for ally in state.cards_in_zone(pid + "_ally_row"):
+			if _is_legal_target(state, ally.instance_id, db):
+				result.append(ally.instance_id)
+	return result
 
 
 # Wrapper: check_destroyed + on_destroyed trigger if the card actually died.

@@ -118,6 +118,17 @@ var pending_reveal_pick_all: Array[String] = []   # every revealed card, in top�
 var pending_ongoing_triggers: Array = []
 var pending_totem_target_player: String = ""  # controller who must pick a target; "" = none
 
+# Death-triggered targeted effects (Boneshanks: "When [this] is destroyed,
+# destroy target ally."). When such a card dies, a trigger dict {card_id,
+# controller} is queued here and the front one opens as a mandatory choice:
+# pending_death_target_player is the controller who must pick an ally to destroy.
+# Drained one at a time (index 0 = active), resolved via
+# StackResolver.choose_death_target() — a direct call, NOT a chain action, like
+# the totem / strike choices. pass_priority / can_submit hard-block while pending.
+# Prompted for a HUMAN controller even in hotseat (the choice is board-public).
+var pending_death_triggers: Array = []
+var pending_death_target_player: String = ""  # controller who must pick a target ally; "" = none
+
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.
 var mulligan_decided: Dictionary = {}

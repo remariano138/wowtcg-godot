@@ -22,6 +22,9 @@ signal targeting_cancelled()
 # Emitted after a human resolves an ongoing Totem start-of-turn target choice
 # (Searing Totem) so the scene can resume driving the turn.
 signal totem_target_resolved()
+# Emitted after a human resolves a death-triggered "destroy target ally" choice
+# (Boneshanks) so the scene can resume driving the turn.
+signal death_target_resolved()
 signal discard_mode_started(count: int)
 signal discard_mode_ended()
 signal control_discard_mode_started(source_id: String)
@@ -210,6 +213,10 @@ func handle_card_click(instance_id: String) -> void:
 					_pass_own_proposal(quest_action)
 					refresh_highlights()
 			return
+		# Any other in-play zone (e.g. an attachment in the "attached" zone) has
+		# no click action — falling through would re-enter the play-from-hand
+		# targeting flow for a card already in play.
+		return
 
 	# ── Hand card left-click → play / place ───────────────────────────────────
 	var action_type := _action_type_for(instance_id)
@@ -528,6 +535,11 @@ func start_totem_targeting(card_id: String, dmg_type: String, dmg_amount: int) -
 	start_targeting(card_id, "choose_totem_target", dmg_type, dmg_amount)
 
 
+# Convenience wrapper for a death-triggered "destroy target ally" choice (Boneshanks).
+func start_death_target_targeting(card_id: String) -> void:
+	start_targeting(card_id, "choose_death_target", "", 0)
+
+
 # Convenience wrapper for the attack-exhaust trigger (Chops / Voss Treebender):
 # "When [this] attacks, you may exhaust target hero or ally." Optional — Esc
 # cancels, which the scene resolves as a decline.
@@ -555,6 +567,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"activate_power_x":          _handle_x_power_targeting_click(instance_id)
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"choose_totem_target":       _handle_totem_targeting_click(instance_id)
+		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
@@ -604,6 +617,16 @@ func _handle_totem_targeting_click(instance_id: String) -> void:
 		EventBus.emit_events(events)
 		# The scene resumes driving the turn (and handles any next queued totem).
 		totem_target_resolved.emit()
+
+
+func _handle_death_target_targeting_click(instance_id: String) -> void:
+	# Boneshanks death trigger. Mandatory, direct-call resolution (no chain) —
+	# like the totem choice. Resolving may open the next queued death trigger.
+	if instance_id in StackResolver.get_death_target_targets(state, db):
+		var events := StackResolver.choose_death_target(state, instance_id, db)
+		cancel_targeting()
+		EventBus.emit_events(events)
+		death_target_resolved.emit()
 
 
 func _handle_attack_exhaust_targeting_click(instance_id: String) -> void:
@@ -933,6 +956,8 @@ func get_playable_card_ids() -> Array:
 				return _get_enter_play_targets(_targeting_source)
 			"choose_totem_target":
 				return StackResolver.get_totem_targets(state, db)
+			"choose_death_target":
+				return StackResolver.get_death_target_targets(state, db)
 			"choose_attack_exhaust":
 				return StackResolver.get_attack_exhaust_targets(state, db)
 			"play_instant":

@@ -29,6 +29,7 @@ var _mouse_inside: bool = false
 var _damage_badge: Label = null
 var _power_used_badge: Label = null
 var _sick_badge: Label = null
+var _mute_badge: Label = null
 var _outline: ColorRect = null
 var _atk_badge_bg: Panel = null
 var _atk_badge_lbl: Label = null
@@ -205,6 +206,20 @@ static func create(inst_id: String, card_name: String,
 	node.add_child(sick_lbl)
 	node._sick_badge = sick_lbl
 
+	# Muted badge (🔇, top-left) — the card is silenced for auto-pass purposes
+	# (context-menu Mute; see InputRouter.muted_ids).
+	var mute_lbl := Label.new()
+	mute_lbl.text = "🔇"
+	mute_lbl.add_theme_font_size_override("font_size", 22)
+	mute_lbl.add_theme_constant_override("outline_size", 4)
+	mute_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	mute_lbl.size         = Vector2(30, 26)
+	mute_lbl.position     = Vector2(-W * 0.5 + 4, -H * 0.5 + 4)
+	mute_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mute_lbl.visible      = false
+	node.add_child(mute_lbl)
+	node._mute_badge = mute_lbl
+
 	# Try to load the real card image.
 	if image_path != "" and image_path != "No match":
 		var res_path := "res://" + image_path.replace("\\", "/")
@@ -295,6 +310,11 @@ func reveal(duration: float = 1.5) -> void:
 	await get_tree().create_timer(duration).timeout
 	if was_face_down:
 		show_card_back()
+
+
+func set_muted(muted: bool) -> void:
+	if _mute_badge:
+		_mute_badge.visible = muted
 
 
 func set_power_used(used: bool) -> void:

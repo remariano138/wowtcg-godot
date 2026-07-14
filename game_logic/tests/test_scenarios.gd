@@ -106,6 +106,7 @@ func _ready() -> void:
 		_test_fire_blast,
 		_test_frost_instants,
 		_test_frost_riders,
+		_test_steal_essence,
 		_test_lady_jaina_aura,
 		_test_lady_jaina_unique,
 		_test_hannah_cant_protect_aura,
@@ -5577,6 +5578,123 @@ func _test_frost_riders() -> void:
 		"sc40d-f: Frost Shock also put cannot_protect on the survivor")
 	ok("prot" not in StackResolver.get_legal_protectors(st2, "atk_dummy", "p2_hero", db),
 		"sc40d-g: the frozen protector can no longer protect")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 40f — Steal Essence (azeroth_134): "Your hero deals 2 shadow damage
+# to target hero or ally and heals 1 damage from itself for each damage dealt."
+# Recipe: deal_damage_to_target:2:shadow|drain_heal_per_damage:1 — the drain
+# segment heals the casting hero per damage actually DEALT (armor prevention
+# and 405.3 excess-beyond-fatal both reduce the heal).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_steal_essence() -> void:
+	_buf.append("\n-- Scenario 40f: Steal Essence — 2 shadow drain heals the caster --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 5, [], 3)      # 5 HP — survives 2 shadow
+	db.ally("wisp_def",  1, 1, [], 1)      # 1 HP — only 1 damage can be placed
+	db.instant("azeroth_134", 2, "deal_damage_to_target:2:shadow|drain_heal_per_damage:1")
+
+	# ── Full drain: 2 dealt → hero heals 2 ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 2)
+	_add_hand_card(st, "se", "azeroth_134", "p1")
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p2")
+	st.get_card("p1_hero").damage_taken = 5
+
+	var events: Array[GameEvent] = StackResolver.submit_action(st,
+		PendingAction.make("play_instant", "p1",
+			{"card_id": "se", "target_id": "grunt"}), db)
+	events.append_array(StackResolver.pass_priority(st, db))
+	events.append_array(StackResolver.pass_priority(st, db))
+
+	eq(grunt.damage_taken, 2, "sc40f-a: target ally took 2 shadow damage")
+	var from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "grunt":
+			from_hero = true
+	ok(from_hero, "sc40f-b: damage sourced from p1's hero")
+	eq(st.get_card("p1_hero").damage_taken, 3,
+		"sc40f-c: hero healed 2 (one per damage dealt)")
+	ok(st.get_card("se").zone_id == "p1_graveyard",
+		"sc40f-d: Steal Essence itself is in the graveyard")
+
+	# ── 405.3: only 1 damage fits on a 1-HP target → heal 1, target destroyed ──
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 2)
+	_add_hand_card(st2, "se2", "azeroth_134", "p1")
+	_add_ally(st2, "wisp", "wisp_def", "p2")
+	st2.get_card("p1_hero").damage_taken = 5
+
+	StackResolver.submit_action(st2, PendingAction.make("play_instant", "p1",
+		{"card_id": "se2", "target_id": "wisp"}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+
+	ok(st2.get_card("wisp").zone_id == "p2_graveyard",
+		"sc40f-e: 1-HP target is destroyed")
+	eq(st2.get_card("p1_hero").damage_taken, 4,
+		"sc40f-f: only 1 damage placed (excess lost) → hero heals 1")
+
+	# ── Armor prevention on the target hero reduces the drain too ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 2)
+	_add_hand_card(st3, "se3", "azeroth_134", "p1")
+	st3.get_card("p1_hero").damage_taken = 5
+	(st3.players["p2"] as PlayerState).damage_prevention = 1
+
+	StackResolver.submit_action(st3, PendingAction.make("play_instant", "p1",
+		{"card_id": "se3", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+
+	eq(st3.get_card("p2_hero").damage_taken, 1,
+		"sc40f-g: enemy hero took 1 (1 prevented by armor block)")
+	eq(st3.get_card("p1_hero").damage_taken, 4,
+		"sc40f-h: hero heals only the 1 damage actually dealt")
+
+	# ── Undamaged hero: damage still lands, heal is a no-op ──
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 2)
+	_add_hand_card(st4, "se4", "azeroth_134", "p1")
+	var grunt4 := _add_ally(st4, "grunt4", "grunt_def", "p2")
+
+	StackResolver.submit_action(st4, PendingAction.make("play_instant", "p1",
+		{"card_id": "se4", "target_id": "grunt4"}), db)
+	StackResolver.pass_priority(st4, db)
+	StackResolver.pass_priority(st4, db)
+	eq(grunt4.damage_taken, 2, "sc40f-i: damage lands on an undamaged caster")
+	eq(st4.get_card("p1_hero").damage_taken, 0,
+		"sc40f-j: heal on an undamaged hero is a no-op")
+
+	# ── AI: held combat instant — never blind-played; ambush-kills an attacker ──
+	var ai := BaseAI.new()
+	var st5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st5, "p1", 2)
+	_add_hand_card(st5, "se5", "azeroth_134", "p1")
+	var blind := false
+	for a in ai.get_legal_actions(st5, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "se5":
+			blind = true
+	ok(not blind, "sc40f-k: AI never blind-plays Steal Essence on its own window")
+
+	db.ally("atk_frail_def", 3, 2, [], 4)   # cost 4, 2 HP — dies to 2 shadow
+	var st6 := _base_state(db, "p1_hero", "p2_hero")
+	st6.turn_player     = "p2"
+	st6.priority_player = "p1"
+	_add_resources(st6, "p1", 2)
+	_add_hand_card(st6, "se6", "azeroth_134", "p1")
+	_add_ally(st6, "atk_frail", "atk_frail_def", "p2")
+	st6.combat_attack_window = true
+	st6.combat_defender = "p1_hero"
+	st6.combat_attacker = "atk_frail"
+	var amb := ai.combat_instant_action(st6, db, "p1")
+	ok(amb != null and amb.params.get("card_id") == "se6"
+			and amb.params.get("target_id") == "atk_frail",
+		"sc40f-l: attack window — 2 HP attacker dies to Steal Essence → ambush it")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

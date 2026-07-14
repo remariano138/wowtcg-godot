@@ -256,10 +256,10 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 			var heal_amt := int(parts[1]) if parts.size() > 1 else 1
 			var pid := card.controller
 			for ally in state.cards_in_zone(pid + "_ally_row"):
-				events.append_array(GameLogic.heal(state, ally.instance_id, heal_amt, db))
+				events.append_array(GameLogic.heal(state, ally.instance_id, heal_amt, db, card.instance_id))
 			var party_hero := state.get_hero(pid)
 			if party_hero:
-				events.append_array(GameLogic.heal(state, party_hero.instance_id, heal_amt, db))
+				events.append_array(GameLogic.heal(state, party_hero.instance_id, heal_amt, db, card.instance_id))
 			continue
 		if not each_turn and key == "turn_start_discard_or_give_control":
 			state.pending_control_discard_player = card.controller
@@ -270,7 +270,7 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 		if parts.size() < 2 or key != trigger_key:
 			continue
 		var amount := int(parts[1])
-		events.append_array(GameLogic.heal(state, card.instance_id, amount, db))
+		events.append_array(GameLogic.heal(state, card.instance_id, amount, db, card.instance_id))
 	return events
 
 

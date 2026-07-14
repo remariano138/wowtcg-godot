@@ -162,6 +162,8 @@ var _game_over: bool = false
 var _stats: StatTracker = StatTracker.new()   # per-match card draw/play stats
 var _last_p1_deck_id: String = ""
 var _last_p2_deck_id: String = ""
+var _prompt_first_player: bool = true   # false for Quick Start (autopick random)
+var _first_player_layer: CanvasLayer
 
 # ── Game log ───────────────────────────────────────────────────────────────────
 var _log: RichTextLabel
@@ -343,6 +345,7 @@ func _build_scene() -> void:
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
 	_router.graveyard_peek_requested.connect(_on_graveyard_peek_requested)
 	_router.graveyard_peek_closed.connect(_on_graveyard_peek_closed)
+	_router.card_mute_changed.connect(_on_card_mute_changed)
 	_build_x_dialog()
 	_build_graveyard_dialog()
 
@@ -798,6 +801,7 @@ func _on_quick_start() -> void:
 	if resolved.is_empty():
 		_show_menu_error("No non-mirror matchup possible — uncheck 'Avoid mirror matches'.")
 		return
+	_prompt_first_player = false   # Quick Start autopicks random
 	_launch_game("human", resolved[0], "recommended", resolved[1])
 
 
@@ -810,6 +814,7 @@ func _on_start_game() -> void:
 	if resolved.is_empty():
 		_show_menu_error("Mirror match — pick different decks or uncheck 'Avoid mirror matches'.")
 		return
+	_prompt_first_player = true
 	_launch_game(_p1_ai_types[_p1_type_opt.selected], resolved[0],
 				 _p2_ai_types[_p2_type_opt.selected], resolved[1])
 
@@ -961,7 +966,7 @@ func _orient_camera(pid: String, animate: bool) -> void:
 func _offscreen_has_play(pid: String) -> bool:
 	var prev := _router.local_player
 	_router.local_player = pid
-	var has := _router.has_any_legal_play()
+	var has := _router.has_any_legal_play(true)   # muted cards don't stop the window
 	_router.local_player = prev
 	return has
 
@@ -1167,13 +1172,83 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	_renderer.relayout_zone("p1_hand")
 	_renderer.relayout_zone("p2_hand")
 
+	_router.muted_ids.clear()   # mutes are per-game (fresh instance ids each game)
 	_router.setup(_state, _db, _local_player)
 	_orient_camera(_local_player, false)   # e.g. single human seated at p2 vs AI
 
-	# Randomize who goes first.
-	var first_player: String = "p1" if randi() % 2 == 0 else "p2"
+	# Who goes first — prompt (normal start / rematch) or autopick random (Quick Start).
+	_choose_first_player()
 
-	# Start the game — fires phase_changed (ready) which sets up the first window.
+
+# Display name of a player's hero (for the who-goes-first labels).
+func _hero_name(pid: String) -> String:
+	var ps := _state.players.get(pid) as PlayerState
+	if ps and ps.hero_instance_id != "":
+		var card := _state.get_card(ps.hero_instance_id)
+		var def: CardDef = _db.get_def(card.card_def_id) if card else null
+		if def:
+			return def.card_name
+	return pid.to_upper()
+
+
+# After the board is built, decide who goes first. Quick Start skips the prompt
+# and picks random; a normal start or rematch shows a selection screen.
+func _choose_first_player() -> void:
+	if not _prompt_first_player:
+		_begin_game("p1" if randi() % 2 == 0 else "p2")
+		return
+
+	_first_player_layer = CanvasLayer.new()
+	_first_player_layer.layer = 25
+	add_child(_first_player_layer)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.03, 0.05, 0.07, 0.97)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_first_player_layer.add_child(dim)
+
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.position = Vector2(-260, -130)
+	box.custom_minimum_size = Vector2(520, 260)
+	box.add_theme_constant_override("separation", 18)
+	_first_player_layer.add_child(box)
+
+	var title := Label.new()
+	title.text = "Who goes first?"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 28)
+	title.add_theme_color_override("font_color", Color(0.9, 0.85, 0.45))
+	box.add_child(title)
+
+	var options := [
+		["Random", ""],
+		["P1 — %s — goes first" % _hero_name("p1"), "p1"],
+		["P2 — %s — goes first" % _hero_name("p2"), "p2"],
+	]
+	for opt in options:
+		var label: String = opt[0]
+		var choice: String = opt[1]
+		var btn := Button.new()
+		btn.text = label
+		btn.custom_minimum_size = Vector2(360, 46)
+		btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		btn.pressed.connect(func() -> void: _on_first_player_chosen(choice))
+		box.add_child(btn)
+
+
+func _on_first_player_chosen(choice: String) -> void:
+	if _first_player_layer:
+		_first_player_layer.queue_free()
+		_first_player_layer = null
+	var first_player: String = choice
+	if first_player == "":
+		first_player = "p1" if randi() % 2 == 0 else "p2"
+	_begin_game(first_player)
+
+
+# Start the game — fires phase_changed (ready) which sets up the first window.
+func _begin_game(first_player: String) -> void:
 	var events := TurnManager.start_game(_state, first_player, _db)
 	EventBus.emit_events(events)
 	_refresh_ui()
@@ -2141,6 +2216,12 @@ func _on_context_menu_id_pressed(id: int) -> void:
 	var entry: Dictionary = _context_actions[id]
 	_router.handle_context_action(entry["action"])
 	_refresh_ui()
+
+
+func _on_card_mute_changed(instance_id: String, muted: bool) -> void:
+	var cn := _renderer.card_nodes.get(instance_id) as CardNode
+	if cn:
+		cn.set_muted(muted)
 
 
 # ── Targeting ──────────────────────────────────────────────────────────────────
@@ -3463,6 +3544,8 @@ func _on_rematch() -> void:
 	_in_ready_mode                = false
 	_ready_nodes                  = []
 	_p1_has_mulliganed            = false
+	_prompt_first_player          = true   # Rematch returns to the who-goes-first screen
+	_first_player_layer           = null   # freed with the other children above
 	_p1_ai = _make_ai(_p1_type, _last_p1_deck_id)
 	_p2_ai = _make_ai(_p2_type, _last_p2_deck_id)
 	_build_scene()
@@ -3596,7 +3679,7 @@ func _drain_passes() -> void:
 				_mark_priority_info_seen()
 				events = StackResolver.pass_priority(_state, _db)
 			elif not owns_top and (_turbo_mode or _wrap_up_active) \
-					and not _router.has_any_legal_play():
+					and not _router.has_any_legal_play(true):
 				# Layer 3 (Turbo / wrap-up burst): something changed, but there's
 				# nothing you could legally play in response — so skip the window
 				# instead of stopping. This is Turbo's whole job ("auto-pass all

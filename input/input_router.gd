@@ -45,6 +45,9 @@ signal graveyard_examine_requested(graveyard_player: String, card_ids: Array)
 # Alt+hover peek over a graveyard pile (view-only, non-modal, closes on its own).
 signal graveyard_peek_requested(graveyard_player: String, card_ids: Array)
 signal graveyard_peek_closed()
+# Emitted when a card's muted flag flips (context-menu Mute/Unmute) so the
+# renderer can show/hide the 🔇 badge.
+signal card_mute_changed(instance_id: String, muted: bool)
 
 var state: GameState
 var db
@@ -77,6 +80,14 @@ var _gy_select_quest_id: String = ""
 var _gy_select_hero_id: String = ""
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
+# Muted cards (instance_id → true): a human convenience flag toggled via the
+# context menu. A muted card stays fully playable, but is IGNORED by the
+# auto-pass probes (`has_any_legal_play(true)`), so it alone never holds a
+# priority window open — Turbo/ambush skip the window as if the card weren't
+# there. Muting a quest/power the player never intends to play at instant
+# speed (e.g. an always-completable quest) removes the constant "Skip" clicks.
+# Session-level UI state, shared by both hotseat seats; cleared on a new game.
+var muted_ids: Dictionary = {}
 
 
 func setup(p_state: GameState, p_db, p_player: String) -> void:
@@ -1043,15 +1054,21 @@ func refresh_highlights() -> void:
 # True if the local player has at least one legal action available right now.
 # Broader than get_playable_card_ids: also counts face-down resource placement,
 # which is only reachable via the context menu (not left-click).
-func has_any_legal_play() -> bool:
+# `exclude_muted`: auto-pass probes (Turbo layer 3, hotseat ambush stop) pass
+# true so muted cards don't hold priority windows open; UI callers (pass button
+# label) pass false — a muted card is still a real legal play.
+func has_any_legal_play(exclude_muted: bool = false) -> bool:
 	if not state or state.priority_player != local_player:
 		return false
-	if not get_playable_card_ids().is_empty():
-		return true
+	for pid: String in get_playable_card_ids():
+		if not (exclude_muted and muted_ids.has(pid)):
+			return true
 	# Check face-down resource placement (context-menu only).
 	var fd_action_template := PendingAction.make("place_resource", local_player,
 		{"card_id": "", "face_up": false})
 	for card in state.cards_in_zone(local_player + "_hand"):
+		if exclude_muted and muted_ids.has(card.instance_id):
+			continue
 		fd_action_template.params["card_id"] = card.instance_id
 		if StackResolver.can_submit(state, fd_action_template, db):
 			return true
@@ -1059,6 +1076,8 @@ func has_any_legal_play() -> bool:
 	# Legal on either player's turn (rule 701.2).
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(local_player + zone_suffix):
+			if exclude_muted and muted_ids.has(card.instance_id):
+				continue
 			# `_skip_target_check`: a targeted power (e.g. Elder Moorf) is a legal
 			# play even before a target is picked — validate everything but the
 			# target, mirroring get_playable_card_ids' inline check and the
@@ -1106,7 +1125,8 @@ func get_context_actions(instance_id: String) -> Array:
 					{"quest_id": instance_id, "_needs_gy_targets": needs_gy})
 				return [{"label": "Complete Quest — %s" % def.card_name,
 					"action": a, "enabled": StackResolver.can_use_quest_no_target_check(
-						state, instance_id, local_player, db)}]
+						state, instance_id, local_player, db)},
+					_mute_entry(instance_id)]
 			return []  # face-up non-quest resources also have no actions
 
 	# ── In-play characters: Attack + (heroes) Hero Power ─────────────────────
@@ -1204,6 +1224,7 @@ func get_context_actions(instance_id: String) -> Array:
 							{"hero_id": instance_id}),
 						"enabled": can_power})
 
+			char_actions.append(_mute_entry(instance_id))
 			return char_actions
 
 	# ── Hand cards ─────────────────────────────────────────────────────────────
@@ -1238,13 +1259,34 @@ func get_context_actions(instance_id: String) -> Array:
 	result.append({"label": "Place face-down as resource",
 		"action": fd, "enabled": StackResolver.can_submit(state, fd, db)})
 
+	result.append(_mute_entry(instance_id))
 	return result
+
+
+# Context-menu Mute/Unmute toggle — see `muted_ids`. Always enabled: muting is
+# pure UI state, legal on any of the local player's cards at any time.
+func _mute_entry(instance_id: String) -> Dictionary:
+	var label := "Unmute (respond in priority windows)" \
+		if muted_ids.has(instance_id) \
+		else "Mute (don't hold priority windows)"
+	return {"label": label,
+		"action": PendingAction.make("toggle_mute", local_player,
+			{"card_id": instance_id}),
+		"enabled": true}
 
 
 func handle_context_action(action: PendingAction) -> void:
 	if not state:
 		return
 	match action.action_type:
+		"toggle_mute":
+			var mute_id: String = action.params.get("card_id", "")
+			if muted_ids.has(mute_id):
+				muted_ids.erase(mute_id)
+			else:
+				muted_ids[mute_id] = true
+			card_mute_changed.emit(mute_id, muted_ids.has(mute_id))
+			return
 		"play_ability":
 			if _ability_needs_target(action.params.get("card_id", "")):
 				var cid: String = action.params.get("card_id", "")

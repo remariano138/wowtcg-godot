@@ -39,6 +39,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_52":  "combat_instant_dmg",   # Fire Blast — 2 fire damage
 	"azeroth_56":  "combat_instant_dmg",   # Frostbolt — 3 frost damage (can't-attack rider not modeled for AI)
 	"azeroth_109": "combat_instant_dmg",   # Frost Shock — 2 frost damage (can't-attack/protect rider not modeled for AI)
+	"azeroth_134": "combat_instant_dmg",   # Steal Essence — 2 shadow damage (drain heal not modeled for AI)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally

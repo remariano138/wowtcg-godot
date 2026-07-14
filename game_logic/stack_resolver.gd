@@ -995,8 +995,23 @@ static func _resolve_play_instant(state: GameState,
 						var hero_id: String = ps.hero_instance_id if ps else ""
 						if hero_id != "" and amount > 0 \
 								and _is_legal_target(state, target_id, db):
-							events.append_array(GameLogic.deal_damage(
-								state, hero_id, target_id, amount, db))
+							var dmg_events := GameLogic.deal_damage(
+								state, hero_id, target_id, amount, db)
+							events.append_array(dmg_events)
+							# Paired drain_heal_per_damage:N segment (Steal Essence):
+							# "heals N damage from itself for each damage dealt."
+							# Dealt = damage actually PLACED (armor prevention and
+							# 405.3 excess-beyond-fatal reduce it), read from the
+							# damage_dealt events just produced.
+							var heal_per := _drain_heal_per_damage(def)
+							if heal_per > 0:
+								var dealt := 0
+								for de in dmg_events:
+									if (de as GameEvent).event_type == "damage_dealt":
+										dealt += int((de as GameEvent).payload.get("amount", 0))
+								if dealt > 0:
+									events.append_array(GameLogic.heal(
+										state, hero_id, dealt * heal_per, db, card_id))
 							var t_card := state.get_card(target_id)
 							if t_card and state.get_current_hp(target_id, db) <= 0:
 								var t_zone := state.zones.get(t_card.zone_id) as Zone
@@ -1412,6 +1427,16 @@ static func _enter_play_choice_on_chain(state: GameState) -> bool:
 		if (a as PendingAction).action_type == "choose_enter_play_target":
 			return true
 	return false
+
+
+# drain_heal_per_damage:N — paired with a deal_damage_to_target segment
+# (Steal Essence): the casting hero heals N for each damage actually dealt.
+static func _drain_heal_per_damage(def: CardDef) -> int:
+	for segment in def.effects.split("|"):
+		var parts := segment.strip_edges().split(":")
+		if parts[0] == "drain_heal_per_damage":
+			return int(parts[1]) if parts.size() > 1 else 1
+	return 0
 
 
 static func _has_effect_flag_prefix(def: CardDef, prefix: String) -> bool:

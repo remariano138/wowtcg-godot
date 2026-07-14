@@ -19,6 +19,12 @@ signal conditional_highlights_updated(orange_ids: Array)
 # dmg_amount: damage shown on the cursor overlay; 0 = don't show
 signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
 signal targeting_cancelled()
+# Modal spell (rule 707.1c — "Choose one:", Natural Selection): the player must
+# pick a mode before targeting. The scene shows one button per label and calls
+# choose_modal_mode(index); Esc / cancel_modal_choice aborts (the scene removes
+# its buttons on modal_choice_cancelled — also fired when a mode is chosen).
+signal modal_choice_opened(card_id: String, mode_labels: Array)
+signal modal_choice_cancelled()
 # Emitted after a human resolves an ongoing Totem start-of-turn target choice
 # (Searing Totem) so the scene can resume driving the turn.
 signal totem_target_resolved()
@@ -78,6 +84,10 @@ var _targeting_first_target: String = ""  # "" = first pick pending; non-empty =
 var _chain_lightning_picked: Array[String] = []
 # Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
 var _targeting_x_value: int = 0
+# Modal spell (707.1c): card awaiting its mode choice ("" = none), and the mode
+# index riding on the current targeting flow (-1 = not a modal play).
+var _modal_pending_card: String = ""
+var _targeting_mode: int = -1
 # Quest awaiting graveyard-target selection; "" = no browser open.
 var _gy_select_quest_id: String = ""
 var _gy_select_hero_id: String = ""
@@ -115,7 +125,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		pass_priority_action()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_cancel"): # Escape
-		if _targeting_source != "":
+		if _modal_pending_card != "":
+			cancel_modal_choice()
+		elif _targeting_source != "":
 			cancel_targeting()
 		else:
 			retract_last_action()
@@ -126,6 +138,10 @@ func _unhandled_input(event: InputEvent) -> void:
 func handle_card_click(instance_id: String) -> void:
 	if not state:
 		return
+
+	# ── Modal mode choice open: clicking elsewhere abandons it, click proceeds ──
+	if _modal_pending_card != "":
+		cancel_modal_choice()
 
 	# ── Graveyard browser open: board clicks are ignored (modal owns input) ──
 	if _gy_select_quest_id != "" or _gy_select_hero_id != "":
@@ -229,6 +245,10 @@ func handle_card_click(instance_id: String) -> void:
 			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
 	if action_type == "play_instant" and _instant_needs_target(instance_id):
+		# Modal spell (707.1c): pick the mode first, then target.
+		if _is_modal(instance_id):
+			_open_modal_choice(instance_id)
+			return
 		start_targeting(instance_id, "play_instant",
 			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
@@ -555,9 +575,74 @@ func cancel_targeting() -> void:
 	preferred_strike_weapon = ""
 	_targeting_first_target = ""
 	_targeting_x_value      = 0
+	_targeting_mode         = -1
 	_chain_lightning_picked = []
 	refresh_highlights()
 	targeting_cancelled.emit()
+
+
+# ── Modal spells (rule 707.1c — "Choose one:", Natural Selection) ───────────────
+# The mode is picked BEFORE targeting: clicking the card emits
+# modal_choice_opened; the scene shows one button per mode label and calls
+# choose_modal_mode(index), which enters the normal instant targeting flow with
+# the chosen mode index riding on the submission (params.mode).
+
+func _is_modal(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null and StackResolver.is_modal_def(def)
+
+
+func _open_modal_choice(card_id: String) -> void:
+	_modal_pending_card = card_id
+	var def := db.get_def(state.get_card(card_id).card_def_id) as CardDef
+	var labels: Array = []
+	for mode in StackResolver.modal_modes(def):
+		labels.append(_modal_mode_label(mode))
+	modal_choice_opened.emit(card_id, labels)
+
+
+func _modal_mode_label(mode_effect: String) -> String:
+	var parts := mode_effect.split(":")
+	match parts[0]:
+		"deal_damage_to_target":
+			if parts.size() > 2:
+				return "Deal %s %s damage" % [parts[1], parts[2]]
+		"heal_target":
+			if parts.size() > 1:
+				return "Heal %s damage" % parts[1]
+	return mode_effect
+
+
+func choose_modal_mode(mode_index: int) -> void:
+	var card_id := _modal_pending_card
+	_modal_pending_card = ""
+	modal_choice_cancelled.emit()   # the scene removes its buttons either way
+	if card_id == "" or not _is_modal(card_id):
+		return
+	var def := db.get_def(state.get_card(card_id).card_def_id) as CardDef
+	var modes := StackResolver.modal_modes(def)
+	if mode_index < 0 or mode_index >= modes.size():
+		return
+	_targeting_mode = mode_index
+	var parts := (modes[mode_index] as String).split(":")
+	var dmg_type := ""
+	var amount := 0
+	match parts[0]:
+		"deal_damage_to_target":
+			dmg_type = parts[2].to_lower() if parts.size() > 2 else ""
+			amount   = int(parts[1]) if parts.size() > 1 else 0
+		"heal_target":
+			dmg_type = "heal"
+			amount   = int(parts[1]) if parts.size() > 1 else 0
+	start_targeting(card_id, "play_instant", dmg_type, amount)
+
+
+func cancel_modal_choice() -> void:
+	_modal_pending_card = ""
+	modal_choice_cancelled.emit()
 
 
 func _handle_targeting_click(instance_id: String) -> void:
@@ -737,11 +822,11 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
 		return
-	var action := PendingAction.make("play_instant", local_player, {
-		"card_id": _targeting_source, "target_id": instance_id,
-	})
+	var action := PendingAction.make("play_instant", local_player,
+		_instant_params(_targeting_source, instance_id))
 	if StackResolver.can_submit(state, action, db):
 		_targeting_source = ""
+		_targeting_mode   = -1
 		targeting_cancelled.emit()
 		var events := StackResolver.submit_action(state, action, db)
 		if events.is_empty():
@@ -1321,6 +1406,9 @@ func handle_context_action(action: PendingAction) -> void:
 		"play_instant":
 			if _instant_needs_target(action.params.get("card_id", "")):
 				var cid: String = action.params.get("card_id", "")
+				if _is_modal(cid):
+					_open_modal_choice(cid)
+					return
 				start_targeting(cid, "play_instant",
 					_card_dmg_type(cid), _card_dmg_amount(cid))
 				return
@@ -1609,16 +1697,25 @@ func _get_instant_targets(card_id: String) -> Array:
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
 			var act := PendingAction.make("play_instant", local_player,
-				{"card_id": card_id, "target_id": card.instance_id})
+				_instant_params(card_id, card.instance_id))
 			if StackResolver.can_submit(state, act, db):
 				result.append(card.instance_id)
 		var ps := state.players.get(pid) as PlayerState
 		if ps and ps.hero_instance_id != "":
 			var act := PendingAction.make("play_instant", local_player,
-				{"card_id": card_id, "target_id": ps.hero_instance_id})
+				_instant_params(card_id, ps.hero_instance_id))
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
 	return result
+
+
+# Params for a play_instant probe/submission — carries the modal mode index
+# (707.1c) when the current targeting flow came from a mode choice.
+func _instant_params(card_id: String, target_id: String) -> Dictionary:
+	var params := {"card_id": card_id, "target_id": target_id}
+	if _targeting_mode >= 0:
+		params["mode"] = _targeting_mode
+	return params
 
 
 func _instant_needs_target(card_id: String) -> bool:

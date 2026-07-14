@@ -388,6 +388,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 	# Validate target for targeted effects.
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
+		# Modal (707.1c): the chosen mode must be announced with the play.
+		if def and is_modal_def(def) and selected_mode(def, action) == "":
+			return false
 		if def and _has_effect_flag_prefix(def, "multi_shot"):
 			if not _can_play_multi_shot(state, action, db): return false
 		elif def and _instant_needs_target(def):
@@ -427,6 +430,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		return false
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
+		# Modal (707.1c): the chosen mode must be announced with the play.
+		if def and is_modal_def(def) and selected_mode(def, action) == "":
+			return false
 		if def and _has_effect_flag_prefix(def, "chain_lightning"):
 			if not _can_play_chain_lightning(state, action, db): return false
 		elif def and _instant_needs_target(def):
@@ -519,7 +525,46 @@ static func _instant_needs_target(def: CardDef) -> bool:
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target", "attach"]:
 			return true
+		# Modal (707.1c): targeted when any mode's inner effect targets.
+		if parts[0] == "mode" and parts.size() > 1 \
+				and parts[1] in ["destroy_target", "deal_damage_to_target",
+					"exhaust_target", "heal_target"]:
+			return true
 	return false
+
+
+# ── Modal links (rule 707.1c — "Choose one:") ──────────────────────────────────
+# Each `mode:` effects segment wraps ONE standard effect segment, e.g. Natural
+# Selection: `mode:deal_damage_to_target:3:nature|mode:heal_target:3`. The
+# chosen mode is announced at play time on the action (params.mode, an index
+# into modal_modes), like a target — validation and resolution then see ONLY
+# the chosen mode's inner effect, so the engine receives "deal 3" OR "heal 3",
+# never the choice itself.
+# v1 limit: every mode must target a hero or ally (both Natural Selection modes
+# do) — ally-only or targetless modes would need mode-aware target validation.
+static func modal_modes(def: CardDef) -> Array:
+	var modes: Array = []
+	if not def:
+		return modes
+	for seg in def.effects.split("|"):
+		var s := seg.strip_edges()
+		if s.begins_with("mode:"):
+			modes.append(s.substr(5))
+	return modes
+
+
+static func is_modal_def(def: CardDef) -> bool:
+	return not modal_modes(def).is_empty()
+
+
+# The inner effect segment picked by the action's `mode` param; "" when the
+# def isn't modal or the index is missing/out of range.
+static func selected_mode(def: CardDef, action: PendingAction) -> String:
+	var modes := modal_modes(def)
+	var idx := int(action.params.get("mode", -1))
+	if idx >= 0 and idx < modes.size():
+		return modes[idx]
+	return ""
 
 
 static func _instant_targets_ally_only(def: CardDef) -> bool:
@@ -1021,7 +1066,12 @@ static func _resolve_play_instant(state: GameState,
 		var card := state.get_card(card_id)
 		var def  := db.get_def(card.card_def_id) as CardDef if card else null
 		if def and def.effects != "":
-			for entry in def.effects.split("|"):
+			# Modal (707.1c): resolve ONLY the chosen mode's inner segment —
+			# the dispatch below never sees the modes that weren't picked.
+			var entries := def.effects.split("|")
+			if is_modal_def(def):
+				entries = PackedStringArray([selected_mode(def, action)])
+			for entry in entries:
 				var parts := entry.strip_edges().split(":")
 				match parts[0].strip_edges():
 					"destroy_target":
@@ -1047,6 +1097,15 @@ static func _resolve_play_instant(state: GameState,
 						if _is_legal_target(state, target_id, db) \
 								and _is_ally(state, target_id):
 							events.append_array(GameLogic.exhaust_card(state, target_id))
+					"heal_target":
+						# "Your hero heals N damage from target hero or ally."
+						# (Natural Selection heal mode). Re-check at resolution
+						# (706): fizzles if the target left play / became
+						# Untargetable. heal() no-ops on an undamaged target.
+						var heal_amount := int(parts[1]) if parts.size() > 1 else 0
+						if heal_amount > 0 and _is_legal_target(state, target_id, db):
+							events.append_array(GameLogic.heal(
+								state, target_id, heal_amount, db, card_id))
 					"deal_damage_to_target":
 						# "Your hero deals N <type> damage to target hero or ally."
 						# (Quick Strike). Target is announced at play time (rule 601-style;

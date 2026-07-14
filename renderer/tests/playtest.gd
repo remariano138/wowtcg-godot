@@ -212,6 +212,11 @@ var _in_strike_mode: bool = false
 var _strike_weapon_ids: Array = []
 var _strike_nodes: Array[Node] = []
 
+# Modal spell mode choice (rule 707.1c — Natural Selection) — inline "Choose
+# one:" buttons shown when the router opens a modal choice; picking a mode
+# enters the normal targeting flow, Esc / any other click cancels.
+var _modal_nodes: Array[Node] = []
+
 # Ready-on-attack point (Windseer Tarus) — inline "pay to ready" choice, mirrors
 # the strike-point UI.
 var _in_ready_mode: bool = false
@@ -334,6 +339,8 @@ func _build_scene() -> void:
 	_renderer.set_input_router(_router)
 	_router.targeting_started.connect(_on_targeting_started)
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
+	_router.modal_choice_opened.connect(_on_modal_choice_opened)
+	_router.modal_choice_cancelled.connect(_on_modal_choice_cancelled)
 	_router.totem_target_resolved.connect(_on_totem_target_resolved)
 	_router.death_target_resolved.connect(_on_death_target_resolved)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
@@ -3233,6 +3240,67 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 		_resolve_protection(instance_id)
 	elif _in_strike_mode and instance_id in _strike_weapon_ids:
 		_resolve_strike(instance_id)
+
+
+# ── Modal spell mode choice (rule 707.1c — "Choose one:", Natural Selection) ───
+
+func _on_modal_choice_opened(card_id: String, mode_labels: Array) -> void:
+	_clear_modal_buttons()
+
+	const CENTER_X := 960
+	const BTN_W    := 220
+	const BTN_GAP  := 10
+	const SKIP_W   := 120
+	const SKIP_GAP := 20
+
+	var n := mode_labels.size()
+	var row_width: int = n * BTN_W + max(n - 1, 0) * BTN_GAP + SKIP_GAP + SKIP_W
+	@warning_ignore("integer_division")
+	var btn_x := CENTER_X - row_width / 2
+
+	var header := Label.new()
+	var card := _state.get_card(card_id)
+	var def: CardDef = _db.get_def(card.card_def_id) if card and _db else null
+	header.text = "%s — choose one:" % (def.card_name if def else "Choose one:")
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(0.9, 0.5, 0.2))
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.size     = Vector2(row_width + 100, 20)
+	@warning_ignore("integer_division")
+	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
+	_hud.add_child(header)
+	_modal_nodes.append(header)
+
+	for i in n:
+		var btn := Button.new()
+		btn.text     = str(mode_labels[i])
+		btn.position = Vector2(btn_x, 987)
+		btn.size     = Vector2(BTN_W, 36)
+		var captured_i: int = i
+		# choose_modal_mode fires modal_choice_cancelled first (clearing these
+		# buttons via _on_modal_choice_cancelled), then starts targeting.
+		btn.pressed.connect(func() -> void: _router.choose_modal_mode(captured_i))
+		_hud.add_child(btn)
+		_modal_nodes.append(btn)
+		btn_x += BTN_W + BTN_GAP
+
+	var skip := Button.new()
+	skip.text     = "Cancel"
+	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
+	skip.size     = Vector2(SKIP_W, 36)
+	skip.pressed.connect(func() -> void: _router.cancel_modal_choice())
+	_hud.add_child(skip)
+	_modal_nodes.append(skip)
+
+
+func _on_modal_choice_cancelled() -> void:
+	_clear_modal_buttons()
+
+
+func _clear_modal_buttons() -> void:
+	for node in _modal_nodes:
+		node.queue_free()
+	_modal_nodes.clear()
 
 
 # ── Strike point (rules 602.1 / 602.3) ─────────────────────────────────────────

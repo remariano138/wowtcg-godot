@@ -107,6 +107,7 @@ func _ready() -> void:
 		_test_frost_instants,
 		_test_frost_riders,
 		_test_steal_essence,
+		_test_natural_selection,
 		_test_mind_damage_discard,
 		_test_ismantal_ally_power_discard,
 		_test_boneshanks_death_trigger,
@@ -9591,3 +9592,131 @@ func _test_ai_attach_target_choice() -> void:
 		if a.params.get("card_id", "") == "roots":
 			any_roots = true
 	ok(not any_roots, "aa-e: Roots not wasted on a lone cheap ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Natural Selection (azeroth_27): "Choose one: Your hero deals 3
+# nature damage to target hero or ally; or your hero heals 3 damage from
+# target hero or ally." First MODAL link (rule 707.1c) — recipe
+# `mode:deal_damage_to_target:3:nature|mode:heal_target:3`. The chosen mode
+# index is announced on the play action (params.mode); the engine validates
+# and resolves ONLY that mode's inner effect.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_natural_selection() -> void:
+	_buf.append("\n-- Scenario: Natural Selection — modal choose-one (707.1c) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 5, [], 4)
+	db.instant("azeroth_27", 3,
+		"mode:deal_damage_to_target:3:nature|mode:heal_target:3")
+
+	# ── Damage mode (mode 0): 3 nature from the hero ──
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	_add_hand_card(st, "ns", "azeroth_27", "p1")
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p2")
+
+	var events: Array[GameEvent] = StackResolver.submit_action(st,
+		PendingAction.make("play_instant", "p1",
+			{"card_id": "ns", "target_id": "grunt", "mode": 0}), db)
+	events.append_array(StackResolver.pass_priority(st, db))
+	events.append_array(StackResolver.pass_priority(st, db))
+
+	eq(grunt.damage_taken, 3, "ns-a: damage mode — target ally took 3")
+	var from_hero := false
+	for e in events:
+		if e.event_type == "damage_dealt" and e.payload.get("source", "") == "p1_hero" \
+				and e.payload.get("target", "") == "grunt":
+			from_hero = true
+	ok(from_hero, "ns-b: damage sourced from p1's hero")
+	ok(st.get_card("ns").zone_id == "p1_graveyard",
+		"ns-c: Natural Selection is in the graveyard")
+
+	# ── Heal mode (mode 1): heals 3 from own damaged ally, deals nothing ──
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 3)
+	_add_hand_card(st2, "ns2", "azeroth_27", "p1")
+	var mine := _add_ally(st2, "mine", "grunt_def", "p1")
+	mine.damage_taken = 4
+
+	StackResolver.submit_action(st2, PendingAction.make("play_instant", "p1",
+		{"card_id": "ns2", "target_id": "mine", "mode": 1}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+
+	eq(mine.damage_taken, 1, "ns-d: heal mode — 3 damage removed from own ally")
+	ok(st2.get_card("ns2").zone_id == "p1_graveyard",
+		"ns-e: heal mode also ends in the graveyard")
+
+	# ── The mode must be announced with the play (707.1c) ──
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 3)
+	_add_hand_card(st3, "ns3", "azeroth_27", "p1")
+	_add_ally(st3, "grunt3", "grunt_def", "p2")
+	ok(not StackResolver.can_submit(st3, PendingAction.make("play_instant", "p1",
+			{"card_id": "ns3", "target_id": "grunt3"}), db),
+		"ns-f: play without a mode param is rejected")
+	ok(not StackResolver.can_submit(st3, PendingAction.make("play_instant", "p1",
+			{"card_id": "ns3", "target_id": "grunt3", "mode": 5}), db),
+		"ns-g: out-of-range mode index is rejected")
+	ok(StackResolver.can_submit(st3, PendingAction.make("play_instant", "p1",
+			{"card_id": "ns3", "target_id": "grunt3", "mode": 0}), db),
+		"ns-h: same play with a valid mode is legal")
+
+	# ── AI: get_modal_actions exposes BOTH modes; play policy keeps damage only ──
+	var ai := BaseAI.new()
+	# An untagged modal twin exercises the get_legal_actions modal hook directly
+	# (azeroth_27 itself is held as a combat instant and never blind-played).
+	db.instant("modal_twin", 3,
+		"mode:deal_damage_to_target:3:nature|mode:heal_target:3")
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 3)
+	_add_hand_card(st4, "twin", "modal_twin", "p1")
+	_add_ally(st4, "grunt4", "grunt_def", "p2")
+	st4.get_card("p1_hero").damage_taken = 5
+
+	var seen_modes: Dictionary = {}
+	var heal_target := ""
+	for a in ai.get_modal_actions(st4, db, "p1", "twin"):
+		var m := int((a as PendingAction).params.get("mode", -1))
+		seen_modes[m] = true
+		if m == 1:
+			heal_target = (a as PendingAction).params.get("target_id", "")
+	ok(seen_modes.has(0) and seen_modes.has(1),
+		"ns-i: get_modal_actions enumerates both modes")
+	eq(heal_target, "p1_hero", "ns-j: heal-mode option targets the AI's own damaged hero")
+
+	var played_modes: Dictionary = {}
+	for a in ai.get_legal_actions(st4, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "twin":
+			played_modes[int((a as PendingAction).params.get("mode", -1))] = true
+	ok(played_modes.has(0) and not played_modes.has(1),
+		"ns-k: play policy — only the damage mode is actually submitted")
+
+	# ── AI: azeroth_27 itself is a held combat instant, ambushed with mode 0 ──
+	var st5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st5, "p1", 3)
+	_add_hand_card(st5, "ns5", "azeroth_27", "p1")
+	var blind := false
+	for a in ai.get_legal_actions(st5, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "ns5":
+			blind = true
+	ok(not blind, "ns-l: AI never blind-plays Natural Selection on its own window")
+
+	db.ally("atk_frail_ns", 3, 3, [], 4)   # cost 4, 3 HP — dies to 3 nature
+	var st6 := _base_state(db, "p1_hero", "p2_hero")
+	st6.turn_player     = "p2"
+	st6.priority_player = "p1"
+	_add_resources(st6, "p1", 3)
+	_add_hand_card(st6, "ns6", "azeroth_27", "p1")
+	_add_ally(st6, "atk_frail", "atk_frail_ns", "p2")
+	st6.combat_attack_window = true
+	st6.combat_defender = "p1_hero"
+	st6.combat_attacker = "atk_frail"
+	var amb := ai.combat_instant_action(st6, db, "p1")
+	ok(amb != null and amb.params.get("card_id") == "ns6"
+			and amb.params.get("target_id") == "atk_frail"
+			and int(amb.params.get("mode", -1)) == 0,
+		"ns-m: attack window — ambush kill announces the damage mode")

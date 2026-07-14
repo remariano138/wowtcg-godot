@@ -40,6 +40,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_56":  "combat_instant_dmg",   # Frostbolt — 3 frost damage (can't-attack rider not modeled for AI)
 	"azeroth_109": "combat_instant_dmg",   # Frost Shock — 2 frost damage (can't-attack/protect rider not modeled for AI)
 	"azeroth_134": "combat_instant_dmg",   # Steal Essence — 2 shadow damage (drain heal not modeled for AI)
+	"azeroth_27":  "combat_instant_dmg",   # Natural Selection — modal: damage mode only (heal mode enumerated by get_modal_actions but never played — future work)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
@@ -142,6 +143,10 @@ func _incoming_hero_damage(state: GameState, db, player_id: String) -> int:
 			continue
 		match act.action_type:
 			"play_instant", "play_ability":
+				# Modal card on the chain: only its damage mode counts as incoming.
+				if StackResolver.is_modal_def(def) \
+						and int(act.params.get("mode", -1)) != _modal_dmg_mode_index(def):
+					continue
 				incoming += _combat_instant_dmg(def)
 			"use_ally_power":
 				var ap := StackResolver._ally_activated_power(def)
@@ -202,8 +207,12 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 			play = attacker_hp <= defender_atk + dmg and attacker_hp > defender_atk
 		if not play:
 			continue
-		var act := PendingAction.make("play_instant", player_id,
-			{"card_id": card.instance_id, "target_id": attacker_id})
+		var params := {"card_id": card.instance_id, "target_id": attacker_id}
+		# Modal card (Natural Selection): announce the damage mode with the play.
+		var dmg_mode := _modal_dmg_mode_index(def)
+		if dmg_mode >= 0:
+			params["mode"] = dmg_mode
+		var act := PendingAction.make("play_instant", player_id, params)
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
@@ -527,13 +536,27 @@ func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String)
 	return null
 
 
-# Damage amount of a combat_instant_dmg card (deal_damage_to_target:N:TYPE).
+# Damage amount of a combat_instant_dmg card (deal_damage_to_target:N:TYPE),
+# including a modal card's damage mode (mode:deal_damage_to_target:N:TYPE —
+# Natural Selection).
 static func _combat_instant_dmg(def: CardDef) -> int:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0].strip_edges() == "deal_damage_to_target" and parts.size() > 1:
 			return int(parts[1])
+		if parts[0].strip_edges() == "mode" and parts.size() > 2 \
+				and parts[1].strip_edges() == "deal_damage_to_target":
+			return int(parts[2])
 	return 0
+
+
+# Index of a modal card's deal_damage_to_target mode; -1 when none / not modal.
+static func _modal_dmg_mode_index(def: CardDef) -> int:
+	var modes := StackResolver.modal_modes(def)
+	for i in modes.size():
+		if (modes[i] as String).begins_with("deal_damage_to_target"):
+			return i
+	return -1
 
 
 # Return true if this AI wants to mulligan its opening hand.
@@ -582,6 +605,16 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 			if def and StackResolver.is_attachment_def(def):
 				# Attachment (rule 400): buff → own ally, debuff → enemy ally.
 				result.append_array(_attach_actions(state, db, player_id, card.instance_id, action_type, def))
+				continue
+			if def and StackResolver.is_modal_def(def):
+				# Modal spell (707.1c): every mode is enumerated (get_modal_actions)
+				# so the option space is visible, then the play policy
+				# (_modal_mode_playable) filters what's actually submitted.
+				var modal_modes: Array = StackResolver.modal_modes(def)
+				for m_act in get_modal_actions(state, db, player_id, card.instance_id, action_type):
+					var m_idx := int((m_act as PendingAction).params.get("mode", 0))
+					if _modal_mode_playable(modal_modes[m_idx]):
+						result.append(m_act)
 				continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
@@ -2183,6 +2216,55 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 			if StackResolver.can_submit(state, act, db):
 				result.append(act)
 	return result
+
+
+# Modal spells (rule 707.1c — "Choose one:", Natural Selection): enumerate
+# EVERY mode × legal target, each action carrying its `mode` index, so any AI
+# (current or future) can see the full option space before deciding. Damage /
+# removal modes follow the usual targeting rule (opponents only); heal modes
+# target our own side, and only characters with damage to remove. Which of
+# these options actually get played is a separate policy — see
+# _modal_mode_playable below.
+func get_modal_actions(state: GameState, db, player_id: String,
+		card_id: String, action_type: String = "play_instant") -> Array[PendingAction]:
+	var result: Array[PendingAction] = []
+	var spell_card := state.get_card(card_id)
+	var spell_def  := db.get_def(spell_card.card_def_id) as CardDef if spell_card else null
+	if not spell_def:
+		return result
+	var modes := StackResolver.modal_modes(spell_def)
+	var opp := "p2" if player_id == "p1" else "p1"
+	for i in modes.size():
+		var mode_effect: String = modes[i]
+		var candidates: Array[String] = []
+		if mode_effect.begins_with("heal_target"):
+			var ps := state.players.get(player_id) as PlayerState
+			if ps and ps.hero_instance_id != "" \
+					and state.get_card(ps.hero_instance_id).damage_taken > 0:
+				candidates.append(ps.hero_instance_id)
+			for ally in state.cards_in_zone(player_id + "_ally_row"):
+				if ally.damage_taken > 0:
+					candidates.append(ally.instance_id)
+		else:
+			for ally in state.cards_in_zone(opp + "_ally_row"):
+				candidates.append(ally.instance_id)
+			var ps_opp := state.players.get(opp) as PlayerState
+			if ps_opp and ps_opp.hero_instance_id != "":
+				candidates.append(ps_opp.hero_instance_id)
+		for target_id in candidates:
+			var act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": target_id, "mode": i})
+			if StackResolver.can_submit(state, act, db):
+				result.append(act)
+	return result
+
+
+# Play policy over a modal card's modes: which enumerated options the current
+# heuristics actually play. For now only damage modes (played with the usual
+# combat-instant / targeted-damage logic); heal modes are enumerated by
+# get_modal_actions but filtered here — future work.
+func _modal_mode_playable(mode_effect: String) -> bool:
+	return mode_effect.begins_with("deal_damage_to_target")
 
 
 # Attachments (rule 400). A buff attachment (`attached_buff` — Mark of the

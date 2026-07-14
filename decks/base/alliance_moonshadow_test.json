@@ -134,8 +134,13 @@
       "_card_name": "Liba Wobblebonk"
     },
     {
+      "card_def_id": "azeroth_24",
+      "count": 2,
+      "_card_name": "Mark of the Wild"
+    },
+    {
       "card_def_id": "azeroth_219",
-      "count": 4,
+      "count": 2,
       "_card_name": "Tracker Gallen"
     }
   ],

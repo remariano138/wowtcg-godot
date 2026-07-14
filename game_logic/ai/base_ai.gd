@@ -579,6 +579,10 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 				if ms_action:
 					result.append(ms_action)
 				continue
+			if def and StackResolver.is_attachment_def(def):
+				# Attachment (rule 400): buff → own ally, debuff → enemy ally.
+				result.append_array(_attach_actions(state, db, player_id, card.instance_id, action_type, def))
+				continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
@@ -2149,6 +2153,35 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 				{"card_id": card_id, "target_id": ps_opp.hero_instance_id})
 			if StackResolver.can_submit(state, act, db):
 				result.append(act)
+	return result
+
+
+# Attachments (rule 400). A buff attachment (`attached_buff` — Mark of the
+# Wild) goes on our own highest-ATK ally. A debuff attachment (Entangling
+# Roots: exhaust + `attached_cannot_ready`) goes on the opposing highest-ATK
+# ally whose cost >= the spell's cost (same value bar as _destroy_is_worth_it's
+# first gate — don't spend 2 to lock a 1-drop). At most one action is
+# generated (the best target), never a self-target for a debuff.
+func _attach_actions(state: GameState, db, player_id: String,
+		card_id: String, action_type: String, def: CardDef) -> Array[PendingAction]:
+	var result: Array[PendingAction] = []
+	var is_buff := StackResolver._has_effect_flag_prefix(def, "attached_buff")
+	var side := player_id if is_buff else ("p2" if player_id == "p1" else "p1")
+	var best: PendingAction = null
+	var best_score := -1
+	for ally in state.cards_in_zone(side + "_ally_row"):
+		var act := PendingAction.make(action_type, player_id,
+			{"card_id": card_id, "target_id": ally.instance_id})
+		if not StackResolver.can_submit(state, act, db):
+			continue
+		if not is_buff and _def_cost(state, db, ally.instance_id) < def.cost:
+			continue
+		var score := state.get_atk(ally.instance_id, db, true)
+		if score > best_score:
+			best_score = score
+			best = act
+	if best:
+		result.append(best)
 	return result
 
 

@@ -48,6 +48,11 @@ static func damage_dealt(source_id: String, target_id: String, amount: int) -> G
 static func card_destroyed(card_id: String, by_source: String) -> GameEvent:
 	return make("card_destroyed", {"card": card_id, "source": by_source})
 
+# An attachment entered play attached to a host (rule 400.2). Emitted right
+# after the card_moved into the "attached" zone so the renderer knows the host.
+static func card_attached(card_id: String, host_id: String) -> GameEvent:
+	return make("card_attached", {"card": card_id, "host": host_id})
+
 static func card_exhausted(card_id: String) -> GameEvent:
 	return make("card_exhausted", {"card": card_id})
 

@@ -52,6 +52,19 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 
 	events.append(GameEvent.card_moved(card_id, from_zone_id, to_zone_id))
 
+	# Rule 400.5 / 410.6c: a host leaving play takes its attachments with it —
+	# each attachment is destroyed by the game (moves within play, e.g. a
+	# control change to the other ally_row, keep attachments attached).
+	if not card.attachments.is_empty():
+		var new_zone := state.zones.get(to_zone_id) as Zone
+		if new_zone == null or not (new_zone.zone_type in GameState.PLAY_ZONE_TYPES):
+			for att_id in card.attachments.duplicate():
+				var att := state.get_card(att_id)
+				if att:
+					events.append(GameEvent.card_destroyed(att_id, card_id))
+					events.append_array(move_card(state, att_id, att.owner + "_graveyard"))
+			card.attachments.clear()
+
 	# Cards entering the graveyard leave play (rule 400.6a): all continuous
 	# effects end, so the card is reset to a fresh state and starts clean if it
 	# ever re-enters play. This clears exhaustion, damage, buffs (including

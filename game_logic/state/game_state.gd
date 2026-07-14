@@ -216,6 +216,9 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 		if b.condition == "while_attacking" and not is_attacking:
 			continue
 		atk += b.amount
+	# (1b) Attachments on this card (rule 400): Ongoing "Attached ally has
+	# +A ATK" (Mark of the Wild). Live read — never cached.
+	atk += _attachment_stat_mods(inst, db, 1)
 	# (2) This card's own printed continuous self-modifiers.
 	var is_weapon := false
 	for segment in def.effects.split("|"):
@@ -327,7 +330,27 @@ func get_max_hp(instance_id: String, db) -> int:
 		return 0
 	var hp := def.printed_health + inst.sum_stat("health")
 	hp += _aura_health_mods(inst, db)
+	hp += _attachment_stat_mods(inst, db, 2)
 	return max(hp, 0)
+
+
+# Sum of one stat granted by this card's attachments' `attached_buff:ATK:HP`
+# segments (rule 400 — Mark of the Wild). field: 1 = ATK, 2 = health.
+# Live read on every stat query — never cached.
+func _attachment_stat_mods(inst: CardInstance, db, field: int) -> int:
+	var bonus := 0
+	for att_id in inst.attachments:
+		var att := get_card(att_id)
+		if not att or att.zone_id != "attached":
+			continue
+		var att_def: CardDef = db.get_def(att.card_def_id)
+		if not att_def:
+			continue
+		for seg in att_def.effects.split("|"):
+			var p := seg.split(":")
+			if p[0] == "attached_buff" and p.size() > field:
+				bonus += int(p[field])
+	return bonus
 
 # Sum of max-health bonuses this card receives from static "aura" sources in
 # its controller's party — continuous modifiers that live on another card in

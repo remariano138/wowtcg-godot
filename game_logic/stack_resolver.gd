@@ -508,7 +508,7 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db) 
 static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target"]:
+		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target", "attach"]:
 			return true
 	return false
 
@@ -516,10 +516,27 @@ static func _instant_needs_target(def: CardDef) -> bool:
 static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "exhaust_target"] \
+		if parts[0] in ["destroy_target", "exhaust_target", "attach"] \
 				and parts.size() > 1 and parts[1] == "ally":
 			return true
 	return false
+
+
+# Rule 400: an attachment carries an `attach:TARGETS[:exhaust_it]` segment
+# ("Attach to target <TARGETS>"). Returns the parsed segment, or an empty
+# array for non-attachments.
+static func attach_parts(def: CardDef) -> PackedStringArray:
+	if not def:
+		return PackedStringArray()
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0] == "attach":
+			return p
+	return PackedStringArray()
+
+
+static func is_attachment_def(def: CardDef) -> bool:
+	return attach_parts(def).size() > 0
 
 
 # First to Fall: "Destroy target protecting ally." (`destroy_target:protecting_ally`).
@@ -928,6 +945,10 @@ static func _resolve_play_ongoing_ability(state: GameState,
 
 	var events: Array[GameEvent] = []
 	var def := db.get_def(card.card_def_id) as CardDef if db else null
+	# Rule 400.2: a targeted attachment resolves by entering play attached to
+	# its announced target.
+	if def and is_attachment_def(def):
+		return _resolve_attach(state, action, card, def, db)
 	# Rule 305.3: a Totem is an ability ALLY — it enters the controller's ally_row
 	# (so it can be attacked/targeted like an ally), not the hero row. It carries
 	# summoning sickness like any other ally (irrelevant to attacking — totems
@@ -941,6 +962,40 @@ static func _resolve_play_ongoing_ability(state: GameState,
 	# effect) until removed from play — it does not resolve-and-graveyard
 	# like a non-ongoing ability.
 	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
+	return events
+
+
+# Rule 400.2 / 707.1d: a targeted attachment enters play attached to its
+# announced target. The target is re-checked at resolution (706 / glossary
+# 4217): if it left play, became Untargetable, or stopped matching the attach
+# description, the attachment is put into its owner's graveyard instead.
+# The attached card stays in play (zone "attached", rule 400.5) providing its
+# Ongoing effect until its host leaves play (GameLogic.move_card destroys it).
+static func _resolve_attach(state: GameState, action: PendingAction,
+		card: CardInstance, def: CardDef, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var target_id: String = action.params.get("target_id", "")
+	var parts := attach_parts(def)
+	var target_ok := _is_legal_target(state, target_id, db)
+	if target_ok and parts.size() > 1 and parts[1] == "ally":
+		target_ok = _is_ally(state, target_id)
+	if not target_ok:
+		events.append(GameEvent.make("action_fizzled", {
+			"action_type": "play_ability", "reason": "attach_target_gone",
+		}))
+		events.append_array(GameLogic.move_card(state, card.instance_id, card.owner + "_graveyard"))
+		return events
+	var host := state.get_card(target_id)
+	# Both sides of the relationship are set BEFORE move_card — see move_card's
+	# contract (attachment setup lives in the caller).
+	card.attached_to = target_id
+	host.attachments.append(card.instance_id)
+	events.append_array(GameLogic.move_card(state, card.instance_id, "attached"))
+	events.append(GameEvent.card_attached(card.instance_id, target_id))
+	# "Attach to target ally and exhaust it." (Entangling Roots) — the exhaust
+	# is part of the attach resolution, not a separate link.
+	if "exhaust_it" in parts:
+		events.append_array(GameLogic.exhaust_card(state, target_id))
 	return events
 
 

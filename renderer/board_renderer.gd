@@ -26,6 +26,16 @@ var _zone_cards: Dictionary = {}
 # non-attaching ongoing abilities) uses the normal centre-row spread.
 var _hero_card_ids: Dictionary = {}
 
+# attachment instance_id -> host instance_id (rule 400.5 — the attachment card
+# renders tucked behind its host and follows it around). Maintained from
+# card_attached events, self-healed from state in reconcile_from_state.
+var _attachment_hosts: Dictionary = {}
+
+# How far an attachment peeks out past its host (toward the opponent side, so
+# it reads as tucked underneath from the controller's seat).
+const ATTACH_PEEK := 46.0
+const ATTACH_STACK_GAP := 26.0   # extra peek per additional attachment
+
 
 # card_id -> Tween of an in-flight death overlay fade. card_moved defers the
 # move-to-graveyard animation until this finishes, so the card doesn't slide
@@ -382,6 +392,17 @@ func _on_game_event(event: GameEvent) -> void:
 				var cn := card_nodes.get(event.payload["card"]) as CardNode
 				if cn and cn.has_method("update_damage"):
 					cn.update_damage(0)
+		"card_attached":
+			var att_id:  String = event.payload.get("card", "")
+			var host_id: String = event.payload.get("host", "")
+			_attachment_hosts[att_id] = host_id
+			var att_cn  := card_nodes.get(att_id)  as CardNode
+			var host_cn := card_nodes.get(host_id) as CardNode
+			if att_cn and host_cn:
+				att_cn.facing_degrees = host_cn.facing_degrees
+				att_cn.rotation_degrees = att_cn.facing_degrees
+				_update_host_z(host_id)
+				_move_attachments_with_host(host_id, host_cn.global_position)
 		"card_exhausted":
 			_animate_exhaust(event.payload["card"])
 		"card_readied":
@@ -573,6 +594,13 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	_remove_from_zone(card_id, from_zone)
 	_add_to_zone(card_id, to_zone)
 	_apply_zone_scale(card_id, to_zone)
+
+	# Leaving an attachment relationship (host died / attachment destroyed):
+	# drop the host link and restore the host's z-order if it's now bare.
+	if from_zone == "attached" and _attachment_hosts.has(card_id):
+		var old_host: String = _attachment_hosts[card_id]
+		_attachment_hosts.erase(card_id)
+		_update_host_z(old_host)
 
 	# Flip face based on destination zone and perspective.
 	# resource_placed handles face-down resources separately; here we only
@@ -843,6 +871,7 @@ func _relayout_zone(zone_id: String) -> void:
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 		tween.tween_property(node, "global_position", target, 0.2)
 		_pos_tweens[cid] = tween
+		_move_attachments_with_host(cid, target)
 
 	if hero_id != "" and hero_id in (_zone_cards.get(zone_id, []) as Array):
 		var hnode := card_nodes.get(hero_id) as Node2D
@@ -855,6 +884,50 @@ func _relayout_zone(zone_id: String) -> void:
 				htween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 				htween.tween_property(hnode, "global_position", hero_anchor.global_position, 0.2)
 				_pos_tweens[hero_id] = htween
+
+
+# ── Attachment layout (rule 400.5) ─────────────────────────────────────────────
+
+func _attachments_of(host_id: String) -> Array:
+	var out: Array = []
+	for att_id in _attachment_hosts:
+		if _attachment_hosts[att_id] == host_id:
+			out.append(att_id)
+	return out
+
+
+# Where the index-th attachment of a host sits, given the host's (target)
+# position. The peek offset composes with the host's facing so it always
+# points toward the opponent's side of the board.
+func _attachment_target_pos(host_cn: CardNode, host_pos: Vector2, index: int) -> Vector2:
+	var peek := ATTACH_PEEK + index * ATTACH_STACK_GAP
+	return host_pos + Vector2(0.0, -peek).rotated(deg_to_rad(host_cn.facing_degrees))
+
+
+# Tween every attachment of host_id toward its slot behind host_target
+# (the position the host itself is heading to).
+func _move_attachments_with_host(host_id: String, host_target: Vector2) -> void:
+	var host_cn := card_nodes.get(host_id) as CardNode
+	if not host_cn:
+		return
+	var atts := _attachments_of(host_id)
+	for i in atts.size():
+		var node := card_nodes.get(atts[i]) as Node2D
+		if not node:
+			continue
+		_kill_pos_tween(atts[i])
+		var tween := create_tween()
+		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+		tween.tween_property(node, "global_position",
+			_attachment_target_pos(host_cn, host_target, i), 0.2)
+		_pos_tweens[atts[i]] = tween
+
+
+# A host with attachments draws above them (z 1); a bare card sits at z 0.
+func _update_host_z(host_id: String) -> void:
+	var host_cn := card_nodes.get(host_id) as CardNode
+	if host_cn:
+		host_cn.z_index = 1 if not _attachments_of(host_id).is_empty() else 0
 
 
 func _kill_pos_tween(card_id: String) -> void:
@@ -884,6 +957,21 @@ func reconcile_from_state(state) -> void:
 			continue  # effect cue mid-swing — reasserts on next pass
 		var card = state.get_card(card_id)
 		if card == null:
+			continue
+		# Attachments (rule 400.5): self-heal the host map from state, mirror
+		# the host's facing, and snap onto the slot behind the host when
+		# neither card is mid-tween.
+		if card.zone_id == "attached" and card.attached_to != "":
+			_attachment_hosts[card_id] = card.attached_to
+			var host_cn := card_nodes.get(card.attached_to) as CardNode
+			if host_cn:
+				_update_host_z(card.attached_to)
+				cn.facing_degrees = host_cn.facing_degrees
+				cn.settle_rotation(false)
+				if not _pos_tweens.has(card.attached_to):
+					var idx := _attachments_of(card.attached_to).find(card_id)
+					cn.global_position = _attachment_target_pos(
+						host_cn, host_cn.global_position, max(idx, 0))
 			continue
 		cn.facing_degrees = _facing_for_zone(card.zone_id)
 		cn.settle_rotation(card.is_exhausted)
@@ -915,6 +1003,10 @@ func _on_card_hovered(instance_id: String) -> void:
 	# In stacked (non-spread) zones, only the topmost card (last in list) drives the inspector.
 	for zone_id in _zone_cards:
 		var zone_list: Array = _zone_cards[zone_id]
+		# Attachments each sit behind their own host, not in one shared stack —
+		# any of them may drive the inspector.
+		if zone_id == "attached":
+			continue
 		if instance_id in zone_list and zone_id not in SPREAD_ZONES:
 			if zone_list[-1] != instance_id:
 				return

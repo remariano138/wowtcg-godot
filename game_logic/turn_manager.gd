@@ -119,6 +119,8 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):
 		card.just_summoned = false
+		if _ready_blocked(state, card, db):
+			continue
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
 	for card in state.cards_in_zone(state.turn_player + "_resource_row"):
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
@@ -224,6 +226,26 @@ static func _next_turn(state: GameState, db) -> Array[GameEvent]:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+# Entangling Roots: a card hosting an attachment with `attached_cannot_ready`
+# ("Attached ally can't ready during its controller's ready step") skips the
+# ready step. Only the ready STEP is blocked — explicit ready effects
+# (e.g. ready_self_at_turn_end) still work. Live read — never cached.
+static func _ready_blocked(state: GameState, card: CardInstance, db) -> bool:
+	if not db:
+		return false
+	for att_id in card.attachments:
+		var att := state.get_card(att_id)
+		if not att or att.zone_id != "attached":
+			continue
+		var att_def := db.get_def(att.card_def_id) as CardDef
+		if not att_def:
+			continue
+		for seg in att_def.effects.split("|"):
+			if seg.strip_edges() == "attached_cannot_ready":
+				return true
+	return false
+
 
 static func _open_window(state: GameState) -> void:
 	state.priority_player    = state.turn_player

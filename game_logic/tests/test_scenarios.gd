@@ -174,6 +174,10 @@ func _ready() -> void:
 		_test_ai_attack_exhaust_choice,
 		_test_bala_atk_vs_exhausted,
 		_test_bala_bonus_turns_on_mid_combat,
+		_test_mark_of_the_wild_attach_buff,
+		_test_entangling_roots_ready_lock,
+		_test_attach_fizzles_when_target_dies,
+		_test_ai_attach_target_choice,
 	]
 
 	for t in tests:
@@ -9174,3 +9178,201 @@ func _test_bala_bonus_turns_on_mid_combat() -> void:
 	StackResolver.pass_priority(state, db)
 	StackResolver.pass_priority(state, db)   # conclusion
 	eq(state.get_card("victim").damage_taken, 4, "bc-c: combo dealt the boosted 4")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Mark of the Wild (azeroth_24): Instant Ability attachment — "Attach to target
+# ally. Ongoing: Attached ally has +2 ATK and +2 health." (rule 400.2 / 400.5).
+# The host leaving play destroys the attachment (rule 410.6c).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_mark_of_the_wild_attach_buff() -> void:
+	_buf.append("\n-- Mark of the Wild: attach grants +2/+2, dies with its host --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.instant("azeroth_24", 2, "ongoing|attach:ally|attached_buff:2:2")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bear := _add_ally(state, "bear", "bear_def", "p1")
+	_add_card_to_hand(state, "mark", "azeroth_24", "p1")
+	_add_resources(state, "p1", 2)
+
+	# Instant + ongoing routes to play_ability (is_ongoing_def), instant timing.
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "mark", "target_id": "bear"})
+	ok(StackResolver.can_submit(state, cast, db), "mw-a: attach on own ally is legal")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	var mark := state.get_card("mark")
+	eq(mark.zone_id, "attached",       "mw-b: Mark is in the attached zone")
+	eq(mark.attached_to, "bear",       "mw-c: Mark's host is the bear")
+	ok("mark" in bear.attachments,     "mw-d: bear lists Mark as an attachment")
+	eq(state.get_atk("bear", db), 4,   "mw-e: host ATK is 2 + 2")
+	eq(state.get_max_hp("bear", db), 5, "mw-f: host max HP is 3 + 2")
+	ok(state.is_in_play("mark"),       "mw-g: the attachment counts as in play")
+
+	# Rule 410.6c: the host leaving play destroys the attachment.
+	var events := GameLogic.destroy_card(state, "bear", "")
+	eq(mark.zone_id, "p1_graveyard",   "mw-h: Mark follows its host to the graveyard")
+	eq(mark.attached_to, "",           "mw-i: attachment link cleared")
+	ok(bear.attachments.is_empty(),    "mw-j: host attachment list cleared")
+	var saw_att_destroy := false
+	for e in events:
+		if e.event_type == "card_destroyed" and e.payload.get("card", "") == "mark":
+			saw_att_destroy = true
+	ok(saw_att_destroy, "mw-k: attachment destruction emitted an event")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Entangling Roots (azeroth_20): "Attach to target ally and exhaust it.
+# Ongoing: Attached ally can't ready during its controller's ready step."
+# Non-instant Ability — action-phase timing. The lock is a live read at the
+# ready step; other cards ready normally.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_entangling_roots_ready_lock() -> void:
+	_buf.append("\n-- Entangling Roots: exhausts on attach, blocks the ready step --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("victim_def", 3, 3, [], 3)
+	db.ally("other_def", 2, 2, [], 1)
+	db.ability("azeroth_20", 2, "ongoing|attach:ally:exhaust_it|attached_cannot_ready")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	var other  := _add_ally(state, "other", "other_def", "p2")
+	other.is_exhausted = true
+	_add_card_to_hand(state, "roots", "azeroth_20", "p1")
+	_add_resources(state, "p1", 2)
+
+	# Ally-only attach description: a hero is not a legal target.
+	var at_hero := PendingAction.make("play_ability", "p1",
+		{"card_id": "roots", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"er-a: Roots can't target a hero (attach:ally)")
+
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "roots", "target_id": "victim"})
+	ok(StackResolver.can_submit(state, cast, db), "er-b: Roots on an enemy ally is legal")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	ok(victim.is_exhausted,                        "er-c: host exhausted on attach")
+	eq(state.get_card("roots").zone_id, "attached", "er-d: Roots is attached")
+
+	# p2's ready step: the rooted ally stays exhausted, everything else readies.
+	state.turn_player = "p2"
+	TurnManager._enter_ready(state, db)
+	ok(victim.is_exhausted,     "er-e: rooted ally did NOT ready at the ready step")
+	ok(not other.is_exhausted,  "er-f: other exhausted ally readied normally")
+	ok(not victim.just_summoned, "er-g: summoning sickness still cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Rule 400.2 re-check at resolution: if the announced attach target leaves play
+# before the attachment resolves, the attachment goes to its owner's graveyard.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_attach_fizzles_when_target_dies() -> void:
+	_buf.append("\n-- Attach fizzle: target destroyed in response --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.instant("azeroth_24", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.instant("kill_def", 0, "destroy_target:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bear", "bear_def", "p1")
+	_add_card_to_hand(state, "mark", "azeroth_24", "p1")
+	_add_card_to_hand(state, "kill", "kill_def", "p2")
+	_add_resources(state, "p1", 2)
+
+	var all_events: Array[GameEvent] = []
+	all_events.append_array(StackResolver.submit_action(state,
+		PendingAction.make("play_ability", "p1",
+			{"card_id": "mark", "target_id": "bear"}), db))
+	all_events.append_array(StackResolver.pass_priority(state, db))  # p1 → p2
+	# p2 destroys the bear in response.
+	all_events.append_array(StackResolver.submit_action(state,
+		PendingAction.make("play_instant", "p2",
+			{"card_id": "kill", "target_id": "bear"}), db))
+	all_events.append_array(StackResolver.pass_priority(state, db))  # p2 passes
+	all_events.append_array(StackResolver.pass_priority(state, db))  # kill resolves
+	ok(state.get_card("bear").zone_id == "p1_graveyard", "af-a: bear destroyed in response")
+	# Both pass again → Mark resolves with no legal host → graveyard.
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.get_card("mark").zone_id, "p1_graveyard", "af-b: Mark fizzled to the graveyard")
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled" \
+				and e.payload.get("reason", "") == "attach_target_gone":
+			saw_fizzle = true
+	ok(saw_fizzle, "af-c: attach fizzle event emitted")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI attach heuristics: a buff attachment (Mark) goes on the AI's OWN best
+# ally; a debuff attachment (Roots) goes on an opposing ally worth locking
+# (cost >= spell cost) and never a cheap one.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_attach_target_choice() -> void:
+	_buf.append("\n-- AI attach: buff own ally, lock expensive enemy ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def", 3, 3, [], 3)
+	db.ally("big_def", 4, 4, [], 4)
+	db.ally("cheap_def", 1, 1, [], 1)
+	db.instant("azeroth_24", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.ability("azeroth_20", 2, "ongoing|attach:ally:exhaust_it|attached_cannot_ready")
+
+	var ai := BaseAI.new()
+
+	# Buff: only the friendly ally is offered, never the enemy.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "mine", "mine_def", "p1")
+	_add_ally(state, "big", "big_def", "p2")
+	_add_card_to_hand(state, "mark", "azeroth_24", "p1")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	var mark_targets: Array = []
+	for a in ai.get_legal_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "mark":
+			mark_targets.append(a.params.get("target_id", ""))
+	eq(mark_targets.size(), 1, "aa-a: exactly one Mark action generated")
+	ok("mine" in mark_targets, "aa-b: Mark targets the AI's own ally")
+
+	# Debuff: the 4-cost enemy is locked, a lone 1-cost enemy is not worth it.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "big", "big_def", "p2")
+	_add_ally(state2, "cheap", "cheap_def", "p2")
+	_add_card_to_hand(state2, "roots", "azeroth_20", "p1")
+	_add_resources(state2, "p1", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+	var roots_targets: Array = []
+	for a in ai.get_legal_actions(state2, db, "p1"):
+		if a.params.get("card_id", "") == "roots":
+			roots_targets.append(a.params.get("target_id", ""))
+	eq(roots_targets.size(), 1, "aa-c: exactly one Roots action generated")
+	ok("big" in roots_targets, "aa-d: Roots targets the expensive enemy ally")
+
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state3, "cheap", "cheap_def", "p2")
+	_add_card_to_hand(state3, "roots", "azeroth_20", "p1")
+	_add_resources(state3, "p1", 2)
+	state3.players["p1"].resource_placed_this_turn = true
+	var any_roots := false
+	for a in ai.get_legal_actions(state3, db, "p1"):
+		if a.params.get("card_id", "") == "roots":
+			any_roots = true
+	ok(not any_roots, "aa-e: Roots not wasted on a lone cheap ally")

@@ -1074,6 +1074,32 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_kill})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
+		elif ap.get("effect", "") == "rfg_graveyard_ally":
+			# Ophelia Barrows: exile an ally card from any graveyard, heal 1 from
+			# herself if it happens. Only ever exile from the OPPONENT's graveyard
+			# (own graveyard denial is pure downside); worth the 1 resource when
+			# she's damaged (the heal has value) or the exiled card is expensive
+			# (denies graveyard recursion à la Chasing A-Me / Finkle Einhorn).
+			var gy_req := StackResolver.get_graveyard_search_requirement(def)
+			var gy_cands := StackResolver.get_graveyard_search_candidates(
+				state, player_id, gy_req, db)
+			var opp_gy := ("p2" if player_id == "p1" else "p1") + "_graveyard"
+			var best_gy := ""
+			var best_gy_cost := -1
+			for tid in gy_cands:
+				var t := state.get_card(tid)
+				if not t or t.zone_id != opp_gy:
+					continue
+				var t_def := _card_def(state, db, tid)
+				var t_cost := t_def.cost if t_def else 0
+				if t_cost > best_gy_cost:
+					best_gy_cost = t_cost
+					best_gy = tid
+			if best_gy != "" and (card.damage_taken > 0 or best_gy_cost >= 3):
+				var gy_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_gy})
+				if StackResolver.can_submit(state, gy_act, db):
+					result.append(gy_act)
 		elif ap.get("effect", "") == "discard_opponent":
 			# Hypnotic Blade: force the opponent to discard. Only worth the cost
 			# while they actually hold cards.
@@ -2198,6 +2224,26 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 	var spell_def  := db.get_def(spell_card.card_def_id) as CardDef if spell_card else null
 
 	var opp := "p2" if player_id == "p1" else "p1"
+
+	# Burn Away / Shattering Blow (destroy_target:ability / :equipment): targets
+	# are opposing in-play ability / equipment cards, not heroes and allies.
+	# Value gate: target cost >= spell cost (same bar as _destroy_is_worth_it's
+	# first gate; the solo-kill check doesn't apply — you can't attack these).
+	var destroy_kind := StackResolver.destroy_target_kind(spell_def) if spell_def else ""
+	if destroy_kind in ["ability", "equipment"]:
+		for cid in StackResolver.get_destroy_kind_candidates(state, db, destroy_kind):
+			var t_card := state.get_card(cid)
+			if not t_card or t_card.controller != opp:
+				continue
+			var t_def := db.get_def(t_card.card_def_id) as CardDef
+			if t_def and spell_def and t_def.cost < spell_def.cost:
+				continue
+			var d_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": cid})
+			if StackResolver.can_submit(state, d_act, db):
+				result.append(d_act)
+		return result
+
 	for ally in state.cards_in_zone(opp + "_ally_row"):
 		var act := PendingAction.make(action_type, player_id,
 			{"card_id": card_id, "target_id": ally.instance_id})

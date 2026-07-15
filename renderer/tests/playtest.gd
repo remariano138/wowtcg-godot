@@ -123,6 +123,7 @@ var _menu_error_label: Label
 var _status:     Label
 var _priority_label: Label
 var _phase_label:    Label
+var _chain_panel: Control   # visual chain display (bottom-left, above the control panel)
 var _pass_btn:   Button
 var _cancel_btn: Button
 var _resource_label: Label
@@ -372,6 +373,14 @@ func _build_scene() -> void:
 	sep_line.position = Vector2(-480, 960)
 	sep_line.size     = Vector2(3360, 2)
 	_hud.add_child(sep_line)
+
+	# ── Visual chain (bottom-left, above the control panel) ────────────────────
+	# One card-sized entry per link on the chain, stacked bottom-up (LIFO — the
+	# topmost entry is the top of the chain, the one that resolves next).
+	# Rebuilt from _state.pending_actions in _update_chain_panel (via _refresh_ui).
+	_chain_panel = Control.new()
+	_chain_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(_chain_panel)
 
 	# ── Skip button (top-right, free since P2's column moved screen-left) ──────
 	# The OFF-SCREEN player's pass during an ambush stop: skips the window
@@ -1307,6 +1316,7 @@ func _refresh_ui() -> void:
 	if _in_ambush_mode and _state and _state.priority_player != _ambush_player:
 		_exit_ambush_mode()
 	_update_priority_label()
+	_update_chain_panel()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_whelp_bounce_mode:
@@ -1387,6 +1397,144 @@ func _pending_action_card_name(action: PendingAction) -> String:
 		return action.action_type
 	var def := _db.get_def(card.card_def_id) as CardDef
 	return def.card_name if def else action.action_type
+
+
+# ── Visual chain panel ─────────────────────────────────────────────────────────
+# Bottom-left stack showing every link on the chain, bottom-up (LIFO: the topmost
+# entry resolves next). Card-backed links show the card image with a caption
+# ("played" / "power" / …); links with no public card face (combat proposals,
+# face-down resources) show a card-sized text rectangle instead.
+
+const CHAIN_PANEL_X      := 16.0
+const CHAIN_PANEL_BOTTOM := 946.0   # control panel starts at y=960
+# HUD CanvasLayer renders at native pixel scale (unaffected by the board camera's
+# zoom), so these must be much smaller than CardNode.W/H to visually match the
+# in-world cards — CardNode's own size would look oversized here.
+const CHAIN_CARD_W       := 46.0
+const CHAIN_CARD_H       := 64.0
+const CHAIN_CAPTION_H    := 14.0
+const CHAIN_ENTRY_GAP    := 5.0
+
+func _update_chain_panel() -> void:
+	if not _chain_panel:
+		return
+	for child in _chain_panel.get_children():
+		child.queue_free()
+	if not _state or _state.pending_actions.is_empty():
+		return
+	var count := _state.pending_actions.size()
+	var step := CHAIN_CARD_H + CHAIN_CAPTION_H + CHAIN_ENTRY_GAP
+	for i in count:
+		var action := _state.pending_actions[i] as PendingAction
+		var is_top := (i == count - 1)
+		# index 0 (bottom of the chain) sits lowest; each later link stacks above.
+		var y := CHAIN_PANEL_BOTTOM - CHAIN_CAPTION_H - CHAIN_CARD_H - (count - 1 - i) * step
+		_chain_panel.add_child(_make_chain_entry(action, Vector2(CHAIN_PANEL_X, y), is_top))
+	var header := Label.new()
+	header.text = "CHAIN  ·  top resolves first"
+	header.position = Vector2(CHAIN_PANEL_X,
+			CHAIN_PANEL_BOTTOM - CHAIN_CAPTION_H - CHAIN_CARD_H - (count - 1) * step - 22)
+	header.add_theme_font_size_override("font_size", 12)
+	header.add_theme_color_override("font_color", Color(0.9, 0.85, 0.45))
+	_chain_panel.add_child(header)
+
+
+func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Control:
+	var entry := Control.new()
+	entry.position = pos
+	entry.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var frame := Panel.new()
+	frame.size = Vector2(CHAIN_CARD_W, CHAIN_CARD_H)
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.12, 0.13, 0.16, 0.92)
+	sb.set_border_width_all(2)
+	sb.border_color = Color(1.0, 0.9, 0.3) if is_top else Color(0.45, 0.48, 0.55)
+	frame.add_theme_stylebox_override("panel", sb)
+	entry.add_child(frame)
+
+	var caption := ""
+	var tex: Texture2D = null
+	match action.action_type:
+		"propose_combat":
+			# No card face — combat proposal rectangle: attacker + proposed defender.
+			pass
+		"place_resource":
+			# Resources enter play face down — never show the card face here.
+			caption = "resource"
+		"play_ally", "play_instant", "play_ability", "play_equipment":
+			caption = "played"
+			tex = _chain_action_texture(action)
+		"use_ally_power", "activate_power":
+			caption = "power"
+			tex = _chain_action_texture(action)
+		"use_quest":
+			caption = "quest"
+			tex = _chain_action_texture(action)
+		"use_armor_prevention":
+			caption = "block"
+			tex = _chain_action_texture(action)
+		_:
+			caption = action.action_type
+			tex = _chain_action_texture(action)
+
+	if tex:
+		var tr := TextureRect.new()
+		tr.texture = tex
+		tr.position = Vector2(2, 2)
+		tr.size = Vector2(CHAIN_CARD_W - 4, CHAIN_CARD_H - 4)
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_SCALE
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		frame.add_child(tr)
+	else:
+		var txt := Label.new()
+		txt.text = _describe_pending_action(action)
+		txt.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_KEEP_SIZE, 4)
+		txt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		txt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		txt.add_theme_font_size_override("font_size", 8)
+		txt.add_theme_color_override("font_color", Color(0.92, 0.92, 0.95))
+		txt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		frame.add_child(txt)
+
+	if caption != "":
+		var cap := Label.new()
+		cap.text = caption
+		cap.position = Vector2(0, CHAIN_CARD_H + 1)
+		cap.size = Vector2(CHAIN_CARD_W, CHAIN_CAPTION_H - 1)
+		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cap.add_theme_font_size_override("font_size", 10)
+		cap.add_theme_color_override("font_color",
+				Color(1.0, 0.9, 0.3) if is_top else Color(0.7, 0.72, 0.78))
+		cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		entry.add_child(cap)
+	return entry
+
+
+# The public card face for a pending action, or null (falls back to the text rect).
+func _chain_action_texture(action: PendingAction) -> Texture2D:
+	if not _db or not _state:
+		return null
+	var card_id: String = action.params.get("card_id", "")
+	if card_id == "":
+		card_id = action.params.get("quest_id", "")
+	if card_id == "":
+		card_id = action.params.get("hero_id", "")
+	if card_id == "":
+		return null
+	var card := _state.get_card(card_id)
+	if not card:
+		return null
+	var def := _db.get_def(card.card_def_id) as CardDef
+	if not def or def.image_path == "" or def.image_path == "No match":
+		return null
+	var res_path := "res://" + def.image_path.replace("\\", "/")
+	if not ResourceLoader.exists(res_path):
+		return null
+	return load(res_path) as Texture2D
 
 
 func _update_cancel_btn() -> void:
@@ -1913,6 +2061,11 @@ func _on_game_event(event: GameEvent) -> void:
 	_stats.record_event(event)
 	match event.event_type:
 		"turn_changed":
+			# End-of-turn heal: force a reconcile that ignores the wiggle-skip so any
+			# card left crooked/un-exhausted after a power or attack animation (the
+			# engine already has them exhausted) snaps to its true orientation.
+			if _renderer and _state:
+				_renderer.reconcile_from_state(_state, true)
 			# Hotseat: the turn passed to the OTHER human — hide both hands and
 			# block everything until they confirm they have the screen.
 			var next_tp: String = event.payload.get("player", "")
@@ -2881,11 +3034,19 @@ func _on_graveyard_select_requested(quest_id: String, candidate_ids: Array,
 	var quest_name := quest_def.card_name if quest_def else "Quest"
 	var count_str := ("%d" % min_count) if min_count == max_count \
 			else "%d – %d" % [min_count, max_count]
-	var source := "graveyard"
-	if quest_def and StackResolver.get_graveyard_search_requirement(quest_def).get("source", "graveyard") == "deck":
-		source = "deck"
+	# Title reflects where the candidates come from: "your deck", "your
+	# graveyard", or "any graveyard" (owner:both, e.g. Ophelia Barrows).
+	var source := "your graveyard"
+	if quest_def:
+		var gy_req := StackResolver.get_graveyard_search_requirement(quest_def)
+		if gy_req.get("source", "graveyard") == "deck":
+			source = "your deck"
+		elif gy_req.get("owner", "own") == "both":
+			source = "any graveyard"
+		elif gy_req.get("owner", "own") == "opponent":
+			source = "the opponent's graveyard"
 	_open_gy_dialog(candidate_ids, false,
-			"%s — choose %s card(s) from your %s" % [quest_name, count_str, source],
+			"%s — choose %s card(s) from %s" % [quest_name, count_str, source],
 			min_count, max_count)
 
 
@@ -3242,55 +3403,91 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 		_resolve_strike(instance_id)
 
 
+# ── Central choice popup (every non-Protect player choice) ─────────────────────
+# Protecting stays inline over the pass bar (it's the common combat decision and
+# players expect it there). Every OTHER board-public player choice — modal mode
+# (Natural Selection), weapon strike, ready-on-attack (Windseer Tarus), Green
+# Whelp bounce — renders in this centered popup panel instead of crowding the
+# pass button. `buttons` is an Array of { "text": String, "callback": Callable }.
+# Returns the root Panel; freeing it (queue_free) tears down the whole popup, so
+# callers append just the panel to their existing `_*_nodes` array.
+const CHOICE_POPUP_CENTER := Vector2(960, 470)
+
+func _build_choice_popup(header_text: String, header_color: Color, buttons: Array) -> Panel:
+	const PAD        := 26
+	const BTN_H      := 40
+	const BTN_GAP    := 12
+	const HEADER_H   := 30
+	const HEADER_GAP := 20
+
+	# Per-button width from label length (clamped); total row width from those.
+	var btn_widths: Array[int] = []
+	var row_w := 0
+	for b in buttons:
+		var w: int = clampi(str(b.get("text", "")).length() * 10 + 36, 150, 360)
+		btn_widths.append(w)
+		row_w += w
+	row_w += max(buttons.size() - 1, 0) * BTN_GAP
+
+	var header_w: int = header_text.length() * 8 + 40
+	var content_w: int = max(row_w, header_w)
+	var panel_w: int = content_w + PAD * 2
+	var panel_h: int = PAD * 2 + HEADER_H + HEADER_GAP + BTN_H
+
+	var panel := Panel.new()
+	panel.size     = Vector2(panel_w, panel_h)
+	panel.position = CHOICE_POPUP_CENTER - Vector2(panel_w, panel_h) * 0.5
+	panel.add_theme_stylebox_override("panel", _make_stylebox(Color(0.10, 0.11, 0.16, 0.97)))
+	_hud.add_child(panel)
+
+	var header := Label.new()
+	header.text = header_text
+	header.add_theme_font_size_override("font_size", 15)
+	header.add_theme_color_override("font_color", header_color)
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.size     = Vector2(panel_w - PAD * 2, HEADER_H)
+	header.position = Vector2(PAD, PAD)
+	panel.add_child(header)
+
+	@warning_ignore("integer_division")
+	var btn_x := (panel_w - row_w) / 2
+	var btn_y := PAD + HEADER_H + HEADER_GAP
+	for i in buttons.size():
+		var btn := Button.new()
+		btn.text     = str(buttons[i].get("text", ""))
+		btn.position = Vector2(btn_x, btn_y)
+		btn.size     = Vector2(btn_widths[i], BTN_H)
+		btn.pressed.connect(buttons[i].get("callback") as Callable)
+		panel.add_child(btn)
+		btn_x += btn_widths[i] + BTN_GAP
+
+	return panel
+
+
 # ── Modal spell mode choice (rule 707.1c — "Choose one:", Natural Selection) ───
 
 func _on_modal_choice_opened(card_id: String, mode_labels: Array) -> void:
 	_clear_modal_buttons()
 
-	const CENTER_X := 960
-	const BTN_W    := 220
-	const BTN_GAP  := 10
-	const SKIP_W   := 120
-	const SKIP_GAP := 20
-
-	var n := mode_labels.size()
-	var row_width: int = n * BTN_W + max(n - 1, 0) * BTN_GAP + SKIP_GAP + SKIP_W
-	@warning_ignore("integer_division")
-	var btn_x := CENTER_X - row_width / 2
-
-	var header := Label.new()
 	var card := _state.get_card(card_id)
 	var def: CardDef = _db.get_def(card.card_def_id) if card and _db else null
-	header.text = "%s — choose one:" % (def.card_name if def else "Choose one:")
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.9, 0.5, 0.2))
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.size     = Vector2(row_width + 100, 20)
-	@warning_ignore("integer_division")
-	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	_hud.add_child(header)
-	_modal_nodes.append(header)
+	var header_text := "%s — choose one:" % (def.card_name if def else "Choose one:")
 
-	for i in n:
-		var btn := Button.new()
-		btn.text     = str(mode_labels[i])
-		btn.position = Vector2(btn_x, 987)
-		btn.size     = Vector2(BTN_W, 36)
+	var buttons: Array = []
+	for i in mode_labels.size():
 		var captured_i: int = i
-		# choose_modal_mode fires modal_choice_cancelled first (clearing these
-		# buttons via _on_modal_choice_cancelled), then starts targeting.
-		btn.pressed.connect(func() -> void: _router.choose_modal_mode(captured_i))
-		_hud.add_child(btn)
-		_modal_nodes.append(btn)
-		btn_x += BTN_W + BTN_GAP
+		# choose_modal_mode fires modal_choice_cancelled first (clearing this popup
+		# via _on_modal_choice_cancelled), then starts targeting.
+		buttons.append({
+			"text": str(mode_labels[i]),
+			"callback": func() -> void: _router.choose_modal_mode(captured_i),
+		})
+	buttons.append({
+		"text": "Cancel",
+		"callback": func() -> void: _router.cancel_modal_choice(),
+	})
 
-	var skip := Button.new()
-	skip.text     = "Cancel"
-	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
-	skip.size     = Vector2(SKIP_W, 36)
-	skip.pressed.connect(func() -> void: _router.cancel_modal_choice())
-	_hud.add_child(skip)
-	_modal_nodes.append(skip)
+	_modal_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons))
 
 
 func _on_modal_choice_cancelled() -> void:
@@ -3340,29 +3537,10 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
-	const CENTER_X := 960
-	const BTN_W    := 200
-	const BTN_GAP  := 10
-	const SKIP_W   := 120
-	const SKIP_GAP := 20
-
-	var n := weapon_ids.size()
-	var row_width: int = n * BTN_W + max(n - 1, 0) * BTN_GAP + SKIP_GAP + SKIP_W
-	@warning_ignore("integer_division")
-	var btn_x := CENTER_X - row_width / 2
-
-	var header := Label.new()
-	header.text = "Strike with a weapon? (%s)" % \
+	var header_text := "Strike with a weapon? (%s)" % \
 		("attacking" if side == "attack" else "defending")
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.9, 0.5, 0.2))
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.size     = Vector2(row_width + 100, 20)
-	@warning_ignore("integer_division")
-	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	_hud.add_child(header)
-	_strike_nodes.append(header)
 
+	var buttons: Array = []
 	for cid in weapon_ids:
 		var btn_label: String = cid
 		var card := _state.get_card(cid)
@@ -3371,23 +3549,17 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 			if def:
 				var cost := StackResolver.get_strike_cost(_state, _state.pending_strike_player, def)
 				btn_label = "%s  (+%d ATK, %d)" % [def.card_name, _state.get_atk(cid, _db), cost]
-		var btn := Button.new()
-		btn.text     = btn_label
-		btn.position = Vector2(btn_x, 987)
-		btn.size     = Vector2(BTN_W, 36)
 		var captured_id: String = cid
-		btn.pressed.connect(func() -> void: _resolve_strike(captured_id))
-		_hud.add_child(btn)
-		_strike_nodes.append(btn)
-		btn_x += BTN_W + BTN_GAP
+		buttons.append({
+			"text": btn_label,
+			"callback": func() -> void: _resolve_strike(captured_id),
+		})
+	buttons.append({
+		"text": "Don't strike",
+		"callback": func() -> void: _resolve_strike(""),
+	})
 
-	var skip := Button.new()
-	skip.text     = "Don't strike"
-	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
-	skip.size     = Vector2(SKIP_W, 36)
-	skip.pressed.connect(func() -> void: _resolve_strike(""))
-	_hud.add_child(skip)
-	_strike_nodes.append(skip)
+	_strike_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons))
 
 	# Highlight the strikeable weapons (deferred, same reason as protect outlines).
 	var captured_ids: Array = weapon_ids.duplicate()
@@ -3450,40 +3622,19 @@ func _show_ready_inline(payload: Dictionary) -> void:
 		if def:
 			card_name = def.card_name
 
-	const CENTER_X := 960
-	const BTN_W    := 220
-	const SKIP_W   := 120
-	const GAP      := 20
-	var row_width: int = BTN_W + GAP + SKIP_W
-	@warning_ignore("integer_division")
-	var btn_x := CENTER_X - row_width / 2
+	var header_text := "%s attacks — pay %d to ready it?" % [card_name, cost]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: ready %s" % [cost, card_name],
+			"callback": func() -> void: _resolve_ready(true),
+		},
+		{
+			"text": "Decline",
+			"callback": func() -> void: _resolve_ready(false),
+		},
+	]
 
-	var header := Label.new()
-	header.text = "%s attacks — pay %d to ready it?" % [card_name, cost]
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.5, 0.8, 0.9))
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.size     = Vector2(row_width + 100, 20)
-	@warning_ignore("integer_division")
-	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	_hud.add_child(header)
-	_ready_nodes.append(header)
-
-	var pay_btn := Button.new()
-	pay_btn.text     = "Pay %d: ready %s" % [cost, card_name]
-	pay_btn.position = Vector2(btn_x, 987)
-	pay_btn.size     = Vector2(BTN_W, 36)
-	pay_btn.pressed.connect(func() -> void: _resolve_ready(true))
-	_hud.add_child(pay_btn)
-	_ready_nodes.append(pay_btn)
-
-	var skip := Button.new()
-	skip.text     = "Decline"
-	skip.position = Vector2(btn_x + BTN_W + GAP, 987)
-	skip.size     = Vector2(SKIP_W, 36)
-	skip.pressed.connect(func() -> void: _resolve_ready(false))
-	_hud.add_child(skip)
-	_ready_nodes.append(skip)
+	_ready_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.8, 0.9), buttons))
 
 
 func _resolve_ready(pay: bool) -> void:
@@ -3556,42 +3707,21 @@ func _show_whelp_bounce_inline(payload: Dictionary) -> void:
 		if def:
 			card_name = def.card_name
 
-	const CENTER_X := 960
-	const BTN_W    := 240
-	const SKIP_W   := 120
-	const GAP      := 20
-	var row_width: int = BTN_W + GAP + SKIP_W
-	@warning_ignore("integer_division")
-	var btn_x := CENTER_X - row_width / 2
-
-	var header := Label.new()
 	var who: String = payload.get("player", "")
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
-	header.text = "%sGreen Whelp Armor — pay %d to return %s to hand?" % [prefix, cost, card_name]
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.5, 0.9, 0.6))
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.size     = Vector2(row_width + 160, 20)
-	@warning_ignore("integer_division")
-	header.position = Vector2(CENTER_X - (row_width + 160) / 2, 968)
-	_hud.add_child(header)
-	_whelp_bounce_nodes.append(header)
+	var header_text := "%sGreen Whelp Armor — pay %d to return %s to hand?" % [prefix, cost, card_name]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: bounce %s" % [cost, card_name],
+			"callback": func() -> void: _resolve_whelp_bounce(true),
+		},
+		{
+			"text": "Decline",
+			"callback": func() -> void: _resolve_whelp_bounce(false),
+		},
+	]
 
-	var pay_btn := Button.new()
-	pay_btn.text     = "Pay %d: bounce %s" % [cost, card_name]
-	pay_btn.position = Vector2(btn_x, 987)
-	pay_btn.size     = Vector2(BTN_W, 36)
-	pay_btn.pressed.connect(func() -> void: _resolve_whelp_bounce(true))
-	_hud.add_child(pay_btn)
-	_whelp_bounce_nodes.append(pay_btn)
-
-	var skip := Button.new()
-	skip.text     = "Decline"
-	skip.position = Vector2(btn_x + BTN_W + GAP, 987)
-	skip.size     = Vector2(SKIP_W, 36)
-	skip.pressed.connect(func() -> void: _resolve_whelp_bounce(false))
-	_hud.add_child(skip)
-	_whelp_bounce_nodes.append(skip)
+	_whelp_bounce_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons))
 
 
 func _resolve_whelp_bounce(pay: bool) -> void:

@@ -19,6 +19,11 @@
       "_card_name": "Your Fortune Awaits You"
     },
     {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
+    },
+    {
       "card_def_id": "dark_portal_316",
       "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
@@ -99,9 +104,9 @@
       "_card_name": "Fa'tafi"
     },
     {
-      "card_def_id": "azeroth_262",
+      "card_def_id": "azeroth_253",
       "count": 2,
-      "_card_name": "Vaerik Proudhoof"
+      "_card_name": "Ophelia Barrows"
     },
     {
       "card_def_id": "azeroth_235",
@@ -112,12 +117,7 @@
       "card_def_id": "azeroth_344",
       "count": 1,
       "_card_name": "For the Horde!"
-    },
-    {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
-    },
+    },    
     {
       "card_def_id": "azeroth_264",
       "count": 2,
@@ -134,9 +134,9 @@
       "_card_name": "Benethor Draigo"
     },
     {
-      "card_def_id": "azeroth_252",
-      "count": 1,
-      "_card_name": "Moko Hunts-at-Dawn"
+      "card_def_id": "azeroth_258",
+      "count": 2,
+      "_card_name": "Samuel Grey"
     },
     {
       "card_def_id": "azeroth_80",
@@ -145,7 +145,7 @@
     },
     {
       "card_def_id": "azeroth_234",
-      "count": 2,
+      "count": 1,
       "_card_name": "Deacon Johanna"
     }
   ],

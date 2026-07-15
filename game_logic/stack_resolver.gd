@@ -404,6 +404,12 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 				var t_zone := state.zones.get(state.get_card(target_id).zone_id) as Zone
 				if not t_zone or t_zone.zone_type != "ally_row":
 					return false
+			elif destroy_target_kind(def) == "ability":
+				if not _is_in_play_ability(state, target_id, db):
+					return false
+			elif destroy_target_kind(def) == "equipment":
+				if not _is_in_play_equipment(state, target_id, db):
+					return false
 	return true
 
 
@@ -445,6 +451,10 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 				if t_card:
 					var t_zone := state.zones.get(t_card.zone_id) as Zone
 					if not t_zone or t_zone.zone_type != "ally_row": return false
+			elif destroy_target_kind(def) == "ability":
+				if not _is_in_play_ability(state, target_id, db): return false
+			elif destroy_target_kind(def) == "equipment":
+				if not _is_in_play_equipment(state, target_id, db): return false
 	return true
 
 
@@ -516,6 +526,13 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db) 
 				for cid in zone.card_ids:
 					if _is_legal_target(state, cid, db):
 						return true
+		return false
+	# Burn Away / Shattering Blow: some in-play ability / equipment card must
+	# be a legal target.
+	if destroy_target_kind(def) in ["ability", "equipment"]:
+		for cid in get_destroy_kind_candidates(state, db, destroy_target_kind(def)):
+			if _is_legal_target(state, cid, db):
+				return true
 		return false
 	return true
 
@@ -610,6 +627,69 @@ static func _instant_targets_protecting_ally_only(def: CardDef) -> bool:
 static func _is_protecting_ally(state: GameState, target_id: String, db = null) -> bool:
 	return target_id != "" and target_id == state.combat_protector \
 			and state.is_in_play(target_id) and _is_ally(state, target_id)
+
+
+# Burn Away ("Destroy target ability.") / Shattering Blow ("Destroy target
+# equipment."): `destroy_target:ability` / `destroy_target:equipment`. Returns
+# the destroy_target kind of a def ("ally", "ability", "equipment",
+# "protecting_ally") or "" for non-destroy defs. Shared by the router and AI.
+static func destroy_target_kind(def: CardDef) -> String:
+	if not def:
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "destroy_target" and parts.size() > 1:
+			return parts[1]
+	return ""
+
+
+# An in-play ability CARD (rule 300.1): an ongoing ability in a hero row, a
+# Totem in an ally row, or an attachment in the "attached" zone. A face-down
+# resource is a resource, not an ability — resource_row never qualifies.
+static func _is_in_play_ability(state: GameState, target_id: String, db) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(target_id)
+	if not card:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or not (zone.zone_type in ["hero_row", "ally_row", "attached"]):
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	return def != null and def.card_type == "Ability"
+
+
+# An in-play equipment card (armor or weapon — equipment only lives in the
+# hero row, rule 304.1).
+static func _is_in_play_equipment(state: GameState, target_id: String, db) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(target_id)
+	if not card:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hero_row":
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	return def != null and def.card_type == "Equipment"
+
+
+# All in-play cards that match a destroy_target kind of "ability" or
+# "equipment" (both players). Candidates only — callers still filter through
+# can_submit / _is_legal_target (706 Untargetable).
+static func get_destroy_kind_candidates(state: GameState, db, kind: String) -> Array:
+	var result: Array = []
+	var zone_ids: Array = ["p1_hero_row", "p2_hero_row"]
+	if kind == "ability":
+		zone_ids += ["p1_ally_row", "p2_ally_row", "attached"]
+	for zone_id in zone_ids:
+		for card in state.cards_in_zone(zone_id):
+			var matches := _is_in_play_ability(state, card.instance_id, db) \
+					if kind == "ability" \
+					else _is_in_play_equipment(state, card.instance_id, db)
+			if matches:
+				result.append(card.instance_id)
+	return result
 
 
 # Whether an in-play card is a legal "hero or ally" target: a hero (card_type
@@ -1083,8 +1163,14 @@ static func _resolve_play_instant(state: GameState,
 						# destroying it in the defend window ends the combat with no
 						# damage (603.1b) rather than passing the attack through.
 						var dt_ok := _is_legal_target(state, target_id, db)
-						if dt_ok and parts.size() > 1 and parts[1] == "protecting_ally":
-							dt_ok = _is_protecting_ally(state, target_id, db)
+						if dt_ok and parts.size() > 1:
+							match parts[1]:
+								"protecting_ally":
+									dt_ok = _is_protecting_ally(state, target_id, db)
+								"ability":
+									dt_ok = _is_in_play_ability(state, target_id, db)
+								"equipment":
+									dt_ok = _is_in_play_equipment(state, target_id, db)
 						if dt_ok:
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
@@ -1738,6 +1824,19 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# since the target is picked interactively after the power is chosen.
 	var skip_target: bool = action.params.get("_skip_target_check", false)
 	var targets_kind: String = ap.get("targets", "")
+	# Graveyard-card-targeted powers (Ophelia Barrows): even the no-target probe
+	# requires a legal candidate in some graveyard (per the card's paired
+	# graveyard_to_rfg requirement segment); a chosen target must be one of them.
+	if targets_kind == "graveyard_ally":
+		var gy_req := get_graveyard_search_requirement(def)
+		if gy_req.is_empty():
+			return false
+		var gy_cands := get_graveyard_search_candidates(state, action.source_player, gy_req, db)
+		if gy_cands.is_empty():
+			return false
+		if skip_target:
+			return true
+		return action.params.get("target_id", "") in gy_cands
 	if skip_target:
 		return true
 	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
@@ -1907,6 +2006,19 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				state.pending_discard_player = disc_opp
 				state.pending_discard_count  = disc_n
 				events.append(GameEvent.discard_choice_opened(disc_opp, disc_n, "card_effect"))
+		"rfg_graveyard_ally":
+			# Ophelia Barrows: "Remove target ally card in any graveyard from the
+			# game. If you do, [she] heals 1 damage from herself." Re-check the
+			# target is still in a graveyard at resolution (fizzle otherwise); the
+			# self-heal only fires when the removal actually happens ("if you do").
+			var gy_tid: String = action.params.get("target_id", "")
+			var gy_card := state.get_card(gy_tid)
+			var gy_zone: Zone = state.zones.get(gy_card.zone_id) if gy_card else null
+			if gy_card and gy_zone and gy_zone.zone_type == "graveyard":
+				events.append_array(GameLogic.move_card(state, gy_tid, gy_card.owner + "_rfg"))
+				events.append(GameEvent.card_removed_from_game(gy_tid, action.source_player))
+				events.append_array(GameLogic.heal(
+					state, card_id, int(ap.get("amount", 1)), db, card_id))
 		"destroy_ally":
 			# Augustus Corpsemonger: "Destroy target ally." Re-check at resolution
 			# (rule 706 / glossary 4217) — fizzle if the target left play or
@@ -2651,6 +2763,51 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, defender.controller if defender else "",
 		attacker_was_ally, defender_is_hero, hero_dmg_landed, db))
 
+	# Randipan / Samuel Grey (rule 703): "When [this] deals combat damage to a
+	# defending hero, ..." — fires only when the attacker's combat damage
+	# actually LANDED on a defending hero (armor DEF/block absorbing all of it,
+	# or a protecting ally taking the hit, means no trigger). Still fires if
+	# the attacker died to a defensive weapon strike — the damage was dealt.
+	events.append_array(_fire_combat_damage_to_hero_triggers(
+		state, attacker_id, defender.controller if defender else "",
+		defender_is_hero, hero_dmg_landed, db))
+
+	return events
+
+
+# on_combat_damage_to_hero:EFFECT[:N] triggered powers, checked at combat
+# conclusion. EFFECT `draw` draws N for the attacker's controller (Randipan);
+# `discard_controller` makes the damaged hero's controller discard N via the
+# standard pending-discard machinery (Samuel Grey) — no-op on an empty hand.
+static func _fire_combat_damage_to_hero_triggers(state: GameState,
+		attacker_id: String, hero_controller: String,
+		defender_is_hero: bool, hero_dmg_landed: int, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not defender_is_hero or hero_dmg_landed <= 0 or db == null:
+		return events
+	var attacker := state.get_card(attacker_id)
+	if not attacker:
+		return events
+	var def := db.get_def(attacker.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return events
+	for segment in def.effects.split("|"):
+		var parts := segment.strip_edges().split(":")
+		if parts[0] != "on_combat_damage_to_hero":
+			continue
+		var effect := parts[1].strip_edges() if parts.size() > 1 else ""
+		var n := int(parts[2]) if parts.size() > 2 else 1
+		match effect:
+			"draw":
+				for _i in n:
+					events.append_array(_draw_one(state, attacker.controller))
+			"discard_controller":
+				if hero_controller != "" \
+						and not state.cards_in_zone(hero_controller + "_hand").is_empty():
+					state.pending_discard_player = hero_controller
+					state.pending_discard_count  = n
+					events.append(GameEvent.discard_choice_opened(
+						hero_controller, n, "card_effect"))
 	return events
 
 

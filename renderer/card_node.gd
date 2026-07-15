@@ -24,6 +24,11 @@ var _is_face_down: bool = false
 # (top). Every rotation write (exhaust/ready/settle) composes with this base,
 # so P2's cards stay upside-down to the P1 viewer, Tabletop-Simulator style.
 var facing_degrees: float = 0.0
+# True while this card is attached to a host (rule 400). Attachments peek out
+# from behind their host and would otherwise steal clicks meant for it; an
+# attachment stays hoverable (Alt+hover inspector still works) but does not
+# consume mouse clicks.
+var is_attachment: bool = false
 var _base_color: Color = Color(0.25, 0.45, 0.75)
 var _mouse_inside: bool = false
 var _damage_badge: Label = null
@@ -443,6 +448,8 @@ func _input(event: InputEvent) -> void:
 		return
 	if not inside:
 		return
+	if is_attachment:
+		return  # click-through: let the click reach the host underneath
 	var mb := event as InputEventMouseButton
 	match mb.button_index:
 		MOUSE_BUTTON_LEFT:

@@ -182,6 +182,12 @@ func _ready() -> void:
 		_test_entangling_roots_ready_lock,
 		_test_attach_fizzles_when_target_dies,
 		_test_ai_attach_target_choice,
+		_test_burn_away_destroys_ability,
+		_test_shattering_blow_destroys_equipment,
+		_test_randipan_draw_on_hero_combat_damage,
+		_test_samuel_grey_discard_on_hero_combat_damage,
+		_test_ophelia_barrows_rfg_and_heal,
+		_test_ophelia_barrows_gates_and_fizzle,
 	]
 
 	for t in tests:
@@ -383,6 +389,200 @@ func _test_green_whelp_armor_decline_and_gates() -> void:
 		StackResolver.pass_priority(s2, db)
 	eq(s2.pending_whelp_bounce_player, "", "gw-e: unaffordable — point never opens")
 	ok(s2.is_in_play("ogre"), "gw-e2: ogre unaffected")
+
+
+# Randipan (azeroth_213): "When Randipan deals combat damage to a defending
+# hero, draw a card." Fires only when the damage LANDS on a defending hero.
+func _test_randipan_draw_on_hero_combat_damage() -> void:
+	_buf.append("\n-- Randipan: draw on combat damage to a defending hero --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("randipan_def", 2, 2, [], 3, "on_combat_damage_to_hero:draw:1")
+	db.ally("bear_def", 1, 4, [], 2)
+
+	# Case A: attacks the hero, damage lands → draw.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var rp := _add_ally(st, "randipan", "randipan_def", "p1")
+	rp.just_summoned = false
+	var dc := CardInstance.create("deck1", "bear_def", "p1", "p1_deck")
+	st.cards["deck1"] = dc
+	st.zones["p1_deck"].card_ids.append("deck1")
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "randipan", "defender_id": "p2_hero"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(st, db)
+	eq(st.get_card("p2_hero").damage_taken, 2, "rp-a: hero took 2")
+	ok("deck1" in st.zones["p1_hand"].card_ids, "rp-a2: drew a card")
+
+	# Case B: attacks a defending ALLY → no draw.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	var rp2 := _add_ally(st2, "randipan", "randipan_def", "p1")
+	rp2.just_summoned = false
+	var bear := _add_ally(st2, "bear", "bear_def", "p2")
+	bear.just_summoned = false
+	var dc2 := CardInstance.create("deck1", "bear_def", "p1", "p1_deck")
+	st2.cards["deck1"] = dc2
+	st2.zones["p1_deck"].card_ids.append("deck1")
+
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "randipan", "defender_id": "bear"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(st2, db)
+	eq(st2.get_card("bear").damage_taken, 2, "rp-b: ally took 2")
+	ok("deck1" in st2.zones["p1_deck"].card_ids, "rp-b2: no draw vs an ally")
+
+	# Case C: block absorbs all the damage → no trigger.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	var rp3 := _add_ally(st3, "randipan", "randipan_def", "p1")
+	rp3.just_summoned = false
+	var dc3 := CardInstance.create("deck1", "bear_def", "p1", "p1_deck")
+	st3.cards["deck1"] = dc3
+	st3.zones["p1_deck"].card_ids.append("deck1")
+
+	StackResolver.submit_action(st3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "randipan", "defender_id": "p2_hero"}), db)
+	for i in range(4):
+		StackResolver.pass_priority(st3, db)   # up to the defend window
+	(st3.players["p2"] as PlayerState).damage_prevention = 5   # committed block
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)       # conclusion
+	eq(st3.get_card("p2_hero").damage_taken, 0, "rp-c: all damage prevented")
+	ok("deck1" in st3.zones["p1_deck"].card_ids, "rp-c2: no draw — no damage landed")
+
+
+# Samuel Grey (azeroth_258): "When Samuel Grey deals combat damage to a
+# defending hero, that hero's controller discards a card."
+func _test_samuel_grey_discard_on_hero_combat_damage() -> void:
+	_buf.append("\n-- Samuel Grey: hero's controller discards on combat damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("samuel_def", 2, 2, [], 3, "on_combat_damage_to_hero:discard_controller:1")
+	db.ally("bear_def", 1, 4, [], 2)
+
+	# Case A: damage lands on the hero → its controller owes a discard.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var sg := _add_ally(st, "samuel", "samuel_def", "p1")
+	sg.just_summoned = false
+	_add_card_to_hand(st, "h1", "bear_def", "p2")
+	_add_card_to_hand(st, "h2", "bear_def", "p2")
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "samuel", "defender_id": "p2_hero"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(st, db)
+	eq(st.get_card("p2_hero").damage_taken, 2, "sg-a: hero took 2")
+	eq(st.pending_discard_player, "p2", "sg-a2: p2 owes a discard")
+	eq(st.pending_discard_count, 1, "sg-a3: exactly one card")
+
+	StackResolver.choose_discard(st, "h1", db)
+	eq(st.pending_discard_player, "", "sg-b: discard resolved")
+	ok("h1" in st.zones["p2_graveyard"].card_ids, "sg-b2: discarded to graveyard")
+	ok("h2" in st.zones["p2_hand"].card_ids, "sg-b3: other card kept")
+
+	# Case B: empty hand → trigger is a no-op (no stuck pending discard).
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	var sg2 := _add_ally(st2, "samuel", "samuel_def", "p1")
+	sg2.just_summoned = false
+
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "samuel", "defender_id": "p2_hero"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(st2, db)
+	eq(st2.get_card("p2_hero").damage_taken, 2, "sg-c: hero took 2")
+	eq(st2.pending_discard_player, "", "sg-c2: empty hand — no pending discard")
+
+
+const OPHELIA_FX := "activated_power:1:rfg_graveyard_ally:1::graveyard_ally:no_activate" \
+		+ "|graveyard_to_rfg:Ally:1:1:both"
+
+# Ophelia Barrows (azeroth_253): "1 -> Remove target ally card in any graveyard
+# from the game. If you do, Ophelia Barrows heals 1 damage from herself."
+# Plain payment power (no [Activate]) — no exhaust, repeatable, any graveyard.
+func _test_ophelia_barrows_rfg_and_heal() -> void:
+	_buf.append("\n-- Ophelia Barrows: exile graveyard ally + self-heal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ophelia_def", 1, 5, ["protector"], 4, OPHELIA_FX)
+	db.ally("bear_def", 1, 4, [], 2)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 2)
+	var oph := _add_ally(st, "ophelia", "ophelia_def", "p1")
+	oph.just_summoned = false
+	oph.damage_taken = 2
+	# One ally card in each graveyard ("any graveyard" — both are candidates).
+	var g1 := CardInstance.create("dead_own", "bear_def", "p1", "p1_graveyard")
+	st.cards["dead_own"] = g1
+	st.zones["p1_graveyard"].card_ids.append("dead_own")
+	var g2 := CardInstance.create("dead_opp", "bear_def", "p2", "p2_graveyard")
+	st.cards["dead_opp"] = g2
+	st.zones["p2_graveyard"].card_ids.append("dead_opp")
+
+	# Use 1: exile from the OPPONENT's graveyard.
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ophelia", "target_id": "dead_opp"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok("dead_opp" in st.zones["p2_rfg"].card_ids, "oph-a: opp graveyard ally exiled")
+	eq(oph.damage_taken, 1, "oph-a2: healed 1 from herself")
+	ok(not oph.is_exhausted, "oph-a3: no [Activate] — Ophelia not exhausted")
+
+	# Use 2 same turn (repeatable payment power): exile from OWN graveyard too.
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ophelia", "target_id": "dead_own"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok("dead_own" in st.zones["p1_rfg"].card_ids, "oph-b: own graveyard ally exiled")
+	eq(oph.damage_taken, 0, "oph-b2: healed again")
+	eq(st.get_available_resources("p1"), 0, "oph-b3: paid 1 per use")
+
+
+# Gates: no ally card in any graveyard blocks even the no-target probe (an
+# Ability card doesn't count); a target that leaves the graveyard before
+# resolution fizzles the whole power — no exile, no heal ("if you do").
+func _test_ophelia_barrows_gates_and_fizzle() -> void:
+	_buf.append("\n-- Ophelia Barrows: candidate gates + fizzle --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ophelia_def", 1, 5, ["protector"], 4, OPHELIA_FX)
+	db.ally("bear_def", 1, 4, [], 2)
+	db.instant("bolt_def", 2, "")
+
+	# Gate: graveyards hold only an Ability card → probe and submit both fail.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 2)
+	var oph := _add_ally(st, "ophelia", "ophelia_def", "p1")
+	oph.just_summoned = false
+	var gb := CardInstance.create("dead_bolt", "bolt_def", "p2", "p2_graveyard")
+	st.cards["dead_bolt"] = gb
+	st.zones["p2_graveyard"].card_ids.append("dead_bolt")
+
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ophelia", "_skip_target_check": true}), db),
+		"oph-c: no ally in any graveyard — probe fails")
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ophelia", "target_id": "dead_bolt"}), db),
+		"oph-c2: an Ability card is not a legal target")
+
+	# Fizzle: target leaves the graveyard while the power is on the chain.
+	var g2 := CardInstance.create("dead_ally", "bear_def", "p2", "p2_graveyard")
+	st.cards["dead_ally"] = g2
+	st.zones["p2_graveyard"].card_ids.append("dead_ally")
+	oph.damage_taken = 2
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "ophelia", "target_id": "dead_ally"}), db)
+	# Simulate the card vanishing from the graveyard before resolution.
+	GameLogic.move_card(st, "dead_ally", "p2_hand")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok("dead_ally" in st.zones["p2_hand"].card_ids, "oph-d: target stayed where it went")
+	ok(st.zones["p2_rfg"].card_ids.is_empty(), "oph-d2: nothing exiled")
+	eq(oph.damage_taken, 2, "oph-d3: no removal — no heal ('if you do')")
 
 
 # ── Mock database ──────────────────────────────────────────────────────────────
@@ -9720,3 +9920,156 @@ func _test_natural_selection() -> void:
 			and amb.params.get("target_id") == "atk_frail"
 			and int(amb.params.get("mode", -1)) == 0,
 		"ns-m: attack window — ambush kill announces the damage mode")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Burn Away (azeroth_156): "Destroy target ability." Non-instant Ability.
+# Legal targets are in-play ability CARDS only: ongoing abilities (hero row),
+# attachments ("attached" zone), totems (ally row) — never heroes, regular
+# allies, or equipment.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_burn_away_destroys_ability() -> void:
+	_buf.append("\n-- Burn Away: destroys target in-play ability card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.ability("azeroth_156", 3, "destroy_target:ability")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 6)
+
+	# p2's ongoing ability in play (hero row).
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	# p2's equipment in play (NOT a legal ability target).
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	# p2's Mark of the Wild attached to p2's bear.
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	_add_card_to_hand(state, "burn1", "azeroth_156", "p1")
+	_add_card_to_hand(state, "burn2", "azeroth_156", "p1")
+
+	# Target legality: ability cards only.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "burn1", "target_id": "ongo"}), db),
+		"ba-a: ongoing ability is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "burn1", "target_id": "mark"}), db),
+		"ba-b: an attachment is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "burn1", "target_id": "robe"}), db),
+		"ba-c: equipment is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "burn1", "target_id": "bear"}), db),
+		"ba-d: a regular ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "burn1", "target_id": "p2_hero"}), db),
+		"ba-e: a hero is NOT a legal target")
+
+	# Resolve on the ongoing ability.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "burn1", "target_id": "ongo"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(ongo.zone_id, "p2_graveyard",  "ba-f: ongoing ability destroyed")
+	eq(state.get_card("burn1").zone_id, "p1_graveyard", "ba-g: Burn Away in graveyard")
+
+	# Resolve on the attachment: host loses the buff, link cleaned up.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "burn2", "target_id": "mark"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(mark.zone_id, "p2_graveyard",  "ba-h: attachment destroyed")
+	ok(bear.attachments.is_empty(),   "ba-i: host attachment list cleared")
+	eq(state.get_atk("bear", db), 2,  "ba-j: host ATK back to printed value")
+
+	# AI: enumerates only opposing ability targets worth the cost.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 3)
+	var ongo2 := CardInstance.create("ongo2", "ongo_def", "p2", "p2_hero_row")
+	state2.cards["ongo2"] = ongo2
+	state2.zones["p2_hero_row"].card_ids.append("ongo2")
+	_add_card_to_hand(state2, "burn3", "azeroth_156", "p1")
+	var ai := BaseAI.new()
+	var acts := ai._targeted_instant_actions(state2, db, "p1", "burn3", "play_ability")
+	ok(acts.is_empty(), "ba-k: AI skips a target cheaper than the spell (cost 2 < 3)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shattering Blow (azeroth_168): "Destroy target equipment." Non-instant
+# Ability. Legal targets are in-play equipment cards only (armor / weapons in
+# a hero row) — never heroes, allies, or ability cards.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_shattering_blow_destroys_equipment() -> void:
+	_buf.append("\n-- Shattering Blow: destroys target equipment --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.equipment("robe_def", 4, "equipment:chest:0")
+	db.ability("azeroth_168", 4, "destroy_target:equipment")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "blow", "azeroth_168", "p1")
+
+	# No equipment in play yet: the hand card has no legal target (706.2).
+	ok(not StackResolver.can_play_ability_no_target_check(state, "blow", "p1", db),
+		"sb-a: unplayable while no equipment is in play")
+
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+
+	ok(StackResolver.can_play_ability_no_target_check(state, "blow", "p1", db),
+		"sb-b: playable once equipment is in play")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "blow", "target_id": "robe"}), db),
+		"sb-c: equipment is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "blow", "target_id": "ongo"}), db),
+		"sb-d: an ongoing ability is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "blow", "target_id": "bear"}), db),
+		"sb-e: an ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "blow", "target_id": "p2_hero"}), db),
+		"sb-f: a hero is NOT a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "blow", "target_id": "robe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(robe.zone_id, "p2_graveyard",  "sb-g: equipment destroyed")
+	eq(state.get_card("blow").zone_id, "p1_graveyard", "sb-h: Shattering Blow in graveyard")
+
+	# AI: targets the opposing equipment (cost 4 >= spell 4).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 4)
+	var robe2 := CardInstance.create("robe2", "robe_def", "p2", "p2_hero_row")
+	state2.cards["robe2"] = robe2
+	state2.zones["p2_hero_row"].card_ids.append("robe2")
+	_add_card_to_hand(state2, "blow2", "azeroth_168", "p1")
+	var ai := BaseAI.new()
+	var acts := ai._targeted_instant_actions(state2, db, "p1", "blow2", "play_ability")
+	ok(acts.size() == 1 and acts[0].params.get("target_id") == "robe2",
+		"sb-i: AI targets the opposing equipment")

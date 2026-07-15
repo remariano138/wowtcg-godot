@@ -401,6 +401,7 @@ func _on_game_event(event: GameEvent) -> void:
 			if att_cn and host_cn:
 				att_cn.facing_degrees = host_cn.facing_degrees
 				att_cn.rotation_degrees = att_cn.facing_degrees
+				att_cn.is_attachment = true
 				_update_host_z(host_id)
 				_move_attachments_with_host(host_id, host_cn.global_position)
 		"card_exhausted":
@@ -601,6 +602,8 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 		var old_host: String = _attachment_hosts[card_id]
 		_attachment_hosts.erase(card_id)
 		_update_host_z(old_host)
+		if card_node is CardNode:
+			(card_node as CardNode).is_attachment = false
 
 	# Flip face based on destination zone and perspective.
 	# resource_placed handles face-down resources separately; here we only
@@ -950,7 +953,7 @@ func _kill_pos_tween(card_id: String) -> void:
 # Visual-only, read-only on state, and idempotent (a no-op when already correct).
 # Skips cards mid-animation: a live position tween (_pos_tweens) or an active
 # wiggle (CardNode.is_wiggling) — so it never fights in-flight motion.
-func reconcile_from_state(state) -> void:
+func reconcile_from_state(state, force := false) -> void:
 	if state == null:
 		return
 	for card_id in card_nodes:
@@ -960,7 +963,14 @@ func reconcile_from_state(state) -> void:
 		if not cn or not is_instance_valid(cn):
 			continue
 		if cn.is_wiggling():
-			continue  # effect cue mid-swing — reasserts on next pass
+			# Effect cue mid-swing — normally reasserts on the next pass. A forced
+			# pass (turn change) kills the wiggle first so a card left wiggling at a
+			# stale rest angle (e.g. a power/attack whose exhaust didn't register on
+			# the wiggle base) is snapped to truth instead of skipped indefinitely.
+			if force:
+				cn.stop_wiggle(0.0)
+			else:
+				continue
 		var card = state.get_card(card_id)
 		if card == null:
 			continue
@@ -969,6 +979,7 @@ func reconcile_from_state(state) -> void:
 		# neither card is mid-tween.
 		if card.zone_id == "attached" and card.attached_to != "":
 			_attachment_hosts[card_id] = card.attached_to
+			cn.is_attachment = true
 			var host_cn := card_nodes.get(card.attached_to) as CardNode
 			if host_cn:
 				_update_host_z(card.attached_to)
@@ -979,6 +990,7 @@ func reconcile_from_state(state) -> void:
 					cn.global_position = _attachment_target_pos(
 						host_cn, host_cn.global_position, max(idx, 0))
 			continue
+		cn.is_attachment = false
 		cn.facing_degrees = _facing_for_zone(card.zone_id)
 		cn.settle_rotation(card.is_exhausted)
 

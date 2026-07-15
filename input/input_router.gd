@@ -91,6 +91,8 @@ var _targeting_mode: int = -1
 # Quest awaiting graveyard-target selection; "" = no browser open.
 var _gy_select_quest_id: String = ""
 var _gy_select_hero_id: String = ""
+# Ally/equipment power awaiting a graveyard-card target (Ophelia Barrows).
+var _gy_select_ally_id: String = ""
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 # Muted cards (instance_id → true): a human convenience flag toggled via the
@@ -384,6 +386,26 @@ func start_hero_graveyard_selection(hero_id: String) -> void:
 			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
 
 
+# Open the browser for an ally/equipment activated power whose effect targets a
+# graveyard card (Ophelia Barrows: "Remove target ally card in any graveyard
+# from the game"). Candidates come from the card's graveyard_to_rfg segment.
+func start_ally_graveyard_selection(card_id: String) -> void:
+	var card := state.get_card(card_id)
+	if not card or not db:
+		return
+	var def := db.get_def(card.card_def_id) as CardDef
+	var req := StackResolver.get_graveyard_search_requirement(def) if def else {}
+	if req.is_empty():
+		return
+	var candidates := StackResolver.get_graveyard_search_candidates(
+			state, local_player, req, db)
+	if candidates.size() < int(req.get("min_count", 1)):
+		return
+	_gy_select_ally_id = card_id
+	graveyard_select_requested.emit(card_id, candidates,
+			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
+
+
 # UI confirmed a selection: submit the quest completion (or hero power) with
 # the announced targets.
 func confirm_graveyard_selection(selected_ids: Array) -> void:
@@ -413,11 +435,26 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 		_pass_own_proposal(action)
 		refresh_highlights()
 		return
+	if _gy_select_ally_id != "":
+		var ally_id := _gy_select_ally_id
+		_gy_select_ally_id = ""
+		var ap_target: String = selected_ids[0] if not selected_ids.is_empty() else ""
+		var ap_action := PendingAction.make("use_ally_power", local_player,
+				{"card_id": ally_id, "target_id": ap_target})
+		var ap_events := StackResolver.submit_action(state, ap_action, db)
+		if ap_events.is_empty():
+			refresh_highlights()
+			return
+		EventBus.emit_events(ap_events)
+		_pass_own_proposal(ap_action)
+		refresh_highlights()
+		return
 
 
 func cancel_graveyard_selection() -> void:
 	_gy_select_quest_id = ""
 	_gy_select_hero_id = ""
+	_gy_select_ally_id = ""
 	refresh_highlights()
 
 
@@ -1141,8 +1178,12 @@ func get_playable_card_ids() -> Array:
 							or not StackResolver._power_effect_is(def, "on_your_turn")):
 					result.append(card.instance_id)
 			else:
+				# graveyard_ally powers (Ophelia Barrows) pick their target in the
+				# browser afterward — the skip-target probe still verifies a
+				# candidate exists, so no false green on empty graveyards.
 				var ap_action := PendingAction.make("use_ally_power", local_player,
-					{"card_id": card.instance_id})
+					{"card_id": card.instance_id,
+						"_skip_target_check": (ap_data.get("targets", "") as String) == "graveyard_ally"})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
 	return result
@@ -1277,8 +1318,15 @@ func get_context_actions(instance_id: String) -> Array:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
 					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two"]
+					var ap_needs_gy_target: bool = (ap_data.get("targets", "") as String) == "graveyard_ally"
 					var ap_enabled: bool
-					if ap_needs_target:
+					if ap_needs_gy_target:
+						# Graveyard target picked in the browser afterward — probe
+						# everything else, including candidate existence.
+						ap_enabled = StackResolver.can_submit(state,
+							PendingAction.make("use_ally_power", local_player,
+								{"card_id": instance_id, "_skip_target_check": true}), db)
+					elif ap_needs_target:
 						# Check affordability only (target chosen after targeting mode starts).
 						# No turn_player restriction — ally powers work on either player's turn
 						# as long as you hold priority (e.g. defending with Grimdron's power).
@@ -1305,7 +1353,8 @@ func get_context_actions(instance_id: String) -> Array:
 						ap_enabled = StackResolver.can_submit(state, ap_action, db)
 					char_actions.append({"label": "Activate Power",
 						"action": PendingAction.make("use_ally_power", local_player,
-							{"card_id": instance_id, "_needs_target": ap_needs_target}),
+							{"card_id": instance_id, "_needs_target": ap_needs_target,
+								"_needs_gy_target": ap_needs_gy_target}),
 						"enabled": ap_enabled})
 
 			# Armor block (rule 304.3): equipment with DEF > 0 in the hero row.
@@ -1424,6 +1473,9 @@ func handle_context_action(action: PendingAction) -> void:
 				start_graveyard_selection(action.params.get("quest_id", ""))
 				return
 		"use_ally_power":
+			if action.params.get("_needs_gy_target", false):
+				start_ally_graveyard_selection(action.params.get("card_id", ""))
+				return
 			if action.params.get("_needs_target", false):
 				var cid: String = action.params.get("card_id", "")
 				var ally_card := state.get_card(cid) if state else null
@@ -1652,6 +1704,11 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 func _get_ability_targets(card_id: String) -> Array:
 	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
+	# Burn Away / Shattering Blow: targets are in-play ability / equipment
+	# cards (hero rows, totems, attachments), not heroes and allies.
+	var kind := _destroy_kind(card_id)
+	if kind in ["ability", "equipment"]:
+		return _get_destroy_kind_targets(card_id, "play_ability", kind)
 	var result: Array = []
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
@@ -1693,6 +1750,9 @@ func _get_chain_lightning_targets(card_id: String) -> Array:
 func _get_instant_targets(card_id: String) -> Array:
 	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
+	var kind := _destroy_kind(card_id)
+	if kind in ["ability", "equipment"]:
+		return _get_destroy_kind_targets(card_id, "play_instant", kind)
 	var result: Array = []
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
@@ -1706,6 +1766,28 @@ func _get_instant_targets(card_id: String) -> Array:
 				_instant_params(card_id, ps.hero_instance_id))
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
+	return result
+
+
+# destroy_target kind of a hand card's def ("" when not a destroy spell).
+func _destroy_kind(card_id: String) -> String:
+	if not db:
+		return ""
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.destroy_target_kind(def) if def else ""
+
+
+# Legal targets for a destroy_target:ability / :equipment spell (Burn Away /
+# Shattering Blow) — candidates from the resolver, filtered through can_submit
+# like every other targeting mode.
+func _get_destroy_kind_targets(card_id: String, action_type: String, kind: String) -> Array:
+	var result: Array = []
+	for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+		var act := PendingAction.make(action_type, local_player,
+			{"card_id": card_id, "target_id": cid})
+		if StackResolver.can_submit(state, act, db):
+			result.append(cid)
 	return result
 
 

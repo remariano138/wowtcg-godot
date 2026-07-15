@@ -839,6 +839,18 @@ func _on_start_game() -> void:
 
 func _launch_game(p1_type: String, p1_deck_id: String,
 		p2_type: String, p2_deck_id: String) -> void:
+	# Deck authorization (rule 100 legality against the card database) — the
+	# gate that catches hand-edited custom decks (unknown/unimplemented ids,
+	# >4 copies, wrong faction/class) with a readable message instead of a
+	# broken game. Runs before the menu is torn down so errors land in it.
+	var auth_db := CardDatabase.new()
+	auth_db.load_csv("res://data/cards.csv")
+	for pick in [["P1", p1_deck_id], ["P2", p2_deck_id]]:
+		var auth_errors := DeckManager.authorize_deck(pick[1], auth_db)
+		if not auth_errors.is_empty():
+			_show_menu_error("%s deck '%s' is not legal:\n%s"
+				% [pick[0], pick[1], "\n".join(auth_errors)])
+			return
 	_log.clear()
 	_log_in_mulligan = false
 	_pending_exhaust.clear()
@@ -1407,13 +1419,10 @@ func _pending_action_card_name(action: PendingAction) -> String:
 
 const CHAIN_PANEL_X      := 16.0
 const CHAIN_PANEL_BOTTOM := 946.0   # control panel starts at y=960
-# HUD CanvasLayer renders at native pixel scale (unaffected by the board camera's
-# zoom), so these must be much smaller than CardNode.W/H to visually match the
-# in-world cards — CardNode's own size would look oversized here.
-const CHAIN_CARD_W       := 46.0
-const CHAIN_CARD_H       := 64.0
-const CHAIN_CAPTION_H    := 14.0
-const CHAIN_ENTRY_GAP    := 5.0
+const CHAIN_CARD_W       := 90.0
+const CHAIN_CARD_H       := 126.0
+const CHAIN_CAPTION_H    := 18.0
+const CHAIN_ENTRY_GAP    := 8.0
 
 func _update_chain_panel() -> void:
 	if not _chain_panel:
@@ -1445,7 +1454,9 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 	entry.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	var frame := Panel.new()
+	frame.custom_minimum_size = Vector2.ZERO
 	frame.size = Vector2(CHAIN_CARD_W, CHAIN_CARD_H)
+	frame.clip_contents = true   # belt-and-suspenders: never let a child's own minimum size push the box larger
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.12, 0.13, 0.16, 0.92)
@@ -1481,11 +1492,12 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 
 	if tex:
 		var tr := TextureRect.new()
-		tr.texture = tex
-		tr.position = Vector2(2, 2)
-		tr.size = Vector2(CHAIN_CARD_W - 4, CHAIN_CARD_H - 4)
 		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		tr.stretch_mode = TextureRect.STRETCH_SCALE
+		tr.custom_minimum_size = Vector2.ZERO
+		tr.position = Vector2(2, 2)
+		tr.size = Vector2(CHAIN_CARD_W - 4, CHAIN_CARD_H - 4)
+		tr.texture = tex   # assign last — texture-driven minimum size is already neutralized above
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		frame.add_child(tr)
 	else:
@@ -1495,7 +1507,7 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 		txt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		txt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		txt.add_theme_font_size_override("font_size", 8)
+		txt.add_theme_font_size_override("font_size", 12)
 		txt.add_theme_color_override("font_color", Color(0.92, 0.92, 0.95))
 		txt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		frame.add_child(txt)
@@ -1503,10 +1515,10 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 	if caption != "":
 		var cap := Label.new()
 		cap.text = caption
-		cap.position = Vector2(0, CHAIN_CARD_H + 1)
-		cap.size = Vector2(CHAIN_CARD_W, CHAIN_CAPTION_H - 1)
+		cap.position = Vector2(0, CHAIN_CARD_H + 2)
+		cap.size = Vector2(CHAIN_CARD_W, CHAIN_CAPTION_H - 2)
 		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		cap.add_theme_font_size_override("font_size", 10)
+		cap.add_theme_font_size_override("font_size", 12)
 		cap.add_theme_color_override("font_color",
 				Color(1.0, 0.9, 0.3) if is_top else Color(0.7, 0.72, 0.78))
 		cap.mouse_filter = Control.MOUSE_FILTER_IGNORE

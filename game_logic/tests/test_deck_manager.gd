@@ -16,6 +16,8 @@ func _ready() -> void:
 	_test_library_scan()
 	_test_load_all_decks()
 	_test_validate_rejects_bad_decks()
+	_test_authorize_all_shipped_decks()
+	_test_authorize_rejects_illegal_decks()
 	_test_runtime_deck_expansion()
 	_test_roundtrip_serialization()
 	_test_ai_profiles()
@@ -72,6 +74,82 @@ func _test_validate_rejects_bad_decks() -> void:
 	_check(DeckManager.load_deck("no_such_deck") == null, "unknown deck id -> null")
 
 
+func _make_db() -> CardDatabase:
+	var db := CardDatabase.new()
+	db.load_csv("res://data/cards.csv")
+	return db
+
+
+# Every shipped deck must pass full rule-100 authorization against the real
+# card database — this is what catches a deck edit that references an
+# unknown/unimplemented card, exceeds 4 copies, or breaks faction/class
+# legality, without pinning any specific composition into the tests.
+func _test_authorize_all_shipped_decks() -> void:
+	var db := _make_db()
+	for deck_id in DeckManager.get_available_decks().all():
+		var errors := DeckManager.authorize_deck(deck_id, db)
+		_check(errors.is_empty(), "%s authorized%s" % [deck_id,
+			"" if errors.is_empty() else " — " + "; ".join(errors)])
+
+
+func _test_authorize_rejects_illegal_decks() -> void:
+	var db := _make_db()
+	# Base: a copy of a known-legal shipped deck (Moonshadow — Alliance Druid),
+	# mutated per case.
+	var source := DeckManager.load_deck("alliance_moonshadow_test")
+	if source == null:
+		_check(false, "authorize: source deck loads")
+		return
+
+	# Unknown / unimplemented card id.
+	var deck := DeckDefinition.from_dict(source.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("no_such_card_999", 1))
+	_check(DeckManager.authorize_deck_def(deck, db).size() == 1,
+		"unknown card id -> 1 error")
+
+	# A hero among the 60 (rule 100.1).
+	deck = DeckDefinition.from_dict(source.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("azeroth_15", 1))   # Ta'zo (Hero)
+	_check(DeckManager.authorize_deck_def(deck, db).size() == 1,
+		"hero as a deck card -> 1 error")
+
+	# More than 4 copies of one name (rule 100.4).
+	deck = DeckDefinition.from_dict(source.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("azeroth_221", 5))  # + shipped 3x Tristan
+	var copy_errors := DeckManager.authorize_deck_def(deck, db)
+	_check(copy_errors.size() == 1 and "100.4" in copy_errors[0],
+		"8 copies of one name -> 1 error citing 100.4")
+
+	# Wrong faction (rule 100.2a): Horde ally in an Alliance deck.
+	deck = DeckDefinition.from_dict(source.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("dark_portal_201", 1))  # Boneshanks (Horde)
+	var faction_errors := DeckManager.authorize_deck_def(deck, db)
+	_check(faction_errors.size() == 1 and "Horde" in faction_errors[0],
+		"Horde ally in Alliance deck -> 1 faction error")
+
+	# Wrong class (rule 100.2a): Warlock ability in a Druid deck. Class icons
+	# only restrict Abilities/Equipment — an ALLY's class column is flavor
+	# (Kavai "Warrior" is already legal in this Druid deck's shipped list).
+	deck = DeckDefinition.from_dict(source.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("azeroth_134", 1))  # Steal Essence (Warlock)
+	var class_errors := DeckManager.authorize_deck_def(deck, db)
+	_check(class_errors.size() == 1 and "Warlock" in class_errors[0],
+		"Warlock ability in Druid deck -> 1 class error")
+
+	# Multi-class equipment (MaPrLo): illegal for Druid, legal for Warlock.
+	deck = DeckDefinition.from_dict(source.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("azeroth_298", 1))  # Mooncloth Robe
+	_check(DeckManager.authorize_deck_def(deck, db).size() == 1,
+		"MaPrLo equipment in Druid deck -> 1 error")
+	deck.hero_card_def_id = "azeroth_2"   # Dizdemona (Warlock) — Lo matches
+	var robe_ok_errors := DeckManager.authorize_deck_def(deck, db)
+	var robe_flagged := false
+	for e in robe_ok_errors:
+		if "Mooncloth" in e:
+			robe_flagged = true
+	_check(not robe_flagged, "MaPrLo equipment legal for a Warlock hero")
+
+
 func _test_runtime_deck_expansion() -> void:
 	var runtime := DeckManager.get_runtime_deck("alliance_dizdemona_test")
 	_check(runtime != null, "get_runtime_deck returns a Deck")
@@ -79,7 +157,6 @@ func _test_runtime_deck_expansion() -> void:
 		return
 	_check(runtime.hero_def_id == "azeroth_2", "Dizdemona hero id")
 	_check(runtime.card_def_ids.size() == 60, "expanded to 60 def ids")
-	_check(runtime.card_def_ids.count("azeroth_125") == 2, "2x Grimdron expanded")
 
 
 func _test_roundtrip_serialization() -> void:

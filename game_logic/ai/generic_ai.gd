@@ -74,6 +74,12 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
+	var save := save_bounce_action(state, db, player_id)
+	if save != null:
+		return save
+	var cash_in := doomed_sacrifice_action(state, db, player_id)
+	if cash_in != null:
+		return cash_in
 
 	# Everything below is our own action window only. Outside it (opponent's
 	# turn / a pending chain we don't want to answer), we simply pass — no random

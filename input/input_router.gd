@@ -1163,7 +1163,7 @@ func get_playable_card_ids() -> Array:
 				var ap_extra_cost: String = ap_data.get("extra_cost", "")
 				var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
 				var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self") \
-					or ap_extra_cost == "no_activate"
+					or ap_extra_cost == "no_activate" or ap_extra_cost == "sacrifice_self"
 				var ap_ready_ok: bool
 				if ap_once_per_turn:
 					ap_ready_ok = not card.used_this_turn
@@ -1179,11 +1179,12 @@ func get_playable_card_ids() -> Array:
 					result.append(card.instance_id)
 			else:
 				# graveyard_ally powers (Ophelia Barrows) pick their target in the
-				# browser afterward — the skip-target probe still verifies a
-				# candidate exists, so no false green on empty graveyards.
+				# browser afterward, ability_or_equipment (Kavai) in targeting mode —
+				# the skip-target probe still verifies a candidate exists, so no
+				# false green with nothing to target.
 				var ap_action := PendingAction.make("use_ally_power", local_player,
 					{"card_id": card.instance_id,
-						"_skip_target_check": (ap_data.get("targets", "") as String) == "graveyard_ally"})
+						"_skip_target_check": (ap_data.get("targets", "") as String) in ["graveyard_ally", "ability_or_equipment"]})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
 	return result
@@ -1317,12 +1318,14 @@ func get_context_actions(instance_id: String) -> Array:
 			if zone.zone_type in ["ally_row", "hero_row"] and card.controller == local_player:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
-					var ap_needs_target: bool = (ap_data.get("targets", "") as String) in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two"]
-					var ap_needs_gy_target: bool = (ap_data.get("targets", "") as String) == "graveyard_ally"
+					var ap_kind: String = ap_data.get("targets", "") as String
+					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two", "ability_or_equipment"]
+					var ap_needs_gy_target: bool = ap_kind == "graveyard_ally"
 					var ap_enabled: bool
-					if ap_needs_gy_target:
-						# Graveyard target picked in the browser afterward — probe
-						# everything else, including candidate existence.
+					if ap_needs_gy_target or ap_kind == "ability_or_equipment":
+						# Target picked afterward (graveyard browser / targeting mode) —
+						# the skip-target probe checks everything else, including that
+						# a candidate exists at all.
 						ap_enabled = StackResolver.can_submit(state,
 							PendingAction.make("use_ally_power", local_player,
 								{"card_id": instance_id, "_skip_target_check": true}), db)
@@ -1333,7 +1336,7 @@ func get_context_actions(instance_id: String) -> Array:
 						var ap_extra_cost: String = ap_data.get("extra_cost", "")
 						var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
 						var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self") \
-							or ap_extra_cost == "no_activate"
+							or ap_extra_cost == "no_activate" or ap_extra_cost == "sacrifice_self"
 						var ap_ready_ok: bool
 						if ap_once_per_turn:
 							ap_ready_ok = not card.used_this_turn
@@ -1484,6 +1487,8 @@ func handle_context_action(action: PendingAction) -> void:
 				var ap_dmg_type: String
 				if ally_ap and (ally_ap.get("effect", "") as String) in ["heal_target", "heal_x_from_target"]:
 					ap_dmg_type = "heal"
+				elif ally_ap and (ally_ap.get("effect", "") as String).begins_with("destroy"):
+					ap_dmg_type = "destroy"   # Kavai — same cursor as Vanquish/Burn Away
 				else:
 					ap_dmg_type = (ally_ap.get("dmg_type", "") as String).to_lower() if ally_ap else ""
 					if ap_dmg_type == "":
@@ -1972,6 +1977,19 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 		return result
 	var ally := state.get_card(ally_id)
 	if not ally:
+		return result
+	# Kavai the Wanderer: targets are in-play ability / equipment cards (both
+	# players), not heroes and allies — candidates from the resolver, filtered
+	# through can_submit like every other targeting mode.
+	var ally_def := db.get_def(ally.card_def_id) as CardDef
+	var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
+	if (ally_ap.get("targets", "") as String) == "ability_or_equipment":
+		for kind in ["ability", "equipment"]:
+			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+				var d_act := PendingAction.make("use_ally_power", local_player,
+					{"card_id": ally_id, "target_id": cid})
+				if StackResolver.can_submit(state, d_act, db):
+					result.append(cid)
 		return result
 	if _is_ally_damage_and_heal_power(ally_id):
 		if _targeting_first_target == "":

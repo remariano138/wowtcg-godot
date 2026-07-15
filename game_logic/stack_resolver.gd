@@ -540,7 +540,8 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db) 
 static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target", "attach"]:
+		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
+				"return_to_hand", "attach"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -587,7 +588,7 @@ static func selected_mode(def: CardDef, action: PendingAction) -> String:
 static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "exhaust_target", "attach"] \
+		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
 				and parts.size() > 1 and parts[1] == "ally":
 			return true
 	return false
@@ -1183,6 +1184,20 @@ static func _resolve_play_instant(state: GameState,
 						if _is_legal_target(state, target_id, db) \
 								and _is_ally(state, target_id):
 							events.append_array(GameLogic.exhaust_card(state, target_id))
+					"return_to_hand":
+						# "Put target ally into its owner's hand." (Withdraw).
+						# Re-check at resolution (706): fizzles if the ally left
+						# play / became Untargetable. move_card destroys any
+						# attachments on it (400.5) and, if it was a proposed
+						# attacker/defender on the chain, the proposal's 601.3
+						# recheck fizzles the combat.
+						if _is_legal_target(state, target_id, db) \
+								and _is_ally(state, target_id):
+							var rth_card := state.get_card(target_id)
+							events.append_array(GameLogic.move_card(
+								state, target_id, rth_card.owner + "_hand"))
+							events.append(GameEvent.card_returned_to_hand(
+								target_id, card_id))
 					"heal_target":
 						# "Your hero heals N damage from target hero or ally."
 						# (Natural Selection heal mode). Re-check at resolution
@@ -1797,7 +1812,7 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# its cost is just the resource + self-damage, so it's a plain payment power
 	# (701.2), not an activated power (701.3). No summoning sickness, no exhaust.
 	var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self") \
-		or extra_cost_str == "no_activate"
+		or extra_cost_str == "no_activate" or extra_cost_str == "sacrifice_self"
 	if once_per_turn:
 		# No [Activate] tap symbol on this power (rule 701.3/3216): it isn't gated
 		# by summoning sickness or the card's exhausted state, only by its own
@@ -1837,6 +1852,18 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if skip_target:
 			return true
 		return action.params.get("target_id", "") in gy_cands
+	# Kavai the Wanderer: "Destroy target ability or equipment." Even the
+	# no-target probe requires at least one in-play candidate of either kind
+	# (no false green with nothing to destroy).
+	if targets_kind == "ability_or_equipment":
+		var d_cands := get_destroy_kind_candidates(state, db, "ability") \
+			+ get_destroy_kind_candidates(state, db, "equipment")
+		if d_cands.is_empty():
+			return false
+		if skip_target:
+			return true
+		var d_tid: String = action.params.get("target_id", "")
+		return d_tid in d_cands and _is_legal_target(state, d_tid, db)
 	if skip_target:
 		return true
 	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
@@ -1905,6 +1932,10 @@ static func _can_pay_extra_power_cost(state: GameState, player_id: String,
 			# Bizzik Sparkcog: destroy an ally in your party as a cost. Payable
 			# while you control at least one ally (Bizzik himself qualifies).
 			return not state.cards_in_zone(player_id + "_ally_row").is_empty()
+		"sacrifice_self":
+			# Kavai the Wanderer: destroy the power's source itself as a cost.
+			# Always payable while the source is in play (checked by the caller).
+			return true
 	return true
 
 
@@ -1943,10 +1974,10 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		# No [Activate] tap symbol on this power — don't exhaust the source,
 		# just mark it used until the once-per-turn flag resets next turn.
 		card.used_this_turn = true
-	elif extra_cost.begins_with("put_damage_self") or extra_cost == "no_activate":
+	elif extra_cost.begins_with("put_damage_self") or extra_cost == "no_activate" \
+			or extra_cost == "sacrifice_self":
 		# No [Activate] tap symbol on this power either (e.g. Acolyte Demia,
-		# Hierophant Caydiem) — the source never exhausts and can be reused
-		# any time it's affordable.
+		# Hierophant Caydiem, Kavai the Wanderer) — the source never exhausts.
 		pass
 	else:
 		# Exhaust the source at resolution (the activate symbol).
@@ -1986,6 +2017,13 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		var sac_id: String = action.params.get("target_id", "")
 		if _is_ally(state, sac_id):
 			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
+	elif extra_cost == "sacrifice_self":
+		# Kavai the Wanderer: destroy the source itself as a cost. If an opponent
+		# already destroyed her in response, the destroy no-ops and the effect
+		# still resolves — matching the printed rules, where the cost was paid at
+		# announcement.
+		if _is_ally(state, card_id):
+			events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
 	events.append(GameEvent.make("ally_power_used",
 		{"ally_id": card_id, "player": action.source_player,
 			"target_id": action.params.get("target_id", "")}))
@@ -2026,6 +2064,17 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var destroy_id: String = action.params.get("target_id", "")
 			if _is_legal_target(state, destroy_id, db) and _is_ally(state, destroy_id):
 				events.append_array(_destroy_card_trigger(state, destroy_id, card_id, db))
+		"destroy_ability_or_equipment":
+			# Kavai the Wanderer: "Destroy target ability or equipment." Re-check
+			# at resolution (706) — fizzles if the target left play (e.g. an
+			# attachment that died with its host, including one attached to Kavai
+			# herself, destroyed by her own sacrifice cost above) or became
+			# Untargetable after the announce.
+			var dae_id: String = action.params.get("target_id", "")
+			if _is_legal_target(state, dae_id, db) \
+					and (_is_in_play_ability(state, dae_id, db) \
+						or _is_in_play_equipment(state, dae_id, db)):
+				events.append_array(_destroy_card_trigger(state, dae_id, card_id, db))
 		"exhaust_target":
 			# Galahandra, Keeper of the Silent Grove: "1, [Activate] -> Exhaust
 			# target ally." Re-check at resolution (706): fizzles if the ally

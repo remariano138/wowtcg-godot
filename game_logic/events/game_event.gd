@@ -285,6 +285,12 @@ static func card_revealed_from_deck(card_id: String, player_id: String) -> GameE
 		"card_id": card_id, "player": player_id,
 	})
 
+# A card in play was put back into its owner's hand by an effect (Withdraw).
+static func card_returned_to_hand(card_id: String, source_id: String) -> GameEvent:
+	return make("card_returned_to_hand", {
+		"card_id": card_id, "source_id": source_id,
+	})
+
 static func card_removed_from_game(card_id: String, player_id: String) -> GameEvent:
 	return make("card_removed_from_game", {
 		"card_id": card_id, "player": player_id,

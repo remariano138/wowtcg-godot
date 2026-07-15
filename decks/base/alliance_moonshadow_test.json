@@ -129,9 +129,9 @@
       "_card_name": "Tristan Rapidstrike"
     },
     {
-      "card_def_id": "azeroth_200",
+      "card_def_id": "dark_portal_173",
       "count": 2,
-      "_card_name": "Liba Wobblebonk"
+      "_card_name": "Kavai the Wanderer"
     },
     {
       "card_def_id": "azeroth_27",
@@ -144,9 +144,9 @@
       "_card_name": "Mark of the Wild"
     },
     {
-      "card_def_id": "azeroth_219",
+      "card_def_id": "azeroth_172",
       "count": 2,
-      "_card_name": "Tracker Gallen"
+      "_card_name": "Withdraw"
     }
   ],
   "recommended_ai_id": "ai_generic",

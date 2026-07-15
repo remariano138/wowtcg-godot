@@ -51,6 +51,14 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
+	# Withdraw save-bounce (BaseAI) — deterministic, never left to the dice.
+	var save := save_bounce_action(state, db, player_id)
+	if save != null:
+		return save
+	# Doomed self-sacrifice cash-in (BaseAI, Kavai the Wanderer) — deterministic.
+	var cash_in := doomed_sacrifice_action(state, db, player_id)
+	if cash_in != null:
+		return cash_in
 	var legal := get_legal_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false

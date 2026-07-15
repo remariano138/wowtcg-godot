@@ -136,6 +136,8 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_exhaustion_freezes_proposal,
 		_test_ai_exhaustion_freeze_save,
+		_test_withdraw_bounce_and_spell_fizzle,
+		_test_ai_withdraw_save,
 		_test_first_to_fall_destroys_protector,
 		_test_ai_first_to_fall_destroys_protector,
 		_test_targeted_instant_highlight_requires_target,
@@ -169,6 +171,9 @@ func _ready() -> void:
 		_test_bizzik_sparkcog_sacrifice_draw,
 		_test_augustus_destroys_with_graveyard_cost,
 		_test_augustus_blocked_too_few_graveyard_allies,
+		_test_kavai_sacrifice_destroys_ability_or_equipment,
+		_test_kavai_fizzles_opposing_removal,
+		_test_ai_kavai_doomed_cash_in,
 		_test_stat_tracker_counts,
 		_test_green_whelp_armor_bounces_attacker,
 		_test_green_whelp_armor_decline_and_gates,
@@ -7687,6 +7692,137 @@ func _test_ai_exhaustion_freeze_save() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Withdraw (azeroth_172, 3, Instant Ability): "Put target ally into its owner's
+# hand." Bounced in response to an opposing targeted removal spell, the spell
+# fizzles at the 709.2a recheck (target no longer in play). The bounced card
+# leaves play, so its damage/exhaustion reset (400.6a).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_withdraw_bounce_and_spell_fizzle() -> void:
+	_buf.append("\n-- Withdraw: bounce our ally, opposing removal spell fizzles --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("victim_def", 3, 4, [], 4)
+	db.instant("vanquish_def", 3, "destroy_target:ally")
+	db.instant("azeroth_172", 3, "return_to_hand:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+	victim.damage_taken = 2
+	victim.is_exhausted = true
+	_add_card_to_hand(state, "wd", "azeroth_172", "p2")
+	_add_card_to_hand(state, "vq", "vanquish_def", "p1")
+	_add_resources(state, "p1", 3)
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# wd-a: Withdraw is ally-only — can't target a hero.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "wd", "target_id": "p1_hero"}), db),
+		"wd-a: Withdraw can't target a hero (ally-only)")
+
+	# p1 casts the destroy spell at p2's ally; p2 responds with Withdraw.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "vq", "target_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+	var cast := PendingAction.make("play_instant", "p2",
+		{"card_id": "wd", "target_id": "victim"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"wd-b: Withdraw is legal in response to the removal spell")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → Withdraw resolves
+
+	eq(state.get_card("victim").zone_id, "p2_hand",
+		"wd-c: ally is back in its owner's hand")
+	eq(victim.damage_taken, 0, "wd-d: damage reset on leaving play (400.6a)")
+	ok(not victim.is_exhausted, "wd-e: exhaustion reset on leaving play")
+	ok(state.get_card("wd").zone_id == "p2_graveyard",
+		"wd-f: Withdraw is in the graveyard")
+
+	# Both pass again → the destroy spell resolves against no legal target.
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("victim").zone_id, "p2_hand",
+		"wd-g: spell fizzled — ally still in hand, not destroyed")
+	ok(state.get_card("vq").zone_id == "p1_graveyard",
+		"wd-h: fizzled spell still goes to the graveyard")
+	ok(state.pending_actions.is_empty(), "wd-i: chain empty afterwards")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI holds Withdraw and plays it ONLY to interrupt opposing targeted removal
+# aimed at a worthwhile ally — never to dodge a combat attack.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_withdraw_save() -> void:
+	_buf.append("\n-- AI plays Withdraw to interrupt targeted removal only --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   4, 4, [], 4)
+	db.ally("cheap_def", 2, 2, [], 1)
+	db.instant("vanquish_def", 3, "destroy_target:ally")
+	db.instant("azeroth_172", 3, "return_to_hand:ally")
+
+	# wa-a: destroy spell aimed at our 4-cost ally → AI bounces it.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var big := _add_ally(state, "big", "big_def", "p2")
+	big.just_summoned = false
+	_add_card_to_hand(state, "wd", "azeroth_172", "p2")
+	_add_card_to_hand(state, "vq", "vanquish_def", "p1")
+	_add_resources(state, "p1", 3)
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "vq", "target_id": "big"}), db)
+	StackResolver.pass_priority(state, db)   # priority → p2
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_instant"
+			and act.params.get("card_id") == "wd"
+			and act.params.get("target_id") == "big",
+		"wa-a: AI plays Withdraw on the ally targeted by removal")
+
+	# wa-b: same threat aimed at a 1-cost ally → hold (not worth the save).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var cheap := _add_ally(state2, "cheap", "cheap_def", "p2")
+	cheap.just_summoned = false
+	_add_card_to_hand(state2, "wd2", "azeroth_172", "p2")
+	_add_card_to_hand(state2, "vq2", "vanquish_def", "p1")
+	_add_resources(state2, "p1", 3)
+	_add_resources(state2, "p2", 3)
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("play_instant", "p1",
+		{"card_id": "vq2", "target_id": "cheap"}), db)
+	StackResolver.pass_priority(state2, db)
+	ok(ai.decide_action(state2, db, "p2") == null,
+		"wa-b: AI holds Withdraw when the targeted ally is too cheap")
+
+	# wa-c: a combat proposal at our 4-cost ally → hold (never dodge an attack).
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	var big3 := _add_ally(state3, "big3", "big_def", "p2")
+	big3.just_summoned = false
+	var atk3 := _add_ally(state3, "atk3", "big_def", "p1")
+	atk3.just_summoned = false
+	_add_card_to_hand(state3, "wd3", "azeroth_172", "p2")
+	_add_resources(state3, "p2", 3)
+	state3.players["p1"].resource_placed_this_turn = true
+	StackResolver.submit_action(state3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk3", "defender_id": "big3"}), db)
+	StackResolver.pass_priority(state3, db)
+	var act3 := ai.decide_action(state3, db, "p2")
+	ok(act3 == null or act3.params.get("card_id", "") != "wd3",
+		"wa-c: AI never spends Withdraw to dodge a combat attack")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # First to Fall (dark_portal_141, 2, Instant Ability): "Destroy target protecting
 # ally." Legal only in the defend window, aimed at the ally protecting this combat
 # (state.combat_protector). Destroying it ends the combat with no damage (603.1b).
@@ -9334,6 +9470,196 @@ func _test_augustus_blocked_too_few_graveyard_allies() -> void:
 	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
 		{"card_id": "aug", "target_id": "victim"}), db),
 		"ab-a: Augustus power illegal with only 2 graveyard allies")
+
+
+# ── Kavai the Wanderer: "1, Destroy Kavai → Destroy target ability or
+# equipment." Plain payment power (no [Activate] tap symbol) whose extra cost
+# destroys the source itself. ──────────────────────────────────────────────────
+
+const KAVAI_RECIPE := "activated_power:1:destroy_ability_or_equipment:0::ability_or_equipment:sacrifice_self"
+
+func _test_kavai_sacrifice_destroys_ability_or_equipment() -> void:
+	_buf.append("\n-- Kavai the Wanderer: sacrifice self → destroy target ability or equipment --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kavai_def", 4, 6, [], 6, KAVAI_RECIPE)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var kavai := _add_ally(state, "kavai", "kavai_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 2)
+
+	# kv-a: no ability or equipment in play → the power has no legal target,
+	# even the skip-target highlight probe fails.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "_skip_target_check": true}), db),
+		"kv-a: power illegal with nothing to destroy")
+
+	# p2's ongoing ability, equipment, and attachment on its bear.
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	# kv-b..e: ability / equipment / attachment are legal, heroes and allies not.
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "target_id": "ongo"}), db),
+		"kv-b: ongoing ability is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "target_id": "robe"}), db),
+		"kv-c: equipment is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "target_id": "mark"}), db),
+		"kv-d: an attachment is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "target_id": "bear"}), db),
+		"kv-e: an ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "target_id": "p2_hero"}), db),
+		"kv-f: a hero is NOT a legal target")
+
+	# kv-g: no [Activate] tap symbol — usable with summoning sickness AND exhausted.
+	kavai.just_summoned = true
+	kavai.is_exhausted = true
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "kavai", "target_id": "robe"}), db),
+		"kv-g: usable while just summoned and exhausted (no tap symbol)")
+
+	# Resolve on the equipment: Kavai destroyed (cost), robe destroyed (effect).
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "kavai", "target_id": "robe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(kavai.zone_id, "p1_graveyard", "kv-h: Kavai sacrificed to the graveyard")
+	eq(robe.zone_id, "p2_graveyard",  "kv-i: target equipment destroyed")
+	eq(state.get_available_resources("p1"), 1, "kv-j: 1 resource paid")
+
+
+func _test_kavai_fizzles_opposing_removal() -> void:
+	_buf.append("\n-- Kavai the Wanderer: killed in response, the effect still resolves --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kavai_def", 4, 6, [], 6, KAVAI_RECIPE)
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.instant("vanq_def", 3, "destroy_target:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var kavai := _add_ally(state, "kavai", "kavai_def", "p1")
+	_add_resources(state, "p1", 1)
+	_add_resources(state, "p2", 3)
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	_add_card_to_hand(state, "vanq", "vanq_def", "p2")
+
+	# p1 announces the power; p2 responds destroying Kavai. The response
+	# resolves first — but the sacrifice cost simply no-ops (she's already
+	# gone) and the announced effect still destroys the robe, matching the
+	# printed rules where costs are paid at announcement.
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "kavai", "target_id": "robe"}), db)
+	StackResolver.pass_priority(state, db)   # p1 passes, p2 responds
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "vanq", "target_id": "kavai"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Vanquish resolves — Kavai dies
+	eq(kavai.zone_id, "p1_graveyard", "kf-a: Kavai destroyed by the response")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # the power resolves
+	eq(robe.zone_id, "p2_graveyard", "kf-b: the announced destroy still resolves")
+
+
+func _test_ai_kavai_doomed_cash_in() -> void:
+	_buf.append("\n-- AI Kavai: cashes in the power when doomed, holds it otherwise --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kavai_def", 4, 6, [], 6, KAVAI_RECIPE)
+	db.ally("ogre_def", 6, 6, [], 5)
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.instant("vanq_def", 3, "destroy_target:ally")
+	var ai := BaseAI.new()
+
+	# Case 1 — combat: p1's 6-ATK ogre attacks p2's Kavai (6 hp). During the
+	# attack window the AI sacrifices her onto p1's equipment.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "ogre", "ogre_def", "p1")
+	var kavai := _add_ally(state, "kavai", "kavai_def", "p2")
+	kavai.just_summoned = false
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	var robe := CardInstance.create("robe", "robe_def", "p1", "p1_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p1_hero_row"].card_ids.append("robe")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "ogre", "defender_id": "kavai"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts, attack window opens
+	ok(state.combat_attack_window, "kd-a: attack window open")
+	StackResolver.pass_priority(state, db)   # p1 passes — priority to p2
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "use_ally_power" \
+			and act.params.get("card_id", "") == "kavai" \
+			and act.params.get("target_id", "") == "robe",
+		"kd-b: doomed defender cashes in on the opposing equipment")
+
+	# Case 2 — chain: opposing removal aimed at Kavai.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var kavai2 := _add_ally(state2, "kavai2", "kavai_def", "p2")
+	kavai2.just_summoned = false
+	_add_resources(state2, "p1", 3)
+	_add_resources(state2, "p2", 1)
+	var robe2 := CardInstance.create("robe2", "robe_def", "p1", "p1_hero_row")
+	state2.cards["robe2"] = robe2
+	state2.zones["p1_hero_row"].card_ids.append("robe2")
+	_add_card_to_hand(state2, "vanq", "vanq_def", "p1")
+	StackResolver.submit_action(state2, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq", "target_id": "kavai2"}), db)
+	StackResolver.pass_priority(state2, db)   # p1 passes — priority to p2
+	var act2 := ai.decide_action(state2, db, "p2")
+	ok(act2 != null and act2.action_type == "use_ally_power" \
+			and act2.params.get("card_id", "") == "kavai2",
+		"kd-c: chain-threatened Kavai cashes in")
+
+	# Case 3 — doomed but NO opposing ability/equipment: hold (die quietly).
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	var kavai3 := _add_ally(state3, "kavai3", "kavai_def", "p2")
+	kavai3.just_summoned = false
+	_add_resources(state3, "p1", 3)
+	_add_resources(state3, "p2", 1)
+	_add_card_to_hand(state3, "vanq3", "vanq_def", "p1")
+	StackResolver.submit_action(state3, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq3", "target_id": "kavai3"}), db)
+	StackResolver.pass_priority(state3, db)
+	ok(ai.doomed_sacrifice_action(state3, db, "p2") == null,
+		"kd-d: no meaningful target — power held")
+
+	# Case 4 — never fired proactively on the AI's own turn.
+	var state4 := _base_state(db, "p1_hero", "p2_hero")
+	var kavai4 := _add_ally(state4, "kavai4", "kavai_def", "p1")
+	kavai4.just_summoned = false
+	_add_resources(state4, "p1", 1)
+	var robe4 := CardInstance.create("robe4", "robe_def", "p2", "p2_hero_row")
+	state4.cards["robe4"] = robe4
+	state4.zones["p2_hero_row"].card_ids.append("robe4")
+	for a in ai.get_legal_actions(state4, db, "p1"):
+		ok(not (a.action_type == "use_ally_power" \
+				and a.params.get("card_id", "") == "kavai4"),
+			"kd-e: proactive power use never generated")
 
 
 # ── Chops / Voss Treebender: "When [this] attacks, you may exhaust target

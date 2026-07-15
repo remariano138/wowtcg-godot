@@ -33,6 +33,14 @@ extends RefCounted
 #       DEFEND window once the opponent has protected with an ally: destroying the
 #       protector ends the combat (603.1b). Played only on an opposing protecting
 #       ally whose cost >= this card's cost — see destroy_protector_action().
+#   "combat_instant_save_bounce" — Instant Ability that returns a target ally to
+#       its owner's hand (effects: return_to_hand:ally). Held to INTERRUPT an
+#       opposing targeted removal spell on the chain aimed at one of our allies
+#       (destroy, or lethal targeted damage): bouncing the target makes the
+#       spell fizzle at the 709.2a recheck, a card-for-card trade. Deliberately
+#       NOT played to dodge a combat attack — that trades our card (plus
+#       re-paying the ally's cost later) against an attack that cost the
+#       opponent nothing. See save_bounce_action().
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
@@ -43,6 +51,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_27":  "combat_instant_dmg",   # Natural Selection — modal: damage mode only (heal mode enumerated by get_modal_actions but never played — future work)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
+	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 }
 
@@ -69,6 +78,12 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
+	var save := save_bounce_action(state, db, player_id)
+	if save != null:
+		return save
+	var cash_in := doomed_sacrifice_action(state, db, player_id)
+	if cash_in != null:
+		return cash_in
 	return instant_protector_action(state, db, player_id)
 
 
@@ -534,6 +549,153 @@ func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String)
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
+
+
+# Withdraw (combat_instant_save_bounce): a held Instant that returns a target
+# ally to its owner's hand. Played ONLY to interrupt an opposing removal SPELL
+# on the chain aimed at one of our allies — the bounce makes the spell fizzle
+# at the 709.2a recheck, a fair card-for-card trade (they spent a card too).
+# Never played to dodge a combat attack: an attack costs the opponent no card,
+# while we'd burn Withdraw AND have to re-pay the ally's cost to replay it.
+# Threats recognized: destroy_target:ally (Vanquish), destroy_ally ally powers
+# (Augustus), and targeted damage that is LETHAL to the ally (deal_damage_to_target
+# instants incl. modal damage modes, and ally-power damage). Worth gate: the
+# threatened ally's printed cost must be >= Withdraw's cost.
+func save_bounce_action(state: GameState, db, player_id: String) -> PendingAction:
+	var target_id := _chain_threatened_ally(state, db, player_id)
+	if target_id == "":
+		return null
+	var victim := state.get_card(target_id)
+	var v_def := db.get_def(victim.card_def_id) as CardDef
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_save_bounce":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or not v_def or v_def.cost < def.cost:
+			continue   # not worth spending the save on a cheap ally
+		var act := PendingAction.make("play_instant", player_id,
+			{"card_id": card.instance_id, "target_id": target_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# The friendly ally targeted by a LETHAL opposing removal/damage link on top of
+# the chain ("" when there is none). Threats recognized: destroy_target:ally
+# (Vanquish), destroy_ally ally powers (Augustus), and targeted damage >= the
+# ally's remaining health (deal_damage_to_target instants incl. modal damage
+# modes, and ally-power damage). Shared by save_bounce_action (Withdraw) and
+# doomed_sacrifice_action (Kavai the Wanderer).
+func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
+	if not db or state.pending_actions.is_empty():
+		return ""
+	var top: PendingAction = state.pending_actions.back()
+	if top.source_player == player_id:
+		return ""
+	if not (top.action_type in ["play_instant", "play_ability", "use_ally_power"]):
+		return ""
+	var target_id: String = top.params.get("target_id", "")
+	if target_id == "" or not state.is_in_play(target_id):
+		return ""
+	var victim := state.get_card(target_id)
+	if not victim or victim.controller != player_id \
+			or not StackResolver._is_ally(state, target_id):
+		return ""
+
+	# Is the link actually going to remove the ally?
+	var threat_card := state.get_card(top.params.get("card_id", ""))
+	var threat_def := db.get_def(threat_card.card_def_id) as CardDef if threat_card else null
+	if not threat_def:
+		return ""
+	var lethal := false
+	var v_hp := state.get_current_hp(target_id, db)
+	if top.action_type == "use_ally_power":
+		var ap := StackResolver._ally_activated_power(threat_def)
+		match ap.get("effect", ""):
+			"destroy_ally":
+				lethal = true
+			"deal_damage_to_target":
+				lethal = int(ap.get("amount", 0)) >= v_hp
+	else:
+		var segs := threat_def.effects.split("|")
+		if StackResolver.is_modal_def(threat_def):
+			var chosen := StackResolver.selected_mode(threat_def, top)
+			segs = PackedStringArray([chosen]) if chosen != "" else PackedStringArray()
+		for seg in segs:
+			var parts := (seg as String).strip_edges().split(":")
+			match parts[0].strip_edges():
+				"destroy_target":
+					lethal = lethal or parts.size() < 2 or parts[1] == "ally" \
+							or (parts[1] == "protecting_ally" \
+								and target_id == state.combat_protector)
+				"deal_damage_to_target":
+					var amt := int(parts[1]) if parts.size() > 1 else 0
+					lethal = lethal or amt >= v_hp
+	return target_id if lethal else ""
+
+
+# Kavai the Wanderer (destroy_ability_or_equipment + sacrifice_self): her power
+# destroys HERSELF as a cost, so it is never fired proactively —
+# _get_ally_power_actions doesn't generate it. Instead, when she is DOOMED —
+# targeted by a lethal opposing removal/damage link on the chain, or about to
+# die when the open combat window concludes — cash her in on the opponent's
+# most expensive in-play ability or equipment, so her death isn't wasted (and
+# an opposing removal spell aimed at her fizzles at its 709.2a recheck).
+func doomed_sacrifice_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var threatened := _chain_threatened_ally(state, db, player_id)
+	var opp := "p2" if player_id == "p1" else "p1"
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var ap := StackResolver._ally_activated_power(def)
+		if ap.get("effect", "") != "destroy_ability_or_equipment" \
+				or ap.get("extra_cost", "") != "sacrifice_self":
+			continue
+		if not _is_doomed(state, db, card.instance_id, threatened):
+			continue
+		# Meaningful target only: the opponent's most expensive ability/equipment.
+		var best := ""
+		var best_cost := -1
+		for kind in ["ability", "equipment"]:
+			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+				var t := state.get_card(cid)
+				if not t or t.controller != opp:
+					continue
+				var t_def := db.get_def(t.card_def_id) as CardDef
+				var t_cost: int = t_def.cost if t_def else 0
+				if t_cost > best_cost:
+					best_cost = t_cost
+					best = cid
+		if best == "":
+			continue
+		var act := PendingAction.make("use_ally_power", player_id,
+			{"card_id": card.instance_id, "target_id": best})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Whether this ally is about to be removed: it's the victim of a lethal
+# opposing link on the chain (chain_threatened, from _chain_threatened_ally),
+# or the open combat window will conclude with lethal combat damage on it —
+# as the defender, or as an attacker facing a lethal retaliation (which never
+# comes when the attacker is Long-Range).
+func _is_doomed(state: GameState, db, card_id: String, chain_threatened: String) -> bool:
+	if card_id == chain_threatened:
+		return true
+	if not (state.combat_attack_window or state.combat_defend_window):
+		return false
+	var hp := state.get_current_hp(card_id, db)
+	if card_id == state.combat_defender:
+		return state.get_atk(state.combat_attacker, db) >= hp
+	if card_id == state.combat_attacker:
+		if StackResolver._has_keyword(state.get_card(card_id), "long_range", db):
+			return false
+		return state.get_atk(state.combat_defender, db) >= hp
+	return false
 
 
 # Damage amount of a combat_instant_dmg card (deal_damage_to_target:N:TYPE),

@@ -20,7 +20,7 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
@@ -30,7 +30,7 @@
     },
     {
       "card_def_id": "azeroth_347",
-      "count": 2,
+      "count": 1,
       "_card_name": "Battle of Darrowshire"
     },
     {
@@ -80,8 +80,13 @@
     },
     {
       "card_def_id": "azeroth_236",
-      "count": 3,
+      "count": 2,
       "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "azeroth_282",
+      "count": 1,
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_274",

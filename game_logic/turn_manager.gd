@@ -296,7 +296,27 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 				events.append_array(StackResolver.defer_packets(state, db, [{
 					"source": caster_hero.instance_id, "target": card.attached_to,
 					"amount": burn_amt, "dmg_type": burn_type,
+					"from_ability": true,
 				}]))
+			continue
+		# Spirit Bond: "Ongoing: At the start of your turn, if you have a Pet,
+		# your hero heals 2 damage from itself and each of your Pets." The Pet
+		# condition is checked at fire time; no Pet in play → the trigger does
+		# nothing this turn.
+		if not each_turn and key == "turn_start_heal_hero_and_pets":
+			var pet_heal := int(parts[1]) if parts.size() > 1 else 2
+			var sb_pid := card.controller
+			var pets: Array = []
+			for ally in state.cards_in_zone(sb_pid + "_ally_row"):
+				var adef := db.get_def(ally.card_def_id) as CardDef
+				if adef and adef.card_subtype == "Pet":
+					pets.append(ally)
+			if not pets.is_empty():
+				var sb_hero := state.get_hero(sb_pid)
+				if sb_hero:
+					events.append_array(GameLogic.heal(state, sb_hero.instance_id, pet_heal, db, card.instance_id))
+				for pet in pets:
+					events.append_array(GameLogic.heal(state, pet.instance_id, pet_heal, db, card.instance_id))
 			continue
 		if not each_turn and key == "turn_start_discard_or_give_control":
 			state.pending_control_discard_player = card.controller

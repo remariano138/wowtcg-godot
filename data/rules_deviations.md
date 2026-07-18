@@ -450,3 +450,22 @@ be destroyed. Accepted for v1.
 
 Enforcement sites: `_check_form_break_ability` / `_check_form_break_strike` in
 `game_logic/stack_resolver.gd`.
+
+## Replacement-effect order — Chromatic Cloak before World in Flames
+
+**Cards:** Chromatic Cloak (`azeroth_282`), World in Flames (`azeroth_61`)
+**Enforcement site:** `StackResolver.defer_packets` (the packet-entry modifier loop)
+
+Printed rule: when multiple replacement effects would modify the same damage
+event, the affected player chooses the order they apply. The engine instead
+applies a FIXED order: Chromatic Cloak's "+1 if your hero would deal damage
+with an ability" first, then World in Flames' fire doubling. Both effects only
+ever benefit the same player (both read "your hero"), and (X+1)*2 > X*2+1,
+so the fixed order is exactly the order that player would always choose —
+no meaningful choice is lost.
+
+Also note: "with an ability" is tracked by a `from_ability` packet tag set at
+ability-resolution packet sites (instants/abilities, ongoing-ability on-play
+damage, attachments including Fireball's turn-start burn). Hero flip POWERS,
+ally/equipment activated powers, totem triggers, enter-play ally effects, and
+combat damage are not abilities and never get the bonus.

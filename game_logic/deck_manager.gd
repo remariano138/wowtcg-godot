@@ -106,6 +106,13 @@ static func authorize_deck_def(deck: DeckDefinition, db) -> Array[String]:
 			hero_def = null
 
 	var copies_by_name: Dictionary = {}   # card_name -> total count
+	# 100.2c: Talent cards ("[Spec] Talent" on the type line, tags column) —
+	# our heroes list no talent spec (206.1), so the deck simply may not mix
+	# Talents of two different specs. Non-Talent cards are unrestricted no
+	# matter their subtype. If heroes ever gain a talent_spec trait, the
+	# hero-match branch of 100.2c goes here.
+	var deck_talent_spec := ""       # first Talent spec seen
+	var deck_talent_card := ""       # its card name (for the error message)
 	for entry in deck.card_entries:
 		if entry.count < 1:
 			errors.append("Card '%s' has a non-positive count (%d)." % [entry.card_def_id, entry.count])
@@ -119,6 +126,14 @@ static func authorize_deck_def(deck: DeckDefinition, db) -> Array[String]:
 			errors.append("'%s' is a Hero — heroes can't be deck cards (rule 100.1)." % def.card_name)
 			continue
 		copies_by_name[def.card_name] = copies_by_name.get(def.card_name, 0) + entry.count
+		var spec := talent_spec(def)
+		if spec != "":
+			if deck_talent_spec == "":
+				deck_talent_spec = spec
+				deck_talent_card = def.card_name
+			elif spec != deck_talent_spec:
+				errors.append("'%s' is a %s Talent but the deck already has the %s Talent '%s' — Talents of different specs can't share a deck (rule 100.2c)."
+					% [def.card_name, spec, deck_talent_spec, deck_talent_card])
 		if hero_def:
 			# 100.2a: faction icons must match the hero's ("" = neutral, always legal).
 			if def.alignment != "" and def.alignment != hero_def.alignment:
@@ -143,6 +158,18 @@ static func authorize_deck_def(deck: DeckDefinition, db) -> Array[String]:
 			errors.append("%d copies of '%s' — maximum is %d (rule 100.4)."
 				% [copies_by_name[card_name], card_name, MAX_COPIES_PER_NAME])
 	return errors
+
+
+# "[Spec] Talent" tag → the spec ("Marksmanship Talent" → "Marksmanship"),
+# or "" for a non-Talent card. The tag lives in the cards.csv tags column
+# (CardDef.tags), e.g. Aimed Shot "Marksmanship Talent", Spirit Bond
+# "Beast Mastery Talent". Non-Talent subtypes ("Feral", "Feral Combo",
+# "Frost"…) never match.
+static func talent_spec(def: CardDef) -> String:
+	var t := def.tags.strip_edges()
+	if t.ends_with(" Talent"):
+		return t.trim_suffix(" Talent").strip_edges()
+	return ""
 
 
 # cards.csv class column → full class names: "" = no restriction (legal

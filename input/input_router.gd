@@ -240,6 +240,17 @@ func handle_card_click(instance_id: String) -> void:
 		return
 	# Abilities/instants with targets: enter targeting mode rather than submitting
 	# directly — targeting is cancellable (Esc) until the target click submits.
+	# X-cost cards (Aimed Shot, "1+X"): pick X first (same dialog as Boris's
+	# pay-X hero power), then confirm_x_value re-enters the targeting flow
+	# with the X riding on the submission.
+	if action_type in ["play_ability", "play_instant"] and _card_cost_x(instance_id) \
+			and (_ability_needs_target(instance_id) if action_type == "play_ability"
+				else _instant_needs_target(instance_id)):
+		_targeting_source = instance_id
+		var max_x := state.get_available_resources(local_player) \
+			- state.get_play_cost(instance_id, db, 0)
+		x_select_requested.emit(instance_id, max_x)
+		return
 	if action_type == "play_ability" and _ability_needs_target(instance_id):
 		start_targeting(instance_id, "play_ability",
 			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
@@ -798,11 +809,11 @@ func _handle_ability_targeting_click(instance_id: String) -> void:
 	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
 		return
-	var action := PendingAction.make("play_ability", local_player, {
-		"card_id": _targeting_source, "target_id": instance_id,
-	})
+	var action := PendingAction.make("play_ability", local_player,
+		_instant_params(_targeting_source, instance_id))
 	if StackResolver.can_submit(state, action, db):
 		_targeting_source = ""
+		_targeting_x_value = 0
 		targeting_cancelled.emit()
 		var events := StackResolver.submit_action(state, action, db)
 		if not events.is_empty():
@@ -895,6 +906,7 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 	if StackResolver.can_submit(state, action, db):
 		_targeting_source = ""
 		_targeting_mode   = -1
+		_targeting_x_value = 0
 		targeting_cancelled.emit()
 		var events := StackResolver.submit_action(state, action, db)
 		if events.is_empty():
@@ -1739,13 +1751,13 @@ func _get_ability_targets(card_id: String) -> Array:
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
 			var act := PendingAction.make("play_ability", local_player,
-				{"card_id": card_id, "target_id": card.instance_id})
+				_instant_params(card_id, card.instance_id))
 			if StackResolver.can_submit(state, act, db):
 				result.append(card.instance_id)
 		var ps := state.players.get(pid) as PlayerState
 		if ps and ps.hero_instance_id != "":
 			var act := PendingAction.make("play_ability", local_player,
-				{"card_id": card_id, "target_id": ps.hero_instance_id})
+				_instant_params(card_id, ps.hero_instance_id))
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
 	return result
@@ -1817,13 +1829,24 @@ func _get_destroy_kind_targets(card_id: String, action_type: String, kind: Strin
 	return result
 
 
-# Params for a play_instant probe/submission — carries the modal mode index
-# (707.1c) when the current targeting flow came from a mode choice.
+# Params for a play_instant/play_ability probe/submission — carries the modal
+# mode index (707.1c) when the current targeting flow came from a mode choice,
+# and the announced X (Aimed Shot) when it came from the X-select dialog.
 func _instant_params(card_id: String, target_id: String) -> Dictionary:
 	var params := {"card_id": card_id, "target_id": target_id}
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
+	if _targeting_x_value > 0:
+		params["x_value"] = _targeting_x_value
 	return params
+
+
+func _card_cost_x(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null and def.cost_x
 
 
 func _instant_needs_target(card_id: String) -> bool:
@@ -2101,6 +2124,14 @@ func confirm_x_value(x_value: int) -> void:
 	if _targeting_source == "":
 		return
 	_targeting_x_value = x_value
+	# X-cost HAND card (Aimed Shot): re-enter the normal play targeting flow —
+	# the X rides on the submission via _instant_params.
+	var src_card := state.get_card(_targeting_source)
+	var src_zone := state.zones.get(src_card.zone_id) as Zone if src_card else null
+	if src_zone and src_zone.zone_type == "hand":
+		start_targeting(_targeting_source, _action_type_for(_targeting_source),
+			_card_dmg_type(_targeting_source), x_value)
+		return
 	var dmg_type := "heal" if _is_heal_x_power(_targeting_source) else "shadow"
 	start_targeting(_targeting_source, "activate_power_x", dmg_type, x_value)
 

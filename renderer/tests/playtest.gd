@@ -3018,7 +3018,10 @@ func _on_x_select_requested(hero_id: String, max_x: int) -> void:
 	_x_input.grab_focus()
 	var hero_card := _router.state.get_card(hero_id) if _router.state else null
 	var hero_def: CardDef = _router.db.get_def(hero_card.card_def_id) if hero_card and _router.db else null
-	if hero_def and StackResolver._power_effect_is(hero_def, "heal_x_from_target"):
+	if hero_def and hero_def.cost_x:
+		# X-cost hand card (Aimed Shot): X is both the extra cost and the amount.
+		_set_status("Enter X — %s costs %d+X" % [hero_def.card_name, hero_def.cost_base])
+	elif hero_def and StackResolver._power_effect_is(hero_def, "heal_x_from_target"):
 		_set_status("Enter X resources to pay — Boris heals X from target hero or ally")
 	else:
 		_set_status("Enter X damage Dizdemona deals to herself and to target ally")

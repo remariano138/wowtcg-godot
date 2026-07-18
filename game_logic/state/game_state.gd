@@ -448,13 +448,17 @@ func get_current_hp(instance_id: String, db) -> int:
 	return max(get_max_hp(instance_id, db) - inst.damage_taken, 0)
 
 # Cost of playing a card from hand, after applying any cost-reduction buffs.
-func get_play_cost(instance_id: String, db) -> int:
+# For X-cost cards (Aimed Shot, cost "1+X") the announced X (action params
+# "x_value") must be passed in — the printed cost alone is cost_base.
+func get_play_cost(instance_id: String, db, x: int = 0) -> int:
 	var inst := get_card(instance_id)
 	if not inst:
 		return 0
 	var def: CardDef = db.get_def(inst.card_def_id)
 	if not def:
 		return 0
+	if def.cost_x:
+		return max(def.cost_base + x + inst.sum_stat("cost"), 0)
 	return max(def.cost + inst.sum_stat("cost"), 0)
 
 

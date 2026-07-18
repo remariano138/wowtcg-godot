@@ -208,7 +208,12 @@ func _ready() -> void:
 		_test_ophelia_barrows_gates_and_fizzle,
 		_test_fireball_attach_and_burn,
 		_test_world_in_flames_doubles_fire,
+		_test_chromatic_cloak_ability_bonus,
 		_test_ai_fireball_targets_hero_only,
+		_test_aimed_shot_x_cost,
+		_test_aimed_shot_retract_and_ai,
+		_test_spirit_bond_turn_start_heal,
+		_test_talent_deck_legality,
 	]
 
 	for t in tests:
@@ -608,6 +613,173 @@ func _test_ophelia_barrows_gates_and_fizzle() -> void:
 	ok("dead_ally" in st.zones["p2_hand"].card_ids, "oph-d: target stayed where it went")
 	ok(st.zones["p2_rfg"].card_ids.is_empty(), "oph-d2: nothing exiled")
 	eq(oph.damage_taken, 2, "oph-d3: no removal — no heal ('if you do')")
+
+
+# Aimed Shot (azeroth_32, "1+X", Ability — Marksmanship Talent): "Your hero
+# deals X ranged damage to target hero or ally." First X-cost hand card: the
+# announced x_value is both part of the cost (1+X, paid at submission) and the
+# damage dealt at resolution.
+func _aimed_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("aimed_def", 0, "deal_damage_to_target:X:ranged")
+	var ad := db._defs["aimed_def"] as CardDef
+	ad.cost = -1
+	ad.cost_x = true
+	ad.cost_base = 1
+	db.ally("bear_def", 1, 4, [], 2)
+	return db
+
+
+func _test_aimed_shot_x_cost() -> void:
+	_buf.append("\n-- Aimed Shot: 1+X cost, X damage --")
+	var db := _aimed_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 5)
+	var bear := _add_ally(st, "bear", "bear_def", "p2")
+	bear.just_summoned = false
+	_add_card_to_hand(st, "aimed", "aimed_def", "p1")
+
+	# X must be announced: no x_value (or 0) is not a legal submission.
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "aimed", "target_id": "bear"}), db),
+		"as-a: no announced X — rejected")
+	# Unaffordable X: 1+5 = 6 > 5 available.
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "aimed", "target_id": "bear", "x_value": 5}), db),
+		"as-a2: X=5 costs 6 with 5 available — rejected")
+
+	# X=3: total cost 4 paid at submission, 3 damage at resolution.
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "aimed", "target_id": "bear", "x_value": 3}), db)
+	eq(st.get_available_resources("p1"), 1, "as-b: paid 1+3 at submission")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(bear.damage_taken, 3, "as-b2: dealt X=3 ranged damage")
+	ok("aimed" in st.zones["p1_graveyard"].card_ids, "as-b3: card resolved to graveyard")
+
+
+func _test_aimed_shot_retract_and_ai() -> void:
+	_buf.append("\n-- Aimed Shot: retraction refunds 1+X; AI announces X --")
+	var db := _aimed_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 5)
+	var bear := _add_ally(st, "bear", "bear_def", "p2")
+	bear.just_summoned = false
+	_add_card_to_hand(st, "aimed", "aimed_def", "p1")
+
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "aimed", "target_id": "bear", "x_value": 2}), db)
+	eq(st.get_available_resources("p1"), 2, "ar-a: paid 1+2")
+	StackResolver.retract_last(st, "p1", db)
+	eq(st.get_available_resources("p1"), 5, "ar-a2: retraction refunded 1+X")
+	ok("aimed" in st.zones["p1_hand"].card_ids, "ar-a3: card back in hand")
+
+	# AI: enumerates the play with X announced — exactly the bear's HP (4)
+	# vs the ally, everything payable (4) vs the hero.
+	var ai := BaseAI.new()
+	var actions: Array = ai.get_legal_actions(st, db, "p1")
+	var ally_x := -1
+	var hero_x := -1
+	for a in actions:
+		if a.action_type == "play_ability" and a.params.get("card_id", "") == "aimed":
+			if a.params.get("target_id", "") == "bear":
+				ally_x = int(a.params.get("x_value", 0))
+			elif a.params.get("target_id", "") == "p2_hero":
+				hero_x = int(a.params.get("x_value", 0))
+	eq(ally_x, 4, "ar-b: AI announces X = ally HP vs the bear")
+	eq(hero_x, 4, "ar-b2: AI announces max affordable X vs the hero")
+
+
+# Spirit Bond (dark_portal_39, 1, Ability — Beast Mastery Talent): "Ongoing:
+# At the start of your turn, if you have a Pet, your hero heals 2 damage from
+# itself and each of your Pets."
+func _test_spirit_bond_turn_start_heal() -> void:
+	_buf.append("\n-- Spirit Bond: turn-start heal gated on a Pet --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("sbond_def", 1, "ongoing|turn_start_heal_hero_and_pets:2")
+	db.pet("wolf_def", 2, 5, [], 2)
+	db.ally("bear_def", 1, 4, [], 2)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var sb := CardInstance.create("sbond", "sbond_def", "p1", "p1_hero_row")
+	st.cards["sbond"] = sb
+	st.zones["p1_hero_row"].card_ids.append("sbond")
+	var wolf := _add_ally(st, "wolf", "wolf_def", "p1")
+	wolf.damage_taken = 3
+	var bear := _add_ally(st, "bear", "bear_def", "p1")
+	bear.damage_taken = 2
+	st.get_card("p1_hero").damage_taken = 4
+
+	# p1 action → end → p2's turn start: NOT p1's turn, no heal.
+	TurnManager.advance_phase(st, db)
+	TurnManager.advance_phase(st, db)
+	eq(st.turn_player, "p2", "sb-a: now p2's turn")
+	eq(st.get_card("p1_hero").damage_taken, 4, "sb-a2: no heal on opponent's turn")
+
+	# Drive to p1's next turn start: hero and the Pet heal 2, non-Pet doesn't.
+	while not (st.turn_player == "p1" and st.phase == "ready"):
+		TurnManager.advance_phase(st, db)
+	eq(st.get_card("p1_hero").damage_taken, 2, "sb-b: hero healed 2")
+	eq(wolf.damage_taken, 1, "sb-b2: Pet healed 2")
+	eq(bear.damage_taken, 2, "sb-b3: non-Pet ally not healed")
+
+	# No Pet in play → the trigger does nothing.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	var sb2 := CardInstance.create("sbond", "sbond_def", "p1", "p1_hero_row")
+	st2.cards["sbond"] = sb2
+	st2.zones["p1_hero_row"].card_ids.append("sbond")
+	st2.get_card("p1_hero").damage_taken = 4
+	while not (st2.turn_player == "p2"):
+		TurnManager.advance_phase(st2, db)
+	while not (st2.turn_player == "p1" and st2.phase == "ready"):
+		TurnManager.advance_phase(st2, db)
+	eq(st2.get_card("p1_hero").damage_taken, 4, "sb-c: no Pet — no heal")
+
+
+# Rule 100.2c: our heroes list no talent spec, so a deck may not mix Talent
+# cards of two different [Talent Spec]s. Non-Talent cards of any subtype are
+# unrestricted alongside a Talent.
+func _test_talent_deck_legality() -> void:
+	_buf.append("\n-- Deck legality: Talents of different specs can't mix (100.2c) --")
+	var db := MockDB.new()
+	db.hero("hero_def", 30)
+	db.ability("aimed_def", 1, "deal_damage_to_target:X:ranged")
+	(db._defs["aimed_def"] as CardDef).tags = "Marksmanship Talent"
+	db.ability("sbond_def", 1, "ongoing|turn_start_heal_hero_and_pets:2")
+	(db._defs["sbond_def"] as CardDef).tags = "Beast Mastery Talent"
+	db.instant("frost_def", 3, "deal_damage_to_target:3:frost")
+	(db._defs["frost_def"] as CardDef).tags = "Frost"   # non-Talent subtype
+	for i in range(14):
+		db.ally("filler_%d_def" % i, 1, 1, [], 1)
+
+	var deck := DeckDefinition.new()
+	deck.deck_id = "talent_test"
+	deck.hero_card_def_id = "hero_def"
+	for i in range(14):
+		deck.card_entries.append(DeckCardEntry.from_dict(
+			{"card_def_id": "filler_%d_def" % i, "count": 4}))
+	# 56 fillers + 4 Aimed Shot = 60, one Talent spec → legal.
+	deck.card_entries.append(DeckCardEntry.from_dict(
+		{"card_def_id": "aimed_def", "count": 4}))
+	eq(DeckManager.authorize_deck_def(deck, db).size(), 0,
+		"td-a: single-spec Talents are legal")
+
+	# Swap 2 fillers for a non-Talent ability of another school → still legal.
+	deck.card_entries[0] = DeckCardEntry.from_dict(
+		{"card_def_id": "frost_def", "count": 4})
+	eq(DeckManager.authorize_deck_def(deck, db).size(), 0,
+		"td-b: a Talent + non-Talent abilities of any subtype is legal")
+
+	# Add a second spec (Beast Mastery next to Marksmanship) → illegal.
+	deck.card_entries[1] = DeckCardEntry.from_dict(
+		{"card_def_id": "sbond_def", "count": 4})
+	var errors := DeckManager.authorize_deck_def(deck, db)
+	eq(errors.size(), 1, "td-c: mixed Talent specs rejected")
+	ok(errors.size() > 0 and "100.2c" in errors[0], "td-c2: error cites rule 100.2c")
 
 
 # ── Mock database ──────────────────────────────────────────────────────────────
@@ -11164,6 +11336,75 @@ func _test_world_in_flames_doubles_fire() -> void:
 	state.turn_player = "p1"
 	TurnManager._enter_ready(state, db)
 	eq(state.get_card("p2_hero").damage_taken, 17, "wif-g: turn-start burn 1→2 (17 total)")
+
+
+func _test_chromatic_cloak_ability_bonus() -> void:
+	_buf.append("\n-- Chromatic Cloak: hero ability damage +1 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("imp_def", 1, 2, [], 1)
+	db.equipment("azeroth_282", 4, "equipment:back:0|hero_ability_damage_bonus:1", "Cloth")
+	db.ability("azeroth_61", 8, "ongoing|hero_fire_damage_doubled")
+	db.ability("azeroth_53", 4, FIREBALL_FX)
+	db.instant("fireblast_def", 2, "deal_damage_to_target:2:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "imp", "imp_def", "p1")
+	_add_card_to_hand(state, "cloak", "azeroth_282", "p1")
+	_add_card_to_hand(state, "blast", "fireblast_def", "p1")
+	_add_card_to_hand(state, "blast2", "fireblast_def", "p1")
+	_add_card_to_hand(state, "wif", "azeroth_61", "p1")
+	_add_card_to_hand(state, "fb", "azeroth_53", "p1")
+	_add_resources(state, "p1", 25)
+
+	# Play the cloak — equipment, enters the hero row.
+	StackResolver.submit_action(state, PendingAction.make("play_equipment", "p1",
+		{"card_id": "cloak"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("cloak").zone_id, "p1_hero_row", "cc-a: cloak is in play")
+
+	# Fire Blast (2) → 3 on the enemy hero.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "blast", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 3, "cc-b: 2 ability damage → 3")
+
+	# Non-ability packets never get the bonus (hero powers / combat carry no tag).
+	eq(StackResolver._ability_bonus_amount(state, db,
+		{"source": "p1_hero", "amount": 2}), 2,
+		"cc-c: untagged hero packet unchanged")
+	# Non-hero sources never get it, even from an ability-shaped site.
+	eq(StackResolver._ability_bonus_amount(state, db,
+		{"source": "imp", "amount": 2, "from_ability": true}), 2,
+		"cc-d: ally-sourced damage unchanged")
+	# The OPPONENT's hero is unaffected by p1's cloak.
+	eq(StackResolver._ability_bonus_amount(state, db,
+		{"source": "p2_hero", "amount": 2, "from_ability": true}), 2,
+		"cc-e: opposing hero's ability damage unchanged")
+
+	# With World in Flames too: +1 applies BEFORE doubling → (2+1)*2 = 6.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "wif"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "blast2", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 9, "cc-f: (2+1)*2 = 6 (9 total)")
+
+	# Fireball is an ability: attach (4+1)*2 = 10, turn-start burn (1+1)*2 = 4.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "fb", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 19, "cc-g: Fireball attach (4+1)*2 (19 total)")
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 23, "cc-h: turn-start burn (1+1)*2 (23 total)")
 
 
 func _test_ai_fireball_targets_hero_only() -> void:

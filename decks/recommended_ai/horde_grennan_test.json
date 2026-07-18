@@ -90,8 +90,13 @@
     },
     {
       "card_def_id": "dark_portal_213",
-      "count": 4,
-      "_card_name": "Quardian Steppestrider"
+      "count": 3,
+      "_card_name": "Guardian Steppestrider"
+    },
+    {
+      "card_def_id": "azeroth_282",
+      "count": 1,
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_106",

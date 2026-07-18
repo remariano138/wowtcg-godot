@@ -38,7 +38,8 @@ static func submit_action(state: GameState, action: PendingAction,
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":
 				events.append_array(GameLogic.move_card(state, card_id, "chain"))
-				events.append_array(_pay_cost(state, card_id, action.source_player, db))
+				events.append_array(_pay_cost(state, card_id, action.source_player, db,
+					int(action.params.get("x_value", 0))))
 				# Stat tracking: a card was played from hand (excludes resources,
 				# which are a separate branch below). See StatTracker.
 				events.append(GameEvent.card_played(action.source_player, card_id))
@@ -403,7 +404,7 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 	if card.controller != action.source_player:
 		return false
 	# Instants can be played any time you have priority (409.1 / 410.2).
-	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
+	if db and not _can_afford_play(state, action, card_id, db):
 		return false
 	# Validate target for targeted effects.
 	if db:
@@ -452,7 +453,7 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		if state.combat_attack_window or state.combat_defend_window: return false
 		if state.turn_player != action.source_player: return false
 		if not state.pending_actions.is_empty(): return false
-	if db and state.get_play_cost(card_id, db) > state.get_available_resources(action.source_player):
+	if db and not _can_afford_play(state, action, card_id, db):
 		return false
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
@@ -496,7 +497,9 @@ static func can_play_ability_no_target_check(state: GameState,
 		if not state.pending_actions.is_empty(): return false
 	else:
 		if state.priority_player != player_id: return false
-	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
+	# X-cost cards probe at the minimum announceable X (1).
+	var probe_x := 1 if play_def and play_def.cost_x else 0
+	if db and state.get_play_cost(card_id, db, probe_x) > state.get_available_resources(player_id):
 		return false
 	if db and play_def and not _targeted_play_has_legal_target(state, play_def, db):
 		return false
@@ -520,13 +523,29 @@ static func can_play_instant_no_target_check(state: GameState,
 	var zone := state.zones.get(card.zone_id) as Zone
 	if not zone or zone.zone_type != "hand": return false
 	if card.controller != player_id: return false
-	if db and state.get_play_cost(card_id, db) > state.get_available_resources(player_id):
-		return false
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
+		# X-cost cards probe at the minimum announceable X (1).
+		var probe_x := 1 if def and def.cost_x else 0
+		if state.get_play_cost(card_id, db, probe_x) > state.get_available_resources(player_id):
+			return false
 		if def and not _targeted_play_has_legal_target(state, def, db):
 			return false
 	return true
+
+
+# Cost affordability for a play_* submission (rule 412.2). X-cost cards
+# (CardDef.cost_x — Aimed Shot "1+X") must announce "x_value" >= 1 with the
+# play; the total cost is cost_base + X.
+static func _can_afford_play(state: GameState, action: PendingAction,
+		card_id: String, db) -> bool:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	var x := int(action.params.get("x_value", 0))
+	if def and def.cost_x and x < 1:
+		return false
+	return state.get_play_cost(card_id, db, x) \
+			<= state.get_available_resources(action.source_player)
 
 
 # A card that targets can't be announced without at least one legal target
@@ -1185,6 +1204,7 @@ static func _resolve_play_ongoing_ability(state: GameState,
 							"source": hero_id, "target": target_id,
 							"amount": amount,
 							"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+							"from_ability": true,
 						}]))
 	# Rule 305.2c: any other non-attaching ongoing ability enters play in its
 	# controller's hero row and remains there (providing its continuous
@@ -1265,6 +1285,7 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 					"source": att_hero.instance_id, "target": target_id,
 					"amount": dmg_amt,
 					"dmg_type": dp[2].to_lower().strip_edges() if dp.size() > 2 else "",
+					"from_ability": true,
 				}]))
 	return events
 
@@ -1349,7 +1370,13 @@ static func _resolve_play_instant(state: GameState,
 						# source per the card text, not this ability card. If the target
 						# left play before resolution, the damage fizzles (711.1) and the
 						# card still goes to the graveyard below.
-						var amount := int(parts[1]) if parts.size() > 1 else 0
+						# AMOUNT literal "X" (Aimed Shot, cost 1+X): the announced
+						# x_value paid at submission is the damage dealt.
+						var amount: int
+						if parts.size() > 1 and parts[1].strip_edges() == "X":
+							amount = int(action.params.get("x_value", 0))
+						else:
+							amount = int(parts[1]) if parts.size() > 1 else 0
 						var ps := state.players.get(action.source_player) as PlayerState
 						var hero_id: String = ps.hero_instance_id if ps else ""
 						if hero_id != "" and amount > 0 \
@@ -1367,6 +1394,7 @@ static func _resolve_play_instant(state: GameState,
 								"drain_heal_to": hero_id,
 								"discard_per": _discard_per_damage(def),
 								"riders": parts[3] if parts.size() > 3 else "",
+								"from_ability": true,
 							}]))
 					"chain_lightning":
 						# "Your hero deals A1 <type> damage to target hero or ally. Your
@@ -1397,7 +1425,8 @@ static func _resolve_play_instant(state: GameState,
 										or not _is_legal_target(state, cl_target_id, db, i > 0):
 									continue
 								cl_packets.append({"source": cl_hero_id,
-									"target": cl_target_id, "amount": cl_amount})
+									"target": cl_target_id, "amount": cl_amount,
+									"from_ability": true})
 							# Packet pipeline: waves land in printed order with their
 							# own destroy check; a target killed by an earlier wave
 							# is skipped at land time (711.1).
@@ -1421,7 +1450,8 @@ static func _resolve_play_instant(state: GameState,
 								if not _is_legal_target(state, ms_target_id, db, true):
 									continue
 								ms_packets.append({"source": ms_hero_id,
-									"target": ms_target_id, "amount": ms_amount})
+									"target": ms_target_id, "amount": ms_amount,
+									"from_ability": true})
 							events.append_array(defer_packets(state, db, ms_packets))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
@@ -1447,7 +1477,8 @@ static func _resolve_play_instant(state: GameState,
 							for t_id in opp_targets:
 								aoe_packets.append({"source": hero_id2,
 									"target": t_id, "amount": aoe_amount,
-									"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else ""})
+									"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+									"from_ability": true})
 							events.append_array(defer_packets(state, db, aoe_packets))
 	# Move used instant to its owner's graveyard (card is currently in chain zone).
 	var card2 := state.get_card(card_id)
@@ -1482,11 +1513,12 @@ static func _resolve_place_resource(state: GameState,
 
 # Exhaust resources to pay a card's play cost (rule 412.2).
 # Auto-selects ready resources; face-up/face-down both valid.
+# x = announced X for X-cost cards (0 otherwise).
 static func _pay_cost(state: GameState, card_id: String,
-		player_id: String, db) -> Array[GameEvent]:
+		player_id: String, db, x: int = 0) -> Array[GameEvent]:
 	if not db:
 		return []
-	var cost: int = state.get_play_cost(card_id, db)
+	var cost: int = state.get_play_cost(card_id, db, x)
 	if cost <= 0:
 		return []
 	var events: Array[GameEvent] = []
@@ -1761,10 +1793,14 @@ static func _combat_prevention_offers(state: GameState, db) -> Array:
 # secondary kills don't chain further on_destroyed effects).
 static func defer_packets(state: GameState, db, packets: Array,
 		after: String = "", recursive_destroy: bool = true) -> Array[GameEvent]:
-	# World in Flames (717-style replacement): applied as the packets enter the
-	# pipeline, so prevention offers and per-damage riders (discard_per, drain
-	# heal) all see the doubled amount.
+	# World in Flames / Chromatic Cloak (717-style replacements): applied as the
+	# packets enter the pipeline, so prevention offers and per-damage riders
+	# (discard_per, drain heal) all see the modified amount. Cloak's +1 applies
+	# BEFORE the doubling — with both in play the controller would pick that
+	# order anyway ((X+1)*2 > X*2+1); see data/rules_deviations.md
+	# "Replacement-effect order".
 	for p in packets:
+		p["amount"] = _ability_bonus_amount(state, db, p)
 		p["amount"] = _fire_doubled_amount(state, db, p)
 	state.pending_prevention_deferred.append({
 		"packets": packets, "after": after,
@@ -1802,6 +1838,31 @@ static func _fire_doubled_amount(state: GameState, db, p: Dictionary) -> int:
 		for seg in def.effects.split("|"):
 			if seg.strip_edges() == "hero_fire_damage_doubled":
 				amount *= 2
+	return amount
+
+
+# Chromatic Cloak (azeroth_282): "If your hero would deal damage with an
+# ability, it deals that amount of damage plus 1 instead." Only packets tagged
+# `from_ability` qualify — the ability-resolution packet sites (instants,
+# ongoing-ability on-play damage, attachments incl. Fireball's turn-start burn)
+# set the flag; hero POWERS, ally powers, totems, and combat damage never do.
+# Live scan of the source hero's controller's in-play cards; +1 per copy.
+static func _ability_bonus_amount(state: GameState, db, p: Dictionary) -> int:
+	var amount := int(p.get("amount", 0))
+	if amount <= 0 or db == null or not p.get("from_ability", false):
+		return amount
+	var source_id := str(p.get("source", ""))
+	if not _is_hero(state, source_id):
+		return amount
+	var controller: String = state.get_card(source_id).controller
+	for card in state.cards_in_play(controller):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.effects == "":
+			continue
+		for seg in def.effects.split("|"):
+			var parts := seg.strip_edges().split(":")
+			if parts[0].strip_edges() == "hero_ability_damage_bonus":
+				amount += int(parts[1]) if parts.size() > 1 else 1
 	return amount
 
 
@@ -3800,7 +3861,7 @@ static func retract_last(state: GameState, player_id: String,
 					events.append_array(GameLogic.ready_card(state, res_card.instance_id))
 					ap_cost2 -= 1
 	if top.action_type in ["play_ally", "play_instant", "play_ability"] and db and card_id != "":
-		var cost: int = state.get_play_cost(card_id, db)
+		var cost: int = state.get_play_cost(card_id, db, int(top.params.get("x_value", 0)))
 		for res_card in state.cards_in_zone(player_id + "_resource_row"):
 			if cost <= 0:
 				break

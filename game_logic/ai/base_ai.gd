@@ -2447,9 +2447,22 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 				result.append(d_act)
 		return result
 
+	# X-cost spell (Aimed Shot, "1+X" — deal X damage): announce X with the
+	# play. vs an ally: X = exactly its HP (kill for the least); vs the hero:
+	# X = everything we can pay. max_x <= 0 → unaffordable, no actions.
+	var max_x := 0
+	if spell_def and spell_def.cost_x:
+		max_x = state.get_available_resources(player_id) \
+			- state.get_play_cost(card_id, db, 0)
+
 	for ally in state.cards_in_zone(opp + "_ally_row"):
-		var act := PendingAction.make(action_type, player_id,
-			{"card_id": card_id, "target_id": ally.instance_id})
+		var params := {"card_id": card_id, "target_id": ally.instance_id}
+		if spell_def and spell_def.cost_x:
+			var x: int = min(max_x, state.get_current_hp(ally.instance_id, db))
+			if x < 1:
+				continue
+			params["x_value"] = x
+		var act := PendingAction.make(action_type, player_id, params)
 		if not StackResolver.can_submit(state, act, db):
 			continue
 		if spell_def and _effect_is_destroy_ally(spell_def) \
@@ -2460,8 +2473,12 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 	if spell_def and not _effect_is_destroy_ally(spell_def):
 		var ps_opp := state.players.get(opp) as PlayerState
 		if ps_opp and ps_opp.hero_instance_id != "":
-			var act := PendingAction.make(action_type, player_id,
-				{"card_id": card_id, "target_id": ps_opp.hero_instance_id})
+			var params := {"card_id": card_id, "target_id": ps_opp.hero_instance_id}
+			if spell_def and spell_def.cost_x:
+				if max_x < 1:
+					return result
+				params["x_value"] = max_x
+			var act := PendingAction.make(action_type, player_id, params)
 			if StackResolver.can_submit(state, act, db):
 				result.append(act)
 	return result

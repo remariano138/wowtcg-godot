@@ -111,6 +111,12 @@ static func move_card_silent(state: GameState, card_id: String, to_zone_id: Stri
 # Does NOT destroy the card — call check_destroyed afterwards when ready.
 # This keeps damage and destruction as separate steps, which is required for
 # simultaneous combat (both hits land before either fatality is checked).
+#
+# INVARIANT: effect resolutions never call this directly — they hand packets to
+# StackResolver.defer_packets (the prevention pipeline, rule 717.2c), which is
+# what makes every new damage effect armor-preventable by construction. The
+# only sanctioned direct callers are the pipeline itself (_apply_packet_group)
+# and _do_combat_conclusion (combat runs its own prevention point first).
 static func deal_damage(state: GameState, source_id: String, target_id: String,
 		amount: int, db) -> Array[GameEvent]:
 	if amount <= 0:
@@ -122,9 +128,10 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 
 	var events: Array[GameEvent] = []
 
-	# Rule 304.3: exhausted armor prevents damage dealt to the controller's HERO.
-	# The prevention pool (PlayerState.damage_prevention) was built up in advance
-	# via use_armor_prevention; consume it before any damage is placed.
+	# Rule 717.2c: exhausted armor prevents damage dealt to the controller's HERO.
+	# The prevention pool (PlayerState.damage_prevention) is built at the
+	# prevention point (StackResolver.choose_prevention) opened right before
+	# this packet; consume it before any damage is placed.
 	var target_ps := state.players.get(target.controller) as PlayerState
 	if target_ps and target_ps.hero_instance_id == target_id \
 			and target_ps.damage_prevention > 0:

@@ -59,12 +59,6 @@ static func submit_action(state: GameState, action: PendingAction,
 					var def := db.get_def(q_card.card_def_id) as CardDef
 					if def:
 						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0) as int))
-		"use_armor_prevention":
-			# Cost is exhausting the armor — paid at submission (rule 304.3),
-			# so the same armor can't be committed twice while on the chain.
-			var armor_id: String = action.params.get("card_id", "")
-			if armor_id != "":
-				events.append_array(GameLogic.exhaust_card(state, armor_id))
 		"use_ally_power":
 			# Pay the ally power's resource cost at submission time, same as play_ally.
 			var ap_card_id: String = action.params.get("card_id", "")
@@ -142,6 +136,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_whelp_bounce() before priority can move.
 	if state.pending_whelp_bounce_player != "":
 		return []
+	# A pending Form pay-return decision must be resolved via
+	# choose_form_return() before priority can move.
+	if state.pending_form_return_player != "":
+		return []
 	# A pending Totem start-of-turn target choice (Searing Totem) must be resolved
 	# via choose_totem_target() before priority can move.
 	if state.pending_totem_target_player != "":
@@ -149,6 +147,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# A pending death-triggered target choice (Boneshanks) must be resolved via
 	# choose_death_target() before priority can move.
 	if state.pending_death_target_player != "":
+		return []
+	# A pending armor-prevention decision (717.2c) must be resolved via
+	# choose_prevention() before priority can move.
+	if state.pending_prevention_player != "":
 		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
@@ -170,6 +172,13 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 				return events
 			if state.combat_defend_window:
 				state.combat_defend_window = false
+				# Rule 717.2c: as the combat damage packets would land, each hero's
+				# controller may exhaust DEF armor first. The conclusion runs from
+				# choose_prevention once every armor decision is made.
+				var prevention := _combat_prevention_offers(state, db)
+				if not prevention.is_empty():
+					events.append_array(_open_prevention(state, prevention, "combat"))
+					return events
 				events.append_array(_do_combat_conclusion(state, db))
 				return events
 			# Rule 410.4b: chain empty → window closes, phase advances.
@@ -180,6 +189,9 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 			return events
 
 		# Rule 410.4a: topmost link resolves; turn player gets priority.
+		# Damage inside the resolution goes through the packet pipeline
+		# (defer_packets) — a preventable hero packet opens the prevention
+		# point mid-resolution and the packets land from choose_prevention.
 		var top: PendingAction = state.pending_actions.pop_back()
 		state.consecutive_passes = 0
 		# PPP stub: in a future phase, run pre-priority checks (410.5) here
@@ -211,14 +223,10 @@ static func can_submit(state: GameState, action: PendingAction,
 	if action.source_player != state.priority_player:
 		return false
 
-	# Pending enters-play target choice blocks everything except resolving it —
-	# but once the choice is announced (sitting on the chain), armor block is a
-	# legal response to the incoming damage (rule 304.3).
+	# Pending enters-play target choice blocks everything except resolving it.
 	if not state.pending_enter_play_effect.is_empty() \
 			and action.action_type != "choose_enter_play_target":
-		if not (action.action_type == "use_armor_prevention"
-				and _enter_play_choice_on_chain(state)):
-			return false
+		return false
 
 	# Pet uniqueness violation blocks everything until resolved via choose_pet_sacrifice().
 	if state.pending_pet_sacrifice_player != "":
@@ -232,6 +240,15 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Name-based (Unique tag) uniqueness violation blocks everything until resolved
 	# via choose_unique_sacrifice().
 	if state.pending_unique_sacrifice_player != "":
+		return false
+
+	# Form (1) tag-count uniqueness violation blocks everything until resolved via
+	# choose_form_sacrifice().
+	if state.pending_form_sacrifice_player != "":
+		return false
+
+	# Form pay-return choice blocks everything until resolved via choose_form_return().
+	if state.pending_form_return_player != "":
 		return false
 
 	# Infernal-style discard-or-give-control choice blocks everything until
@@ -273,6 +290,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_death_target_player != "":
 		return false
 
+	# Armor prevention point (717.2c) blocks everything until resolved via
+	# choose_prevention().
+	if state.pending_prevention_player != "":
+		return false
+
 	match action.action_type:
 		"play_ally":
 			return _can_play_non_instant(state, action, db)
@@ -292,8 +314,6 @@ static func can_submit(state: GameState, action: PendingAction,
 			return _can_activate_power(state, action, db)
 		"use_ally_power":
 			return _can_use_ally_power(state, action, db)
-		"use_armor_prevention":
-			return _can_use_armor_prevention(state, action, db)
 		"choose_enter_play_target":
 			return _can_choose_enter_play_target(state, action, db)
 
@@ -493,6 +513,8 @@ static func can_play_instant_no_target_check(state: GameState,
 	if state.pending_pet_sacrifice_player != "": return false
 	if state.pending_equip_sacrifice_player != "": return false
 	if state.pending_unique_sacrifice_player != "": return false
+	if state.pending_form_sacrifice_player != "": return false
+	if state.pending_form_return_player != "": return false
 	var card := state.get_card(card_id)
 	if not card: return false
 	var zone := state.zones.get(card.zone_id) as Zone
@@ -874,8 +896,6 @@ static func _resolve(state: GameState, action: PendingAction,
 			return _resolve_activate_power(state, action, db)
 		"use_ally_power":
 			return _resolve_use_ally_power(state, action, db)
-		"use_armor_prevention":
-			return _resolve_use_armor_prevention(state, action, db)
 		"choose_enter_play_target":
 			return _resolve_choose_enter_play_target(state, action, db)
 
@@ -979,12 +999,14 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 					if not state.is_in_play(card_id):
 						break   # entering ally already destroyed by an earlier watcher
 					# wp[2] is the damage type (ranged) — flavor only; deal_damage
-					# doesn't track a combat/effect damage type.
+					# doesn't track a combat/effect damage type. Packet pipeline
+					# (the target is always an ally, so no prevention point opens,
+					# but the invariant holds: effects never deal directly).
 					var amt := int(wp[1]) if wp.size() > 1 else 1
-					events.append_array(GameLogic.deal_damage(
-						state, watcher.instance_id, card_id, amt, db))
-					events.append_array(_check_destroyed_trigger(
-						state, card_id, watcher.instance_id, db))
+					events.append_array(defer_packets(state, db, [{
+						"source": watcher.instance_id, "target": card_id,
+						"amount": amt,
+					}]))
 
 	# Check pet uniqueness (414.3b) — must happen after the card is in play.
 	events.append_array(_check_pet_uniqueness(state, card_id, db))
@@ -1048,6 +1070,45 @@ static func is_ongoing_def(def: CardDef) -> bool:
 	return false
 
 
+# ── Forms (rule 414.3b tag-count uniqueness + glossary Bear/Cat Form) ─────────
+#
+# A Form is an ongoing Ability with a `form:N` effects segment (the "Form (N)"
+# type-line tag — all current Forms are Form (1)). A player may control at most
+# N in-play cards with the tag; violations mirror the Pet/Unique sacrifice flow.
+# Druid Feral Forms also carry `form_break:TAG` — "Destroy this card when you
+# strike with a weapon or play a non-TAG ability." (Bear/Cat form: TAG = Feral;
+# a future Moonkin Form would use form_break:Balance. Shadowform's inverted
+# "when you play a Holy ability" condition would need a new form_break_on:TAG
+# segment — not implemented yet.) Travel Form would carry `form:1` alone.
+# The form's own contribution (Bear form's `hero_has_protector`, Cat form's
+# `hero_atk_while_attacking:1`) is a separate live-read segment.
+
+# `form:N` → N; -1 when the def carries no Form tag.
+static func form_slot_count(def: CardDef) -> int:
+	if not def:
+		return -1
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0] == "form":
+			return int(p[1]) if p.size() > 1 else 1
+	return -1
+
+
+static func is_form_def(def: CardDef) -> bool:
+	return form_slot_count(def) >= 0
+
+
+# `form_break:TAG` → TAG; "" when the def has no break condition (Travel Form).
+static func form_break_tag(def: CardDef) -> String:
+	if not def:
+		return ""
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0] == "form_break" and p.size() > 1:
+			return p[1].strip_edges()
+	return ""
+
+
 # Rule 305.3: a Totem is an ability ally that enters the ally_row, can't be
 # proposed as an attacker, and can be attacked/targeted like an ally. We tag it
 # with a "totem[:element]" segment in the effects string.
@@ -1080,10 +1141,16 @@ static func _resolve_play_ongoing_ability(state: GameState,
 
 	var events: Array[GameEvent] = []
 	var def := db.get_def(card.card_def_id) as CardDef if db else null
+	# Forms: "Destroy this card when you … play a non-Feral ability." Checked
+	# up front so every ongoing route (attachment, totem, hero-row) is covered.
+	# The played card is still on the chain (not hero_row), and a played Form's
+	# own tag matches its break tag anyway — it never breaks itself.
+	events.append_array(_check_form_break_ability(state, card.controller, def, db))
 	# Rule 400.2: a targeted attachment resolves by entering play attached to
 	# its announced target.
 	if def and is_attachment_def(def):
-		return _resolve_attach(state, action, card, def, db)
+		events.append_array(_resolve_attach(state, action, card, def, db))
+		return events
 	# Rule 305.3: a Totem is an ability ALLY — it enters the controller's ally_row
 	# (so it can be attacked/targeted like an ally), not the hero row. It carries
 	# summoning sickness like any other ally (irrelevant to attacking — totems
@@ -1092,12 +1159,61 @@ static func _resolve_play_ongoing_ability(state: GameState,
 		events.append_array(GameLogic.move_card(state, card_id, card.controller + "_ally_row"))
 		card.just_summoned = true
 		return events
+	# On-play effect segments resolved in printed order BEFORE the ongoing part
+	# settles into play (Bash: "Exhaust target hero or ally." / Claw: "Your hero
+	# deals 3 melee damage to target hero or ally." — then "Ongoing: …").
+	var target_id: String = action.params.get("target_id", "")
+	if def and def.effects != "":
+		for entry in def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			match parts[0].strip_edges():
+				"exhaust_target":
+					# 706 re-check at resolution; exhaust_card no-ops when the
+					# target is already exhausted. Aimed at a proposed attacker
+					# on the chain, the 601.3 recheck then fizzles the proposal.
+					if _exhaust_target_ok(state, parts, target_id, db):
+						events.append_array(GameLogic.exhaust_card(state, target_id))
+				"deal_damage_to_target":
+					# Same semantics as the play_instant branch: the HERO is the
+					# damage source, packets go through the prevention pipeline.
+					var amount := int(parts[1]) if parts.size() > 1 else 0
+					var ps := state.players.get(action.source_player) as PlayerState
+					var hero_id: String = ps.hero_instance_id if ps else ""
+					if hero_id != "" and amount > 0 \
+							and _is_legal_target(state, target_id, db):
+						events.append_array(defer_packets(state, db, [{
+							"source": hero_id, "target": target_id,
+							"amount": amount,
+							"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+						}]))
 	# Rule 305.2c: any other non-attaching ongoing ability enters play in its
 	# controller's hero row and remains there (providing its continuous
 	# effect) until removed from play — it does not resolve-and-graveyard
 	# like a non-ongoing ability.
 	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
+	# Form (1) tag-count uniqueness (414.3b) — after the card is in play.
+	events.append_array(_check_form_uniqueness(state, card_id, db))
 	return events
+
+
+# Resolution-side target check for exhaust_target: `exhaust_target:ally`
+# (Exhaustion) accepts allies only; `exhaust_target:hero_or_ally` (Bash) also
+# accepts heroes. Both re-check 706 legality.
+static func _exhaust_target_ok(state: GameState, parts: PackedStringArray,
+		target_id: String, db) -> bool:
+	if not _is_legal_target(state, target_id, db):
+		return false
+	if parts.size() > 1 and parts[1] == "hero_or_ally":
+		return _is_ally(state, target_id) or _is_hero(state, target_id)
+	return _is_ally(state, target_id)
+
+
+static func _is_hero(state: GameState, card_id: String) -> bool:
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id == card_id:
+			return true
+	return false
 
 
 # Rule 400.2 / 707.1d: a targeted attachment enters play attached to its
@@ -1114,6 +1230,8 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 	var target_ok := _is_legal_target(state, target_id, db)
 	if target_ok and parts.size() > 1 and parts[1] == "ally":
 		target_ok = _is_ally(state, target_id)
+	elif target_ok and parts.size() > 1 and parts[1] == "hero_or_ally":
+		target_ok = _is_hero_or_ally(state, target_id, db)
 	if not target_ok:
 		events.append(GameEvent.make("action_fizzled", {
 			"action_type": "play_ability", "reason": "attach_target_gone",
@@ -1131,6 +1249,23 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 	# is part of the attach resolution, not a separate link.
 	if "exhaust_it" in parts:
 		events.append_array(GameLogic.exhaust_card(state, target_id))
+	# Fireball: "Attach to target hero or ally, and your hero deals 4 fire
+	# damage to it." The damage is part of the attach resolution, dealt by the
+	# controller's HERO to the fresh host (packet pipeline — armor-preventable,
+	# and fire-typed so World in Flames doubling applies). If it kills an ally
+	# host, the attachment dies with it (400.5) inside the packet group's
+	# destroy check.
+	for seg in def.effects.split("|"):
+		var dp := seg.strip_edges().split(":")
+		if dp[0] == "attach_deal_damage":
+			var dmg_amt := int(dp[1]) if dp.size() > 1 else 0
+			var att_hero := state.get_hero(card.controller)
+			if att_hero and dmg_amt > 0:
+				events.append_array(defer_packets(state, db, [{
+					"source": att_hero.instance_id, "target": target_id,
+					"amount": dmg_amt,
+					"dmg_type": dp[2].to_lower().strip_edges() if dp.size() > 2 else "",
+				}]))
 	return events
 
 
@@ -1176,13 +1311,13 @@ static func _resolve_play_instant(state: GameState,
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
 					"exhaust_target":
-						# "Exhaust target ally." (Exhaustion). Re-check at resolution
-						# (706): fizzles if the ally left play / became Untargetable.
+						# "Exhaust target ally." (Exhaustion) or "Exhaust target hero
+						# or ally." (hero_or_ally variant). Re-check at resolution
+						# (706): fizzles if the target left play / became Untargetable.
 						# exhaust_card no-ops if it's already exhausted. Played in
 						# response to a combat proposal and aimed at the attacker, the
 						# 601.3 recheck then fizzles the proposal (attacker not ready).
-						if _is_legal_target(state, target_id, db) \
-								and _is_ally(state, target_id):
+						if _exhaust_target_ok(state, parts, target_id, db):
 							events.append_array(GameLogic.exhaust_card(state, target_id))
 					"return_to_hand":
 						# "Put target ally into its owner's hand." (Withdraw).
@@ -1219,44 +1354,20 @@ static func _resolve_play_instant(state: GameState,
 						var hero_id: String = ps.hero_instance_id if ps else ""
 						if hero_id != "" and amount > 0 \
 								and _is_legal_target(state, target_id, db):
-							var dmg_events := GameLogic.deal_damage(
-								state, hero_id, target_id, amount, db)
-							events.append_array(dmg_events)
-							# Paired drain_heal_per_damage:N segment (Steal Essence):
-							# "heals N damage from itself for each damage dealt."
-							# Dealt = damage actually PLACED (armor prevention and
-							# 405.3 excess-beyond-fatal reduce it), read from the
-							# damage_dealt events just produced.
-							var heal_per := _drain_heal_per_damage(def)
-							if heal_per > 0:
-								var dealt := 0
-								for de in dmg_events:
-									if (de as GameEvent).event_type == "damage_dealt":
-										dealt += int((de as GameEvent).payload.get("amount", 0))
-								if dealt > 0:
-									events.append_array(GameLogic.heal(
-										state, hero_id, dealt * heal_per, db, card_id))
-							# Paired discard_per_damage:N segment (Mind Spike/Blast): the damaged
-							# character's controller discards N cards per damage actually dealt.
-							events.append_array(_apply_discard_per_damage(
-								state, target_id, dmg_events, _discard_per_damage(def)))
-							var t_card := state.get_card(target_id)
-							if t_card and state.get_current_hp(target_id, db) <= 0:
-								var t_zone := state.zones.get(t_card.zone_id) as Zone
-								if t_zone and t_zone.zone_type == "hero_row":
-									events.append(GameEvent.game_over(
-										_other_player(state, t_card.controller), t_card.controller))
-								else:
-									events.append_array(
-										_check_destroyed_trigger(state, target_id, hero_id, db))
-							else:
-								# Optional 4th field: restriction(s) applied to a character
-								# "dealt damage this way" that survives — Frostbolt
-								# (cannot_attack), Frost Shock (cannot_attack+cannot_protect).
-								# Restrictions last until end of the current turn (turns:1).
-								if parts.size() > 3 and state.is_in_play(target_id):
-									events.append_array(_apply_damage_riders(
-										state, target_id, hero_id, parts[3]))
+							# Packet pipeline (717.2c): the paired riders — drain
+							# heal (Steal Essence), discard-per-damage (Mind
+							# Spike/Blast), restriction riders (Frostbolt / Frost
+							# Shock) — travel WITH the packet so they run after the
+							# prevention point, reading the damage actually dealt.
+							events.append_array(defer_packets(state, db, [{
+								"source": hero_id, "target": target_id,
+								"amount": amount,
+								"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+								"drain_heal_per": _drain_heal_per_damage(def),
+								"drain_heal_to": hero_id,
+								"discard_per": _discard_per_damage(def),
+								"riders": parts[3] if parts.size() > 3 else "",
+							}]))
 					"chain_lightning":
 						# "Your hero deals A1 <type> damage to target hero or ally. Your
 						# hero may deal A2 <type> damage to another hero or ally. Your
@@ -1275,6 +1386,7 @@ static func _resolve_play_instant(state: GameState,
 						var cl_hero_id: String = cl_ps.hero_instance_id if cl_ps else ""
 						var cl_targets := _chain_lightning_targets(action)
 						if cl_hero_id != "":
+							var cl_packets: Array = []
 							for i in cl_targets.size():
 								var cl_target_id: String = cl_targets[i]
 								var cl_amount: int = cl_amounts[i] if i < cl_amounts.size() else 0
@@ -1284,17 +1396,12 @@ static func _resolve_play_instant(state: GameState,
 								if cl_amount <= 0 \
 										or not _is_legal_target(state, cl_target_id, db, i > 0):
 									continue
-								events.append_array(GameLogic.deal_damage(
-									state, cl_hero_id, cl_target_id, cl_amount, db))
-								var cl_t_card := state.get_card(cl_target_id)
-								if cl_t_card and state.get_current_hp(cl_target_id, db) <= 0:
-									var cl_t_zone := state.zones.get(cl_t_card.zone_id) as Zone
-									if cl_t_zone and cl_t_zone.zone_type == "hero_row":
-										events.append(GameEvent.game_over(
-											_other_player(state, cl_t_card.controller), cl_t_card.controller))
-									else:
-										events.append_array(_check_destroyed_trigger(
-											state, cl_target_id, cl_hero_id, db))
+								cl_packets.append({"source": cl_hero_id,
+									"target": cl_target_id, "amount": cl_amount})
+							# Packet pipeline: waves land in printed order with their
+							# own destroy check; a target killed by an earlier wave
+							# is skipped at land time (711.1).
+							events.append_array(defer_packets(state, db, cl_packets))
 					"multi_shot":
 						# "Your hero deals N ranged damage to each of up to three
 						# target heroes and/or allies." (Multi-Shot). Recipe
@@ -1309,20 +1416,13 @@ static func _resolve_play_instant(state: GameState,
 						var ms_hero_id: String = ms_ps.hero_instance_id if ms_ps else ""
 						var ms_targets := _chain_lightning_targets(action)
 						if ms_hero_id != "" and ms_amount > 0:
+							var ms_packets: Array = []
 							for ms_target_id in ms_targets:
 								if not _is_legal_target(state, ms_target_id, db, true):
 									continue
-								events.append_array(GameLogic.deal_damage(
-									state, ms_hero_id, ms_target_id, ms_amount, db))
-								var ms_t_card := state.get_card(ms_target_id)
-								if ms_t_card and state.get_current_hp(ms_target_id, db) <= 0:
-									var ms_t_zone := state.zones.get(ms_t_card.zone_id) as Zone
-									if ms_t_zone and ms_t_zone.zone_type == "hero_row":
-										events.append(GameEvent.game_over(
-											_other_player(state, ms_t_card.controller), ms_t_card.controller))
-									else:
-										events.append_array(_check_destroyed_trigger(
-											state, ms_target_id, ms_hero_id, db))
+								ms_packets.append({"source": ms_hero_id,
+									"target": ms_target_id, "amount": ms_amount})
+							events.append_array(defer_packets(state, db, ms_packets))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
@@ -1343,22 +1443,22 @@ static func _resolve_play_instant(state: GameState,
 						for opp_ally in state.cards_in_zone(opp2 + "_ally_row"):
 							opp_targets.append(opp_ally.instance_id)
 						if hero_id2 != "" and aoe_amount > 0:
+							var aoe_packets: Array = []
 							for t_id in opp_targets:
-								events.append_array(GameLogic.deal_damage(
-									state, hero_id2, t_id, aoe_amount, db))
-								var t_card2 := state.get_card(t_id)
-								if t_card2 and state.get_current_hp(t_id, db) <= 0:
-									var t_zone2 := state.zones.get(t_card2.zone_id) as Zone
-									if t_zone2 and t_zone2.zone_type == "hero_row":
-										events.append(GameEvent.game_over(
-											_other_player(state, t_card2.controller), t_card2.controller))
-									else:
-										events.append_array(
-											_check_destroyed_trigger(state, t_id, hero_id2, db))
+								aoe_packets.append({"source": hero_id2,
+									"target": t_id, "amount": aoe_amount,
+									"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else ""})
+							events.append_array(defer_packets(state, db, aoe_packets))
 	# Move used instant to its owner's graveyard (card is currently in chain zone).
 	var card2 := state.get_card(card_id)
 	if card2:
 		events.append_array(GameLogic.move_card(state, card_id, card2.owner + "_graveyard"))
+	# Forms: "Destroy this card when you … play a non-Feral ability." Every card
+	# resolved here is an Ability (instant or not), so playing it may break the
+	# player's in-play Form(s) — checked by tag (see _check_form_break_ability).
+	if db and card2:
+		var played_def := db.get_def(card2.card_def_id) as CardDef
+		events.append_array(_check_form_break_ability(state, action.source_player, played_def, db))
 	return events
 
 
@@ -1561,6 +1661,9 @@ static func choose_strike(state: GameState, weapon_id: String,
 			struck.append(weapon_id)
 			state.combat_struck_weapons[wielder_id] = struck
 			events.append(GameEvent.weapon_struck(player_id, wielder_id, weapon_id, cost))
+			# "Destroy this card when you strike with a weapon" — the striking
+			# player's Forms break now (their pay-return trigger may open).
+			events.append_array(_check_form_break_strike(state, player_id, db))
 
 	# Open the window this strike point was holding up.
 	if side == "attack":
@@ -1574,87 +1677,299 @@ static func choose_strike(state: GameState, weapon_id: String,
 	return events
 
 
-# ── Armor damage prevention (rule 304.3) ──────────────────────────────────────
+# ── Armor damage prevention (rule 717.2c) ─────────────────────────────────────
 #
-# Exhaust a ready armor with DEF > 0 to add its DEF to the controller's
-# damage_prevention pool ("current block"). Block is committed BEFORE damage
-# resolves: legal only while damage is actually incoming — during combat
-# windows / the protect point, or while a chain is pending (responding to a
-# damage effect like Quick Strike). No summoning-sickness check ("regardless
-# of how long it's been under your control").
+# Each ready equipment with DEF > 0 generates an optional prevention modifier:
+# when a preventable damage packet would be dealt to its controller's hero
+# (heroes are the only shielders), the controller may exhaust it to reduce the
+# packet by its DEF — and may keep exhausting further armor while the packet
+# still has damage left. None of this uses the chain: the decision point opens
+# at the moment the packet would land (combat conclusion / just before a
+# hero-damaging chain link resolves) and is resolved via choose_prevention()
+# (direct call, like the strike point). Excess DEF beyond the packet is wasted;
+# armor can't be exhausted for future damage. No summoning-sickness check
+# ("regardless of how long it's been under your control").
 
-# Is player_id's hero actually the target of incoming damage right now?
-# Two sources (rule 304.3 — armor only blocks damage aimed at the hero):
-#   • Combat — the Defend Window is open with our hero as the final combat_defender.
-#     Not the Attack Window or protect point: until the protect point resolves,
-#     a Protector could still take the hit instead of the hero, so blocking
-#     earlier would be premature (and isn't legal).
-#   • Chain  — an opposing damage effect on pending_actions targets our hero
-#     (e.g. Quick Strike, Grimdron's power) — legal any time, combat or not.
-static func has_incoming_hero_damage(state: GameState, db, player_id: String) -> bool:
-	var ps := state.players.get(player_id) as PlayerState
-	if not ps or ps.hero_instance_id == "":
-		return false
-	var hero_id := ps.hero_instance_id
-	if state.combat_defend_window \
-			and state.combat_defender == hero_id \
-			and state.is_in_play(state.combat_attacker):
-		return true
-	# Combat retaliation (rule 603.1) — our hero is the attacker (striking with a
-	# weapon) and the defender deals combat damage back at conclusion. Wait for
-	# the defend window (the defender is locked in after the protect point).
-	# Long-Range attackers take no retaliation, so there's nothing to block.
-	if state.combat_defend_window \
-			and state.combat_attacker == hero_id \
-			and state.is_in_play(state.combat_defender) \
-			and db and state.get_atk(state.combat_defender, db) > 0:
-		var atk_card := state.get_card(hero_id)
-		if not (_has_keyword(atk_card, "long_range", db) \
-				or _struck_weapon_grants_long_range(state, hero_id, db)):
-			return true
-	for act in state.pending_actions:
-		if act.source_player == player_id:
+# Ready DEF>0 equipment in player's hero_row — the exhaustable shielder pool.
+static func get_ready_def_armor(state: GameState, player_id: String,
+		db) -> Array[String]:
+	var ids: Array[String] = []
+	if not db:
+		return ids
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.is_exhausted:
 			continue
-		if not db:
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Equipment":
 			continue
-		# Enter-play targeted damage (e.g. Taz'dingo) — the target choice sits on
-		# the chain as choose_enter_play_target; the effect lives in
-		# pending_enter_play_effect (cleared only at resolution).
-		if act.action_type == "choose_enter_play_target":
-			if act.params.get("target_id", "") == hero_id \
-					and (state.pending_enter_play_effect.get("effect", "") as String)\
-						.begins_with("deal_damage_to_target"):
-				return true
-			continue
-		var src := state.get_card(act.params.get("card_id", ""))
-		var def := db.get_def(src.card_def_id) as CardDef if src else null
-		if not def:
-			continue
-		match act.action_type:
-			"play_instant", "play_ability":
-				if act.params.get("target_id", "") == hero_id \
-						and _has_effect_flag_prefix(def, "deal_damage_to_target"):
-					return true
-				if _has_effect_flag_prefix(def, "chain_lightning") \
-						and hero_id in _chain_lightning_targets(act):
-					return true
-				if _has_effect_flag_prefix(def, "multi_shot") \
-						and hero_id in _chain_lightning_targets(act):
-					return true
-			"use_ally_power":
-				if act.params.get("target_id", "") != hero_id:
-					continue
-				var ap := _ally_activated_power(def)
-				if (ap.get("effect", "") as String) == "deal_damage_to_target":
-					return true
-	return false
+		if int(_equipment_info(def).get("def", 0)) > 0:
+			ids.append(card.instance_id)
+	return ids
 
 
-static func _enter_play_choice_on_chain(state: GameState) -> bool:
-	for a in state.pending_actions:
-		if (a as PendingAction).action_type == "choose_enter_play_target":
-			return true
-	return false
+# An offer dict for a packet about to hit `target_id`, or {} when the target
+# isn't an in-play hero / no damage / its controller has no ready DEF armor.
+static func _prevention_offer(state: GameState, db, target_id: String,
+		amount: int, source_id: String) -> Dictionary:
+	if amount <= 0 or not state.is_in_play(target_id):
+		return {}
+	var card := state.get_card(target_id)
+	if not card:
+		return {}
+	var ps := state.players.get(card.controller) as PlayerState
+	if not ps or ps.hero_instance_id != target_id:
+		return {}   # only heroes are shielders (717.2c)
+	if get_ready_def_armor(state, card.controller, db).is_empty():
+		return {}
+	return {"player": card.controller, "amount": amount,
+			"source": source_id, "target": target_id}
+
+
+# Prevention offers for the combat packets about to land (computed when the
+# defend window closes, BEFORE _do_combat_conclusion). Mirrors the conclusion's
+# own damage math — get_atk both ways, Long-Range zeroing the retaliation.
+static func _combat_prevention_offers(state: GameState, db) -> Array:
+	var offers: Array = []
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if db == null or not state.is_in_play(attacker_id) \
+			or not state.is_in_play(defender_id):
+		return offers
+	var attacker := state.get_card(attacker_id)
+	var atk_dmg := state.get_atk(attacker_id, db)
+	var def_dmg := state.get_atk(defender_id, db)
+	if _has_keyword(attacker, "long_range", db) \
+			or _struck_weapon_grants_long_range(state, attacker_id, db):
+		def_dmg = 0
+	var defender_offer := _prevention_offer(state, db, defender_id, atk_dmg, attacker_id)
+	if not defender_offer.is_empty():
+		offers.append(defender_offer)
+	var attacker_offer := _prevention_offer(state, db, attacker_id, def_dmg, defender_id)
+	if not attacker_offer.is_empty():
+		offers.append(attacker_offer)
+	return offers
+
+
+# ── Deferred packet groups (rule 717.2c for non-chain damage sources) ─────────
+# Totem start-of-turn triggers, Infernal's end-of-turn burn, on_destroyed AoE:
+# the effect hands ALL of its packets here INSTEAD of dealing them. If any
+# packet would hit a hero whose controller has ready DEF armor, the prevention
+# point opens first; otherwise the group lands immediately (identical to
+# dealing directly). `after` names an optional follow-up hook run once the
+# group has landed ("totem_next" → open the next queued totem trigger).
+# `recursive_destroy` false uses the non-recursive destroy check (death-AoE
+# secondary kills don't chain further on_destroyed effects).
+static func defer_packets(state: GameState, db, packets: Array,
+		after: String = "", recursive_destroy: bool = true) -> Array[GameEvent]:
+	# World in Flames (717-style replacement): applied as the packets enter the
+	# pipeline, so prevention offers and per-damage riders (discard_per, drain
+	# heal) all see the doubled amount.
+	for p in packets:
+		p["amount"] = _fire_doubled_amount(state, db, p)
+	state.pending_prevention_deferred.append({
+		"packets": packets, "after": after,
+		"recursive_destroy": recursive_destroy,
+	})
+	# A point (or an earlier group) already in flight — this group waits; the
+	# "packets" resume in choose_prevention drains the queue.
+	if state.pending_prevention_player != "" \
+			or not state.pending_prevention_offers.is_empty() \
+			or state.pending_prevention_resume != "" \
+			or state.pending_prevention_deferred.size() > 1:
+		return []
+	return _open_or_apply_next_group(state, db)
+
+
+# World in Flames (azeroth_61): "Ongoing: If your hero would deal fire damage,
+# it deals double that amount of damage instead." Only packets that carry a
+# "dmg_type" field can qualify — packet sites whose source can be a hero pass
+# their printed type along; combat damage has its own conclusion path and no
+# fire-typed combat source exists today. Live scan of the source hero's
+# controller's in-play cards; doubling applies once per copy (two → ×4).
+static func _fire_doubled_amount(state: GameState, db, p: Dictionary) -> int:
+	var amount := int(p.get("amount", 0))
+	if amount <= 0 or db == null \
+			or str(p.get("dmg_type", "")).to_lower() != "fire":
+		return amount
+	var source_id := str(p.get("source", ""))
+	if not _is_hero(state, source_id):
+		return amount
+	var controller: String = state.get_card(source_id).controller
+	for card in state.cards_in_play(controller):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.effects == "":
+			continue
+		for seg in def.effects.split("|"):
+			if seg.strip_edges() == "hero_fire_damage_doubled":
+				amount *= 2
+	return amount
+
+
+# Drain the deferred-group queue: groups with no preventable hero packet land
+# immediately; the first group that has one opens the prevention point (the
+# group stays at the front of the queue until its offers are decided).
+static func _open_or_apply_next_group(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if state.pending_prevention_player != "":
+		return events   # a point is already open — the queue drains after it
+	while not state.pending_prevention_deferred.is_empty():
+		var group: Dictionary = state.pending_prevention_deferred[0]
+		var offers: Array = []
+		for p in group.get("packets", []):
+			var o := _prevention_offer(state, db,
+				p.get("target", ""), int(p.get("amount", 0)), p.get("source", ""))
+			if not o.is_empty():
+				offers.append(o)
+		if offers.is_empty():
+			state.pending_prevention_deferred.pop_front()
+			events.append_array(_apply_packet_group(state, db, group))
+			# A destroy trigger inside the group may have deferred ANOTHER group
+			# and opened its point (reentrant defer_packets) — stop draining.
+			if state.pending_prevention_player != "":
+				return events
+			continue
+		events.append_array(_open_prevention(state, offers, "packets"))
+		return events
+	return events
+
+
+# Land every packet of a group (deal_damage consumes any prevention pool built
+# at the point), run the packet's per-damage hooks, do a per-target destroy /
+# game-over check, then run the group's after-hook. Excess DEF is wasted (pool
+# cleared with the group).
+#
+# Optional per-packet hook fields (all read the damage actually DEALT — armor
+# prevention and 405.3 excess-beyond-fatal both reduce it; a fully prevented
+# packet ceases to exist, 717.2b, and fires none of them):
+#   drain_heal_per / drain_heal_to — heal N × dealt from a card (Steal Essence)
+#   discard_per — the damaged character's controller discards N × dealt
+#                 (Mind Spike / Mind Blast / Dark Cleric Ismantal)
+#   riders — "+"-joined restriction rider(s) placed on a SURVIVING target
+#            (Frostbolt / Frost Shock; applied even at 0 dealt — the rider is a
+#            separate sentence on the card, not conditioned on damage)
+static func _apply_packet_group(state: GameState, db,
+		group: Dictionary) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var recursive: bool = group.get("recursive_destroy", true)
+	for p in group.get("packets", []):
+		var target_id: String = p.get("target", "")
+		var source_id: String = p.get("source", "")
+		if not state.is_in_play(target_id):
+			continue
+		var dd_events := GameLogic.deal_damage(
+			state, source_id, target_id, int(p.get("amount", 0)), db)
+		events.append_array(dd_events)
+		var drain_per := int(p.get("drain_heal_per", 0))
+		if drain_per > 0:
+			var dealt := 0
+			for de in dd_events:
+				if (de as GameEvent).event_type == "damage_dealt":
+					dealt += int((de as GameEvent).payload.get("amount", 0))
+			if dealt > 0:
+				events.append_array(GameLogic.heal(
+					state, str(p.get("drain_heal_to", "")), dealt * drain_per,
+					db, source_id))
+		events.append_array(_apply_discard_per_damage(
+			state, target_id, dd_events, int(p.get("discard_per", 0))))
+		var t_card := state.get_card(target_id)
+		if t_card and state.is_in_play(target_id) \
+				and state.get_current_hp(target_id, db) <= 0:
+			var t_zone := state.zones.get(t_card.zone_id) as Zone
+			if t_zone and t_zone.zone_type == "hero_row":
+				events.append(GameEvent.game_over(
+					_other_player(state, t_card.controller), t_card.controller))
+			elif recursive:
+				events.append_array(_check_destroyed_trigger(state, target_id, source_id, db))
+			else:
+				events.append_array(GameLogic.check_destroyed(state, target_id, source_id, db))
+		elif str(p.get("riders", "")) != "" and state.is_in_play(target_id):
+			events.append_array(_apply_damage_riders(
+				state, target_id, source_id, str(p.get("riders", ""))))
+	_clear_damage_prevention(state)   # 717.2c: excess DEF beyond the packet is wasted
+	match group.get("after", ""):
+		"totem_next":
+			events.append_array(_open_next_totem_trigger(state, db))
+	return events
+
+
+# Queue prevention offers and open the first decision point. `resume` names
+# what choose_prevention continues once every offer is decided: "combat" →
+# _do_combat_conclusion, "packets" → land the front deferred packet group.
+static func _open_prevention(state: GameState, offers: Array,
+		resume: String) -> Array[GameEvent]:
+	state.pending_prevention_offers = offers
+	state.pending_prevention_resume = resume
+	return _next_prevention_offer(state)
+
+
+static func _next_prevention_offer(state: GameState) -> Array[GameEvent]:
+	if state.pending_prevention_offers.is_empty():
+		return []
+	var offer: Dictionary = state.pending_prevention_offers.pop_front()
+	state.pending_prevention_player = offer.get("player", "")
+	state.pending_prevention_amount = int(offer.get("amount", 0))
+	state.pending_prevention_source = offer.get("source", "")
+	state.pending_prevention_target = offer.get("target", "")
+	return [GameEvent.prevention_opened(
+		state.pending_prevention_player, state.pending_prevention_amount,
+		state.pending_prevention_source, state.pending_prevention_target)]
+
+
+# Entry point for the prevention decision (direct call, like choose_strike).
+# armor_id != "": exhaust that armor, add its DEF to the controller's
+# prevention pool (consumed by GameLogic.deal_damage when the packet lands),
+# and — if the packet still has damage left and more ready armor exists — keep
+# the point open ("you may exhaust another equipment, and so on" — 717.2c).
+# armor_id == "" (or an invalid pick): take the remaining damage. Once every
+# queued offer is decided, resumes what the point interrupted.
+static func choose_prevention(state: GameState, armor_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_prevention_player == "":
+		return []
+	var player_id := state.pending_prevention_player
+	var events: Array[GameEvent] = []
+
+	if armor_id != "" and armor_id in get_ready_def_armor(state, player_id, db):
+		var armor := state.get_card(armor_id)
+		var a_def := db.get_def(armor.card_def_id) as CardDef
+		var def_value := int(_equipment_info(a_def).get("def", 0))
+		events.append_array(GameLogic.exhaust_card(state, armor_id))
+		var ps := state.players.get(player_id) as PlayerState
+		ps.damage_prevention += def_value
+		state.pending_prevention_amount = max(
+			state.pending_prevention_amount - def_value, 0)
+		events.append(GameEvent.armor_prevention_used(
+			player_id, armor_id, def_value, ps.damage_prevention))
+		if state.pending_prevention_amount > 0 \
+				and not get_ready_def_armor(state, player_id, db).is_empty():
+			events.append(GameEvent.prevention_opened(
+				player_id, state.pending_prevention_amount,
+				state.pending_prevention_source, state.pending_prevention_target))
+			return events
+
+	# This offer is decided — next queued offer, or resume what was interrupted.
+	state.pending_prevention_player = ""
+	state.pending_prevention_amount = 0
+	state.pending_prevention_source = ""
+	state.pending_prevention_target = ""
+	var next := _next_prevention_offer(state)
+	if not next.is_empty():
+		events.append_array(next)
+		return events
+
+	var resume := state.pending_prevention_resume
+	state.pending_prevention_resume = ""
+	match resume:
+		"combat":
+			# _do_combat_conclusion consumes the pools via deal_damage and clears
+			# any leftover (excess DEF is wasted — 717.2c).
+			events.append_array(_do_combat_conclusion(state, db))
+		"packets":
+			if not state.pending_prevention_deferred.is_empty():
+				var group: Dictionary = state.pending_prevention_deferred.pop_front()
+				events.append_array(_apply_packet_group(state, db, group))
+			events.append_array(_open_or_apply_next_group(state, db))
+	return events
 
 
 # drain_heal_per_damage:N — paired with a deal_damage_to_target segment
@@ -1715,49 +2030,8 @@ static func _has_effect_flag_prefix(def: CardDef, prefix: String) -> bool:
 	return false
 
 
-static func _can_use_armor_prevention(state: GameState, action: PendingAction,
-		db = null) -> bool:
-	if state.priority_player != action.source_player:
-		return false
-	# Only meaningful while our hero is actually the target of incoming damage.
-	if not has_incoming_hero_damage(state, db, action.source_player):
-		return false
-	var card_id: String = action.params.get("card_id", "")
-	var card := state.get_card(card_id)
-	if not card or card.controller != action.source_player:
-		return false
-	if card.is_exhausted:
-		return false
-	var zone := state.zones.get(card.zone_id) as Zone
-	if not zone or zone.zone_type != "hero_row":
-		return false
-	if not db:
-		return false
-	var def := db.get_def(card.card_def_id) as CardDef
-	if not def or def.card_type != "Equipment":
-		return false
-	return int(_equipment_info(def).get("def", 0)) > 0
-
-
-static func _resolve_use_armor_prevention(state: GameState, action: PendingAction,
-		db = null) -> Array[GameEvent]:
-	var card_id: String = action.params.get("card_id", "")
-	var card := state.get_card(card_id)
-	if not card or not db:
-		return [GameEvent.make("action_fizzled",
-			{"action_type": "use_armor_prevention", "reason": "card_not_found"})]
-	var def := db.get_def(card.card_def_id) as CardDef
-	var def_value := int(_equipment_info(def).get("def", 0)) if def else 0
-	var ps := state.players.get(action.source_player) as PlayerState
-	if not ps or def_value <= 0:
-		return [GameEvent.make("action_fizzled",
-			{"action_type": "use_armor_prevention", "reason": "no_defense_value"})]
-	ps.damage_prevention += def_value
-	return [GameEvent.armor_prevention_used(
-		action.source_player, card_id, def_value, ps.damage_prevention)]
-
-
-# Unspent block expires when the threat it was declared against is gone.
+# Leftover prevention pool expires once its packet has landed (excess DEF is
+# wasted — 717.2c).
 static func _clear_damage_prevention(state: GameState) -> void:
 	for pid in state.players:
 		var ps := state.players[pid] as PlayerState
@@ -2087,41 +2361,26 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		"deal_damage_aoe":
 			var amount: int = int(ap.get("amount", 0))
 			var opp := _other_player(state, card.controller)
-			var targets: Array[String] = []
+			var packets: Array = []
 			var opp_ps := state.players.get(opp) as PlayerState
 			if opp_ps and opp_ps.hero_instance_id != "":
-				targets.append(opp_ps.hero_instance_id)
+				packets.append({"source": card_id,
+					"target": opp_ps.hero_instance_id, "amount": amount})
 			for ally in state.cards_in_zone(opp + "_ally_row"):
-				targets.append(ally.instance_id)
-			for t_id in targets:
-				events.append_array(GameLogic.deal_damage(state, card_id, t_id, amount, db))
-				var t_card := state.get_card(t_id)
-				if t_card and state.get_current_hp(t_id, db) <= 0:
-					var t_zone := state.zones.get(t_card.zone_id) as Zone
-					if t_zone and t_zone.zone_type == "hero_row":
-						events.append(GameEvent.game_over(
-							_other_player(state, t_card.controller), t_card.controller))
-					else:
-						events.append_array(_check_destroyed_trigger(state, t_id, card_id, db))
+				packets.append({"source": card_id,
+					"target": ally.instance_id, "amount": amount})
+			events.append_array(defer_packets(state, db, packets))
 		"deal_damage_to_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
 			# Rule 706 re-check: fizzle if the target left play or became Untargetable.
 			if _is_legal_target(state, target_id, db):
-				var dd_events := GameLogic.deal_damage(state, card_id, target_id, amount, db)
-				events.append_array(dd_events)
-				# Paired discard_per_damage:N segment (Dark Cleric Ismantal): the
-				# damaged character's controller discards N cards per damage dealt.
-				events.append_array(_apply_discard_per_damage(
-					state, target_id, dd_events, _discard_per_damage(def)))
-				var t_card := state.get_card(target_id)
-				if t_card and state.get_current_hp(target_id, db) <= 0:
-					var t_zone := state.zones.get(t_card.zone_id) as Zone
-					if t_zone and t_zone.zone_type == "hero_row":
-						events.append(GameEvent.game_over(
-							_other_player(state, t_card.controller), t_card.controller))
-					else:
-						events.append_array(_check_destroyed_trigger(state, target_id, card_id, db))
+				# Packet pipeline — the paired discard_per_damage rider (Dark
+				# Cleric Ismantal) travels with the packet.
+				events.append_array(defer_packets(state, db, [{
+					"source": card_id, "target": target_id, "amount": amount,
+					"discard_per": _discard_per_damage(def),
+				}]))
 		"heal_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
@@ -2155,22 +2414,18 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				events.append_array(GameLogic.add_buff(state, target_id, buff))
 		"deal_damage_and_heal":
 			# Hierophant Caydiem: deals AMOUNT damage to target_id and heals
-			# AMOUNT from a different heal_target_id.
+			# AMOUNT from a different heal_target_id. The heal is unconditional
+			# (not per-damage), so it lands inline; the damage packet goes
+			# through the prevention pipeline.
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
 			var heal_target_id: String = action.params.get("heal_target_id", "")
-			if _is_legal_target(state, target_id, db):
-				events.append_array(GameLogic.deal_damage(state, card_id, target_id, amount, db))
-				var t_card := state.get_card(target_id)
-				if t_card and state.get_current_hp(target_id, db) <= 0:
-					var t_zone := state.zones.get(t_card.zone_id) as Zone
-					if t_zone and t_zone.zone_type == "hero_row":
-						events.append(GameEvent.game_over(
-							_other_player(state, t_card.controller), t_card.controller))
-					else:
-						events.append_array(_check_destroyed_trigger(state, target_id, card_id, db))
 			if _is_legal_target(state, heal_target_id, db):
 				events.append_array(GameLogic.heal(state, heal_target_id, amount, db, card_id))
+			if _is_legal_target(state, target_id, db):
+				events.append_array(defer_packets(state, db, [{
+					"source": card_id, "target": target_id, "amount": amount,
+				}]))
 
 	return events
 
@@ -2242,15 +2497,19 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 static func get_legal_attackers(state: GameState, player_id: String, db) -> Array[String]:
 	var result: Array[String] = []
 	# Hero (rule 301.3: no summoning sickness; still must be ready per 601.2a).
-	# Also require ATK > 0 OR an affordable, ready weapon to strike with — a
-	# 0 ATK hero that can't strike deals no damage and exhausts for nothing;
-	# treat as not a legal attacker (practical gate, not an explicit rule, but
-	# avoids pointless/confusing highlights and AI plays).
+	# Also require ATK-if-attacking > 0 OR an affordable, ready weapon to strike
+	# with — a 0 ATK hero that can't strike deals no damage and exhausts for
+	# nothing; treat as not a legal attacker (practical gate, not an explicit
+	# rule, but avoids pointless/confusing highlights and AI plays). The
+	# assume_attacking probe admits defender-independent "while attacking"
+	# bonuses (Cat Form's hero_atk_while_attacking, a Ryn Dreamstrider buff) —
+	# by the printed rules a 0-ATK attack proposal is legal anyway, so relaxing
+	# the gate only moves us closer to the rules.
 	var ps := state.players.get(player_id) as PlayerState
 	if ps and ps.hero_instance_id != "":
 		var hero := state.get_card(ps.hero_instance_id)
 		if hero and not hero.is_exhausted \
-				and (state.get_atk(hero.instance_id, db) > 0
+				and (state.get_atk(hero.instance_id, db, true) > 0
 					or not get_strikeable_weapons(state, player_id, hero.instance_id, db).is_empty()) \
 				and not _has_keyword(hero, "cant_attack", db) \
 				and not hero.has_restriction("cannot_attack"):
@@ -2768,9 +3027,10 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
-	# Green Whelp Armor trigger key facts, captured BEFORE damage lands (the
-	# attacker's zone / the defender's role may change once damage is applied).
+	# Trigger key facts, captured BEFORE damage lands (a combatant's zone / role
+	# may change once damage is applied).
 	var attacker_was_ally := _is_ally(state, attacker_id)
+	var defender_was_ally := _is_ally(state, defender_id)
 	var defender_ps := state.players.get(defender.controller) as PlayerState
 	var defender_is_hero := defender_ps != null \
 			and defender_ps.hero_instance_id == defender_id
@@ -2779,7 +3039,8 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	# then check fatalities on both after — true simultaneity.
 	var atk_events := GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db)
 	events.append_array(atk_events)
-	events.append_array(GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db))
+	var def_events := GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db)
+	events.append_array(def_events)
 	_clear_damage_prevention(state)   # combat over — unspent block expires
 
 	# Did the attacker actually LAND combat damage on the hero? (armor DEF / block
@@ -2821,7 +3082,71 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender.controller if defender else "",
 		defender_is_hero, hero_dmg_landed, db))
 
+	# Devilsaur Leggings (rule 305.2 triggered equipment power): "When your hero
+	# deals combat damage to an ally, destroy that ally." Fires when the
+	# wielder's hero dealt ≥1 combat damage to an ally this combat — as the
+	# attacker hitting an ally defender, or as a protecting defender retaliating
+	# onto an attacking ally. Mandatory (no cost/choice); a no-op if the ally
+	# already died to the combat damage (the card matters when the ally survives).
+	events.append_array(_fire_hero_combat_dmg_destroys_ally(
+		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
+		atk_events, def_events, db))
+
 	return events
+
+
+# hero_combat_dmg_destroys_ally equipment flag (Devilsaur Leggings). See the
+# call site in _do_combat_conclusion.
+static func _fire_hero_combat_dmg_destroys_ally(state: GameState,
+		attacker_id: String, defender_id: String,
+		attacker_was_ally: bool, defender_was_ally: bool,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Hero as attacker → ally defender.
+	if defender_was_ally \
+			and _hero_wields_flag(state, attacker_id, "hero_combat_dmg_destroys_ally", db) \
+			and _combat_dmg_landed(atk_events, defender_id) > 0 \
+			and state.is_in_play(defender_id):
+		events.append_array(_destroy_card_trigger(state, defender_id, attacker_id, db))
+	# Hero as protecting defender → retaliation onto the attacking ally.
+	if attacker_was_ally \
+			and _hero_wields_flag(state, defender_id, "hero_combat_dmg_destroys_ally", db) \
+			and _combat_dmg_landed(def_events, attacker_id) > 0 \
+			and state.is_in_play(attacker_id):
+		events.append_array(_destroy_card_trigger(state, attacker_id, defender_id, db))
+	return events
+
+
+# Total combat damage from a deal_damage event list that landed on target_id.
+static func _combat_dmg_landed(dmg_events: Array, target_id: String) -> int:
+	var total := 0
+	for ev in dmg_events:
+		if (ev as GameEvent).event_type == "damage_dealt" \
+				and (ev as GameEvent).payload.get("target", "") == target_id:
+			total += int((ev as GameEvent).payload.get("amount", 0))
+	return total
+
+
+# True when card_id is a hero AND its controller has an in-play equipment
+# carrying `flag` in its hero_row (a triggered/ongoing equipment power, no
+# ready/exhaust requirement).
+static func _hero_wields_flag(state: GameState, card_id: String,
+		flag: String, db) -> bool:
+	if db == null:
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var ps := state.players.get(card.controller) as PlayerState
+	if not ps or ps.hero_instance_id != card_id:
+		return false
+	for eq in state.cards_in_zone(card.controller + "_hero_row"):
+		var edef := db.get_def(eq.card_def_id) as CardDef
+		if edef and edef.card_type == "Equipment" and _has_effect_flag_prefix(edef, flag):
+			return true
+	return false
 
 
 # on_combat_damage_to_hero:EFFECT[:N] triggered powers, checked at combat
@@ -3702,18 +4027,10 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				if not _is_legal_target(state, target_id, db):
 					continue
 				var amount := int(parts[1]) if parts.size() > 1 else 0
-				events.append_array(GameLogic.deal_damage(
-					state, hero_id, target_id, amount, db))
-				# Destruction check immediately (not simultaneous — it's a spell).
-				var t_card := state.get_card(target_id)
-				if t_card and state.get_current_hp(target_id, db) <= 0:
-					var t_zone := state.zones.get(t_card.zone_id) as Zone
-					if t_zone and t_zone.zone_type == "hero_row":
-						events.append(GameEvent.game_over(
-							_other_player(state, t_card.controller), t_card.controller))
-					else:
-						events.append_array(
-							_check_destroyed_trigger(state, target_id, hero_id, db))
+				events.append_array(defer_packets(state, db, [{
+					"source": hero_id, "target": target_id, "amount": amount,
+					"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+				}]))
 			"deal_7_minus_hand_to_hero":
 				# Format: deal_7_minus_hand_to_hero:DMG_TYPE
 				# Damage = max(7 - hand size of target hero's controller, 0).
@@ -3722,23 +4039,21 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					var hand_size := state.cards_in_zone(t_card.controller + "_hand").size()
 					var amount2: int = max(7 - hand_size, 0)
 					if amount2 > 0:
-						events.append_array(GameLogic.deal_damage(
-							state, hero_id, target_id, amount2, db))
-						if state.get_current_hp(target_id, db) <= 0:
-							events.append(GameEvent.game_over(
-								_other_player(state, t_card.controller), t_card.controller))
+						events.append_array(defer_packets(state, db, [{
+							"source": hero_id, "target": target_id, "amount": amount2,
+						}]))
 			"deal_x_damage_to_ally":
 				# Format: deal_x_damage_to_ally:DMG_TYPE
-				# x_value is chosen by the player; paid as self-damage before effect resolves.
+				# x_value is chosen by the player; paid as self-damage before the
+				# effect resolves. Both packets are DEALT (not put), so both go
+				# through the prevention pipeline — the self-damage on the own
+				# hero is preventable with own DEF armor (717.2c).
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and _is_legal_target(state, target_id, db):
-					# Self-damage on the hero (paid as part of cost).
-					events.append_array(GameLogic.deal_damage(state, hero_id, hero_id, x_value, db))
-					# Damage to target ally.
-					events.append_array(GameLogic.deal_damage(state, hero_id, target_id, x_value, db))
-					var t_card := state.get_card(target_id)
-					if t_card and state.get_current_hp(target_id, db) <= 0:
-						events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
+					events.append_array(defer_packets(state, db, [
+						{"source": hero_id, "target": hero_id, "amount": x_value},
+						{"source": hero_id, "target": target_id, "amount": x_value},
+					]))
 			"target_cant_attack":
 				# Litori Frostburn: "Target hero or ally can't attack this turn."
 				# Rule 706 re-check: fizzle if the target left play or became Untargetable.
@@ -3769,15 +4084,9 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				# Pet already destroyed at submission. Deal x_value shadow damage to target.
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and _is_legal_target(state, target_id, db):
-					events.append_array(GameLogic.deal_damage(state, hero_id, target_id, x_value, db))
-					var t_card := state.get_card(target_id)
-					if t_card and state.get_current_hp(target_id, db) <= 0:
-						var t_zone := state.zones.get(t_card.zone_id) as Zone
-						if t_zone and t_zone.zone_type == "hero_row":
-							events.append(GameEvent.game_over(
-								_other_player(state, t_card.controller), t_card.controller))
-						else:
-							events.append_array(_check_destroyed_trigger(state, target_id, hero_id, db))
+					events.append_array(defer_packets(state, db, [{
+						"source": hero_id, "target": target_id, "amount": x_value,
+					}]))
 			"melee_strike_discount":
 				# Gorebelly: "You pay (3) less the next time you strike with a
 				# Melee weapon this turn." Consumed by the next melee strike;
@@ -3806,23 +4115,17 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					events.append_array(_destroy_card_trigger(state, target_id, hero_id, db))
 			"deal_damage_and_heal":
 				# Format: deal_damage_and_heal:DMG_AMOUNT:DMG_TYPE:HEAL_AMOUNT
+				# The heal is unconditional (not per-damage), so it lands
+				# inline; the damage packet goes through the prevention pipeline.
 				var dmg_amount  := int(parts[1]) if parts.size() > 1 else 0
 				var heal_amount := int(parts[3]) if parts.size() > 3 else 0
 				var heal_target_id: String = action.params.get("heal_target_id", "")
-				if _is_legal_target(state, target_id, db):
-					events.append_array(GameLogic.deal_damage(
-						state, hero_id, target_id, dmg_amount, db))
-					var t_card := state.get_card(target_id)
-					if t_card and state.get_current_hp(target_id, db) <= 0:
-						var t_zone := state.zones.get(t_card.zone_id) as Zone
-						if t_zone and t_zone.zone_type == "hero_row":
-							events.append(GameEvent.game_over(
-								_other_player(state, t_card.controller), t_card.controller))
-						else:
-							events.append_array(
-								_check_destroyed_trigger(state, target_id, hero_id, db))
 				if _is_legal_target(state, heal_target_id, db):
 					events.append_array(GameLogic.heal(state, heal_target_id, heal_amount, db, hero_id))
+				if _is_legal_target(state, target_id, db):
+					events.append_array(defer_packets(state, db, [{
+						"source": hero_id, "target": target_id, "amount": dmg_amount,
+					}]))
 	return events
 
 
@@ -3866,16 +4169,9 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			if not _is_legal_target(state, target_id, db):
 				return events
 			var amount := int(parts[1]) if parts.size() > 1 else 0
-			events.append_array(GameLogic.deal_damage(state, source_id, target_id, amount, db))
-			var t_card := state.get_card(target_id)
-			if t_card and state.get_current_hp(target_id, db) <= 0:
-				var t_zone := state.zones.get(t_card.zone_id) as Zone
-				if t_zone and t_zone.zone_type == "hero_row":
-					events.append(GameEvent.game_over(
-						_other_player(state, t_card.controller), t_card.controller))
-				else:
-					events.append_array(
-						_check_destroyed_trigger(state, target_id, source_id, db))
+			events.append_array(defer_packets(state, db, [{
+				"source": source_id, "target": target_id, "amount": amount,
+			}]))
 	return events
 
 
@@ -3916,16 +4212,14 @@ static func choose_totem_target(state: GameState, target_id: String, db) -> Arra
 	var events: Array[GameEvent] = []
 	# 706 re-check: the source must still be in play and the target legal.
 	if state.is_in_play(source_id) and amount > 0 and _is_legal_target(state, target_id, db):
-		events.append_array(GameLogic.deal_damage(state, source_id, target_id, amount, db))
-		var t_card := state.get_card(target_id)
-		if t_card and state.get_current_hp(target_id, db) <= 0:
-			var t_zone := state.zones.get(t_card.zone_id) as Zone
-			if t_zone and t_zone.zone_type == "hero_row":
-				events.append(GameEvent.game_over(
-					_other_player(state, t_card.controller), t_card.controller))
-			else:
-				events.append_array(_check_destroyed_trigger(state, target_id, source_id, db))
-	# Open the next queued totem trigger, if any.
+		# Rule 717.2c: the packet goes through the prevention machinery — a hero
+		# target whose controller has ready DEF armor gets the point first; the
+		# "totem_next" after-hook opens the next queued trigger once it lands.
+		events.append_array(defer_packets(state, db,
+			[{"source": source_id, "target": target_id, "amount": amount}],
+			"totem_next"))
+		return events
+	# Fizzled — open the next queued totem trigger, if any.
 	events.append_array(_open_next_totem_trigger(state, db))
 	return events
 
@@ -3983,26 +4277,21 @@ static func _fire_on_destroyed(state: GameState, card_id: String, db) -> Array[G
 		match parts[1]:
 			"deal_damage_aoe":
 				# on_destroyed:deal_damage_aoe:AMOUNT:DMG_TYPE:opposing
+				# Packets go through the prevention machinery (717.2c) — the
+				# opposing hero's controller may exhaust DEF armor first.
+				# recursive_destroy=false: no recursive on_destroyed for AoE
+				# secondary kills.
 				var amount := int(parts[2]) if parts.size() > 2 else 1
 				var opp    := _other_player(state, card.controller)
-				var targets: Array[String] = []
+				var packets: Array = []
 				var opp_ps := state.players.get(opp) as PlayerState
 				if opp_ps and opp_ps.hero_instance_id != "":
-					targets.append(opp_ps.hero_instance_id)
+					packets.append({"source": card_id,
+						"target": opp_ps.hero_instance_id, "amount": amount})
 				for ally in state.cards_in_zone(opp + "_ally_row"):
-					targets.append(ally.instance_id)
-				for t_id in targets:
-					events.append_array(GameLogic.deal_damage(state, card_id, t_id, amount, db))
-					var t_card := state.get_card(t_id)
-					if t_card and state.get_current_hp(t_id, db) <= 0:
-						var t_zone := state.zones.get(t_card.zone_id) as Zone
-						if t_zone and t_zone.zone_type == "hero_row":
-							events.append(GameEvent.game_over(
-								_other_player(state, t_card.controller), t_card.controller))
-						else:
-							# No recursive on_destroyed for AoE secondary kills.
-							events.append_array(
-								GameLogic.check_destroyed(state, t_id, card_id, db))
+					packets.append({"source": card_id,
+						"target": ally.instance_id, "amount": amount})
+				events.append_array(defer_packets(state, db, packets, "", false))
 			"destroy_target":
 				# on_destroyed:destroy_target:ally (Boneshanks: "When [this] is
 				# destroyed, destroy target ally."). Mandatory targeted death
@@ -4015,6 +4304,21 @@ static func _fire_on_destroyed(state: GameState, card_id: String, db) -> Array[G
 					state.pending_death_triggers.append({
 						"card_id": card_id, "controller": card.controller})
 					events.append_array(_open_next_death_trigger(state, db))
+			"pay_return_hand":
+				# on_destroyed:pay_return_hand:COST (Bear Form / Cat Form): the
+				# controller may pay COST to return the destroyed card from the
+				# graveyard to hand. Opens a direct-call choice point
+				# (choose_form_return) — skipped when unaffordable or another
+				# return choice is already open (can't happen with Form (1)
+				# uniqueness, but guard anyway).
+				var return_cost := int(parts[2]) if parts.size() > 2 else 2
+				if state.pending_form_return_player == "" \
+						and state.get_available_resources(card.controller) >= return_cost:
+					state.pending_form_return_player  = card.controller
+					state.pending_form_return_card_id = card_id
+					state.pending_form_return_cost    = return_cost
+					events.append(GameEvent.form_return_opened(
+						card.controller, card_id, return_cost))
 	return events
 
 
@@ -4315,4 +4619,138 @@ static func choose_unique_sacrifice(state: GameState, card_id: String,
 		typed_ids.assign(surviving)
 		events.append(GameEvent.unique_sacrifice_required(
 			state.pending_unique_sacrifice_player, typed_ids))
+	return events
+
+
+# ── Form (1) tag-count uniqueness (rule 414.3b) ───────────────────────────────
+# A player may control at most one card with the Form (1) tag (`form:1`) in
+# play. When a second Form enters, the controller must destroy Forms until one
+# remains — normally keeping the new one (playing Cat Form while in Bear Form is
+# how you shapeshift). Mirrors the Pet/Unique immediate-choice flow: resolved
+# via choose_form_sacrifice() (direct call), can_submit hard-blocks while
+# pending. Destroyed Forms fire their on_destroyed pay-return trigger normally.
+
+static func _check_form_uniqueness(state: GameState, card_id: String, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var card := state.get_card(card_id)
+	if not card:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	var capacity := form_slot_count(def)
+	if capacity < 0:
+		return []
+	# Forms are ongoing abilities living in the hero row (305.2c).
+	var form_ids: Array[String] = []
+	for c in state.cards_in_zone(card.controller + "_hero_row"):
+		if is_form_def(db.get_def(c.card_def_id) as CardDef):
+			form_ids.append(c.instance_id)
+	if form_ids.size() <= capacity:
+		return []
+	state.pending_form_sacrifice_player = card.controller
+	state.pending_form_sacrifice_ids.assign(form_ids)
+	var typed_ids: Array[String] = []
+	typed_ids.assign(form_ids)
+	return [GameEvent.form_sacrifice_required(card.controller, typed_ids, card_id)]
+
+
+# Called directly by the scene (not via submit_action), like choose_pet_sacrifice.
+static func choose_form_sacrifice(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_form_sacrifice_player == "":
+		return []
+	if card_id not in state.pending_form_sacrifice_ids:
+		return []
+	var card := state.get_card(card_id)
+	if not card or card.controller != state.pending_form_sacrifice_player:
+		return []
+	var player := state.pending_form_sacrifice_player
+	var events: Array[GameEvent] = []
+	events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
+	state.pending_form_sacrifice_ids.erase(card_id)
+	# Re-check: still a violation while more than one Form remains in play.
+	var surviving: Array[String] = []
+	for cid in state.pending_form_sacrifice_ids:
+		if state.is_in_play(cid):
+			surviving.append(cid)
+	if surviving.size() <= 1:
+		state.pending_form_sacrifice_player = ""
+		state.pending_form_sacrifice_ids.clear()
+	else:
+		state.pending_form_sacrifice_ids.assign(surviving)
+		var typed_ids: Array[String] = []
+		typed_ids.assign(surviving)
+		events.append(GameEvent.form_sacrifice_required(player, typed_ids, ""))
+	return events
+
+
+# ── Form break condition (glossary Bear Form / Cat Form) ──────────────────────
+# "Destroy this card when you strike with a weapon or play a non-<TAG> ability."
+# Checked when `player` resolves an Ability play (_resolve_play_instant /
+# _resolve_play_ongoing_ability) and when they strike with a weapon
+# (choose_strike). Fires at RESOLUTION time, not at announce — see
+# data/rules_deviations.md "Form break timing". Destroys EVERY in-play Form of
+# that player whose break tag doesn't match (414.2-style, no chain); the
+# destruction fires the Form's own pay-return death trigger.
+
+static func _check_form_break_ability(state: GameState, player_id: String,
+		played_def: CardDef, db) -> Array[GameEvent]:
+	if not db or not played_def or played_def.card_type != "Ability":
+		return []
+	var events: Array[GameEvent] = []
+	for c in state.cards_in_zone(player_id + "_hero_row"):
+		var f_def := db.get_def(c.card_def_id) as CardDef
+		var tag := form_break_tag(f_def)
+		if tag == "" or tag in played_def.tags:
+			continue   # not a breakable Form / the played ability matches (Feral)
+		events.append(GameEvent.form_broken(c.instance_id, player_id, "non_%s_ability" % tag.to_lower()))
+		events.append_array(_destroy_card_trigger(state, c.instance_id, c.instance_id, db))
+	return events
+
+
+static func _check_form_break_strike(state: GameState, player_id: String,
+		db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var events: Array[GameEvent] = []
+	for c in state.cards_in_zone(player_id + "_hero_row"):
+		var f_def := db.get_def(c.card_def_id) as CardDef
+		if form_break_tag(f_def) == "":
+			continue
+		events.append(GameEvent.form_broken(c.instance_id, player_id, "weapon_strike"))
+		events.append_array(_destroy_card_trigger(state, c.instance_id, c.instance_id, db))
+	return events
+
+
+# ── Form pay-return death trigger ─────────────────────────────────────────────
+# Bear Form / Cat Form: "When [this] is destroyed, you may pay (2). If you do,
+# put it into your hand." Opened from _fire_on_destroyed only when the
+# controller can afford the cost; resolved via choose_form_return() (direct
+# call, like choose_whelp_bounce; can_submit/pass_priority hard-block while
+# pending). v1 returns the card immediately on payment instead of at the next
+# end of turn — see data/rules_deviations.md "Form return timing".
+static func choose_form_return(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_form_return_player == "":
+		return []
+	var player_id := state.pending_form_return_player
+	var card_id   := state.pending_form_return_card_id
+	var cost      := state.pending_form_return_cost
+	state.pending_form_return_player  = ""
+	state.pending_form_return_card_id = ""
+	state.pending_form_return_cost    = 0
+
+	var events: Array[GameEvent] = []
+	var card := state.get_card(card_id)
+	var in_graveyard := false
+	if card:
+		var zone := state.zones.get(card.zone_id) as Zone
+		in_graveyard = zone != null and zone.zone_type == "graveyard"
+	if pay and in_graveyard \
+			and state.get_available_resources(player_id) >= cost:
+		events.append_array(_pay_resource_cost(state, player_id, cost))
+		events.append_array(GameLogic.move_card(state, card_id, card.owner + "_hand"))
+		events.append(GameEvent.form_return_resolved(player_id, card_id, true))
+	else:
+		events.append(GameEvent.form_return_resolved(player_id, card_id, false))
 	return events

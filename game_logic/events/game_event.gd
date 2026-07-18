@@ -131,6 +131,29 @@ static func equipment_sacrifice_required(player_id: String, candidate_ids: Array
 static func unique_sacrifice_required(player_id: String, candidate_ids: Array[String]) -> GameEvent:
 	return make("unique_sacrifice_required", {"player": player_id, "candidates": candidate_ids})
 
+# Form (1) tag-count uniqueness violation (rule 414.3b): `player` must destroy
+# Forms until one remains. `new_card_id` is the Form that just entered play
+# (the AI keeps it; a human picks freely).
+static func form_sacrifice_required(player_id: String, candidate_ids: Array[String],
+		new_card_id: String) -> GameEvent:
+	return make("form_sacrifice_required", {
+		"player": player_id, "candidates": candidate_ids, "new_card_id": new_card_id,
+	})
+
+# A Form was destroyed by its own break condition ("strike with a weapon or
+# play a non-Feral ability"). Informational — the card_destroyed event carries
+# the actual zone change.
+static func form_broken(card_id: String, player_id: String, reason: String) -> GameEvent:
+	return make("form_broken", {"card_id": card_id, "player": player_id, "reason": reason})
+
+# Bear/Cat Form pay-2 return choice opened for `player` (the destroyed Form's
+# controller). Resolved via StackResolver.choose_form_return().
+static func form_return_opened(player_id: String, card_id: String, cost: int) -> GameEvent:
+	return make("form_return_opened", {"player": player_id, "card_id": card_id, "cost": cost})
+
+static func form_return_resolved(player_id: String, card_id: String, paid: bool) -> GameEvent:
+	return make("form_return_resolved", {"player": player_id, "card_id": card_id, "paid": paid})
+
 static func armor_prevention_used(player_id: String, card_id: String,
 		def_value: int, total_prevention: int) -> GameEvent:
 	return make("armor_prevention_used", {
@@ -138,6 +161,19 @@ static func armor_prevention_used(player_id: String, card_id: String,
 		"card_id":    card_id,
 		"def":        def_value,
 		"prevention": total_prevention,   # pool total after adding this armor's DEF
+	})
+
+# Armor prevention point opened (rule 717.2c): `player` may exhaust ready DEF
+# armor against an `amount`-damage packet from `source` about to hit `target`
+# (their hero). Re-emitted with the reduced amount after each armor exhausted
+# while the packet still has damage left and more ready armor exists.
+static func prevention_opened(player_id: String, amount: int,
+		source_id: String, target_id: String) -> GameEvent:
+	return make("prevention_opened", {
+		"player": player_id,
+		"amount": amount,
+		"source": source_id,
+		"target": target_id,
 	})
 
 static func damage_prevented(target_id: String, amount: int, remaining: int) -> GameEvent:

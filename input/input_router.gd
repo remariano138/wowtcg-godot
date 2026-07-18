@@ -41,6 +41,8 @@ signal equipment_sacrifice_mode_started(candidate_ids: Array)
 signal equipment_sacrifice_mode_ended()
 signal unique_sacrifice_mode_started(candidate_ids: Array)
 signal unique_sacrifice_mode_ended()
+signal form_sacrifice_mode_started(candidate_ids: Array)
+signal form_sacrifice_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
@@ -77,6 +79,8 @@ var _equip_sacrifice_candidates: Array[String] = []
 var _pet_sacrifice_candidates: Array[String] = []
 var _in_unique_sacrifice_mode: bool = false  # true while player must choose a Unique duplicate to destroy
 var _unique_sacrifice_candidates: Array[String] = []
+var _in_form_sacrifice_mode: bool = false  # true while player must choose a Form to destroy (414.3b)
+var _form_sacrifice_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 # Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
@@ -164,6 +168,11 @@ func handle_card_click(instance_id: String) -> void:
 		_handle_unique_sacrifice_click(instance_id)
 		return
 
+	# ── Form sacrifice mode: click destroys the chosen Form (shapeshift) ─────
+	if _in_form_sacrifice_mode:
+		_handle_form_sacrifice_click(instance_id)
+		return
+
 	# ── Discard mode: click discards the chosen hand card ─────────────────────
 	if _in_discard_mode:
 		_handle_discard_click(instance_id)
@@ -190,17 +199,6 @@ func handle_card_click(instance_id: String) -> void:
 	if state.is_in_play(instance_id):
 		var zone := state.zones.get(card.zone_id) as Zone
 		if zone and zone.zone_type in ["ally_row", "hero_row"]:
-			# Armor block (rule 304.3): left-click a ready armor while damage is
-			# incoming exhausts it for its DEF — same as the context-menu entry.
-			var block_action := PendingAction.make("use_armor_prevention",
-				local_player, {"card_id": instance_id})
-			if StackResolver.can_submit(state, block_action, db):
-				var block_events := StackResolver.submit_action(state, block_action, db)
-				if not block_events.is_empty():
-					EventBus.emit_events(block_events)
-					_pass_own_proposal(block_action)
-					refresh_highlights()
-				return
 			# Only enter targeting if combat can actually be proposed right now (rule 601.1).
 			var can_propose := state.phase == "action" \
 				and state.turn_player == local_player \
@@ -546,6 +544,39 @@ func _handle_unique_sacrifice_click(instance_id: String) -> void:
 		_unique_sacrifice_candidates.clear()
 		for cid: String in state.pending_unique_sacrifice_ids:
 			_unique_sacrifice_candidates.append(cid)
+	refresh_highlights()
+
+
+# ── Form sacrifice mode (rule 414.3b — Form (1) tag) ──────────────────────────
+# Mirrors the Unique-duplicate sacrifice mode: red highlight on the in-play
+# Forms, click one to destroy it (normally the OLD form — shapeshifting).
+
+func start_form_sacrifice_mode(candidate_ids: Array) -> void:
+	_in_form_sacrifice_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)  # red — mandatory Form sacrifice
+	_form_sacrifice_candidates.clear()
+	for cid in candidate_ids:
+		_form_sacrifice_candidates.append(cid as String)
+	refresh_highlights()
+	form_sacrifice_mode_started.emit(candidate_ids)
+
+
+func _handle_form_sacrifice_click(instance_id: String) -> void:
+	if instance_id not in _form_sacrifice_candidates:
+		return
+	var events := StackResolver.choose_form_sacrifice(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	if state.pending_form_sacrifice_player == "":
+		_in_form_sacrifice_mode = false
+		_highlight_color = Color(0.2, 1.0, 0.3)
+		_form_sacrifice_candidates.clear()
+		form_sacrifice_mode_ended.emit()
+	else:
+		_form_sacrifice_candidates.clear()
+		for cid: String in state.pending_form_sacrifice_ids:
+			_form_sacrifice_candidates.append(cid)
 	refresh_highlights()
 
 
@@ -1047,6 +1078,13 @@ func get_playable_card_ids() -> Array:
 			unique_ids.append(cid)
 		return unique_ids
 
+	# Form sacrifice mode: highlight the in-play Forms.
+	if _in_form_sacrifice_mode and state.pending_form_sacrifice_player == local_player:
+		var form_ids: Array = []
+		for cid: String in _form_sacrifice_candidates:
+			form_ids.append(cid)
+		return form_ids
+
 	# Control-discard mode (Infernal): all local hand cards are valid discard
 	# choices (declining goes through the pass button, not a card click).
 	if _in_control_discard_mode and state.pending_control_discard_player == local_player:
@@ -1146,12 +1184,6 @@ func get_playable_card_ids() -> Array:
 					{"hero_id": card.instance_id, "target_id": ""})
 				if StackResolver.can_submit(state, power_check, db):
 					result.append(card.instance_id)
-				continue
-			# Armor block (rule 304.3): green when exhaust-to-prevent is legal.
-			var block_action := PendingAction.make("use_armor_prevention",
-				local_player, {"card_id": card.instance_id})
-			if StackResolver.can_submit(state, block_action, db):
-				result.append(card.instance_id)
 				continue
 			# Activated power (ally / equipment).
 			var ap_data := StackResolver._ally_activated_power(def)
@@ -1359,17 +1391,6 @@ func get_context_actions(instance_id: String) -> Array:
 							{"card_id": instance_id, "_needs_target": ap_needs_target,
 								"_needs_gy_target": ap_needs_gy_target}),
 						"enabled": ap_enabled})
-
-			# Armor block (rule 304.3): equipment with DEF > 0 in the hero row.
-			if zone.zone_type == "hero_row" and def.card_type == "Equipment":
-				var eq_def := int(StackResolver._equipment_info(def).get("def", 0))
-				if eq_def > 0:
-					var block_a := PendingAction.make("use_armor_prevention",
-						local_player, {"card_id": instance_id})
-					char_actions.append({
-						"label": "Exhaust to prevent %d damage" % eq_def,
-						"action": block_a,
-						"enabled": StackResolver.can_submit(state, block_a, db)})
 
 			# Hero power entry (heroes only, controlled by local player).
 			if zone.zone_type == "hero_row" and card.controller == local_player:

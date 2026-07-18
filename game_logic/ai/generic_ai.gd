@@ -53,9 +53,6 @@ const _DEVELOP_RANK := {
 # from the top before developing again.
 func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	# Defensive, deterministic — legal at any priority incl. the opponent's turn.
-	var block := armor_prevention_action(state, db, player_id)
-	if block != null:
-		return block
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
 		return ambush
@@ -80,6 +77,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var cash_in := doomed_sacrifice_action(state, db, player_id)
 	if cash_in != null:
 		return cash_in
+	# Bear Form flash-in (BaseAI) — hero gains protector before the protect point.
+	var shift := bear_form_action(state, db, player_id)
+	if shift != null:
+		return shift
 
 	# Everything below is our own action window only. Outside it (opponent's
 	# turn / a pending chain we don't want to answer), we simply pass — no random
@@ -640,11 +641,10 @@ func _all_out_with_spell_hero_lethal_action(state: GameState, db, player_id: Str
 	return finisher
 
 
-# Enemy hero's total available damage prevention right now: current block
-# (PlayerState.damage_prevention, already committed via use_armor_prevention)
-# plus the DEF of every ready armor they could still exhaust to add more
-# before this window's damage resolves (rule 304.3 block is declared before
-# damage, so an all-out read must assume they use everything available).
+# Enemy hero's total available damage prevention right now: any pool already
+# built at an open prevention point plus the DEF of every ready armor they
+# could still exhaust when the packet lands (rule 717.2c — an all-out read
+# must assume they use everything available).
 func _enemy_available_hero_block(state: GameState, db, opp: String) -> int:
 	var ps := state.players.get(opp) as PlayerState
 	var block: int = ps.damage_prevention if ps else 0

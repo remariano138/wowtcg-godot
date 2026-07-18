@@ -76,6 +76,26 @@ var pending_whelp_bounce_cost: int = 0
 # (direct call, like the ready-on-attack point). "" = none pending.
 var pending_attack_exhaust_player: String = ""
 var pending_attack_exhaust_source_id: String = ""
+# Armor prevention point (rule 717.2c): opened at the moment a damage packet
+# would be dealt to a hero whose controller has ready DEF>0 equipment — at
+# combat conclusion, or just before a hero-damaging chain link resolves. The
+# player exhausts any number of armors back-to-back (each choose_prevention
+# call), or declines; then the (reduced) packet lands. Direct call, NOT the
+# chain ("None of this uses the chain" — 717.2c); can_submit / pass_priority
+# hard-block while pending. Resolved via StackResolver.choose_prevention().
+var pending_prevention_player: String = ""   # who must decide; "" = none
+var pending_prevention_amount: int = 0       # damage remaining in the current packet
+var pending_prevention_source: String = ""   # packet source card (UI)
+var pending_prevention_target: String = ""   # hero about to be hit
+var pending_prevention_offers: Array = []    # queued packets: {player, amount, source, target}
+var pending_prevention_resume: String = ""   # what to resume: "combat" or "packets"
+# Deferred packet groups (resume == "packets"): EVERY non-combat damage effect
+# hands its packets to StackResolver.defer_packets instead of calling
+# deal_damage — each group is {packets: [{source, target, amount, riders,
+# discard_per, drain_heal_per, drain_heal_to}], after: String,
+# recursive_destroy: bool} and lands (pool-reduced) once its prevention offers
+# are decided. This makes new damage effects preventable by construction.
+var pending_prevention_deferred: Array = []
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending
@@ -95,6 +115,19 @@ var pending_equip_sacrifice_ids: Array[String] = []  # instance_ids of same-slot
 # On violation the player destroys duplicates until only one remains.
 var pending_unique_sacrifice_player: String = ""
 var pending_unique_sacrifice_ids: Array[String] = []  # instance_ids of the same-named Unique cards in play
+# Form (1) tag-count uniqueness (rule 414.3b — Bear Form / Cat Form / Bash / Claw):
+# a player may control at most one card with the Form (1) tag (`form:1` effects
+# segment) in play. On violation the player destroys Forms until one remains
+# (normally keeping the newly played one). Mirrors the Unique-tag flow.
+var pending_form_sacrifice_player: String = ""
+var pending_form_sacrifice_ids: Array[String] = []  # instance_ids of the in-play Form cards
+# Bear/Cat Form death trigger: "When [this] is destroyed, you may pay (2). If you
+# do, put it into your hand" (`on_destroyed:pay_return_hand:2`). Opened only when
+# the controller can afford the cost; resolved via choose_form_return() (direct
+# call, like the whelp bounce). See data/rules_deviations.md "Form return timing".
+var pending_form_return_player: String = ""
+var pending_form_return_card_id: String = ""
+var pending_form_return_cost: int = 0
 # Infernal-style start-of-turn choice: discard a card OR give the opponent
 # control of the source. Optional discard — declining is a legal resolution
 # (unlike pending_discard, which is mandatory).
@@ -330,6 +363,17 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 					# +Y health." Lives in the hero row (rule 305.2c).
 					if def and def.card_subtype == "Pet":
 						bonus += int(p[1]) if p.size() > 1 else 0
+				"hero_atk_while_attacking":
+					# Cat Form: "Your hero is in cat form. (+1 ATK while
+					# attacking.)" — the ongoing Form in the hero row grants the
+					# HERO (only) +N while attacking. Defender-independent, so
+					# it's safe inside assume_attacking forecasts and the
+					# get_legal_attackers hero gate (unlike Bala's
+					# atk_vs_exhausted_defender). Never cached.
+					if is_attacking:
+						var owner_ps := players.get(inst.controller) as PlayerState
+						if owner_ps and owner_ps.hero_instance_id == inst.instance_id:
+							bonus += int(p[1]) if p.size() > 1 else 1
 	return bonus
 
 func get_max_hp(instance_id: String, db) -> int:

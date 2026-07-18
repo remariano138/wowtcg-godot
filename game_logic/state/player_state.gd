@@ -27,10 +27,11 @@ var max_hand_size: int = 7
 # Default is 1; some card effects increase this.
 var pet_capacity: int = 1
 
-# Damage prevention pool ("current block") from exhausted armor (rule 304.3).
-# Built up via use_armor_prevention actions; consumed by damage dealt to this
-# player's HERO (allies are not protected). Cleared at combat conclusion,
-# when the priority window closes, and at the start of each turn.
+# Damage prevention pool from exhausted armor (rule 717.2c). Built at an open
+# prevention point (StackResolver.choose_prevention) for the packet about to
+# land; consumed by damage dealt to this player's HERO (allies are not
+# protected). Excess DEF beyond the packet is wasted — cleared once the packet
+# has landed (and defensively at window close / turn start).
 var damage_prevention: int = 0
 
 # Gorebelly's flip power: "You pay (3) less the next time you strike with a

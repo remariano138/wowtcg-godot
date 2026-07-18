@@ -31,10 +31,6 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	# Don't act during ready or draw phases — pass and let the phase advance.
 	if state.phase in ["ready", "draw"]:
 		return null
-	# Armor block (BaseAI) — deterministic, never left to the dice.
-	var block := armor_prevention_action(state, db, player_id)
-	if block != null:
-		return block
 	# Combat-instant ambush (BaseAI) — deterministic, never left to the dice.
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
@@ -59,6 +55,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var cash_in := doomed_sacrifice_action(state, db, player_id)
 	if cash_in != null:
 		return cash_in
+	# Bear Form flash-in (BaseAI) — deterministic, never left to the dice.
+	var shift := bear_form_action(state, db, player_id)
+	if shift != null:
+		return shift
 	var legal := get_legal_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false

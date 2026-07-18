@@ -51,6 +51,9 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_27":  "combat_instant_dmg",   # Natural Selection — modal: damage mode only (heal mode enumerated by get_modal_actions but never played — future work)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
+	"azeroth_17":  "combat_instant_exhaust",     # Bash — exhaust target hero or ally (+ bear form ongoing)
+	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
+	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 }
@@ -60,9 +63,6 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 # Called once each time this player has priority.
 # Even the base AI plays combat instants — the ambush behavior is universal.
 func decide_action(state: GameState, db, player_id: String) -> PendingAction:
-	var block := armor_prevention_action(state, db, player_id)
-	if block != null:
-		return block
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
 		return ambush
@@ -84,90 +84,37 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var cash_in := doomed_sacrifice_action(state, db, player_id)
 	if cash_in != null:
 		return cash_in
-	return instant_protector_action(state, db, player_id)
+	var flash := instant_protector_action(state, db, player_id)
+	if flash != null:
+		return flash
+	return bear_form_action(state, db, player_id)
 
 
-# ── Armor damage prevention (rule 304.3) ──────────────────────────────────────
-# Exhaust armor to block incoming hero damage. Heuristic:
-#   incoming = damage being dealt to our hero − current block (damage_prevention)
-#   Check armors from highest DEF down; exhaust one when incoming >= DEF − 1
-#   (avoids wasting a big armor on chip damage). One armor per decide call —
-#   the proposer keeps priority, so we re-evaluate with the new block each time
-#   priority comes back (e.g. 6 incoming vs DEF 3 + DEF 1 → both get used).
-func armor_prevention_action(state: GameState, db, player_id: String) -> PendingAction:
-	if not db:
-		return null
-	var incoming := _incoming_hero_damage(state, db, player_id)
-	if incoming <= 0:
-		return null
+# ── Armor damage prevention (rule 717.2c prevention point) ────────────────────
+# Called by the scene when this player must decide at an open prevention point
+# (state.pending_prevention_*). Returns the armor instance_id to exhaust, or ""
+# to take the remaining damage. The engine re-opens the point after each
+# exhaust while damage remains and ready armor exists, so this is called once
+# per armor. Heuristic: exhaust the highest-DEF ready armor for which
+# remaining >= DEF − 1 (avoids wasting a big armor on chip damage).
+func choose_prevention(state: GameState, db, player_id: String) -> String:
+	if not db or state.pending_prevention_player != player_id:
+		return ""
+	var remaining := state.pending_prevention_amount
+	if remaining <= 0:
+		return ""
 	var best_id := ""
 	var best_def := 0
-	for card in state.cards_in_zone(player_id + "_hero_row"):
-		if card.is_exhausted:
-			continue
+	for armor_id in StackResolver.get_ready_def_armor(state, player_id, db):
+		var card := state.get_card(armor_id)
 		var def := db.get_def(card.card_def_id) as CardDef
-		if not def or def.card_type != "Equipment":
-			continue
 		var dv := int(StackResolver._equipment_info(def).get("def", 0))
-		if dv <= 0 or dv <= best_def:
+		if dv <= best_def:
 			continue
-		if incoming >= dv - 1:   # worth exhausting — little wasted potential
+		if remaining >= dv - 1:   # worth exhausting — little wasted potential
 			best_def = dv
-			best_id  = card.instance_id
-	if best_id == "":
-		return null
-	var act := PendingAction.make("use_armor_prevention", player_id,
-		{"card_id": best_id})
-	if StackResolver.can_submit(state, act, db):
-		return act
-	return null
-
-
-# Damage currently heading at player_id's hero, minus block already declared.
-# Two sources:
-#   • Combat — Defend Window open with our hero as the final defender (not the
-#     Attack Window or protect point — a Protector could still take the hit).
-#   • Chain  — an opposing damage effect on pending_actions targets our hero
-#     (e.g. Quick Strike, Grimdron's power). Armor prevents effect damage too.
-func _incoming_hero_damage(state: GameState, db, player_id: String) -> int:
-	var ps := state.players.get(player_id) as PlayerState
-	if not ps or ps.hero_instance_id == "":
-		return 0
-	var hero_id := ps.hero_instance_id
-	var incoming := 0
-	if state.combat_defend_window \
-			and state.combat_defender == hero_id \
-			and state.is_in_play(state.combat_attacker):
-		incoming += state.get_atk(state.combat_attacker, db)
-	for act in state.pending_actions:
-		if act.source_player == player_id:
-			continue
-		if act.params.get("target_id", "") != hero_id:
-			continue
-		# Enter-play targeted damage (e.g. Taz'dingo) on the chain — effect and
-		# amount live in pending_enter_play_effect until resolution.
-		if act.action_type == "choose_enter_play_target":
-			var eff := state.pending_enter_play_effect.get("effect", "") as String
-			var eff_parts := eff.split(":")
-			if eff_parts[0] == "deal_damage_to_target" and eff_parts.size() > 1:
-				incoming += int(eff_parts[1])
-			continue
-		var src := state.get_card(act.params.get("card_id", ""))
-		var def := db.get_def(src.card_def_id) as CardDef if src else null
-		if not def:
-			continue
-		match act.action_type:
-			"play_instant", "play_ability":
-				# Modal card on the chain: only its damage mode counts as incoming.
-				if StackResolver.is_modal_def(def) \
-						and int(act.params.get("mode", -1)) != _modal_dmg_mode_index(def):
-					continue
-				incoming += _combat_instant_dmg(def)
-			"use_ally_power":
-				var ap := StackResolver._ally_activated_power(def)
-				if (ap.get("effect", "") as String) == "deal_damage_to_target":
-					incoming += int(ap.get("amount", 0))
-	return incoming - ps.damage_prevention
+			best_id  = armor_id
+	return best_id
 
 
 # Ambush logic — only the player being ATTACKED (controller of combat_defender)
@@ -227,7 +174,9 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 		var dmg_mode := _modal_dmg_mode_index(def)
 		if dmg_mode >= 0:
 			params["mode"] = dmg_mode
-		var act := PendingAction.make("play_instant", player_id, params)
+		# Action type per card — an ongoing Instant Ability (Claw) routes to
+		# play_ability, a plain instant (Quick Strike) to play_instant.
+		var act := PendingAction.make(_action_type_for(card, db), player_id, params)
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
@@ -398,9 +347,12 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 	var defender_id: String = top.params.get("defender_id", "")
 	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
 		return null
-	# Exhaustion targets allies only — an attacking hero can't be frozen this way.
+	# Exhaustion (exhaust_target:ally) can only freeze an attacking ALLY; Bash
+	# (exhaust_target:hero_or_ally) can also freeze an attacking hero — the
+	# per-card targeting gate is applied in the candidate loop below.
 	var attacker := state.get_card(attacker_id)
-	if not attacker or not StackResolver._is_ally(state, attacker_id):
+	var attacker_is_ally := attacker != null and StackResolver._is_ally(state, attacker_id)
+	if not attacker:
 		return null
 	var defender := state.get_card(defender_id)
 	if not defender or defender.controller != player_id:
@@ -433,15 +385,95 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 				and dmg_def.cost <= state.get_available_resources(player_id):
 			return null
 
-	# Find an affordable Exhaustion in hand and aim it at the attacker.
+	# Find an affordable Exhaustion/Bash in hand and aim it at the attacker.
 	for card in state.cards_in_zone(player_id + "_hand"):
 		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_exhaust":
 			continue
-		var act := PendingAction.make("play_instant", player_id,
+		var e_def := db.get_def(card.card_def_id) as CardDef
+		if not attacker_is_ally and not _exhausts_heroes(e_def):
+			continue   # ally-only exhaust can't answer an attacking hero
+		# Action type per card — Bash is an ongoing Instant Ability (play_ability).
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
 			{"card_id": card.instance_id, "target_id": attacker_id})
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
+
+
+# True when the card's exhaust_target segment accepts heroes (Bash:
+# exhaust_target:hero_or_ally).
+static func _exhausts_heroes(def: CardDef) -> bool:
+	if not def:
+		return false
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "exhaust_target" and parts.size() > 1 \
+				and parts[1] == "hero_or_ally":
+			return true
+	return false
+
+
+# ── Bear Form (azeroth_18 / combat_instant_bear_form) ─────────────────────────
+# "Ongoing: Your hero is in bear form. (Has protector.)" Held like a combat
+# instant and flashed in during the ATTACK window of a combat where the AI is
+# being attacked — the hero is then a legal protector at the protect point
+# (choose_protector picks it up). Played only when:
+#   • the attack window is open with an empty chain and we control the defender,
+#   • the hero is NOT already in bear form (no in-play Form granting
+#     hero_has_protector),
+#   • the hero is ready (an exhausted hero can't protect),
+#   • the attacker actually deals damage,
+#   • no board protector already answers the attack (choose_protector == "").
+func bear_form_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.combat_attack_window:
+		return null   # before the protect point only — too late afterwards
+	if not state.pending_actions.is_empty():
+		return null
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only the attacked side shifts
+
+	if state.get_atk(attacker_id, db, true) <= 0:
+		return null   # attacker deals nothing — no reason to block
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return null
+	var hero := state.get_card(ps.hero_instance_id)
+	if not hero or hero.is_exhausted:
+		return null   # exhausted hero can't protect anyway
+	# Already in bear form? (Any in-play Form of ours granting hero_has_protector.)
+	for c in state.cards_in_zone(player_id + "_hero_row"):
+		var c_def := db.get_def(c.card_def_id) as CardDef
+		if c_def and StackResolver.is_form_def(c_def) \
+				and StackResolver._has_effect_flag(c_def, "hero_has_protector"):
+			return null
+	# A board protector already answers this attack — save the card.
+	if choose_protector(state, db, player_id) != "":
+		return null
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_bear_form":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Form pay-return choice (Bear/Cat Form death trigger): the engine only opens
+# the point when the cost is affordable, and getting the Form back is always
+# worth 2 — pay.
+func choose_form_return(_state: GameState, _db, _player_id: String) -> bool:
+	return true
 
 
 # ── Destroy the protecting ally (First to Fall) ───────────────────────────────
@@ -817,10 +849,19 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 	if state.phase == "action" and state.turn_player == player_id \
 			and state.pending_actions.is_empty() \
 			and not state.combat_attack_window and not state.combat_defend_window:
+		var ps_self := state.players.get(player_id) as PlayerState
+		var own_hero_id: String = ps_self.hero_instance_id if ps_self else ""
 		for atk_id in StackResolver.get_legal_attackers(state, player_id, db):
-			if forecast_atk(state, db, atk_id) <= 0:
+			var fatk := forecast_atk(state, db, atk_id)
+			if fatk <= 0:
 				continue   # never propose combat with a 0-ATK attacker
 			for def_id in StackResolver.get_legal_defenders(state, atk_id, db):
+				# HERO attacks on an enemy ALLY only when lethal on it — a hero
+				# swinging into an ally it can't kill just soaks retaliation for
+				# nothing (attacks on the enemy hero always qualify).
+				if atk_id == own_hero_id and StackResolver._is_ally(state, def_id) \
+						and fatk < state.get_current_hp(def_id, db):
+					continue
 				result.append(PendingAction.make("propose_combat", player_id,
 					{"attacker_id": atk_id, "defender_id": def_id}))
 
@@ -2484,6 +2525,18 @@ func _modal_mode_playable(mode_effect: String) -> bool:
 func _attach_actions(state: GameState, db, player_id: String,
 		card_id: String, action_type: String, def: CardDef) -> Array[PendingAction]:
 	var result: Array[PendingAction] = []
+	# Damage attachment (Fireball): AI policy — only ever aimed at the opposing
+	# HERO (guaranteed value, no fizzle risk). Any printed target stays legal
+	# for human players; this is a targeting heuristic, not a rule.
+	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage"):
+		var f_opp := "p2" if player_id == "p1" else "p1"
+		var f_hero := state.get_hero(f_opp)
+		if f_hero:
+			var f_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": f_hero.instance_id})
+			if StackResolver.can_submit(state, f_act, db):
+				result.append(f_act)
+		return result
 	var is_buff := StackResolver._has_effect_flag_prefix(def, "attached_buff")
 	var side := player_id if is_buff else ("p2" if player_id == "p1" else "p1")
 	var best: PendingAction = null

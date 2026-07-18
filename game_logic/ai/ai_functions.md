@@ -158,8 +158,10 @@ GenericAI is fully deterministic — it does **not** fall through to
 FullRandomAI. `decide_action` returns ONE action per priority call; the engine
 resolves it and calls again, so a turn plays out step by step. Order:
 
-1. `armor_prevention_action` / `combat_instant_action` — inherited defensive
-   plays, legal even on the opponent's turn.
+1. `combat_instant_action` — inherited defensive plays, legal even on the
+   opponent's turn. (Armor prevention is no longer a priority-window action:
+   the scene/sim calls `BaseAI.choose_prevention` at the 717.2c prevention
+   point instead.)
 2. (own action window only, else `null` — no random responses)
 3. `_hero_lethal_action` — win now.
 4. `_safe_lethal_action` — kill an ally and survive.
@@ -243,6 +245,44 @@ targeting flow (`input_router.start_targeting`).
 |---|---|
 | `base_ai.gd` → `decide_action` | The base AI's only proactive play — every subclass inherits the ambush. |
 | `full_random_ai.gd` → `decide_action` | Checked FIRST, before any random pick — the ambush is deterministic, never left to the dice. |
-| `generic_ai.gd` → `decide_action` | Also checked first (step 1 of its pipeline); GenericAI calls `armor_prevention_action`/`combat_instant_action` directly, not via `super` — it has no random fallback. |
+| `generic_ai.gd` → `decide_action` | Also checked first (step 1 of its pipeline); GenericAI calls `combat_instant_action` directly, not via `super` — it has no random fallback. |
 
 Tests: scenario 34 in `game_logic/tests/test_scenarios.gd`.
+
+## `BaseAI.bear_form_action(state, db, player_id) -> PendingAction`
+
+**Bear Form flash-in** (`azeroth_18`, tagged `"combat_instant_bear_form"` —
+held, never blind-played). Plays Bear Form during the **attack window** of a
+combat where the AI is being attacked, so its hero is a legal protector at the
+following protect point (the normal `choose_protector` then decides whether the
+hero actually steps in). Gates: attack window open with an empty chain, we
+control the defender, the attacker's forecast ATK > 0, our hero is **ready**
+(an exhausted hero can't protect), the hero is **not already in bear form**
+(no in-play Form of ours carrying `hero_has_protector`), and no board
+protector already answers the attack (`choose_protector == ""`). Wired into
+all three AIs' `decide_action`, after `instant_protector_action`.
+
+Related Form behaviors:
+
+- **Bash** (`azeroth_17`) is tagged `"combat_instant_exhaust"` — same role and
+  worth math as Exhaustion in `exhaust_attacker_action`, but because its
+  recipe is `exhaust_target:hero_or_ally` it also answers an attacking
+  **hero** (ally-only Exhaustion is skipped for hero attackers via
+  `_exhausts_heroes`). Action type comes from `_action_type_for` (Bash is an
+  ongoing Instant Ability → `play_ability`).
+- **Claw** (`dark_portal_20`) is tagged `"combat_instant_dmg"` — standard
+  ambush math in `combat_instant_action` (action type `play_ability`); the cat
+  form ongoing it leaves behind is a free rider the AI doesn't model.
+- **Cat Form** (`dark_portal_19`) is untagged — GenericAI plays it in its
+  develop step; the hero then shows up in `get_legal_attackers` (the engine
+  gate probes `get_atk(hero, db, true)`).
+- **Hero-attack policy** (`get_legal_actions`): a HERO attack on an enemy
+  **ally** is offered only when the forecast ATK kills it — a hero swinging
+  into an ally it can't kill soaks retaliation for nothing. Attacks on the
+  enemy hero are always offered.
+- `BaseAI.choose_form_return` always pays the 2 (the engine only opens the
+  choice when affordable).
+
+Tests: the Forms block in `game_logic/tests/test_scenarios.gd`
+(`_test_ai_bear_form_flash_in`, `_test_ai_bash_freezes_attacking_hero`,
+`_test_ai_hero_attack_lethal_gate`, `_test_ai_claw_ambush`).

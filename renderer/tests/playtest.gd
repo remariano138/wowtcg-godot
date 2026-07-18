@@ -224,6 +224,15 @@ var _in_ready_mode: bool = false
 var _ready_nodes: Array[Node] = []
 var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
+var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
+var _form_return_nodes: Array[Node] = []
+
+# Armor prevention point (rule 717.2c) — inline "exhaust armor / take the
+# damage" choice at the moment a packet would hit a hero, mirrors the
+# strike-point UI. Board-public (works for the off-screen hotseat player too).
+var _in_prevention_mode: bool = false
+var _prevention_armor_ids: Array = []
+var _prevention_nodes: Array[Node] = []
 
 # ── Combat window highlight (attacker/defender in red during attack/defend windows) ──
 var _combat_highlight_ids: Array = []
@@ -350,6 +359,7 @@ func _build_scene() -> void:
 	_router.control_discard_mode_ended.connect(_on_control_discard_mode_ended)
 	_router.equipment_sacrifice_mode_ended.connect(_on_equipment_sacrifice_mode_ended)
 	_router.unique_sacrifice_mode_ended.connect(_on_unique_sacrifice_mode_ended)
+	_router.form_sacrifice_mode_ended.connect(_on_form_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
@@ -1390,7 +1400,6 @@ func _describe_pending_action(action: PendingAction) -> String:
 		"play_equipment":       return "Equip %s" % name
 		"place_resource":       return "Resource: %s" % name
 		"use_quest":            return "Quest: %s" % name
-		"use_armor_prevention": return "Block: %s" % name
 		"use_ally_power":       return "%s (power)" % name
 		"activate_power":       return "%s (hero power)" % name
 		_:                      return "%s (%s)" % [name, action.action_type]
@@ -1482,9 +1491,6 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 			tex = _chain_action_texture(action)
 		"use_quest":
 			caption = "quest"
-			tex = _chain_action_texture(action)
-		"use_armor_prevention":
-			caption = "block"
 			tex = _chain_action_texture(action)
 		_:
 			caption = action.action_type
@@ -1582,6 +1588,7 @@ func _update_pass_btn() -> void:
 	_pass_btn.disabled = not my_turn or _state.pending_pet_sacrifice_player == _local_player \
 		or _state.pending_equip_sacrifice_player == _local_player \
 		or _state.pending_unique_sacrifice_player == _local_player \
+		or _state.pending_form_sacrifice_player == _local_player \
 		or (_state.pending_control_discard_player != "" \
 			and _state.pending_control_discard_player != _local_player)
 
@@ -1598,6 +1605,9 @@ func _update_pass_btn() -> void:
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _state.pending_unique_sacrifice_player == _local_player:
 		_pass_btn.text     = "Destroy a duplicate  [Space]"
+		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
+	elif _state.pending_form_sacrifice_player == _local_player:
+		_pass_btn.text     = "Destroy a Form  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif _router.is_awaiting_chain_lightning_optional_target():
 		_pass_btn.text     = "Skip target  [Space]"
@@ -2204,6 +2214,9 @@ func _on_game_event(event: GameEvent) -> void:
 		"whelp_bounce_opened":
 			_window_generation += 1
 			_handle_whelp_bounce(event.payload)
+		"prevention_opened":
+			_window_generation += 1
+			_handle_prevention(event.payload)
 		"whelp_bounce_resolved":
 			var b_card := _state.get_card(event.payload.get("ally_id", ""))
 			var b_def: CardDef = _db.get_def(b_card.card_def_id) if b_card else null
@@ -2232,6 +2245,26 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_equipment_sacrifice(event.payload)
 		"unique_sacrifice_required":
 			_handle_unique_sacrifice(event.payload)
+		"form_sacrifice_required":
+			_handle_form_sacrifice(event.payload)
+		"form_return_opened":
+			_window_generation += 1
+			_handle_form_return(event.payload)
+		"form_return_resolved":
+			var fr_card := _state.get_card(event.payload.get("card_id", ""))
+			var fr_def: CardDef = _db.get_def(fr_card.card_def_id) if fr_card else null
+			if event.payload.get("paid", false):
+				_set_status("↩ %s pays to return %s to hand" % [event.payload.get("player", "?"),
+					fr_def.card_name if fr_def else "a Form"])
+			_refresh_ui()
+		"form_broken":
+			var fb_card := _state.get_card(event.payload.get("card_id", ""))
+			var fb_def: CardDef = _db.get_def(fb_card.card_def_id) if fb_card else null
+			_set_status("💢 %s's %s is destroyed (%s)" % [event.payload.get("player", "?"),
+				fb_def.card_name if fb_def else "Form",
+				"weapon strike" if event.payload.get("reason", "") == "weapon_strike"
+					else "non-Feral ability"])
+			_refresh_ui()
 		"reveal_pick_opened":
 			_handle_reveal_pick(event.payload)
 		"enter_play_target_required":
@@ -2452,6 +2485,39 @@ func _on_unique_sacrifice_mode_ended() -> void:
 	_refresh_ui()
 	_schedule_next_turn()
 	_maybe_turbo_pass()
+
+
+func _on_form_sacrifice_mode_ended() -> void:
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
+
+
+# Form (1) tag-count uniqueness (rule 414.3b): destroy Forms until one remains.
+func _handle_form_sacrifice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var candidates: Array = payload.get("candidates", [])
+	var new_id: String = payload.get("new_card_id", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	if player_type != "human":
+		# AI: playing a new Form IS the shapeshift — keep the newly played one,
+		# destroy the older Form(s).
+		var keep_id: String = new_id if new_id != "" else \
+				(candidates[0] if not candidates.is_empty() else "")
+		for cid: String in candidates:
+			if cid == keep_id:
+				continue
+			var events := StackResolver.choose_form_sacrifice(_state, cid, _db)
+			if not events.is_empty():
+				EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		# Human: highlight the in-play Forms; click one to destroy it.
+		_router.start_form_sacrifice_mode(candidates)
+		_set_status("Form (1) — click a highlighted Form to destroy it")
+		_refresh_ui()
 
 
 func _handle_unique_sacrifice(payload: Dictionary) -> void:
@@ -3413,6 +3479,8 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 		_resolve_protection(instance_id)
 	elif _in_strike_mode and instance_id in _strike_weapon_ids:
 		_resolve_strike(instance_id)
+	elif _in_prevention_mode and instance_id in _prevention_armor_ids:
+		_resolve_prevention(instance_id)
 
 
 # ── Central choice popup (every non-Protect player choice) ─────────────────────
@@ -3602,6 +3670,103 @@ func _resolve_strike(weapon_id: String) -> void:
 	# would re-read the just-held window as "already seen" and Layer-2 auto-pass it.
 
 
+# ── Armor prevention point (rule 717.2c) ───────────────────────────────────────
+# Opened by the engine at the moment a damage packet would hit a hero whose
+# controller has ready DEF armor — combat conclusion or a hero-damaging chain
+# link about to resolve. The player exhausts armors one at a time (the engine
+# re-opens the point while damage remains and armor is available) or takes the
+# damage. Board-public, so the off-screen hotseat player is prompted inline too.
+
+func _handle_prevention(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		# AI decides one armor per call; choose_prevention re-emits
+		# prevention_opened (re-entering this handler) while the point stays open.
+		var armor_id: String = ai.choose_prevention(_state, _db, player)
+		var events := StackResolver.choose_prevention(_state, armor_id, _db)
+		EventBus.emit_events(events)
+		if _state.pending_prevention_player == "":
+			_refresh_ui()
+			_drain_passes()
+			_schedule_next_turn()
+	else:
+		_show_prevention_inline(payload)
+
+
+func _show_prevention_inline(payload: Dictionary) -> void:
+	# A previous popup may still be up when the point re-opens (second armor).
+	_clear_prevention_nodes()
+	_in_prevention_mode   = true
+	_prevention_armor_ids = StackResolver.get_ready_def_armor(
+		_state, payload.get("player", ""), _db)
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var amount: int = payload.get("amount", 0)
+	var src_card := _state.get_card(payload.get("source", ""))
+	var src_def: CardDef = _db.get_def(src_card.card_def_id) if src_card else null
+	var header_text := "%d damage incoming%s — exhaust armor to prevent?" % [
+		amount, (" from %s" % src_def.card_name) if src_def else ""]
+
+	var buttons: Array = []
+	for cid in _prevention_armor_ids:
+		var btn_label: String = cid
+		var card := _state.get_card(cid)
+		if card and _db:
+			var def: CardDef = _db.get_def(card.card_def_id)
+			if def:
+				btn_label = "%s  (DEF %d)" % [def.card_name,
+					int(StackResolver._equipment_info(def).get("def", 0))]
+		var captured_id: String = cid
+		buttons.append({
+			"text": btn_label,
+			"callback": func() -> void: _resolve_prevention(captured_id),
+		})
+	buttons.append({
+		"text": "Take the damage",
+		"callback": func() -> void: _resolve_prevention(""),
+	})
+
+	_prevention_nodes.append(_build_choice_popup(header_text, Color(0.55, 0.75, 1.0), buttons))
+
+	# Highlight the exhaustable armors (deferred, same reason as protect outlines).
+	var captured_ids: Array = _prevention_armor_ids.duplicate()
+	call_deferred("_apply_prevention_highlights", captured_ids)
+
+
+func _apply_prevention_highlights(armor_ids: Array) -> void:
+	if not _in_prevention_mode:
+		return   # already resolved before this frame fired
+	_renderer.highlight_cards(armor_ids)
+
+
+func _clear_prevention_nodes() -> void:
+	for n in _prevention_nodes:
+		n.queue_free()
+	_prevention_nodes.clear()
+
+
+func _resolve_prevention(armor_id: String) -> void:
+	_in_prevention_mode   = false
+	_prevention_armor_ids = []
+	_clear_prevention_nodes()
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_prevention(_state, armor_id, _db)
+	EventBus.emit_events(events)
+	# Point still open (another armor / the other hero's packet)? The nested
+	# prevention_opened handler already rebuilt the UI inside emit_events.
+	if _state.pending_prevention_player != "":
+		return
+	_refresh_ui()
+	_drain_passes()
+	_schedule_next_turn()
+
+
 # ── Ready-on-attack point (Windseer Tarus) ─────────────────────────────────────
 
 func _handle_ready_point(payload: Dictionary) -> void:
@@ -3736,6 +3901,69 @@ func _show_whelp_bounce_inline(payload: Dictionary) -> void:
 	_whelp_bounce_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons))
 
 
+# Form pay-return choice (Bear/Cat Form death trigger). Board-public like the
+# whelp bounce: AI seats auto-resolve (always pay — see BaseAI.choose_form_return),
+# any human gets the inline pay/decline popup.
+func _handle_form_return(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pay: bool = ai.choose_form_return(_state, _db, player) if ai else false
+		var events := StackResolver.choose_form_return(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_form_return_inline(payload)
+
+
+func _show_form_return_inline(payload: Dictionary) -> void:
+	_in_form_return_mode = true
+	_ai_timer.stop()
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var card_id: String = payload.get("card_id", "")
+	var cost: int       = payload.get("cost", 0)
+	var card := _state.get_card(card_id)
+	var card_name := "the Form"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var header_text := "%s%s destroyed — pay %d to return it to hand?" % [prefix, card_name, cost]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: return %s" % [cost, card_name],
+			"callback": func() -> void: _resolve_form_return(true),
+		},
+		{
+			"text": "Decline",
+			"callback": func() -> void: _resolve_form_return(false),
+		},
+	]
+	_form_return_nodes.append(_build_choice_popup(header_text, Color(0.7, 0.55, 0.35), buttons))
+
+
+func _resolve_form_return(pay: bool) -> void:
+	_in_form_return_mode = false
+	for n in _form_return_nodes:
+		n.queue_free()
+	_form_return_nodes.clear()
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_form_return(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 func _resolve_whelp_bounce(pay: bool) -> void:
 	_in_whelp_bounce_mode = false
 	for n in _whelp_bounce_nodes:
@@ -3806,6 +4034,11 @@ func _on_rematch() -> void:
 	_strike_nodes                 = []
 	_in_ready_mode                = false
 	_ready_nodes                  = []
+	_in_prevention_mode           = false
+	_prevention_armor_ids         = []
+	_prevention_nodes             = []
+	_in_form_return_mode          = false
+	_form_return_nodes            = []
 	_p1_has_mulliganed            = false
 	_prompt_first_player          = true   # Rematch returns to the who-goes-first screen
 	_first_player_layer           = null   # freed with the other children above
@@ -3827,6 +4060,10 @@ func _schedule_next_turn() -> void:
 		return  # wait for equipment sacrifice before advancing
 	if _state.pending_unique_sacrifice_player != "":
 		return  # wait for the Unique-duplicate sacrifice before advancing
+	if _state.pending_form_sacrifice_player != "":
+		return  # wait for the Form (1) sacrifice choice before advancing
+	if _state.pending_form_return_player != "" or _in_form_return_mode:
+		return  # wait for the Form pay-return choice before advancing
 	if _state.pending_control_discard_player != "":
 		return  # wait for the discard-or-give-control choice before advancing
 	if _state.pending_reveal_pick_player != "":
@@ -3841,6 +4078,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
 		return  # wait for the Green Whelp Armor bounce choice before advancing
+	if _state.pending_prevention_player != "" or _in_prevention_mode:
+		return  # wait for the armor-prevention choice (717.2c) before advancing
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	# Auto-drive AI players AND, in hotseat, the off-screen human (auto-pass).
@@ -3894,11 +4133,14 @@ func _drain_passes() -> void:
 		if _game_over or _state.in_protect_point or _in_protect_mode \
 				or _state.pending_strike_player != "" or _in_strike_mode \
 				or _state.pending_ready_player != "" or _in_ready_mode \
-				or _state.pending_attack_exhaust_player != "":
+				or _state.pending_attack_exhaust_player != "" \
+				or _state.pending_prevention_player != "" or _in_prevention_mode:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \
 				or _state.pending_unique_sacrifice_player != "" \
+				or _state.pending_form_sacrifice_player != "" \
+				or _state.pending_form_return_player != "" or _in_form_return_mode \
 				or _state.pending_control_discard_player != "" \
 				or _state.pending_reveal_pick_player != "" \
 				or _state.pending_totem_target_player != "" \

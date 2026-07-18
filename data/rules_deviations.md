@@ -378,3 +378,75 @@ every triggered choice (strike, totems, Whelp Armor, attack-exhaust) uses
 direct-call points. Enforcement site: `_fire_on_destroyed` (`destroy_target`
 branch) / `_open_next_death_trigger` / `choose_death_target` in
 `game_logic/stack_resolver.gd`.
+
+---
+
+## Armor prevention — packet pipeline
+
+**Rule:** 717.2c — each ready equipment with DEF ≥ 1 generates an optional
+prevention modifier usable against ANY preventable damage packet that would be
+dealt to the controller's hero, at the moment the packet would be dealt.
+
+**Engine model:** rules-faithful via the packet pipeline. Effect resolutions
+never call `GameLogic.deal_damage` directly — they hand packets to
+`StackResolver.defer_packets`, which opens the prevention point
+(`choose_prevention`, direct call, never the chain) whenever a packet would
+hit a hero whose controller has ready DEF armor, then lands the (pool-reduced)
+group with its per-damage hooks (restriction riders, discard-per-damage,
+drain heal). Combat conclusion has its own open site
+(`_combat_prevention_offers`) because its two packets are simultaneous and
+strike-modified. New damage effects are preventable by construction —
+**implementers must emit packets via `defer_packets`, never `deal_damage`**
+(see the INVARIANT comment on `GameLogic.deal_damage`).
+
+**Remaining deviation:** none in coverage. Timing nuance: for chain links the
+point opens mid-resolution (after non-damage parts of the effect, e.g. an
+unconditional heal on a deal-and-heal card, which lands before the damage
+packet), rather than strictly "as the packet would be dealt" — observable
+order only, no rules-visible difference identified.
+
+Enforcement sites: `defer_packets` / `_apply_packet_group` /
+`_combat_prevention_offers` / `choose_prevention` in
+`game_logic/stack_resolver.gd`.
+
+---
+
+## Form return timing (Bear Form / Cat Form)
+
+**Rule:** printed text + CR 1582 example — "When [this] is destroyed, you may
+pay (2). If you do, put it into your hand at the next end of turn," and only if
+the card stayed in the graveyard continuously until then.
+
+**Engine model:** `on_destroyed:pay_return_hand:2` opens a direct-call choice
+(`choose_form_return`, like the whelp bounce) immediately after the destruction;
+paying returns the card to hand **immediately** instead of at end of turn, and
+no graveyard-continuity watch exists. The continuity clause only matters if
+something exiles/recurs the card from the graveyard between destruction and end
+of turn — nothing in the current pool does. The choice also only OPENS when the
+cost is affordable at destruction time (rules would let you wait until the
+trigger resolves).
+
+Enforcement site: the `pay_return_hand` branch of `_fire_on_destroyed` +
+`choose_form_return` in `game_logic/stack_resolver.gd`.
+
+---
+
+## Form break timing ("play a non-Feral ability")
+
+**Rule:** glossary Bear Form / Cat Form — "When you play a non-Feral ability or
+strike with a weapon, destroy each ability that's the source of a modifier
+granting your hero bear or cat form." A triggered effect fires when the ability
+is PLAYED (announced).
+
+**Engine model:** `form_break:TAG` destroys the controller's Forms as part of
+the played ability's **resolution** (`_check_form_break_ability`, called from
+`_resolve_play_instant` and `_resolve_play_ongoing_ability`), not at announce —
+and consequently not at all if the play fizzles (card left the chain). The
+weapon-strike branch (`_check_form_break_strike` in `choose_strike`) is
+timing-faithful. Observable difference: while a non-Feral ability sits on the
+chain the form is still in play (e.g. the hero could still protect with Bear
+Form against something resolving first); by strict rules the form would already
+be destroyed. Accepted for v1.
+
+Enforcement sites: `_check_form_break_ability` / `_check_form_break_strike` in
+`game_logic/stack_resolver.gd`.

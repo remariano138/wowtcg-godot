@@ -283,6 +283,21 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 			if party_hero:
 				events.append_array(GameLogic.heal(state, party_hero.instance_id, heal_amt, db, card.instance_id))
 			continue
+		# Fireball: "Ongoing: At the start of your turn, your hero deals 1 fire
+		# damage to attached character." No choice — the target is the host, so
+		# the trigger fires inline (packet pipeline: armor-preventable, and
+		# fire-typed so World in Flames doubling applies).
+		if not each_turn and key == "attached_damage_turn_start":
+			var burn_amt := int(parts[1]) if parts.size() > 1 else 1
+			var burn_type := parts[2].to_lower().strip_edges() if parts.size() > 2 else ""
+			var caster_hero := state.get_hero(card.controller)
+			if caster_hero and card.attached_to != "" \
+					and state.is_in_play(card.attached_to):
+				events.append_array(StackResolver.defer_packets(state, db, [{
+					"source": caster_hero.instance_id, "target": card.attached_to,
+					"amount": burn_amt, "dmg_type": burn_type,
+				}]))
+			continue
 		if not each_turn and key == "turn_start_discard_or_give_control":
 			state.pending_control_discard_player = card.controller
 			state.pending_control_discard_ids.append(card.instance_id)
@@ -348,6 +363,10 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 			"end_of_turn_damage_opposing":
 				# Infernal: "At the end of your turn, [this] deals AMOUNT DMG_TYPE
 				# damage to each opposing hero and ally."
+				# Packets go through the prevention machinery (rule 717.2c) —
+				# the opposing hero's controller may exhaust DEF armor first.
+				# The end-phase priority window that follows is hard-blocked
+				# until the point resolves, so nothing advances early.
 				var amount := int(parts[1]) if parts.size() > 1 else 1
 				var opp := ""
 				for pid in state.players:
@@ -356,17 +375,15 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 						break
 				if opp == "":
 					continue
+				var packets: Array = []
 				for target in state.cards_in_zone(opp + "_ally_row").duplicate():
-					events.append_array(GameLogic.deal_damage(
-						state, card.instance_id, target.instance_id, amount, db))
-					events.append_array(StackResolver._check_destroyed_trigger(
-						state, target.instance_id, card.instance_id, db))
+					packets.append({"source": card.instance_id,
+						"target": target.instance_id, "amount": amount})
 				var opp_hero := state.get_hero(opp)
 				if opp_hero:
-					events.append_array(GameLogic.deal_damage(
-						state, card.instance_id, opp_hero.instance_id, amount, db))
-					if state.get_current_hp(opp_hero.instance_id, db) <= 0:
-						events.append(GameEvent.game_over(card.controller, opp))
+					packets.append({"source": card.instance_id,
+						"target": opp_hero.instance_id, "amount": amount})
+				events.append_array(StackResolver.defer_packets(state, db, packets))
 	return events
 
 

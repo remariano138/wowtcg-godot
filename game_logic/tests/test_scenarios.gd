@@ -36,10 +36,13 @@ func _ready() -> void:
 		_test_equipment_slot_uniqueness,
 		_test_ai_plays_equipment,
 		_test_pads_block_combat,
+		_test_pads_block_decline,
 		_test_pads_block_instant,
 		_test_pads_block_enter_play_damage,
 		_test_pads_overblock_expires,
 		_test_ai_armor_block_heuristic,
+		_test_prevention_noncombat_sources,
+		_test_prevention_reduces_discard_per_damage,
 		_test_grimdron_ally_power,
 		_test_sarmoth_taunt_forces_attacker,
 		_test_sarmoth_taunt_multiple_attackers,
@@ -136,6 +139,15 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_exhaustion_freezes_proposal,
 		_test_ai_exhaustion_freeze_save,
+		_test_cat_form_hero_attack,
+		_test_form_break_and_pay_return,
+		_test_form_uniqueness_shapeshift,
+		_test_bash_freezes_and_grants_bear_form,
+		_test_form_breaks_on_weapon_strike,
+		_test_ai_bear_form_flash_in,
+		_test_ai_bash_freezes_attacking_hero,
+		_test_ai_hero_attack_lethal_gate,
+		_test_ai_claw_ambush,
 		_test_withdraw_bounce_and_spell_fizzle,
 		_test_ai_withdraw_save,
 		_test_first_to_fall_destroys_protector,
@@ -145,6 +157,7 @@ func _ready() -> void:
 		_test_ai_galahandra_freeze_save,
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
+		_test_devilsaur_leggings,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
 		_test_ai_elendril_flip_for_lethal,
@@ -193,6 +206,9 @@ func _ready() -> void:
 		_test_samuel_grey_discard_on_hero_combat_damage,
 		_test_ophelia_barrows_rfg_and_heal,
 		_test_ophelia_barrows_gates_and_fizzle,
+		_test_fireball_attach_and_burn,
+		_test_world_in_flames_doubles_fire,
+		_test_ai_fireball_targets_hero_only,
 	]
 
 	for t in tests:
@@ -332,7 +348,9 @@ func _test_green_whelp_armor_bounces_attacker() -> void:
 	StackResolver.pass_priority(state, db)
 	StackResolver.pass_priority(state, db)   # defend window
 	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # conclusion -> whelp bounce point
+	StackResolver.pass_priority(state, db)   # → prevention point (whelp has DEF 1)
+	eq(state.pending_prevention_player, "p1", "gw-a0: prevention point opened first")
+	StackResolver.choose_prevention(state, "", db)   # decline → conclusion → bounce point
 
 	eq(state.get_card("p1_hero").damage_taken, 3, "gw-a: hero took the ogre's 3")
 	eq(state.pending_whelp_bounce_player, "p1", "gw-b: bounce point opened for p1")
@@ -372,6 +390,7 @@ func _test_green_whelp_armor_decline_and_gates() -> void:
 		{"attacker_id": "ogre", "defender_id": "p1_hero"}), db)
 	for i in range(6):
 		StackResolver.pass_priority(s1, db)
+	StackResolver.choose_prevention(s1, "", db)   # decline the DEF 1 prevention point
 	eq(s1.pending_whelp_bounce_player, "p1", "gw-d: bounce point opened")
 	StackResolver.choose_whelp_bounce(s1, false, db)   # decline
 	ok(s1.is_in_play("ogre"), "gw-d2: declined — ogre stays in play")
@@ -392,6 +411,7 @@ func _test_green_whelp_armor_decline_and_gates() -> void:
 		{"attacker_id": "ogre", "defender_id": "p1_hero"}), db)
 	for i in range(6):
 		StackResolver.pass_priority(s2, db)
+	StackResolver.choose_prevention(s2, "", db)   # decline the DEF 1 prevention point
 	eq(s2.pending_whelp_bounce_player, "", "gw-e: unaffordable — point never opens")
 	ok(s2.is_in_play("ogre"), "gw-e2: ogre unaffected")
 
@@ -1883,16 +1903,18 @@ func _test_ai_plays_equipment() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Pads of the Dread Wolf — armor damage prevention (rule 304.3)
+# Pads of the Dread Wolf — armor damage prevention (rule 717.2c)
 #
 # Cost 1, Armor—Leather, Feet, 1 DEF. No powers — its whole job is
-# "exhaust to prevent 1 damage to your hero".
+# "exhaust to prevent 1 damage to your hero". The prevention point opens at the
+# moment the packet would land (combat conclusion / a hero-damaging chain link
+# about to resolve) — never a chain action, resolved via choose_prevention().
 # ══════════════════════════════════════════════════════════════════════════════
 
 const PADS_EFFECTS := "equipment:feet:1"
 
 func _test_pads_block_combat() -> void:
-	_buf.append("\n-- Pads of the Dread Wolf: block combat damage to hero --")
+	_buf.append("\n-- Pads of the Dread Wolf: prevention point at combat conclusion --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1907,55 +1929,69 @@ func _test_pads_block_combat() -> void:
 	state.cards["pads_inst"] = pads
 	state.zones["p1_hero_row"].card_ids.append("pads_inst")
 
-	# pb-a: no incoming damage → block is illegal (empty chain, no combat).
-	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "pads_inst"})
-	state.priority_player = "p1"
-	ok(not StackResolver.can_submit(state, block, db),
-		"pb-a: block illegal outside combat with empty chain")
-	state.priority_player = "p2"
-
 	# p2 attacks p1's hero.
 	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
 		{"attacker_id": "smasher_inst", "defender_id": "p1_hero"}), db)
 	StackResolver.pass_priority(state, db)   # p2 passes
 	StackResolver.pass_priority(state, db)   # p1 passes → combat starts, attack window
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → defend window opens
+	ok(state.pending_prevention_player == "",
+		"pb-a: no prevention point before the packets would land")
+	StackResolver.pass_priority(state, db)   # p2 passes
+	var events := StackResolver.pass_priority(state, db)   # p1 passes → conclusion imminent
 
-	# Block is a last-moment decision — not legal yet during the attack window
-	# (a Protector could still take the hit instead).
-	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1
-	ok(not StackResolver.can_submit(state, block, db),
-		"pb-a2: block still illegal during the attack window")
+	# pb-b: instead of concluding, the prevention point opened for p1.
+	eq(state.pending_prevention_player, "p1", "pb-b: prevention point opened for p1")
+	eq(state.pending_prevention_amount, 2, "pb-b2: packet amount is the attacker's ATK")
+	var opened := false
+	for ev in events:
+		if ev.event_type == "prevention_opened":
+			opened = true
+	ok(opened, "pb-b3: prevention_opened emitted")
+	eq(state.get_card("p1_hero").damage_taken, 0, "pb-b4: no damage yet — packet held")
 
-	# Close the attack window (no protectors) → defend window opens.
-	StackResolver.pass_priority(state, db)   # p1 passes → attack window closes, defend window opens
+	# pb-c: the pass/submit gates hard-block while the point is open.
+	eq(StackResolver.pass_priority(state, db).size(), 0,
+		"pb-c: pass_priority blocked while prevention pending")
 
-	# pb-b: defend window open, p2 has priority — pass to p1, block now legal.
-	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1
-	ok(StackResolver.can_submit(state, block, db),
-		"pb-b: block legal during the defend window")
+	# p1 exhausts the pads → conclusion runs with the reduced packet.
+	StackResolver.choose_prevention(state, "pads_inst", db)
+	ok(state.get_card("pads_inst").is_exhausted, "pb-d: pads exhausted by the choice")
+	eq(state.pending_prevention_player, "", "pb-d2: point closed (no more ready armor)")
+	eq(state.get_card("p1_hero").damage_taken, 1, "pb-e: hero took 1 (2 ATK − 1 prevented)")
+	eq(state.players["p1"].damage_prevention, 0, "pb-f: pool cleared after combat")
+	eq(state.combat_attacker, "", "pb-g: combat concluded after the choice")
 
-	# p1 exhausts the pads.
-	StackResolver.submit_action(state, block, db)
-	StackResolver.pass_priority(state, db)   # p1 passes
-	StackResolver.pass_priority(state, db)   # p2 passes → block resolves
 
-	# pb-c: block resolved — pool is 1, pads exhausted.
-	eq(state.players["p1"].damage_prevention, 1, "pb-c: prevention pool at 1")
-	ok(state.get_card("pads_inst").is_exhausted, "pb-c2: pads exhausted at submission")
+func _test_pads_block_decline() -> void:
+	_buf.append("\n-- Prevention point: declining takes the full damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.ally("smasher", 2, 3)
 
-	# Close defend window → conclusion.
-	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # defend window closes → damage
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_ally(state, "smasher_inst", "smasher", "p2")
+	var pads := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
+	state.cards["pads_inst"] = pads
+	state.zones["p1_hero_row"].card_ids.append("pads_inst")
 
-	# pb-d: hero took 2 − 1 = 1 damage.
-	eq(state.get_card("p1_hero").damage_taken, 1, "pb-d: hero took 1 (2 ATK − 1 blocked)")
-
-	# pb-e: pool cleared after combat.
-	eq(state.players["p1"].damage_prevention, 0, "pb-e: pool cleared after combat")
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "smasher_inst", "defender_id": "p1_hero"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(state, db)
+	eq(state.pending_prevention_player, "p1", "pd-a: prevention point opened")
+	StackResolver.choose_prevention(state, "", db)   # decline
+	eq(state.get_card("p1_hero").damage_taken, 2, "pd-b: full 2 damage taken")
+	ok(not state.get_card("pads_inst").is_exhausted, "pd-c: pads stays ready")
 
 
 func _test_pads_block_instant() -> void:
-	_buf.append("\n-- Pads of the Dread Wolf: block effect damage (chain response) --")
+	_buf.append("\n-- Prevention point: hero-damaging chain link about to resolve --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -1973,32 +2009,29 @@ func _test_pads_block_instant() -> void:
 	state.cards["zap_inst"] = zap
 	state.zones["p2_hand"].card_ids.append("zap_inst")
 
-	# p2 plays the damage instant at p1's hero.
+	# p2 plays the damage instant at p1's hero; both pass → the link would
+	# resolve, so the prevention point opens first.
 	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
 		{"card_id": "zap_inst", "target_id": "p1_hero"}), db)
-	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1, chain non-empty
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → prevention point, link stashed
 
-	# pi-a: block legal as a chain response.
-	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "pads_inst"})
-	ok(StackResolver.can_submit(state, block, db),
-		"pi-a: block legal while opposing damage effect is on the chain")
+	eq(state.pending_prevention_player, "p1", "pi-a: prevention point opened for p1")
+	eq(state.pending_prevention_amount, 2, "pi-a2: packet is the instant's damage")
+	eq(state.get_card("p1_hero").damage_taken, 0, "pi-a3: link held, no damage yet")
 
-	StackResolver.submit_action(state, block, db)
-	StackResolver.pass_priority(state, db)   # p1 passes
-	StackResolver.pass_priority(state, db)   # p2 passes → block resolves (pool 1)
-	StackResolver.pass_priority(state, db)   # p2 passes (turn player got priority)
-	StackResolver.pass_priority(state, db)   # p1 passes → zap resolves
+	StackResolver.choose_prevention(state, "pads_inst", db)   # exhaust → link resolves
 
-	# pi-b: hero took 2 − 1 = 1 damage; pool fully consumed.
-	eq(state.get_card("p1_hero").damage_taken, 1, "pi-b: hero took 1 (2 dmg − 1 blocked)")
-	eq(state.players["p1"].damage_prevention, 0, "pi-c: pool consumed to 0")
+	eq(state.get_card("p1_hero").damage_taken, 1, "pi-b: hero took 1 (2 dmg − 1 prevented)")
+	eq(state.players["p1"].damage_prevention, 0, "pi-c: pool consumed/cleared")
+	eq(state.priority_player, "p2", "pi-d: turn player has priority post-resolution")
 
 
-# Armor block vs enter-play targeted damage (e.g. Taz'dingo): the target choice
-# sits on the chain as choose_enter_play_target, so the defender must be able to
-# respond with a block just like against Quick Strike.
+# Prevention vs enter-play targeted damage (e.g. Taz'dingo): the target choice
+# sits on the chain as choose_enter_play_target — the point opens as it would
+# resolve, exactly like against Quick Strike.
 func _test_pads_block_enter_play_damage() -> void:
-	_buf.append("\n-- Armor block: enter-play targeted damage (Taz'dingo-style) --")
+	_buf.append("\n-- Prevention point: enter-play targeted damage (Taz'dingo-style) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2027,31 +2060,24 @@ func _test_pads_block_enter_play_damage() -> void:
 	# p2 announces the target: p1's hero. The choice goes on the chain.
 	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
 		"p2", {"source_card_id": "taz_inst", "target_id": "p1_hero"}), db)
-	StackResolver.pass_priority(state, db)   # p2 passes → p1 priority, chain non-empty
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → prevention point before it lands
 
-	# ep-b: block legal as a response to the pending enter-play damage.
-	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "pads_inst"})
-	ok(StackResolver.can_submit(state, block, db),
-		"ep-b: block legal while enter-play damage choice is on the chain")
+	eq(state.pending_prevention_player, "p1",
+		"ep-b: prevention point opened against enter-play damage")
 
-	# ep-c: the AI heuristic sees the incoming damage too.
+	# ep-c: the AI picks the armor at the point.
 	var ai := BaseAI.new()
-	var ai_block := ai.armor_prevention_action(state, db, "p1")
-	ok(ai_block != null and ai_block.params.get("card_id") == "pads_inst",
-		"ep-c: AI commits the armor against enter-play damage")
+	eq(ai.choose_prevention(state, db, "p1"), "pads_inst",
+		"ep-c: AI exhausts the armor against enter-play damage")
 
-	StackResolver.submit_action(state, block, db)
-	StackResolver.pass_priority(state, db)   # p1 passes
-	StackResolver.pass_priority(state, db)   # p2 passes → block resolves (pool 1)
-	StackResolver.pass_priority(state, db)   # turn player passes
-	StackResolver.pass_priority(state, db)   # p1 passes → enter-play damage resolves
-
-	eq(state.get_card("p1_hero").damage_taken, 1, "ep-d: hero took 1 (2 dmg − 1 blocked)")
+	StackResolver.choose_prevention(state, "pads_inst", db)
+	eq(state.get_card("p1_hero").damage_taken, 1, "ep-d: hero took 1 (2 dmg − 1 prevented)")
 	eq(state.players["p1"].damage_prevention, 0, "ep-e: pool consumed to 0")
 
 
 func _test_pads_overblock_expires() -> void:
-	_buf.append("\n-- Armor block: leftover block expires after combat --")
+	_buf.append("\n-- Prevention point: excess DEF beyond the packet is wasted --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2068,26 +2094,21 @@ func _test_pads_overblock_expires() -> void:
 
 	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
 		{"attacker_id": "poker_inst", "defender_id": "p1_hero"}), db)
-	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # attack window
-	StackResolver.pass_priority(state, db)   # p2 passes → p1 priority (block still illegal here)
-	StackResolver.pass_priority(state, db)   # p1 passes → attack window closes, defend window opens
-	StackResolver.pass_priority(state, db)   # p2 passes → p1 priority
-	StackResolver.submit_action(state, PendingAction.make("use_armor_prevention", "p1",
-		{"card_id": "plate_inst"}), db)
-	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # block resolves (pool 3)
-	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # defend window closes → conclusion
+	for _i in range(6):
+		StackResolver.pass_priority(state, db)   # → prevention point at conclusion
+	eq(state.pending_prevention_player, "p1", "ob-pre: prevention point opened")
+	StackResolver.choose_prevention(state, "plate_inst", db)   # DEF 3 vs 2 dmg
 
-	# ob-a: hero took 0 (2 ATK fully blocked by DEF 3).
-	eq(state.get_card("p1_hero").damage_taken, 0, "ob-a: hero took 0 (fully blocked)")
-	# ob-b: leftover 1 block expired with the combat.
-	eq(state.players["p1"].damage_prevention, 0, "ob-b: leftover block cleared after combat")
+	# ob-a: hero took 0 (2 ATK fully prevented by DEF 3).
+	eq(state.get_card("p1_hero").damage_taken, 0, "ob-a: hero took 0 (fully prevented)")
+	# ob-b: leftover 1 DEF wasted — pool cleared with the packet.
+	eq(state.players["p1"].damage_prevention, 0, "ob-b: leftover DEF wasted after combat")
 
 
+# Multi-armor stacking at ONE point (717.2c "you may exhaust another equipment,
+# and so on") + the AI's per-armor picks.
 func _test_ai_armor_block_heuristic() -> void:
-	_buf.append("\n-- AI armor block heuristic: highest DEF first, no wasted potential --")
+	_buf.append("\n-- Prevention point: multi-armor stacking + AI heuristic --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -2098,53 +2119,52 @@ func _test_ai_armor_block_heuristic() -> void:
 	db.ally("rat", 1, 1)
 	var ai := BaseAI.new()
 
-	# Case 1: 6 incoming vs DEF 3 + DEF 1 → picks the 3 first, then the 1.
+	# Case 1: 6 incoming vs DEF 3 + DEF 1 → point stays open after the first
+	# exhaust; AI picks the 3 first, then the 1, both at the same point.
 	var s1 := _base_state(db, "p1_hero", "p2_hero")
-	s1.turn_player = "p2"
+	s1.turn_player     = "p2"
+	s1.priority_player = "p2"
 	_add_ally(s1, "bruiser_inst", "bruiser", "p2")
 	for pair in [["plate_inst", "plate3_def"], ["pads_inst", "pads1_def"]]:
 		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_hero_row")
 		s1.cards[pair[0]] = c
 		s1.zones["p1_hero_row"].card_ids.append(pair[0])
-	s1.combat_defend_window = true
-	s1.combat_attacker = "bruiser_inst"
-	s1.combat_defender = "p1_hero"
-	s1.priority_player = "p1"
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "bruiser_inst", "defender_id": "p1_hero"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(s1, db)
+	eq(s1.pending_prevention_player, "p1", "hb-pre: prevention point opened")
+	eq(s1.pending_prevention_amount, 6, "hb-pre2: packet is 6")
 
-	var a1 := ai.armor_prevention_action(s1, db, "p1")
-	ok(a1 != null and a1.params.get("card_id") == "plate_inst",
-		"hb-a: 6 incoming → highest DEF (3) armor chosen first")
-	StackResolver.submit_action(s1, a1, db)
-	StackResolver.pass_priority(s1, db)
-	StackResolver.pass_priority(s1, db)   # block resolves → pool 3
+	var pick1 := ai.choose_prevention(s1, db, "p1")
+	eq(pick1, "plate_inst", "hb-a: 6 incoming → highest DEF (3) armor chosen first")
+	StackResolver.choose_prevention(s1, pick1, db)
+	eq(s1.pending_prevention_player, "p1", "hb-a2: point stays open (damage remains, armor left)")
+	eq(s1.pending_prevention_amount, 3, "hb-a3: remaining packet reduced to 3")
 
-	s1.priority_player = "p1"
-	var a2 := ai.armor_prevention_action(s1, db, "p1")
-	ok(a2 != null and a2.params.get("card_id") == "pads_inst",
-		"hb-b: 3 incoming left → DEF 1 armor also committed (3 >= 0)")
-	StackResolver.submit_action(s1, a2, db)
-	StackResolver.pass_priority(s1, db)
-	StackResolver.pass_priority(s1, db)   # pool 4
+	var pick2 := ai.choose_prevention(s1, db, "p1")
+	eq(pick2, "pads_inst", "hb-b: 3 remaining → DEF 1 armor also exhausted (3 >= 0)")
+	StackResolver.choose_prevention(s1, pick2, db)
+	eq(s1.pending_prevention_player, "", "hb-c: no ready armor left → point closes, combat concludes")
+	eq(s1.get_card("p1_hero").damage_taken, 2, "hb-c2: hero took 6 − 4 = 2")
+	eq(s1.players["p1"].damage_prevention, 0, "hb-c3: pool cleared")
 
-	s1.priority_player = "p1"
-	eq(ai.armor_prevention_action(s1, db, "p1"), null,
-		"hb-c: nothing ready left → AI stops blocking")
-
-	# Case 2: 1 incoming vs DEF 6 → wasted potential (1 < 5), AI holds the armor.
+	# Case 2: 1 incoming vs DEF 6 → wasted potential (1 < 5), AI declines.
 	var s2 := _base_state(db, "p1_hero", "p2_hero")
 	s2.turn_player = "p2"
 	_add_ally(s2, "rat_inst", "rat", "p2")
 	var sh := CardInstance.create("shield_inst", "shield6_def", "p1", "p1_hero_row")
 	s2.cards["shield_inst"] = sh
 	s2.zones["p1_hero_row"].card_ids.append("shield_inst")
-	s2.combat_defend_window = true
-	s2.combat_attacker = "rat_inst"
-	s2.combat_defender = "p1_hero"
-	s2.priority_player = "p1"
-	eq(ai.armor_prevention_action(s2, db, "p1"), null,
+	s2.pending_prevention_player = "p1"
+	s2.pending_prevention_amount = 1
+	eq(ai.choose_prevention(s2, db, "p1"), "",
 		"hb-d: 1 incoming vs DEF 6 → armor held (wasted potential)")
+	s2.pending_prevention_player = ""
+	s2.pending_prevention_amount = 0
 
-	# Case 3: ally (not hero) is the defender → armor never blocks for allies.
+	# Case 3: ally (not hero) is the defender → no prevention point at all
+	# (heroes are the only shielders).
 	var s3 := _base_state(db, "p1_hero", "p2_hero")
 	s3.turn_player = "p2"
 	_add_ally(s3, "bruiser_inst3", "bruiser", "p2")
@@ -2152,12 +2172,146 @@ func _test_ai_armor_block_heuristic() -> void:
 	var sh3 := CardInstance.create("shield3_inst", "shield6_def", "p1", "p1_hero_row")
 	s3.cards["shield3_inst"] = sh3
 	s3.zones["p1_hero_row"].card_ids.append("shield3_inst")
-	s3.combat_defend_window = true
 	s3.combat_attacker = "bruiser_inst3"
 	s3.combat_defender = "rat_p1"
-	s3.priority_player = "p1"
-	eq(ai.armor_prevention_action(s3, db, "p1"), null,
-		"hb-e: ally under attack → no armor block (heroes only)")
+	eq(StackResolver._combat_prevention_offers(s3, db).size(), 0,
+		"hb-e: ally under attack → no prevention point (heroes only)")
+
+
+# Non-chain damage sources route through the prevention machinery too
+# (defer_packets): totem start-of-turn triggers, Infernal's end-of-turn burn,
+# and on_destroyed AoE all offer the point before their hero packet lands.
+func _test_prevention_noncombat_sources() -> void:
+	_buf.append("\n-- Prevention point: totem / Infernal EOT / death AoE packets --")
+
+	# Case 1: totem start-of-turn trigger aimed at an armored hero.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.ally("totem_def", 0, 1)
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "totem_inst", "totem_def", "p2")
+	var pads1 := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
+	s1.cards["pads_inst"] = pads1
+	s1.zones["p1_hero_row"].card_ids.append("pads_inst")
+	s1.pending_ongoing_triggers = [
+		{"card_id": "totem_inst", "amount": 1, "dmg_type": "fire"}]
+	s1.pending_totem_target_player = "p2"
+	StackResolver.choose_totem_target(s1, "p1_hero", db)
+	eq(s1.pending_prevention_player, "p1", "nc-a: totem packet opens the prevention point")
+	StackResolver.choose_prevention(s1, "pads_inst", db)
+	eq(s1.get_card("p1_hero").damage_taken, 0, "nc-b: totem's 1 fire fully prevented")
+	eq(s1.pending_totem_target_player, "", "nc-b2: totem queue drained after the point")
+
+	# Case 2: Infernal end-of-turn burn — the opposing hero's packet is
+	# preventable; the ally packets in the same group land regardless.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db2.ally("infernal_def", 6, 6, [], 6, "end_of_turn_damage_opposing:1:fire")
+	db2.ally("tough_def", 0, 3)
+	var s2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_ally(s2, "infernal_inst", "infernal_def", "p1")
+	_add_ally(s2, "tough_inst", "tough_def", "p2")
+	var pads2 := CardInstance.create("pads2", "pads_def", "p2", "p2_hero_row")
+	s2.cards["pads2"] = pads2
+	s2.zones["p2_hero_row"].card_ids.append("pads2")
+	s2.phase       = "action"
+	s2.turn_player = "p1"
+	TurnManager.advance_phase(s2, db2)   # → end phase, burn fires
+	eq(s2.pending_prevention_player, "p2", "nc-c: EOT burn opens the point for p2")
+	eq(s2.get_card("tough_inst").damage_taken, 0, "nc-c2: whole group held, ally not hit yet")
+	StackResolver.choose_prevention(s2, "pads2", db2)
+	eq(s2.get_card("p2_hero").damage_taken, 0, "nc-d: hero's 1 fire fully prevented")
+	eq(s2.get_card("tough_inst").damage_taken, 1, "nc-d2: opposing ally still took 1")
+
+	# Case 3: on_destroyed AoE (2 fire to each opposing hero and ally).
+	var db3 := MockDB.new()
+	db3.hero("p1_hero", 30)
+	db3.hero("p2_hero", 30)
+	db3.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db3.ally("bomber_def", 1, 1, [], 2, "on_destroyed:deal_damage_aoe:2:fire:opposing")
+	db3.ally("rat_def", 1, 2)
+	var s3 := _base_state(db3, "p1_hero", "p2_hero")
+	_add_ally(s3, "bomber", "bomber_def", "p2")
+	_add_ally(s3, "rat", "rat_def", "p1")
+	var pads3 := CardInstance.create("pads3", "pads_def", "p1", "p1_hero_row")
+	s3.cards["pads3"] = pads3
+	s3.zones["p1_hero_row"].card_ids.append("pads3")
+	StackResolver._destroy_card_trigger(s3, "bomber", "", db3)
+	eq(s3.pending_prevention_player, "p1", "nc-e: death AoE opens the point for p1")
+	StackResolver.choose_prevention(s3, "pads3", db3)
+	eq(s3.get_card("p1_hero").damage_taken, 1, "nc-f: hero took 2 − 1 prevented = 1")
+	eq(s3.get_card("rat").zone_id, "p1_graveyard", "nc-f2: ally took the full 2 and died")
+
+
+# discard_per_damage (Mind Blast) counts damage actually DEALT — armor
+# prevention at the point reduces (or zeroes) the forced discard.
+func _test_prevention_reduces_discard_per_damage() -> void:
+	_buf.append("\n-- Prevention point: Mind Blast discard reduced by armor --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.equipment("plate_def", 3, "equipment:chest:3", "Plate")
+	db.ability("blast_def", 5, "deal_damage_to_target:2:shadow|discard_per_damage:1")
+	db.ally("filler", 1, 1)
+
+	# Case 1: 2 shadow at the hero, DEF 1 exhausted → 1 dealt → discard 1.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 5)
+	var pads := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
+	state.cards["pads_inst"] = pads
+	state.zones["p1_hero_row"].card_ids.append("pads_inst")
+	for i in range(3):
+		var hid := "hand_%d" % i
+		var hc := CardInstance.create(hid, "filler", "p1", "p1_hand")
+		state.cards[hid] = hc
+		state.zones["p1_hand"].card_ids.append(hid)
+	var blast := CardInstance.create("blast_inst", "blast_def", "p2", "p2_hand")
+	state.cards["blast_inst"] = blast
+	state.zones["p2_hand"].card_ids.append("blast_inst")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p2",
+		{"card_id": "blast_inst", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # → prevention point
+	eq(state.pending_prevention_player, "p1", "md-a: prevention point opened")
+	StackResolver.choose_prevention(state, "pads_inst", db)
+	eq(state.get_card("p1_hero").damage_taken, 1, "md-b: hero took 1 (2 − 1 prevented)")
+	eq(state.pending_discard_player, "p1", "md-c: damaged hero's controller must discard")
+	eq(state.pending_discard_count, 1, "md-d: discard 1 — only 1 damage was DEALT")
+	# Clean up the pending discard.
+	StackResolver.choose_discard(state, "hand_0", db)
+
+	# Case 2: full prevention (DEF 3 vs 2) → packet ceases to exist (717.2b):
+	# no damage, no discard.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player     = "p2"
+	s2.priority_player = "p2"
+	_add_resources(s2, "p2", 5)
+	var plate := CardInstance.create("plate_inst", "plate_def", "p1", "p1_hero_row")
+	s2.cards["plate_inst"] = plate
+	s2.zones["p1_hero_row"].card_ids.append("plate_inst")
+	var hc2 := CardInstance.create("hand_x", "filler", "p1", "p1_hand")
+	s2.cards["hand_x"] = hc2
+	s2.zones["p1_hand"].card_ids.append("hand_x")
+	var blast2 := CardInstance.create("blast2", "blast_def", "p2", "p2_hand")
+	s2.cards["blast2"] = blast2
+	s2.zones["p2_hand"].card_ids.append("blast2")
+
+	StackResolver.submit_action(s2, PendingAction.make("play_ability", "p2",
+		{"card_id": "blast2", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	eq(s2.pending_prevention_player, "p1", "md-e: prevention point opened")
+	StackResolver.choose_prevention(s2, "plate_inst", db)
+	eq(s2.get_card("p1_hero").damage_taken, 0, "md-f: fully prevented — no damage")
+	eq(s2.pending_discard_count, 0, "md-g: fully prevented — no discard")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8231,6 +8385,97 @@ func _test_weapon_defend_strike() -> void:
 		"ds-d2: attacker died to the 3-damage counter-strike")
 
 
+# Devilsaur Leggings (azeroth_284, Armor—Leather, Legs, DEF 1): "When your hero
+# deals combat damage to an ally, destroy that ally." Mandatory destroy at
+# combat conclusion — meaningful when the ally SURVIVES the combat damage.
+func _test_devilsaur_leggings() -> void:
+	_buf.append("\n-- Devilsaur Leggings: hero combat damage destroys the ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("krol_def", 3, 3, 1)   # 3 ATK, strike cost 1
+	db.equipment("legs_def", 3, "equipment:legs:1|hero_combat_dmg_destroys_ally", "Leather")
+	db.ally("tank_def", 0, 5)        # 0/5 — survives a 3-damage strike, no retaliation
+	db.ally("biter_def", 2, 5)       # 2/5 — attacks, survives the 3 counter
+
+	# ── Case 1: hero ATTACKS an ally; the ally survives the 3, leggings destroy it.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 2)
+	var tank := _add_ally(s1, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	for pair in [["krol", "krol_def"], ["legs", "legs_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_hero_row")
+		s1.cards[pair[0]] = c
+		s1.zones["p1_hero_row"].card_ids.append(pair[0])
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # combat starts -> attack strike point
+	StackResolver.choose_strike(s1, "krol", db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # attack window closes -> defend window (no protector)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # defend window closes -> conclusion
+
+	ok(not s1.is_in_play("tank"), "dl-a: surviving attacked ally destroyed by the leggings")
+	eq(s1.get_card("tank").zone_id, "p2_graveyard", "dl-a2: ally is in the graveyard")
+
+	# ── Case 2: an ally attacks the hero; the hero strikes back for 3, the ally
+	# survives (2/5) and the leggings destroy it on the retaliation. The leggings
+	# are ALSO exhausted for armor prevention here — proving the trigger fires
+	# regardless of the equipment being ready.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player     = "p2"
+	s2.priority_player = "p2"
+	_add_resources(s2, "p1", 1)
+	var biter := _add_ally(s2, "biter", "biter_def", "p2")
+	biter.just_summoned = false
+	for pair2 in [["krol2", "krol_def"], ["legs2", "legs_def"]]:
+		var c2 := CardInstance.create(pair2[0], pair2[1], "p1", "p1_hero_row")
+		s2.cards[pair2[0]] = c2
+		s2.zones["p1_hero_row"].card_ids.append(pair2[0])
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "biter", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # combat starts -> attack window (ally attacker, no strike)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # attack window closes -> defend strike point
+	StackResolver.choose_strike(s2, "krol2", db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # defend window closes -> armor prevention point (DEF 1 legs)
+	eq(s2.pending_prevention_player, "p1", "dl-b0: prevention point opens (leggings are DEF 1)")
+	StackResolver.choose_prevention(s2, "legs2", db)   # exhaust leggings, then conclusion
+
+	eq(s2.get_card("p1_hero").damage_taken, 1, "dl-b: hero took 2 − 1 prevented = 1")
+	ok(s2.get_card("legs2").is_exhausted, "dl-b2: leggings exhausted for the block")
+	ok(not s2.is_in_play("biter"),
+		"dl-b3: attacking ally destroyed by the retaliation even with exhausted leggings")
+
+	# ── Gate: without the leggings, a surviving attacked ally stays in play.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 2)
+	var tank3 := _add_ally(s3, "tank3", "tank_def", "p2")
+	tank3.just_summoned = false
+	var krol3 := CardInstance.create("krol3", "krol_def", "p1", "p1_hero_row")
+	s3.cards["krol3"] = krol3
+	s3.zones["p1_hero_row"].card_ids.append("krol3")
+
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.choose_strike(s3, "krol3", db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+
+	ok(s3.is_in_play("tank3"), "dl-c: no leggings -> surviving ally stays in play")
+	eq(s3.get_card("tank3").damage_taken, 3, "dl-c2: ally kept its 3 combat damage")
+
+
 # Ancient Bone Bow: striking with it grants the attacking hero long-range for
 # the combat — the defender deals no combat damage back.
 func _test_bone_bow_grants_long_range() -> void:
@@ -8839,15 +9084,10 @@ func _test_golem_skull_helm_block() -> void:
 	StackResolver.pass_priority(state, db)   # combat starts, attack window
 	StackResolver.pass_priority(state, db)
 	StackResolver.pass_priority(state, db)   # defend window
-	StackResolver.pass_priority(state, db)   # p2 passes → priority to p1
-	var block := PendingAction.make("use_armor_prevention", "p1", {"card_id": "helm"})
-	ok(StackResolver.can_submit(state, block, db), "gh-a: helm block legal in defend window")
-	StackResolver.submit_action(state, block, db)
 	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # block resolves
-	eq(state.players["p1"].damage_prevention, 3, "gh-b: prevention pool at 3")
-	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # conclusion
+	StackResolver.pass_priority(state, db)   # → prevention point at conclusion
+	eq(state.pending_prevention_player, "p1", "gh-a: prevention point opened for p1")
+	StackResolver.choose_prevention(state, "helm", db)
 	eq(state.get_card("p1_hero").damage_taken, 1, "gh-c: hero took 4 − 3 = 1")
 
 
@@ -8912,7 +9152,11 @@ func _test_deflector_hero_protects() -> void:
 	eq(state.get_atk("p1_hero", db), 3, "dd-g2: struck weapon gives the hero 3 ATK")
 
 	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # defend window closes → conclusion
+	StackResolver.pass_priority(state, db)   # defend window closes → prevention point
+	# The ready DEF 4 deflector opens a prevention point for the protecting
+	# hero's packet — decline it, this test is about the retaliation strike.
+	eq(state.pending_prevention_player, "p1", "dd-g3: prevention point opened (deflector ready)")
+	StackResolver.choose_prevention(state, "", db)   # decline → conclusion
 	ok(not state.is_in_play("smasher"), "dd-h: attacker died to the retaliation strike")
 	eq(state.get_card("p1_hero").damage_taken, 3, "dd-h2: hero soaked the 3 damage")
 	eq(state.get_card("guard").damage_taken, 0, "dd-h3: guard untouched")
@@ -10399,3 +10643,548 @@ func _test_shattering_blow_destroys_equipment() -> void:
 	var acts := ai._targeted_instant_actions(state2, db, "p1", "blow2", "play_ability")
 	ok(acts.size() == 1 and acts[0].params.get("target_id") == "robe2",
 		"sb-i: AI targets the opposing equipment")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FORMS (rule 414.3b + glossary Bear/Cat Form) — Bear Form, Bash, Cat Form, Claw
+# ══════════════════════════════════════════════════════════════════════════════
+
+const CAT_FORM_FX  := "ongoing|form:1|form_break:Feral|hero_atk_while_attacking:1|on_destroyed:pay_return_hand:2"
+const BEAR_FORM_FX := "ongoing|form:1|form_break:Feral|hero_has_protector|on_destroyed:pay_return_hand:2"
+const BASH_FX      := "ongoing|form:1|form_break:Feral|hero_has_protector|exhaust_target:hero_or_ally"
+const CLAW_FX      := "ongoing|form:1|form_break:Feral|hero_atk_while_attacking:1|deal_damage_to_target:3:melee"
+
+
+# MockDB helper: an Instant Ability Form def with the Feral tag.
+func _mock_form(db: MockDB, def_id: String, cost: int, fx: String,
+		tags: String = "Feral") -> void:
+	db.instant(def_id, cost, fx)
+	(db._defs[def_id] as CardDef).tags = tags
+
+
+# Put a Form directly into a player's hero_row (already shapeshifted).
+func _add_form_in_play(state: GameState, inst_id: String, def_id: String,
+		ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_hero_row")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_hero_row"].card_ids.append(inst_id)
+	return card
+
+
+func _test_cat_form_hero_attack() -> void:
+	_buf.append("\n-- Cat Form: +1 ATK while attacking lets the 0-ATK hero attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	_mock_form(db, "dark_portal_19", 2, CAT_FORM_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "cat", "dark_portal_19", "p1")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# The 0-ATK hero with no weapon is not offered as an attacker yet.
+	ok("p1_hero" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"cf-a: bare 0-ATK hero is not a legal attacker")
+
+	var play := PendingAction.make("play_ability", "p1", {"card_id": "cat"})
+	ok(StackResolver.can_submit(state, play, db), "cf-b: Cat Form is playable")
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	ok(state.get_card("cat").zone_id == "p1_hero_row",
+		"cf-c: Cat Form is ongoing — enters the hero row")
+	eq(state.get_atk("p1_hero", db), 0, "cf-d: hero ATK is 0 while not attacking")
+	eq(state.get_atk("p1_hero", db, true), 1, "cf-e: +1 ATK while attacking")
+	ok("p1_hero" in StackResolver.get_legal_attackers(state, "p1", db),
+		"cf-f: hero is a legal attacker thanks to the while-attacking bonus")
+
+	# Attack the enemy hero: the +1 lands as real combat damage.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts, attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # close attack window → defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.get_card("p2_hero").damage_taken, 1, "cf-g: defending hero took 1")
+	eq(state.get_card("p1_hero").damage_taken, 0, "cf-h: attacker took nothing back")
+
+
+func _test_form_break_and_pay_return() -> void:
+	_buf.append("\n-- Form break: a non-Feral ability destroys the Form; pay 2 returns it --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	_mock_form(db, "dark_portal_19", 2, CAT_FORM_FX)
+	db.instant("qs_def", 1, "deal_damage_to_target:2:melee")   # non-Feral (no tag)
+	_mock_form(db, "feral_inst", 1, "deal_damage_to_target:1:melee")  # Feral-tagged instant
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state, "cat", "dark_portal_19", "p1")
+	_add_card_to_hand(state, "feral", "feral_inst", "p1")
+	_add_card_to_hand(state, "qs", "qs_def", "p1")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# A FERAL ability does not break the form.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "feral", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("cat").zone_id == "p1_hero_row",
+		"fb-a: Feral ability leaves the form in play")
+
+	# A non-Feral ability breaks it (after its own resolution).
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "qs", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("cat").zone_id == "p1_graveyard",
+		"fb-b: non-Feral ability destroys the form")
+	eq(state.pending_form_return_player, "p1",
+		"fb-c: pay-return choice opened (cost affordable)")
+
+	var before := state.get_available_resources("p1")
+	StackResolver.choose_form_return(state, true, db)
+	ok(state.get_card("cat").zone_id == "p1_hand", "fb-d: paid — form back in hand")
+	eq(state.get_available_resources("p1"), before - 2, "fb-e: 2 resources paid")
+
+	# Unaffordable variant: no choice opens, the form stays in the graveyard.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state2, "cat2", "dark_portal_19", "p1")
+	_add_card_to_hand(state2, "qs2", "qs_def", "p1")
+	_add_resources(state2, "p1", 2)   # 1 left after playing the 1-cost instant
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("play_instant", "p1",
+		{"card_id": "qs2", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	ok(state2.get_card("cat2").zone_id == "p1_graveyard",
+		"fb-f: form destroyed in the unaffordable case too")
+	eq(state2.pending_form_return_player, "",
+		"fb-g: no pay-return choice when the cost is unaffordable")
+
+
+func _test_form_uniqueness_shapeshift() -> void:
+	_buf.append("\n-- Form (1): playing a second Form forces a sacrifice (shapeshift) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	_mock_form(db, "azeroth_18", 1, BEAR_FORM_FX)
+	_mock_form(db, "dark_portal_19", 2, CAT_FORM_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state, "bear", "azeroth_18", "p1")
+	_add_card_to_hand(state, "cat", "dark_portal_19", "p1")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "cat"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves → violation
+
+	eq(state.pending_form_sacrifice_player, "p1", "fu-a: Form sacrifice pending")
+	ok("bear" in state.pending_form_sacrifice_ids
+			and "cat" in state.pending_form_sacrifice_ids,
+		"fu-b: both Forms are candidates")
+	# Everything else is blocked while the violation stands.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cat"}), db),
+		"fu-c: can_submit hard-blocks during the Form sacrifice")
+
+	StackResolver.choose_form_sacrifice(state, "bear", db)
+	ok(state.get_card("bear").zone_id == "p1_graveyard", "fu-d: old form destroyed")
+	eq(state.pending_form_sacrifice_player, "", "fu-e: violation repaired")
+	# Bear Form's own pay-return trigger fired on the sacrifice destruction.
+	eq(state.pending_form_return_player, "p1", "fu-f: pay-return opened for the old form")
+	StackResolver.choose_form_return(state, false, db)
+	ok(state.get_card("bear").zone_id == "p1_graveyard",
+		"fu-g: declined — old form stays in the graveyard")
+	ok(state.get_card("cat").zone_id == "p1_hero_row", "fu-h: new form is in play")
+
+
+func _test_bash_freezes_and_grants_bear_form() -> void:
+	_buf.append("\n-- Bash: exhaust the attacker (fizzling the proposal) + bear form ongoing --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 4, [], 3)
+	_mock_form(db, "azeroth_17", 2, BASH_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "bash", "azeroth_17", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var all_events: Array[GameEvent] = []
+	all_events.append_array(StackResolver.submit_action(state,
+		PendingAction.make("propose_combat", "p1",
+			{"attacker_id": "atk", "defender_id": "p2_hero"}), db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 → p2
+
+	# Bash is instant speed and may target the attacking ALLY (or a hero).
+	var cast := PendingAction.make("play_ability", "p2",
+		{"card_id": "bash", "target_id": "atk"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"ba-a: Bash on the attacker is legal in response to the proposal")
+	all_events.append_array(StackResolver.submit_action(state, cast, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # Bash resolves
+
+	ok(atk.is_exhausted, "ba-b: attacker exhausted")
+	ok(state.get_card("bash").zone_id == "p2_hero_row",
+		"ba-c: Bash stays in play (ongoing) in the hero row")
+
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # proposal resolves
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled":
+			saw_fizzle = true
+	ok(saw_fizzle and not state.combat_attack_window,
+		"ba-d: proposal fizzled — combat never started")
+
+	# Bear form ongoing: the hero now has protector.
+	ok(StackResolver._hero_has_protector_grant(state, "p2", db),
+		"ba-e: Bash grants the hero protector while in play")
+
+
+func _test_form_breaks_on_weapon_strike() -> void:
+	_buf.append("\n-- Form break: striking with a weapon destroys the Form --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	_mock_form(db, "azeroth_18", 1, BEAR_FORM_FX)
+	db.weapon("krol_def", 2, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state, "bear", "azeroth_18", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → strike point (602.1)
+	eq(state.pending_strike_player, "p1", "wsf-a: strike point open for the attacker")
+
+	StackResolver.choose_strike(state, "krol", db)
+	ok(state.get_card("bear").zone_id == "p1_graveyard",
+		"wsf-b: striking with a weapon destroys the Form")
+	eq(state.pending_form_return_player, "p1", "wsf-c: pay-return opened")
+	StackResolver.choose_form_return(state, true, db)
+	ok(state.get_card("bear").zone_id == "p1_hand", "wsf-d: paid — Form back in hand")
+	ok(state.combat_attack_window, "wsf-e: the held attack window opened after the strike")
+
+
+func _test_ai_bear_form_flash_in() -> void:
+	_buf.append("\n-- AI Bear Form: flash in during the attack window, only when not in form --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 3, 3, [], 3)
+	_mock_form(db, "azeroth_18", 1, BEAR_FORM_FX)
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "bear", "azeroth_18", "p2")
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts, attack window
+	StackResolver.pass_priority(state, db)   # p1 passes on the window → p2 priority
+
+	# get_legal_actions never blind-plays the held card.
+	var blind := false
+	for a in ai.get_legal_actions(state, db, "p2"):
+		if a.params.get("card_id", "") == "bear":
+			blind = true
+	ok(not blind, "aibf-a: Bear Form is held (never blind-played)")
+
+	var act := ai.bear_form_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_ability"
+			and act.params.get("card_id") == "bear",
+		"aibf-b: AI flashes in Bear Form during the attack window")
+
+	# Already in bear form → hold the card.
+	_add_form_in_play(state, "bear_in_play", "azeroth_18", "p2")
+	ok(ai.bear_form_action(state, db, "p2") == null,
+		"aibf-c: held when the hero is already in bear form")
+	state.zones["p2_hero_row"].card_ids.erase("bear_in_play")
+	state.cards.erase("bear_in_play")
+
+	# Exhausted hero can't protect → hold.
+	state.get_card("p2_hero").is_exhausted = true
+	ok(ai.bear_form_action(state, db, "p2") == null,
+		"aibf-d: held when the hero is exhausted")
+	state.get_card("p2_hero").is_exhausted = false
+
+	# The AI always pays to get a destroyed Form back.
+	ok(ai.choose_form_return(state, db, "p2"), "aibf-e: AI always pays the form return")
+
+
+func _test_ai_bash_freezes_attacking_hero() -> void:
+	_buf.append("\n-- AI Bash: freezes an attacking HERO (Exhaustion alone can't) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("azeroth_159", 2, "exhaust_target:ally")
+	_mock_form(db, "azeroth_17", 2, BASH_FX)
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	(db._defs["p1_hero"] as CardDef).printed_atk = 4   # a hero that hits hard
+	_add_card_to_hand(state, "exh", "azeroth_159", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p1 → p2, proposal on the chain
+
+	ok(ai.exhaust_attacker_action(state, db, "p2") == null,
+		"aibh-a: ally-only Exhaustion can't answer an attacking hero")
+
+	_add_card_to_hand(state, "bash", "azeroth_17", "p2")
+	var act := ai.exhaust_attacker_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_ability"
+			and act.params.get("card_id") == "bash"
+			and act.params.get("target_id") == "p1_hero",
+		"aibh-b: Bash answers the attacking hero")
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Bash resolves
+	ok(state.get_card("p1_hero").is_exhausted, "aibh-c: attacking hero exhausted")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal fizzles
+	ok(not state.combat_attack_window, "aibh-d: combat never started")
+
+
+func _test_ai_hero_attack_lethal_gate() -> void:
+	_buf.append("\n-- AI hero attacks: enemy hero always, enemy ally only when lethal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wall_def", 1, 2, [], 2)
+	_mock_form(db, "dark_portal_19", 2, CAT_FORM_FX)
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state, "cat", "dark_portal_19", "p1")
+	var wall := _add_ally(state, "wall", "wall_def", "p2")
+	wall.just_summoned = false
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var vs_hero := false
+	var vs_wall := false
+	for a in ai.get_legal_actions(state, db, "p1"):
+		if a.action_type == "propose_combat" and a.params.get("attacker_id") == "p1_hero":
+			if a.params.get("defender_id") == "p2_hero":
+				vs_hero = true
+			elif a.params.get("defender_id") == "wall":
+				vs_wall = true
+	ok(vs_hero, "hg-a: cat-form hero attack on the enemy HERO is offered")
+	ok(not vs_wall, "hg-b: attack on a 2-HP ally is NOT offered (1 ATK, not lethal)")
+
+	# Damage the wall to 1 HP → the hero swing is now lethal → offered.
+	wall.damage_taken = 1
+	var vs_wall2 := false
+	for a in ai.get_legal_actions(state, db, "p1"):
+		if a.action_type == "propose_combat" \
+				and a.params.get("attacker_id") == "p1_hero" \
+				and a.params.get("defender_id") == "wall":
+			vs_wall2 = true
+	ok(vs_wall2, "hg-c: attack on the 1-HP ally IS offered (lethal)")
+
+
+func _test_ai_claw_ambush() -> void:
+	_buf.append("\n-- AI Claw: combat-instant ambush kill, then cat form stays in play --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 3, [], 4)
+	_mock_form(db, "dark_portal_20", 4, CLAW_FX, "Feral Combo")
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "claw", "dark_portal_20", "p2")
+	_add_resources(state, "p2", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts, attack window
+	StackResolver.pass_priority(state, db)   # p1 passes on the window → p2 priority
+
+	var act := ai.combat_instant_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_ability"
+			and act.params.get("card_id") == "claw"
+			and act.params.get("target_id") == "atk",
+		"claw-a: AI ambushes the 3-HP attacker with Claw (3 dmg)")
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Claw resolves
+	ok(state.get_card("atk").zone_id == "p1_graveyard", "claw-b: attacker destroyed")
+	ok(state.get_card("claw").zone_id == "p2_hero_row",
+		"claw-c: Claw stays in play (cat form ongoing)")
+	eq(state.get_atk("p2_hero", db, true), 1, "claw-d: hero has +1 ATK while attacking")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Fireball (azeroth_53): "Attach to target hero or ally, and your hero deals 4
+# fire damage to it. Ongoing: At the start of your turn, your hero deals 1 fire
+# damage to attached character." First hero-or-ally attachment; the attach
+# damage and the turn-start burn are both hero-sourced fire packets.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const FIREBALL_FX := "ongoing|attach:hero_or_ally|attach_deal_damage:4:fire|attached_damage_turn_start:1:fire"
+
+func _test_fireball_attach_and_burn() -> void:
+	_buf.append("\n-- Fireball: attach deals 4, burns 1 each turn start, dies with host --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 6, [], 3)
+	db.ability("azeroth_53", 4, FIREBALL_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var tank := _add_ally(state, "tank", "tank_def", "p2")
+	_add_card_to_hand(state, "fb", "azeroth_53", "p1")
+	_add_resources(state, "p1", 4)
+
+	# attach:hero_or_ally — a hero is ALSO a legal target (unlike attach:ally).
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "fb", "target_id": "p2_hero"}), db),
+		"fbl-a: Fireball can target a hero")
+
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "fb", "target_id": "tank"})
+	ok(StackResolver.can_submit(state, cast, db), "fbl-b: Fireball on an enemy ally is legal")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_card("fb").zone_id, "attached", "fbl-c: Fireball is attached")
+	eq(state.get_card("fb").attached_to, "tank", "fbl-d: host is the ally")
+	eq(tank.damage_taken, 4, "fbl-e: 4 fire dealt on attach")
+
+	# Start of the CONTROLLER's turn: hero deals 1 to the attached character.
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(tank.damage_taken, 5, "fbl-f: turn-start burn dealt 1 (5 total)")
+
+	# Next turn start is lethal — host dies, Fireball follows it (400.5).
+	TurnManager._enter_ready(state, db)
+	eq(tank.zone_id, "p2_graveyard", "fbl-g: burn killed the host")
+	eq(state.get_card("fb").zone_id, "p1_graveyard", "fbl-h: Fireball died with its host")
+
+
+func _test_world_in_flames_doubles_fire() -> void:
+	_buf.append("\n-- World in Flames: hero fire damage doubled --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("imp_def", 1, 2, [], 1)
+	db.ability("azeroth_61", 8, "ongoing|hero_fire_damage_doubled")
+	db.ability("azeroth_53", 4, FIREBALL_FX)
+	db.instant("fireblast_def", 2, "deal_damage_to_target:2:fire")
+	db.instant("frost_def", 2, "deal_damage_to_target:3:frost")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "imp", "imp_def", "p1")
+	_add_card_to_hand(state, "wif", "azeroth_61", "p1")
+	_add_card_to_hand(state, "blast", "fireblast_def", "p1")
+	_add_card_to_hand(state, "frost", "frost_def", "p1")
+	_add_card_to_hand(state, "fb", "azeroth_53", "p1")
+	_add_resources(state, "p1", 20)
+
+	# Cast World in Flames — plain ongoing ability, enters the hero row.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "wif"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("wif").zone_id, "p1_hero_row", "wif-a: WiF is in play")
+
+	# Fire Blast (2 fire) → 4 on the enemy hero.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "blast", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 4, "wif-b: 2 fire doubled to 4")
+
+	# Frost damage is untouched (3 → 3).
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "frost", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 7, "wif-c: frost damage NOT doubled")
+
+	# Non-hero sources never double, even fire (the card says "your HERO").
+	eq(StackResolver._fire_doubled_amount(state, db,
+		{"source": "imp", "amount": 2, "dmg_type": "fire"}), 2,
+		"wif-d: ally-sourced fire not doubled")
+	# The OPPONENT's hero is unaffected by p1's World in Flames.
+	eq(StackResolver._fire_doubled_amount(state, db,
+		{"source": "p2_hero", "amount": 2, "dmg_type": "fire"}), 2,
+		"wif-e: opposing hero's fire not doubled")
+
+	# Fireball under WiF: attach deals 8, turn-start burn deals 2.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "fb", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 15, "wif-f: Fireball attach 4→8 (15 total)")
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 17, "wif-g: turn-start burn 1→2 (17 total)")
+
+
+func _test_ai_fireball_targets_hero_only() -> void:
+	_buf.append("\n-- AI Fireball: only the opposing hero is ever targeted --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def", 5, 5, [], 5)
+	db.ability("azeroth_53", 4, FIREBALL_FX)
+
+	var ai := BaseAI.new()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "big", "big_def", "p2")
+	_add_ally(state, "mine", "big_def", "p1")
+	_add_card_to_hand(state, "fb", "azeroth_53", "p1")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var fb_targets: Array = []
+	for a in ai.get_legal_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "fb":
+			fb_targets.append(a.params.get("target_id", ""))
+	eq(fb_targets.size(), 1, "aif-a: exactly one Fireball action generated")
+	ok("p2_hero" in fb_targets, "aif-b: Fireball aimed at the opposing hero only")

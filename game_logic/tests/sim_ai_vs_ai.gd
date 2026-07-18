@@ -120,6 +120,14 @@ func _run_game(db: CardDatabase, deck_id1: String, deck_id2: String) -> String:
 			var dt: String = (ais[dtp] as BaseAI).choose_death_target(state, db, dtp)
 			StackResolver.choose_death_target(state, dt, db)
 			continue
+		if state.pending_prevention_player != "":
+			var pvp := state.pending_prevention_player
+			var armor: String = (ais[pvp] as BaseAI).choose_prevention(state, db, pvp)
+			var pv_events := StackResolver.choose_prevention(state, armor, db)
+			for e in pv_events:
+				if e.event_type == "game_over":
+					game_over[0] = true
+			continue
 
 		# Normal priority decision.
 		var pid: String = state.priority_player

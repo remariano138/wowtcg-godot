@@ -1263,17 +1263,19 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		# have no [Activate] tap symbol — 701.2 payment powers, not gated by
 		# summoning sickness or exhaustion. Mirrors StackResolver._can_use_ally_power.
 		var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self") \
-			or extra_cost_str == "no_activate"
+			or extra_cost_str == "no_activate" or extra_cost_str == "sacrifice_self"
 		if once_per_turn:
 			if card.used_this_turn:
 				continue
 		elif not no_activate_symbol and (card.is_exhausted or card.just_summoned):
 			continue
-		# Don't draw into a full hand (the card would just be discarded at wrap-up).
+		# Don't draw past max hand size (the excess would just be discarded at
+		# wrap-up) — amount-aware, so Mana Agate (draw 2) only fires when the
+		# hand has room for both cards.
 		if ap.get("effect", "") == "draw" and ap.get("targets", "") != "friendly_ally":
-			var ps_hand := state.players.get(player_id) as PlayerState
-			var max_hand: int = ps_hand.max_hand_size if ps_hand else 7
-			if state.cards_in_zone(player_id + "_hand").size() >= max_hand:
+			var max_hand := state.get_max_hand_size(player_id, db)
+			var draw_n: int = int(ap.get("amount", 1))
+			if state.cards_in_zone(player_id + "_hand").size() > max_hand - draw_n:
 				continue
 			# Kena Shadowbrand pays with self-damage — don't draw herself to death.
 			if extra_cost_str.begins_with("activate_put_damage_self"):
@@ -1366,8 +1368,7 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# Bizzik Sparkcog: "Destroy an ally in your party: draw a card."
 			# Only sacrifice an ally that's already mortally wounded (about to die
 			# anyway) — never throw away a healthy body for a single card.
-			var ps_hand2 := state.players.get(player_id) as PlayerState
-			var max_hand2: int = ps_hand2.max_hand_size if ps_hand2 else 7
+			var max_hand2 := state.get_max_hand_size(player_id, db)
 			if state.cards_in_zone(player_id + "_hand").size() < max_hand2:
 				for own in state.cards_in_zone(player_id + "_ally_row"):
 					if state.get_current_hp(own.instance_id, db) > 0 and own.damage_taken == 0:
@@ -1737,8 +1738,7 @@ func _radak_sacrifice_actions(state: GameState, db, player_id: String,
 # _choose_graveyard_targets hook (GenericAI ranks by sort_valuable_cards).
 func _graveyard_to_hand_hero_actions(state: GameState, db, player_id: String,
 		hero_id: String) -> Array[PendingAction]:
-	var ps := state.players.get(player_id) as PlayerState
-	var max_hand: int = ps.max_hand_size if ps else 7
+	var max_hand := state.get_max_hand_size(player_id, db)
 	if state.cards_in_zone(player_id + "_hand").size() >= max_hand:
 		return []
 	var def := _card_def(state, db, hero_id)
@@ -2595,6 +2595,17 @@ func _attach_actions(state: GameState, db, player_id: String,
 	# Damage attachment (Fireball): AI policy — only ever aimed at the opposing
 	# HERO (guaranteed value, no fizzle risk). Any printed target stays legal
 	# for human players; this is a targeting heuristic, not a rule.
+	# Hero-only attachment (Arcane Intellect: `attach:hero`): always our OWN
+	# hero — the ongoing benefit (max hand size) follows the attached hero's
+	# controller, so an enemy hero would gift it away.
+	if StackResolver._attach_targets_hero_only(def):
+		var own_hero := state.get_hero(player_id)
+		if own_hero:
+			var h_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": own_hero.instance_id})
+			if StackResolver.can_submit(state, h_act, db):
+				result.append(h_act)
+		return result
 	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage"):
 		var f_opp := "p2" if player_id == "p1" else "p1"
 		var f_hero := state.get_hero(f_opp)

@@ -218,6 +218,10 @@ func _ready() -> void:
 		_test_aimed_shot_retract_and_ai,
 		_test_spirit_bond_turn_start_heal,
 		_test_talent_deck_legality,
+		_test_mana_agate_power,
+		_test_mana_agate_killed_in_response,
+		_test_arcane_intellect_attach_and_hand_size,
+		_test_ai_mana_agate_and_arcane_intellect,
 	]
 
 	for t in tests:
@@ -11691,3 +11695,172 @@ func _test_ai_fireball_targets_hero_only() -> void:
 			fb_targets.append(a.params.get("target_id", ""))
 	eq(fb_targets.size(), 1, "aif-a: exactly one Fireball action generated")
 	ok("p2_hero" in fb_targets, "aif-b: Fireball aimed at the opposing hero only")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Mana Agate (azeroth_57): "Ongoing: 1, Destroy Mana Agate -> Draw two cards."
+# Plain ongoing Ability living in the hero row; the power is a plain payment
+# power (no [Activate]) whose extra cost destroys the source itself.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _stock_deck(state: GameState, player_id: String, def_id: String, count: int) -> void:
+	for i in range(count):
+		var inst_id := "%s_deck_%d" % [player_id, i]
+		var card := CardInstance.create(inst_id, def_id, player_id, player_id + "_deck")
+		state.cards[inst_id] = card
+		state.zones[player_id + "_deck"].card_ids.append(inst_id)
+
+
+func _test_mana_agate_power() -> void:
+	_buf.append("\n-- Mana Agate: sacrifice from the hero row, draw two --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("azeroth_57", 2, "ongoing|activated_power:1:draw:2:::sacrifice_self")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "agate", "azeroth_57", "p1")
+	_add_resources(state, "p1", 3)
+	_stock_deck(state, "p1", "bear_def", 4)
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "agate"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+	eq(state.get_card("agate").zone_id, "p1_hero_row", "ma-a: Agate is ongoing in the hero row")
+
+	# Plain payment power: usable the same turn it entered play (no [Activate]).
+	var power := PendingAction.make("use_ally_power", "p1", {"card_id": "agate"})
+	ok(StackResolver.can_submit(state, power, db), "ma-b: power legal right away")
+	StackResolver.submit_action(state, power, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_card("agate").zone_id, "p1_graveyard", "ma-c: Agate destroyed as the cost")
+	eq(state.cards_in_zone("p1_hand").size(), 2,        "ma-d: drew two cards")
+	eq(state.get_available_resources("p1"), 0,          "ma-e: 2 (play) + 1 (power) paid")
+
+
+func _test_mana_agate_killed_in_response() -> void:
+	_buf.append("\n-- Mana Agate: killed in response, draw still resolves --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("azeroth_57", 2, "ongoing|activated_power:1:draw:2:::sacrifice_self")
+	db.instant("burn_def", 0, "destroy_target:ability")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var agate := CardInstance.create("agate", "azeroth_57", "p1", "p1_hero_row")
+	state.cards["agate"] = agate
+	state.zones["p1_hero_row"].card_ids.append("agate")
+	_add_card_to_hand(state, "burn", "burn_def", "p2")
+	_add_resources(state, "p1", 1)
+	_stock_deck(state, "p1", "bear_def", 4)
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "agate"}), db)
+	StackResolver.pass_priority(state, db)   # p1 -> p2
+	# p2 destroys the Agate in response.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "burn", "target_id": "agate"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # burn resolves
+	eq(agate.zone_id, "p1_graveyard", "mk-a: Agate destroyed in response")
+	# Both pass again -> the power resolves: destroy no-ops, draw still happens.
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.cards_in_zone("p1_hand").size(), 2, "mk-b: still drew two cards")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Arcane Intellect (azeroth_47): "Attach to target hero, and its controller
+# draws a card. Ongoing: Attached hero's controller's maximum hand size is
+# increased by three."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_arcane_intellect_attach_and_hand_size() -> void:
+	_buf.append("\n-- Arcane Intellect: hero-only attach, draw, +3 max hand --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.instant("azeroth_47", 2, "ongoing|attach:hero|attach_draw:1|attached_max_hand:3")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bear", "bear_def", "p1")
+	_add_card_to_hand(state, "intellect", "azeroth_47", "p1")
+	_add_resources(state, "p1", 2)
+	_stock_deck(state, "p1", "bear_def", 2)
+
+	# attach:hero — an ally is not a legal target.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "intellect", "target_id": "bear"}), db),
+		"aint-a: can't attach to an ally")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "intellect", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	var intellect := state.get_card("intellect")
+	eq(intellect.zone_id, "attached",     "aint-b: Intellect is attached")
+	eq(intellect.attached_to, "p1_hero",  "aint-c: host is our hero")
+	eq(state.cards_in_zone("p1_hand").size(), 1, "aint-d: controller drew a card")
+	eq(state.get_max_hand_size("p1", db), 10, "aint-e: max hand size 7 + 3")
+	eq(state.get_max_hand_size("p2", db), 7,  "aint-f: opponent unaffected")
+
+	# Wrap-up (503.2a): 10 cards in hand is fine now, 11 forces one discard.
+	for i in range(10):
+		_add_card_to_hand(state, "filler_%d" % i, "bear_def", "p1")   # hand: 11
+	TurnManager._next_turn(state, db)
+	eq(state.pending_discard_count, 1, "aint-g: wrap-up discards down to 10")
+	state.pending_discard_player = ""
+	state.pending_discard_count = 0
+
+	# The attachment leaving play drops the limit back to 7.
+	GameLogic.destroy_card(state, "intellect", "")
+	eq(state.get_max_hand_size("p1", db), 7, "aint-h: limit back to 7 after destroy")
+
+
+func _test_ai_mana_agate_and_arcane_intellect() -> void:
+	_buf.append("\n-- AI: Agate hand-room gate; Intellect on own hero --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("azeroth_57", 2, "ongoing|activated_power:1:draw:2:::sacrifice_self")
+	db.instant("azeroth_47", 2, "ongoing|attach:hero|attach_draw:1|attached_max_hand:3")
+
+	var ai := BaseAI.new()
+
+	# Mana Agate power: hand at max-1 has room for only one card -> hold it.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var agate := CardInstance.create("agate", "azeroth_57", "p1", "p1_hero_row")
+	state.cards["agate"] = agate
+	state.zones["p1_hero_row"].card_ids.append("agate")
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	for i in range(6):
+		_add_card_to_hand(state, "h_%d" % i, "bear_def", "p1")   # hand: 6, max: 7
+	var fires := func() -> bool:
+		for a in ai.get_legal_actions(state, db, "p1"):
+			if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "agate":
+				return true
+		return false
+	ok(not fires.call(), "aima-a: AI holds Agate with room for only 1 card")
+	state.zones["p1_hand"].card_ids.pop_back()   # hand: 5 -> room for both
+	ok(fires.call(), "aima-b: AI fires Agate with room for 2 cards")
+
+	# Arcane Intellect: the only generated attach action targets our OWN hero.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state2, "intellect", "azeroth_47", "p1")
+	_add_resources(state2, "p1", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+	var ai_targets: Array = []
+	for a in ai.get_legal_actions(state2, db, "p1"):
+		if a.params.get("card_id", "") == "intellect":
+			ai_targets.append(a.params.get("target_id", ""))
+	eq(ai_targets.size(), 1, "aima-c: exactly one Intellect action")
+	ok("p1_hero" in ai_targets, "aima-d: aimed at our own hero")

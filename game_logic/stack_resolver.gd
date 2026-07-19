@@ -425,6 +425,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 				var t_zone := state.zones.get(state.get_card(target_id).zone_id) as Zone
 				if not t_zone or t_zone.zone_type != "ally_row":
 					return false
+			elif _attach_targets_hero_only(def):
+				if not _is_hero(state, target_id):
+					return false
 			elif destroy_target_kind(def) == "ability":
 				if not _is_in_play_ability(state, target_id, db):
 					return false
@@ -472,6 +475,8 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 				if t_card:
 					var t_zone := state.zones.get(t_card.zone_id) as Zone
 					if not t_zone or t_zone.zone_type != "ally_row": return false
+			elif _attach_targets_hero_only(def):
+				if not _is_hero(state, target_id): return false
 			elif destroy_target_kind(def) == "ability":
 				if not _is_in_play_ability(state, target_id, db): return false
 			elif destroy_target_kind(def) == "equipment":
@@ -633,6 +638,12 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 				and parts.size() > 1 and parts[1] == "ally":
 			return true
 	return false
+
+
+# Arcane Intellect: `attach:hero` — the attachment may only target a hero.
+static func _attach_targets_hero_only(def: CardDef) -> bool:
+	var parts := attach_parts(def)
+	return parts.size() > 1 and parts[1] == "hero"
 
 
 # Rule 400: an attachment carries an `attach:TARGETS[:exhaust_it]` segment
@@ -1252,6 +1263,9 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 		target_ok = _is_ally(state, target_id)
 	elif target_ok and parts.size() > 1 and parts[1] == "hero_or_ally":
 		target_ok = _is_hero_or_ally(state, target_id, db)
+	elif target_ok and parts.size() > 1 and parts[1] == "hero":
+		# Arcane Intellect: "Attach to target hero" — heroes only.
+		target_ok = _is_hero(state, target_id)
 	if not target_ok:
 		events.append(GameEvent.make("action_fizzled", {
 			"action_type": "play_ability", "reason": "attach_target_gone",
@@ -1277,6 +1291,13 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 	# destroy check.
 	for seg in def.effects.split("|"):
 		var dp := seg.strip_edges().split(":")
+		if dp[0] == "attach_draw":
+			# Arcane Intellect: "Attach to target hero, and its controller draws
+			# a card." The draw belongs to the HOST's controller (normally the
+			# caster, but the printed text follows the attached hero).
+			var draw_n := int(dp[1]) if dp.size() > 1 else 1
+			for _i in draw_n:
+				events.append_array(_draw_one(state, host.controller))
 		if dp[0] == "attach_deal_damage":
 			var dmg_amt := int(dp[1]) if dp.size() > 1 else 0
 			var att_hero := state.get_hero(card.controller)
@@ -2377,11 +2398,13 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		if _is_ally(state, sac_id):
 			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
 	elif extra_cost == "sacrifice_self":
-		# Kavai the Wanderer: destroy the source itself as a cost. If an opponent
-		# already destroyed her in response, the destroy no-ops and the effect
-		# still resolves — matching the printed rules, where the cost was paid at
+		# Kavai the Wanderer / Mana Agate: destroy the source itself as a cost.
+		# The source may be an ally (Kavai) or an ongoing ability in the hero row
+		# (Mana Agate) — any in-play source works. If an opponent already
+		# destroyed it in response, the destroy no-ops and the effect still
+		# resolves — matching the printed rules, where the cost was paid at
 		# announcement.
-		if _is_ally(state, card_id):
+		if state.is_in_play(card_id):
 			events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
 	events.append(GameEvent.make("ally_power_used",
 		{"ally_id": card_id, "player": action.source_player,

@@ -389,6 +389,29 @@ func get_max_hp(instance_id: String, db) -> int:
 	return max(hp, 0)
 
 
+# Rule 503.2a max hand size, with live attachment modifiers: Arcane Intellect
+# ("Ongoing: Attached hero's controller's maximum hand size is increased by
+# three", `attached_max_hand:3`) raises it per copy attached to the player's
+# hero. Live read — never cached.
+func get_max_hand_size(player_id: String, db) -> int:
+	var ps := players.get(player_id) as PlayerState
+	var max_hand: int = ps.max_hand_size if ps else 7
+	var hero := get_hero(player_id)
+	if hero and db:
+		for att_id in hero.attachments:
+			var att := get_card(att_id)
+			if not att or att.zone_id != "attached":
+				continue
+			var att_def: CardDef = db.get_def(att.card_def_id)
+			if not att_def:
+				continue
+			for seg in att_def.effects.split("|"):
+				var p := seg.split(":")
+				if p[0] == "attached_max_hand" and p.size() > 1:
+					max_hand += int(p[1])
+	return max_hand
+
+
 # Sum of one stat granted by this card's attachments' `attached_buff:ATK:HP`
 # segments (rule 400 — Mark of the Wild). field: 1 = ATK, 2 = health.
 # Live read on every stat query — never cached.

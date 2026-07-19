@@ -207,9 +207,8 @@ static func _enter_end(state: GameState, db) -> Array[GameEvent]:
 static func _next_turn(state: GameState, db) -> Array[GameEvent]:
 	# Rule 503.2a: wrap-up step — discard to max hand size before turn advances.
 	var outgoing := state.turn_player
-	var ps := state.players.get(outgoing) as PlayerState
 	var hand_count := state.cards_in_zone(outgoing + "_hand").size()
-	var max_hand := ps.max_hand_size if ps else 7
+	var max_hand := state.get_max_hand_size(outgoing, db)
 	var excess := hand_count - max_hand
 	if excess > 0:
 		state.pending_discard_player = outgoing

@@ -327,6 +327,11 @@ static func card_returned_to_hand(card_id: String, source_id: String) -> GameEve
 		"card_id": card_id, "source_id": source_id,
 	})
 
+static func attacker_removed_from_combat(attacker_id: String, source_id: String) -> GameEvent:
+	return make("attacker_removed_from_combat", {
+		"attacker_id": attacker_id, "source_id": source_id,
+	})
+
 static func card_removed_from_game(card_id: String, player_id: String) -> GameEvent:
 	return make("card_removed_from_game", {
 		"card_id": card_id, "player": player_id,

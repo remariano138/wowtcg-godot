@@ -249,6 +249,21 @@ targeting flow (`input_router.start_targeting`).
 
 Tests: scenario 34 in `game_logic/tests/test_scenarios.gd`.
 
+## `BaseAI.evasion_action(state, db, player_id) -> PendingAction`
+
+**Blink dodge** (`azeroth_48`, tagged `"combat_instant_evasion"` — held, never
+blind-played for the draw). Plays Blink during the **defend window** only (the
+removal clause needs the hero to actually BE defending — 602.3; in the attack
+window it would be a pure cantrip), with an empty chain, when the AI's **hero**
+is `combat_defender` and the dodge is worth the card: incoming attacker ATK
+(with "while attacking" bonuses) **> 3**, or the hero is **below 10 HP** (any
+hit matters when low). Wired into all three AIs' `decide_action`, after
+`instant_protector_action` / before `bear_form_action`. Future ally-saving
+evasion cards will need a value comparison (dying ally vs the evasion card)
+instead of the hero gates.
+
+Tests: `_test_ai_blink_evasion`.
+
 ## `BaseAI.bear_form_action(state, db, player_id) -> PendingAction`
 
 **Bear Form flash-in** (`azeroth_18`, tagged `"combat_instant_bear_form"` —

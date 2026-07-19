@@ -1352,6 +1352,21 @@ func _refresh_ui() -> void:
 			var hz := _state.zones.get(hand_zone_id) as Zone
 			if hz:
 				_renderer.sync_zone_with_state(hand_zone_id, hz.card_ids)
+	_refresh_ready_lock_badges()
+
+
+# ⛓ badge on every in-play card that will be skipped by its controller's next
+# ready step (Entangling Roots host, ally facing an opposing Earthbind Totem).
+# Live probe (TurnManager.is_ready_blocked) — badges self-clear when the aura
+# or attachment leaves play.
+func _refresh_ready_lock_badges() -> void:
+	if not _state or not _db or not _renderer:
+		return
+	for pid in _state.players:
+		for card in _state.cards_in_play(pid):
+			var cn := _renderer.card_nodes.get(card.instance_id) as CardNode
+			if cn:
+				cn.set_ready_locked(TurnManager.is_ready_blocked(_state, card, _db))
 
 
 func _turn_label(turn_number: int) -> String:
@@ -1981,6 +1996,10 @@ func _log_event(event: GameEvent) -> void:
 			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			_drain_passes()  # human chose protector; drain the defend window
+		"attacker_removed_from_combat":
+			var rem_att: String = _log_card(event.payload.get("attacker_id", ""))
+			var rem_src: String = _log_card(event.payload.get("source_id", ""))
+			_log_entry("[color=#a66]%s removed from combat by %s[/color]" % [rem_att, rem_src])
 		"damage_dealt":
 			var src:    String = _log_card(event.payload.get("source", ""))
 			var tgt:    String = _log_card(event.payload.get("target", ""))

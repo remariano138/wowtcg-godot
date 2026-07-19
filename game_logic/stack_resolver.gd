@@ -1453,6 +1453,30 @@ static func _resolve_play_instant(state: GameState,
 									"target": ms_target_id, "amount": ms_amount,
 									"from_ability": true})
 							events.append_array(defer_packets(state, db, ms_packets))
+					"remove_attackers":
+						# "If your hero is defending, remove all attackers from combat."
+						# (Blink). Condition token (parts[1]) picks WHO must be
+						# defending: "hero_defending" = the caster's hero is the
+						# current defender (602.3 — defending exists only after the
+						# protect point, so the defend window must be open; during
+						# the attack window the hero is merely a PROPOSED defender
+						# and the clause is a no-op). Rule 602.4: removing the
+						# attacker doesn't end the combat step immediately — the
+						# window plays out, and the conclusion's 603.1b check then
+						# deals no damage. The attacker stays exhausted (it
+						# exhausted when the attack was proposed). Our combats are
+						# 1-on-1, so "all attackers" = the single attacker.
+						var ra_cond := parts[1].strip_edges() if parts.size() > 1 else "hero_defending"
+						var ra_ps := state.players.get(action.source_player) as PlayerState
+						var ra_hero: String = ra_ps.hero_instance_id if ra_ps else ""
+						if ra_cond == "hero_defending" \
+								and state.combat_defend_window \
+								and state.combat_attacker != "" \
+								and state.combat_defender == ra_hero:
+							var removed := state.combat_attacker
+							state.combat_attacker = ""
+							events.append(GameEvent.attacker_removed_from_combat(
+								removed, card_id))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1

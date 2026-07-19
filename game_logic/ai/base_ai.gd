@@ -41,6 +41,12 @@ extends RefCounted
 #       NOT played to dodge a combat attack — that trades our card (plus
 #       re-paying the ally's cost later) against an attack that cost the
 #       opponent nothing. See save_bounce_action().
+#   "combat_instant_evasion" — Instant Ability that removes the attacker from
+#       combat while our HERO is defending (effects: remove_attackers:
+#       hero_defending, e.g. Blink). Played during the DEFEND window only (the
+#       card's condition needs the hero to actually be defending — 602.3), when
+#       the incoming hit is worth the card: attacker ATK > 3 or our hero is
+#       below 10 HP. See evasion_action().
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
@@ -55,6 +61,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
 	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
+	"azeroth_48":  "combat_instant_evasion",     # Blink — draw + remove attacker while hero defends
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 }
 
@@ -87,6 +94,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var flash := instant_protector_action(state, db, player_id)
 	if flash != null:
 		return flash
+	var dodge := evasion_action(state, db, player_id)
+	if dodge != null:
+		return dodge
 	return bear_form_action(state, db, player_id)
 
 
@@ -411,6 +421,46 @@ static func _exhausts_heroes(def: CardDef) -> bool:
 				and parts[1] == "hero_or_ally":
 			return true
 	return false
+
+
+# ── Evasion (azeroth_48 Blink / combat_instant_evasion) ───────────────────────
+# "Draw a card. If your hero is defending, remove all attackers from combat."
+# Played during the DEFEND window only (the removal clause requires the hero to
+# actually be defending — during the attack window it would be a pure cantrip),
+# with an empty chain, when our HERO is the current defender and the dodge is
+# worth the card: incoming attacker ATK > 3, or our hero is below 10 HP (any
+# hit matters when low). Never blind-played for the draw alone.
+func evasion_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.combat_defend_window:
+		return null   # the hero must BE defending — attack window is too early
+	if not state.pending_actions.is_empty():
+		return null   # respond on the window floor
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or defender_id != ps.hero_instance_id:
+		return null   # only when OUR HERO is the defender
+	var incoming := state.get_atk(attacker_id, db)
+	if incoming <= 0:
+		return null   # no damage to dodge
+	var hero_hp := state.get_current_hp(defender_id, db)
+	if incoming <= 3 and hero_hp >= 10:
+		return null   # small hit, healthy hero — hold the card
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_evasion":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
 
 
 # ── Bear Form (azeroth_18 / combat_instant_bear_form) ─────────────────────────

@@ -124,8 +124,13 @@
       "_card_name": "Vesh'ral"
     },
     {
+      "card_def_id": "azeroth_48",
+      "count": 2,
+      "_card_name": "Blink"
+    },
+    {
       "card_def_id": "azeroth_228",
-      "count": 4,
+      "count": 2,
       "_card_name": "Benethor Draigo"
     },
     {

@@ -227,6 +227,12 @@ static func _next_turn(state: GameState, db) -> Array[GameEvent]:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+# Public probe for the UI (playtest ready-lock badge): would this card be
+# skipped by its controller's next ready step? Same live read as the ready step.
+static func is_ready_blocked(state: GameState, card: CardInstance, db) -> bool:
+	return _ready_blocked(state, card, db)
+
+
 # Entangling Roots: a card hosting an attachment with `attached_cannot_ready`
 # ("Attached ally can't ready during its controller's ready step") skips the
 # ready step. Only the ready STEP is blocked — explicit ready effects
@@ -234,6 +240,21 @@ static func _next_turn(state: GameState, db) -> Array[GameEvent]:
 static func _ready_blocked(state: GameState, card: CardInstance, db) -> bool:
 	if not db:
 		return false
+	# Earthbind Totem: "Opposing allies can't ready during their controllers'
+	# ready step." Static aura — live scan of every opponent's in-play cards.
+	# Only allies (ally_row cards, totems included) are locked; heroes, equipment
+	# and resources ready normally.
+	if card.zone_id == card.controller + "_ally_row":
+		for pid in state.players:
+			if pid == card.controller:
+				continue
+			for aura_card in state.cards_in_play(pid):
+				var aura_def := db.get_def(aura_card.card_def_id) as CardDef
+				if not aura_def:
+					continue
+				for aura_seg in aura_def.effects.split("|"):
+					if aura_seg.strip_edges() == "opposing_allies_cant_ready":
+						return true
 	for att_id in card.attachments:
 		var att := state.get_card(att_id)
 		if not att or att.zone_id != "attached":
@@ -274,6 +295,18 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 		# "Infernal" for why this deviates from rule 501.1a's chain-based trigger.
 		# Wazzuli Wildmender: "At the start of your turn, [this] heals AMOUNT damage
 		# from each hero and ally in your party."
+		# Healing Stream Totem: "Ongoing: At the start of each turn, [this] heals
+		# AMOUNT damage from each hero and ally in your party." Fires on BOTH
+		# players' turns; only the controller's party is healed.
+		if each_turn and key == "heal_party_each_turn":
+			var stream_amt := int(parts[1]) if parts.size() > 1 else 1
+			var stream_pid := card.controller
+			for stream_ally in state.cards_in_zone(stream_pid + "_ally_row"):
+				events.append_array(GameLogic.heal(state, stream_ally.instance_id, stream_amt, db, card.instance_id))
+			var stream_hero := state.get_hero(stream_pid)
+			if stream_hero:
+				events.append_array(GameLogic.heal(state, stream_hero.instance_id, stream_amt, db, card.instance_id))
+			continue
 		if not each_turn and key == "heal_party_at_turn_start":
 			var heal_amt := int(parts[1]) if parts.size() > 1 else 1
 			var pid := card.controller

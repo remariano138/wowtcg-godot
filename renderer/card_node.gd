@@ -35,6 +35,7 @@ var _damage_badge: Label = null
 var _power_used_badge: Label = null
 var _sick_badge: Label = null
 var _mute_badge: Label = null
+var _ready_lock_badge: Label = null
 var _outline: ColorRect = null
 var _atk_badge_bg: Panel = null
 var _atk_badge_lbl: Label = null
@@ -225,6 +226,21 @@ static func create(inst_id: String, card_name: String,
 	node.add_child(mute_lbl)
 	node._mute_badge = mute_lbl
 
+	# Ready-lock badge (⛓, top-right) — the card won't ready during its
+	# controller's next ready step (Entangling Roots, Earthbind Totem).
+	var lock_lbl := Label.new()
+	lock_lbl.text = "⛓"
+	lock_lbl.add_theme_font_size_override("font_size", 22)
+	lock_lbl.add_theme_color_override("font_color", Color(0.8, 0.85, 1.0))
+	lock_lbl.add_theme_constant_override("outline_size", 4)
+	lock_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	lock_lbl.size         = Vector2(30, 26)
+	lock_lbl.position     = Vector2(W * 0.5 - 30, -H * 0.5 + 4)
+	lock_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lock_lbl.visible      = false
+	node.add_child(lock_lbl)
+	node._ready_lock_badge = lock_lbl
+
 	# Try to load the real card image.
 	if image_path != "" and image_path != "No match":
 		var res_path := "res://" + image_path.replace("\\", "/")
@@ -320,6 +336,11 @@ func reveal(duration: float = 1.5) -> void:
 func set_muted(muted: bool) -> void:
 	if _mute_badge:
 		_mute_badge.visible = muted
+
+
+func set_ready_locked(locked: bool) -> void:
+	if _ready_lock_badge:
+		_ready_lock_badge.visible = locked
 
 
 func set_power_used(used: bool) -> void:

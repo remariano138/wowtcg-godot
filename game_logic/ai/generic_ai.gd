@@ -77,6 +77,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var cash_in := doomed_sacrifice_action(state, db, player_id)
 	if cash_in != null:
 		return cash_in
+	# Blink dodge (BaseAI) — remove the attacker while our hero defends.
+	var dodge := evasion_action(state, db, player_id)
+	if dodge != null:
+		return dodge
 	# Bear Form flash-in (BaseAI) — hero gains protector before the protect point.
 	var shift := bear_form_action(state, db, player_id)
 	if shift != null:

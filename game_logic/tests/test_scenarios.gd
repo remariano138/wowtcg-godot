@@ -150,6 +150,8 @@ func _ready() -> void:
 		_test_ai_claw_ambush,
 		_test_withdraw_bounce_and_spell_fizzle,
 		_test_ai_withdraw_save,
+	_test_blink_removes_attacker,
+	_test_ai_blink_evasion,
 		_test_first_to_fall_destroys_protector,
 		_test_ai_first_to_fall_destroys_protector,
 		_test_targeted_instant_highlight_requires_target,
@@ -174,6 +176,8 @@ func _ready() -> void:
 		_test_searing_totem_fires_each_turn,
 		_test_searing_totem_can_be_attacked,
 		_test_searing_totem_instant_timing,
+		_test_earthbind_totem_ready_lock,
+		_test_healing_stream_totem_heals_party,
 		_test_watcher_malwi_pings_entering_opposing_ally,
 		_test_watcher_malwi_ignores_own_allies,
 		_test_wazzuli_party_heal,
@@ -8149,6 +8153,172 @@ func _test_ai_withdraw_save() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Blink (azeroth_48, 2, Instant Ability): "Draw a card. If your hero is
+# defending, remove all attackers from combat." The removal fires only while
+# the caster's hero IS the defender (defend window — 602.3); removing the
+# attacker doesn't end the combat step (602.4), the conclusion then deals no
+# damage (603.1b). The attacker stays exhausted. 1-on-1 combat: "all
+# attackers" = the single attacker.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_blink_removes_attacker() -> void:
+	_buf.append("\n-- Blink: dodge while the hero defends; cantrip otherwise --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("raider_def", 4, 4, [], 3)
+	db.instant("azeroth_48", 2, "draw:1|remove_attackers:hero_defending")
+
+	# bl-a: hero defending — Blink in the defend window removes the attacker.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	var raider := _add_ally(state, "raider", "raider_def", "p1")
+	raider.just_summoned = false
+	_add_card_to_hand(state, "blink", "azeroth_48", "p2")
+	var deck_card := CardInstance.create("deck1", "raider_def", "p2", "p2_deck")
+	state.cards["deck1"] = deck_card
+	state.zones["p2_deck"].card_ids.append("deck1")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # no protectors → defend window
+	ok(state.combat_defend_window, "bl-a0: defend window open")
+	StackResolver.pass_priority(state, db)   # attacker (p1) passes → p2
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "blink"}), db)
+	StackResolver.pass_priority(state, db)
+	var res_events := StackResolver.pass_priority(state, db)   # Blink resolves
+	eq(state.combat_attacker, "", "bl-a: attacker removed from combat")
+	var saw_removed := false
+	for ev in res_events:
+		if ev.event_type == "attacker_removed_from_combat" \
+				and ev.payload.get("attacker_id", "") == "raider":
+			saw_removed = true
+	ok(saw_removed, "bl-a2: attacker_removed_from_combat event emitted")
+	eq(state.get_card("deck1").zone_id, "p2_hand", "bl-a3: Blink drew a card")
+	eq(state.get_card("blink").zone_id, "p2_graveyard", "bl-a4: Blink in graveyard")
+	ok(state.combat_defend_window, "bl-a5: combat step doesn't end immediately (602.4)")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # window closes → conclusion, 603.1b
+	ok(not state.combat_defend_window, "bl-b: combat concluded")
+	eq(state.get_card("p2_hero").damage_taken, 0, "bl-b2: no damage — attack dodged")
+	ok(state.get_card("raider").is_exhausted, "bl-b3: attacker stays exhausted")
+
+	# bl-c: an ALLY defending — Blink is a pure cantrip, the attack lands.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p1"
+	state2.priority_player = "p1"
+	var raider2 := _add_ally(state2, "raider2", "raider_def", "p1")
+	raider2.just_summoned = false
+	var blocker := _add_ally(state2, "blocker", "raider_def", "p2")
+	blocker.just_summoned = false
+	_add_card_to_hand(state2, "blink2", "azeroth_48", "p2")
+	_add_resources(state2, "p2", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider2", "defender_id": "blocker"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # defend window
+	ok(state2.combat_defend_window, "bl-c0: defend window open")
+	StackResolver.pass_priority(state2, db)   # p1 passes → p2
+	StackResolver.submit_action(state2, PendingAction.make("play_instant", "p2",
+		{"card_id": "blink2"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # resolves — no removal
+	eq(state2.combat_attacker, "raider2", "bl-c: ally defending — attacker NOT removed")
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # conclusion — damage lands both ways
+	ok(not state2.is_in_play("blocker"),
+		"bl-c2: combat damage landed — the defending ally died (4v4 trade)")
+
+	# bl-d: played in the ATTACK window the hero is only a PROPOSED defender —
+	# no removal, and the attack later lands on the hero.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	state3.turn_player     = "p1"
+	state3.priority_player = "p1"
+	var raider3 := _add_ally(state3, "raider3", "raider_def", "p1")
+	raider3.just_summoned = false
+	_add_card_to_hand(state3, "blink3", "azeroth_48", "p2")
+	_add_resources(state3, "p2", 2)
+	state3.players["p1"].resource_placed_this_turn = true
+	state3.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider3", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # attack window
+	ok(state3.combat_attack_window, "bl-d0: attack window open")
+	StackResolver.pass_priority(state3, db)   # p1 passes → p2
+	StackResolver.submit_action(state3, PendingAction.make("play_instant", "p2",
+		{"card_id": "blink3"}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # resolves — condition not met
+	eq(state3.combat_attacker, "raider3", "bl-d: proposed defender ≠ defending — no removal")
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # attack window closes → defend window
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # conclusion
+	eq(state3.get_card("p2_hero").damage_taken, 4, "bl-d2: attack landed on the hero")
+
+
+func _test_ai_blink_evasion() -> void:
+	_buf.append("\n-- AI Blink: dodge only big hits or when the hero is low --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   5, 5, [], 4)
+	db.ally("small_def", 2, 2, [], 1)
+	db.instant("azeroth_48", 2, "draw:1|remove_attackers:hero_defending")
+
+	# Drive a combat vs p2's hero up to the defend window, then ask the AI.
+	var setups := [
+		{"atk": "big_def",   "hero_dmg": 0,  "plays": true,
+			"label": "ab-a: 5 ATK incoming (>3) → AI blinks"},
+		{"atk": "small_def", "hero_dmg": 0,  "plays": false,
+			"label": "ab-b: 2 ATK on a healthy hero → AI holds"},
+		{"atk": "small_def", "hero_dmg": 22, "plays": true,
+			"label": "ab-c: 2 ATK but hero at 8 HP (<10) → AI blinks"},
+	]
+	for setup in setups:
+		var state := _base_state(db, "p1_hero", "p2_hero")
+		state.turn_player     = "p1"
+		state.priority_player = "p1"
+		var att := _add_ally(state, "att", setup["atk"], "p1")
+		att.just_summoned = false
+		state.get_card("p2_hero").damage_taken = setup["hero_dmg"]
+		_add_card_to_hand(state, "blink", "azeroth_48", "p2")
+		_add_resources(state, "p2", 2)
+		state.players["p1"].resource_placed_this_turn = true
+		state.players["p2"].resource_placed_this_turn = true
+		StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+			{"attacker_id": "att", "defender_id": "p2_hero"}), db)
+		StackResolver.pass_priority(state, db)
+		StackResolver.pass_priority(state, db)   # attack window
+		# AI never blinks in the attack window (hero not defending yet).
+		var early := ai.decide_action(state, db, "p2")
+		ok(early == null or early.params.get("card_id", "") != "blink",
+			setup["label"] + " (held in the attack window)")
+		StackResolver.pass_priority(state, db)
+		StackResolver.pass_priority(state, db)   # defend window
+		StackResolver.pass_priority(state, db)   # p1 passes → p2 has priority
+		var act := ai.decide_action(state, db, "p2")
+		if setup["plays"]:
+			ok(act != null and act.params.get("card_id", "") == "blink", setup["label"])
+		else:
+			ok(act == null or act.params.get("card_id", "") != "blink", setup["label"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # First to Fall (dark_portal_141, 2, Instant Ability): "Destroy target protecting
 # ally." Legal only in the defend window, aimed at the ally protecting this combat
 # (state.combat_protector). Destroying it ends the combat with no damage (603.1b).
@@ -9545,6 +9715,98 @@ func _test_searing_totem_instant_timing() -> void:
 	var play_plain := PendingAction.make("play_ability", "p1", {"card_id": "plain"})
 	ok(not StackResolver.can_submit(state, play_plain, db),
 		"st4-b: a non-instant ongoing Ability is NOT playable off-turn")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Earthbind Totem: "Ongoing: Opposing allies can't ready during
+# their controllers' ready step." Static aura; heroes/resources unaffected,
+# the controller's own allies unaffected, lock lifts when the totem leaves play.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_earthbind_totem_ready_lock() -> void:
+	_buf.append("\n-- Earthbind Totem: opposing allies can't ready --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("earthbind_def", 2, "ongoing|totem:earth|opposing_allies_cant_ready")
+	db.ally("grunt_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "earthbind", "earthbind_def", "p1")
+	var enemy := _add_ally(state, "enemy", "grunt_def", "p2")
+	var mine  := _add_ally(state, "mine", "grunt_def", "p1")
+	enemy.is_exhausted = true
+	mine.is_exhausted = true
+	state.get_card("p2_hero").is_exhausted = true
+
+	ok(TurnManager.is_ready_blocked(state, enemy, db),
+		"eb-a: opposing ally probes as ready-blocked")
+	ok(not TurnManager.is_ready_blocked(state, mine, db),
+		"eb-b: the totem controller's own ally is not blocked")
+
+	# p2's ready step: the ally stays exhausted, the hero readies normally.
+	state.turn_player = "p2"
+	TurnManager._enter_ready(state, db)
+	ok(enemy.is_exhausted, "eb-c: opposing ally did NOT ready")
+	ok(not state.get_card("p2_hero").is_exhausted, "eb-d: opposing hero readied (allies only)")
+	ok(not enemy.just_summoned, "eb-e: summoning sickness still cleared")
+
+	# p1's ready step: their own exhausted ally readies (aura is opposing-only).
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	ok(not mine.is_exhausted, "eb-f: controller's own ally readied normally")
+
+	# Totem leaves play → the lock lifts.
+	GameLogic.move_card(state, "earthbind", "p1_graveyard")
+	enemy.is_exhausted = true
+	state.turn_player = "p2"
+	TurnManager._enter_ready(state, db)
+	ok(not enemy.is_exhausted, "eb-g: ally readies again once the totem is gone")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Healing Stream Totem: "Ongoing: At the start of each turn, [this]
+# heals 1 damage from each hero and ally in your party." Fires on BOTH players'
+# turns; only the controller's party is healed.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_healing_stream_totem_heals_party() -> void:
+	_buf.append("\n-- Healing Stream Totem: heals controller's party each turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("stream_def", 1, "ongoing|totem:water|heal_party_each_turn:1")
+	db.ally("grunt_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "stream", "stream_def", "p1")
+	var mine := _add_ally(state, "mine", "grunt_def", "p1")
+	var theirs := _add_ally(state, "theirs", "grunt_def", "p2")
+	mine.damage_taken = 3
+	theirs.damage_taken = 3
+	state.get_card("p1_hero").damage_taken = 2
+	state.get_card("p2_hero").damage_taken = 2
+
+	# Controller's turn start: own hero + ally heal 1, opponent's party untouched.
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(mine.damage_taken, 2, "hs-a: controller's ally healed 1")
+	eq(state.get_card("p1_hero").damage_taken, 1, "hs-b: controller's hero healed 1")
+	eq(theirs.damage_taken, 3, "hs-c: opposing ally NOT healed")
+	eq(state.get_card("p2_hero").damage_taken, 2, "hs-d: opposing hero NOT healed")
+
+	# Opponent's turn start: "each turn" — fires again for the controller's party.
+	state.turn_player = "p2"
+	TurnManager._enter_ready(state, db)
+	eq(mine.damage_taken, 1, "hs-e: fires on the OPPONENT's turn too")
+	eq(state.get_card("p1_hero").damage_taken, 0, "hs-f: hero healed again")
+	eq(theirs.damage_taken, 3, "hs-g: opposing party still untouched")
+
+	# Totem leaves play → no more healing.
+	GameLogic.move_card(state, "stream", "p1_graveyard")
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(mine.damage_taken, 1, "hs-h: no heal once the totem is gone")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -139,6 +139,8 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_exhaustion_freezes_proposal,
 		_test_ai_exhaustion_freeze_save,
+		_test_war_stomp_mass_exhaust,
+		_test_ai_war_stomp_freeze_save,
 		_test_cat_form_hero_attack,
 		_test_form_break_and_pay_return,
 		_test_form_uniqueness_shapeshift,
@@ -166,6 +168,7 @@ func _ready() -> void:
 		_test_strike_gates_and_gorebelly_discount,
 		_test_ai_strike_decisions,
 		_test_rod_of_ogre_magi_power,
+		_test_hammer_of_grace_heal_power,
 		_test_rod_two_handed_off_hand_uniqueness,
 		_test_ai_power_weapon_never_strikes,
 		_test_hypnotic_blade_discard,
@@ -222,6 +225,10 @@ func _ready() -> void:
 		_test_mana_agate_killed_in_response,
 		_test_arcane_intellect_attach_and_hand_size,
 		_test_ai_mana_agate_and_arcane_intellect,
+		_test_stealth_blocks_protectors,
+		_test_ghank_enter_play_destroy,
+		_test_ghank_no_target_no_prompt,
+		_test_ghank_decline,
 	]
 
 	for t in tests:
@@ -7907,6 +7914,110 @@ func _test_ai_litori_freeze_save() -> void:
 # and too late once the attack window has opened.
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# War Stomp (dark_portal_137): "Exhaust all opposing heroes and allies."
+# Non-targeted mass exhaust — hits Untargetable characters, spares the caster's
+# own side; in response to a proposal it fizzles the combat via the 601.3 recheck.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_war_stomp_mass_exhaust() -> void:
+	_buf.append("\n-- War Stomp: exhaust all opposing heroes and allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 4, [], 3)
+	db.ally("sneaky_def", 2, 2, ["untargetable"], 2)
+	db.ally("own_def", 2, 2, [], 1)
+	db.instant("dark_portal_137", 3, "requires_hero_race:Tauren|exhaust_all_opposing")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	var sneaky := _add_ally(state, "sneaky", "sneaky_def", "p1")
+	sneaky.just_summoned = false
+	var own := _add_ally(state, "own", "own_def", "p2")
+	own.just_summoned = false
+	_add_card_to_hand(state, "stomp", "dark_portal_137", "p2")
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var all_events: Array[GameEvent] = []
+	# p1 proposes combat vs p2's hero; the proposal sits on the chain.
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "p2_hero"})
+	all_events.append_array(StackResolver.submit_action(state, proposal, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 → p2
+
+	# p2 plays War Stomp in response — no target announced (non-targeted).
+	var cast := PendingAction.make("play_instant", "p2", {"card_id": "stomp"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"ws-a: War Stomp is legal in response to the proposal (instant, no target)")
+	all_events.append_array(StackResolver.submit_action(state, cast, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p2 passes
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 passes → cast resolves
+
+	ok(atk.is_exhausted, "ws-b: opposing attacker is exhausted")
+	ok(sneaky.is_exhausted, "ws-c: Untargetable opposing ally is exhausted too (non-targeted)")
+	ok(state.get_card("p1_hero").is_exhausted, "ws-d: opposing hero is exhausted")
+	ok(not own.is_exhausted, "ws-e: caster's own ally is untouched")
+	ok(not state.get_card("p2_hero").is_exhausted, "ws-f: caster's hero is untouched")
+
+	# Both pass again → the proposal itself resolves and must fizzle (601.3).
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled":
+			saw_fizzle = true
+	ok(saw_fizzle, "ws-g: proposal fizzled at resolution")
+	ok(not state.combat_attack_window, "ws-h: no attack window opened")
+	ok(state.get_card("stomp").zone_id == "p2_graveyard", "ws-i: War Stomp is in the graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI plays War Stomp (combat_instant_exhaust, mass/no-target) in response to a
+# dangerous proposal. (Unlike Exhaustion it could also answer an attacking hero —
+# the `mass` gate in exhaust_attacker_action skips the ally-only check.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_war_stomp_freeze_save() -> void:
+	_buf.append("\n-- AI plays War Stomp in response to a heavy attack proposal --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def", 5, 5, [], 4)
+	db.instant("dark_portal_137", 3, "requires_hero_race:Tauren|exhaust_all_opposing")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	_add_card_to_hand(state, "stomp", "dark_portal_137", "p2")
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": "p2_hero"})
+	StackResolver.submit_action(state, proposal, db)
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_instant"
+			and act.params.get("card_id") == "stomp"
+			and act.params.get("target_id", "") == "",
+		"ws-ai-a: AI plays War Stomp (no target) against the proposal")
+
+	# Play it out: the proposal must fizzle and the attacker ends up exhausted.
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # cast resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal fizzles
+	ok(state.get_card("big").is_exhausted and not state.combat_attack_window,
+		"ws-ai-b: proposal cancelled — attacker exhausted, no combat")
+
+
 func _test_exhaustion_freezes_proposal() -> void:
 	_buf.append("\n-- Exhaustion: freeze the ally attacker in response to a proposal --")
 	var db := MockDB.new()
@@ -9194,6 +9305,77 @@ func _test_rod_of_ogre_magi_power() -> void:
 	ok("rod2" in state2.pending_strike_weapon_ids, "rm-d2: rod offered at the strike point")
 	StackResolver.choose_strike(state2, "rod2", db)
 	eq(state2.get_atk("p1_hero", db), 1, "rm-d3: hero ATK 1 while the rod is associated")
+
+
+const HAMMER_EXTRA := "power_weapon|activated_power:1:heal_target:2::hero_or_ally:exhaust_hero"
+
+func _test_hammer_of_grace_heal_power() -> void:
+	_buf.append("\n-- The Hammer of Grace: activated heal power --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("hammer_def", 3, 1, 3, "Melee", "melee_weapon", HAMMER_EXTRA)
+	db.ally("grunt_def", 2, 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var hammer := CardInstance.create("hammer", "hammer_def", "p1", "p1_hero_row")
+	state.cards["hammer"] = hammer
+	state.zones["p1_hero_row"].card_ids.append("hammer")
+	# A damaged friendly ally to heal.
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	grunt.damage_taken = 3   # 2/3 grunt on 3 damage — heal 2 leaves 1.
+
+	# hg-a: power submittable, heals 2 from the target ally; hammer AND hero exhaust.
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "hammer", "target_id": "grunt"})
+	ok(StackResolver.can_submit(state, use, db), "hg-a: hammer heal power submittable")
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("grunt").damage_taken, 1, "hg-a2: 2 damage healed from the target")
+	ok(state.get_card("hammer").is_exhausted, "hg-a3: hammer exhausted (activate)")
+	ok(state.get_card("p1_hero").is_exhausted, "hg-a4: hero exhausted (extra cost)")
+	eq(state.get_available_resources("p1"), 1, "hg-a5: 1 resource paid")
+
+	# hg-b: hammer exhausted -> power gone for the turn.
+	var again := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "hammer", "target_id": "grunt"})
+	ok(not StackResolver.can_submit(state, again, db),
+		"hg-b: power illegal while the hammer is exhausted")
+
+	# hg-c: exhausted hero -> extra cost unpayable, even with a ready hammer.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 2)
+	var hammer2 := CardInstance.create("hammer2", "hammer_def", "p1", "p1_hero_row")
+	state2.cards["hammer2"] = hammer2
+	state2.zones["p1_hero_row"].card_ids.append("hammer2")
+	state2.get_card("p1_hero").is_exhausted = true
+	var g2 := _add_ally(state2, "g2", "grunt_def", "p1")
+	g2.just_summoned = false
+	g2.damage_taken = 2
+	ok(not StackResolver.can_submit(state2, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "hammer2", "target_id": "g2"}), db),
+		"hg-c: power illegal while the hero is exhausted")
+
+	# hg-d: the AI (GenericAI) uses the heal power on its own damaged ally, never
+	# the enemy, and never strikes with this power weapon.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 2)
+	state3.players["p1"].resource_placed_this_turn = true
+	var hammer3 := CardInstance.create("hammer3", "hammer_def", "p1", "p1_hero_row")
+	state3.cards["hammer3"] = hammer3
+	state3.zones["p1_hero_row"].card_ids.append("hammer3")
+	var hurt := _add_ally(state3, "hurt", "grunt_def", "p1")
+	hurt.just_summoned = false
+	hurt.damage_taken = 2
+	var ai := GenericAI.new()
+	var act := ai.decide_action(state3, db, "p1")
+	ok(act != null and act.action_type == "use_ally_power"
+			and act.params.get("card_id") == "hammer3"
+			and act.params.get("target_id") == "hurt",
+		"hg-d: AI heals its own damaged ally with the hammer")
 
 
 func _test_rod_two_handed_off_hand_uniqueness() -> void:
@@ -11864,3 +12046,134 @@ func _test_ai_mana_agate_and_arcane_intellect() -> void:
 			ai_targets.append(a.params.get("target_id", ""))
 	eq(ai_targets.size(), 1, "aima-c: exactly one Intellect action")
 	ok("p1_hero" in ai_targets, "aima-d: aimed at our own hero")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stealth (602.2a) — while an attacker has Stealth, characters can't protect
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_stealth_blocks_protectors() -> void:
+	_buf.append("\n-- Stealth: attacker with stealth denies all protectors --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("sneak_def", 3, 3, (["stealth"] as Array[String]), 4)
+	db.ally("plain_def", 2, 2, [], 2)
+	db.ally("guard_def", 2, 4, (["protector"] as Array[String]), 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "sneak", "sneak_def", "p1")
+	_add_ally(state, "plain", "plain_def", "p1")
+	_add_ally(state, "guard", "guard_def", "p2")
+
+	var vs_stealth := StackResolver.get_legal_protectors(state, "sneak", "p2_hero", db)
+	ok(vs_stealth.is_empty(), "st-a: no legal protectors against a Stealth attacker")
+
+	var vs_plain := StackResolver.get_legal_protectors(state, "plain", "p2_hero", db)
+	ok("guard" in vs_plain, "st-b: protector still legal against a non-Stealth attacker")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Ghank — "When Ghank enters play, you may destroy target exhausted ally with
+# damage on it." Optional targeted enter-play trigger; opens only when a legal
+# target exists.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ghank_enter_play_destroy() -> void:
+	_buf.append("\n-- Ghank: destroys a target exhausted damaged ally on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ghank_def", 3, 3, (["stealth"] as Array[String]), 4,
+		"on_enter:destroy_exhausted_damaged_ally")
+	db.ally("victim_def", 2, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "ghank", "ghank_def", "p1")
+	# Only the exhausted AND damaged ally is a legal target.
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.is_exhausted = true
+	victim.damage_taken = 1
+	var tired := _add_ally(state, "tired", "victim_def", "p2")   # exhausted, undamaged
+	tired.is_exhausted = true
+	var hurt := _add_ally(state, "hurt", "victim_def", "p2")     # damaged, ready
+	hurt.damage_taken = 1
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "ghank"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"gh-a: enter-play choice pending after Ghank resolves")
+
+	var legal := StackResolver.get_enter_play_destroy_targets(state, db)
+	eq(legal.size(), 1, "gh-b: exactly one legal target")
+	ok("victim" in legal, "gh-c: the exhausted damaged ally is the legal target")
+
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "ghank", "target_id": "tired"}), db),
+		"gh-d: exhausted-but-undamaged ally is not submittable")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "ghank", "target_id": "hurt"}), db),
+		"gh-e: damaged-but-ready ally is not submittable")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "ghank", "target_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("victim").zone_id, "p2_graveyard", "gh-f: target destroyed")
+	ok(state.pending_enter_play_effect.is_empty(), "gh-g: pending effect cleared")
+
+
+func _test_ghank_no_target_no_prompt() -> void:
+	_buf.append("\n-- Ghank: no exhausted damaged ally → trigger silently skipped --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ghank_def", 3, 3, (["stealth"] as Array[String]), 4,
+		"on_enter:destroy_exhausted_damaged_ally")
+	db.ally("plain_def", 2, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "ghank", "ghank_def", "p1")
+	_add_ally(state, "healthy", "plain_def", "p2")   # ready, undamaged — not a target
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "ghank"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"ghn-a: no pending choice when no legal target exists")
+	eq(state.get_card("ghank").zone_id, "p1_ally_row", "ghn-b: Ghank in play")
+	eq(state.get_card("healthy").zone_id, "p2_ally_row", "ghn-c: bystander untouched")
+
+
+func _test_ghank_decline() -> void:
+	_buf.append("\n-- Ghank: optional trigger may be declined --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ghank_def", 3, 3, (["stealth"] as Array[String]), 4,
+		"on_enter:destroy_exhausted_damaged_ally")
+	db.ally("victim_def", 2, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "ghank", "ghank_def", "p1")
+	var victim := _add_ally(state, "victim", "victim_def", "p1")   # Ghank's OWN ally
+	victim.is_exhausted = true
+	victim.damage_taken = 1
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "ghank"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"ghd-a: choice opens (own ally is a legal target too)")
+
+	var events := StackResolver.decline_enter_play_effect(state)
+	ok(state.pending_enter_play_effect.is_empty(), "ghd-b: decline clears the pending effect")
+	eq(events.size(), 1, "ghd-c: decline event emitted")
+	eq(state.get_card("victim").zone_id, "p1_ally_row", "ghd-d: ally survives")

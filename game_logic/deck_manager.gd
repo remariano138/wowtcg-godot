@@ -135,6 +135,15 @@ static func authorize_deck_def(deck: DeckDefinition, db) -> Array[String]:
 				errors.append("'%s' is a %s Talent but the deck already has the %s Talent '%s' — Talents of different specs can't share a deck (rule 100.2c)."
 					% [def.card_name, spec, deck_talent_spec, deck_talent_card])
 		if hero_def:
+			# 100.2b: "[Trait] Hero Required" — the deck's hero must have that
+			# trait. Data-driven via a `requires_hero_race:RACE` effects segment
+			# (War Stomp: "Tauren Hero Required"); the hero's race lives in its
+			# tags column ("Tauren Shaman"), so a substring match covers
+			# multi-word races (Night Elf) too.
+			var req_race := required_hero_race(def)
+			if req_race != "" and req_race not in hero_def.tags:
+				errors.append("'%s' requires a %s hero — illegal for %s (%s) (rule 100.2b)."
+					% [def.card_name, req_race, hero_def.card_name, hero_def.tags.strip_edges()])
 			# 100.2a: faction icons must match the hero's ("" = neutral, always legal).
 			if def.alignment != "" and def.alignment != hero_def.alignment:
 				errors.append("'%s' is %s — illegal for a %s hero (rule 100.2a)."
@@ -165,6 +174,18 @@ static func authorize_deck_def(deck: DeckDefinition, db) -> Array[String]:
 # (CardDef.tags), e.g. Aimed Shot "Marksmanship Talent", Spirit Bond
 # "Beast Mastery Talent". Non-Talent subtypes ("Feral", "Feral Combo",
 # "Frost"…) never match.
+# `requires_hero_race:RACE` effects segment → the required race ("Tauren"),
+# or "" when the card has no "[Race] Hero Required" restriction (100.2b).
+static func required_hero_race(def: CardDef) -> String:
+	if not def or def.effects == "":
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "requires_hero_race" and parts.size() > 1:
+			return parts[1].strip_edges()
+	return ""
+
+
 static func talent_spec(def: CardDef) -> String:
 	var t := def.tags.strip_edges()
 	if t.ends_with(" Talent"):

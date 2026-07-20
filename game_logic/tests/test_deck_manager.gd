@@ -149,6 +149,26 @@ func _test_authorize_rejects_illegal_decks() -> void:
 			robe_flagged = true
 	_check(not robe_flagged, "MaPrLo equipment legal for a Warlock hero")
 
+	# "[Race] Hero Required" (rule 100.2b): War Stomp needs a Tauren hero.
+	# Ta'zo is a Troll Mage -> illegal; Grennan (Tauren Shaman) -> legal
+	# (only the War Stomp error is asserted on the hero swap — Ta'zo's Mage
+	# cards going class-illegal for a Shaman is expected noise).
+	var horde := DeckManager.load_deck("horde_tazo_test")
+	if horde == null:
+		_check(false, "authorize: horde source deck loads")
+		return
+	deck = DeckDefinition.from_dict(horde.to_dict())
+	deck.card_entries.append(DeckCardEntry.make("dark_portal_137", 1))  # War Stomp
+	var race_errors := DeckManager.authorize_deck_def(deck, db)
+	_check(race_errors.size() == 1 and "100.2b" in race_errors[0],
+		"War Stomp with a Troll hero -> 1 error citing 100.2b")
+	deck.hero_card_def_id = "azeroth_10"   # Grennan Stormspeaker (Tauren Shaman)
+	var stomp_flagged := false
+	for e in DeckManager.authorize_deck_def(deck, db):
+		if "War Stomp" in e:
+			stomp_flagged = true
+	_check(not stomp_flagged, "War Stomp legal for a Tauren hero")
+
 
 func _test_runtime_deck_expansion() -> void:
 	var runtime := DeckManager.get_runtime_deck("alliance_dizdemona_test")

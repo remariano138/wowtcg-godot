@@ -2800,6 +2800,36 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 		return
 	var ctrl := card.controller
 	var ctrl_type := _p1_type if ctrl == "p1" else _p2_type
+	# Ghank's optional destroy trigger ("you may destroy target exhausted ally
+	# with damage on it") — separate path: AI only destroys OPPOSING allies
+	# (declines otherwise), humans may Esc to decline.
+	if _state.pending_enter_play_effect.get("effect", "") == "destroy_exhausted_damaged_ally":
+		if ctrl_type != "human":
+			var opp := "p2" if ctrl == "p1" else "p1"
+			var best_id := ""
+			var best_cost := -1
+			for tid in StackResolver.get_enter_play_destroy_targets(_state, _db):
+				var t := _state.get_card(tid)
+				if not t or t.controller != opp:
+					continue
+				var tdef := _db.get_def(t.card_def_id) as CardDef
+				var tcost: int = tdef.cost if tdef else 0
+				if tcost > best_cost:
+					best_cost = tcost
+					best_id = tid
+			if best_id == "":
+				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+			else:
+				var dact := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": best_id})
+				EventBus.emit_events(StackResolver.submit_action(_state, dact, _db))
+				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
+			_refresh_ui()
+			_schedule_next_turn()
+		else:
+			_router.start_enter_play_targeting(card_id, dmg_type, amount)
+			_refresh_ui()
+		return
 	if ctrl_type != "human":
 		# AI picks a random valid target — opponents only, never self-harm.
 		var opp := "p2" if ctrl == "p1" else "p1"
@@ -2988,6 +3018,12 @@ func _on_targeting_cancelled() -> void:
 				break
 		if not target_queued:
 			var eff := _state.pending_enter_play_effect
+			# Optional effect (Ghank "you may ...") — Esc means decline.
+			if eff.get("optional", false):
+				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+				_refresh_ui()
+				_drain_passes()
+				return
 			_router.start_enter_play_targeting(
 				eff.get("card_id", ""), eff.get("dmg_type", ""), eff.get("amount", 0))
 			return

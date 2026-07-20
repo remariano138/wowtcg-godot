@@ -201,6 +201,9 @@ func _resolve_enter_play(state: GameState, db) -> void:
 		if StackResolver.can_submit(state, a, db):
 			targets.append(ally.instance_id)
 	if targets.is_empty():
+		# Optional effect (Ghank) with no OPPOSING target — decline, never self-harm.
+		if state.pending_enter_play_effect.get("optional", false):
+			StackResolver.decline_enter_play_effect(state)
 		return   # <-- reproduces the scene's stall path (no fizzle)
 	var tid: String = targets[randi() % targets.size()]
 	# Announce the target; the chain resolves via the normal alternating passes.

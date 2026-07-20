@@ -45,17 +45,32 @@
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 4,
+      "count": 2,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
+      "card_def_id": "azeroth_226",
+      "count": 3,
+      "_card_name": "Bala Silentblade"
+    },
+    {
+      "card_def_id": "azeroth_323",
+      "count": 1,
+      "_card_name": "The Hammer of Grace"
+    },
+    {
       "card_def_id": "azeroth_246",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kagra of the Crossroads"
     },
     {
+      "card_def_id": "dark_portal_223",
+      "count": 2,
+      "_card_name": "Magran Proudstep"
+    },
+    {
       "card_def_id": "azeroth_260",
-      "count": 3,
+      "count": 1,
       "_card_name": "Taz'dingo"
     },
     {
@@ -75,8 +90,13 @@
     },
     {
       "card_def_id": "azeroth_242",
-      "count": 2,
+      "count": 1,
       "_card_name": "Hierophant Caydiem"
+    },
+    {
+      "card_def_id": "dark_portal_137",
+      "count": 1,
+      "_card_name": "War Stomp"
     },
     {
       "card_def_id": "azeroth_171",
@@ -129,9 +149,9 @@
       "_card_name": "Guardian Steelhorn"
     },
     {
-      "card_def_id": "azeroth_252",
+      "card_def_id": "azeroth_107",
       "count": 1,
-      "_card_name": "Moko Hunts-at-Dawn"
+      "_card_name": "Earthbind Totem"
     },
     {
       "card_def_id": "dark_portal_235",
@@ -144,9 +164,9 @@
       "_card_name": "Zorm Stonefury"
     },
     {
-      "card_def_id": "azeroth_271",
+      "card_def_id": "azeroth_111",
       "count": 1,
-      "_card_name": "Windseer Tarus"
+      "_card_name": "Healing Stream Totem"
     },
     {
       "card_def_id": "azeroth_249",

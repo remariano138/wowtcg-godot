@@ -1008,6 +1008,21 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						}
 						events.append(GameEvent.enter_play_target_required(
 							card_id, dmg_type, amount))
+					"destroy_exhausted_damaged_ally":
+						# Ghank: "When [this] enters play, you may destroy target
+						# exhausted ally with damage on it." Optional — the choice
+						# only opens when a legal target exists (no target → the
+						# trigger silently doesn't fire).
+						if not get_enter_play_destroy_targets(state, db).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "destroy_exhausted_damaged_ally",
+								"dmg_type": "destroy",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "destroy", 0))
 
 	# Watcher Mal'wi: "When an opposing ally enters play, [this] deals N ranged
 	# damage to it." Any in-play card an OPPONENT of the entering ally controls
@@ -1498,6 +1513,24 @@ static func _resolve_play_instant(state: GameState,
 							state.combat_attacker = ""
 							events.append(GameEvent.attacker_removed_from_combat(
 								removed, card_id))
+					"exhaust_all_opposing":
+						# "Exhaust all opposing heroes and allies." (War Stomp).
+						# Non-targeted mass exhaust — hits Untargetable characters
+						# (706 restricts targets of links only) and needs no
+						# announce. exhaust_card no-ops on already-exhausted cards.
+						# Played in response to an opposing combat proposal on the
+						# chain, exhausting the attacker fizzles the proposal via
+						# the 601.3 recheck — same interrupt as Exhaustion/Bash,
+						# but board-wide. The `requires_hero_race` segment on the
+						# same card is deck legality only (100.2b, DeckManager).
+						var ws_opp := _other_player(state, action.source_player)
+						var ws_opp_ps := state.players.get(ws_opp) as PlayerState
+						if ws_opp_ps and ws_opp_ps.hero_instance_id != "":
+							events.append_array(GameLogic.exhaust_card(
+								state, ws_opp_ps.hero_instance_id))
+						for ws_ally in state.cards_in_zone(ws_opp + "_ally_row"):
+							events.append_array(GameLogic.exhaust_card(
+								state, ws_ally.instance_id))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
@@ -2674,10 +2707,14 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 
 # Returns instance_ids of all characters that can protect this combat (rule 602.2).
 # The defending player chooses whether to use one of these — it is NOT mandatory.
-static func get_legal_protectors(state: GameState, _attacker_id: String,
+static func get_legal_protectors(state: GameState, attacker_id: String,
 		defender_id: String, db) -> Array[String]:
 	var defender := state.get_card(defender_id)
 	if not defender:
+		return []
+	# Stealth (602.2a): "While an attacker has Stealth, characters can't protect."
+	var attacker := state.get_card(attacker_id)
+	if attacker and _has_keyword(attacker, "stealth", db):
 		return []
 	var defending_player := defender.controller
 	# "Opposing heroes and allies can't protect." (Hannah the Unstoppable):
@@ -4256,7 +4293,37 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	var target_id: String = action.params.get("target_id", "")
 	if not _is_legal_target(state, target_id, db):
 		return false
+	# Effect-specific target restriction (Ghank): only an exhausted ally with
+	# damage on it is a legal target.
+	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_exhausted_damaged_ally" \
+			and target_id not in get_enter_play_destroy_targets(state, db):
+		return false
 	return true
+
+
+# Legal targets for Ghank's enter-play trigger: any in-play ally (either party)
+# that is BOTH exhausted and has at least 1 damage on it, subject to the
+# standard targeting restrictions (untargetable).
+static func get_enter_play_destroy_targets(state: GameState, db) -> Array[String]:
+	var result: Array[String] = []
+	for pid in state.players:
+		for ally in state.cards_in_zone(pid + "_ally_row"):
+			if ally.is_exhausted and ally.damage_taken > 0 \
+					and _is_legal_target(state, ally.instance_id, db):
+				result.append(ally.instance_id)
+	return result
+
+
+# Decline an OPTIONAL pending enters-play effect ("you may ..." — Ghank).
+# Direct call from the scene (Esc / AI decline) — mandatory effects (Taz'dingo)
+# can't be declined and are left untouched.
+static func decline_enter_play_effect(state: GameState) -> Array[GameEvent]:
+	if state.pending_enter_play_effect.is_empty() \
+			or not state.pending_enter_play_effect.get("optional", false):
+		return []
+	var card_id: String = state.pending_enter_play_effect.get("card_id", "")
+	state.pending_enter_play_effect = {}
+	return [GameEvent.make("enter_play_effect_declined", {"card_id": card_id})]
 
 
 static func _resolve_choose_enter_play_target(state: GameState, action: PendingAction,
@@ -4280,6 +4347,13 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			events.append_array(defer_packets(state, db, [{
 				"source": source_id, "target": target_id, "amount": amount,
 			}]))
+		"destroy_exhausted_damaged_ally":
+			# Ghank — 706 re-check: fizzle unless the target is STILL an
+			# exhausted, damaged, targetable ally at resolution.
+			var tgt := state.get_card(target_id)
+			if _is_legal_target(state, target_id, db) and _is_ally(state, target_id) \
+					and tgt and tgt.is_exhausted and tgt.damage_taken > 0:
+				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
 	return events
 
 

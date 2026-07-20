@@ -58,6 +58,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
 	"azeroth_17":  "combat_instant_exhaust",     # Bash — exhaust target hero or ally (+ bear form ongoing)
+	"dark_portal_137": "combat_instant_exhaust", # War Stomp — exhaust ALL opposing heroes and allies (no target)
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
 	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
@@ -400,14 +401,29 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_exhaust":
 			continue
 		var e_def := db.get_def(card.card_def_id) as CardDef
-		if not attacker_is_ally and not _exhausts_heroes(e_def):
+		var mass := _exhausts_all_opposing(e_def)
+		if not attacker_is_ally and not mass and not _exhausts_heroes(e_def):
 			continue   # ally-only exhaust can't answer an attacking hero
 		# Action type per card — Bash is an ongoing Instant Ability (play_ability).
-		var act := PendingAction.make(_action_type_for(card, db), player_id,
-			{"card_id": card.instance_id, "target_id": attacker_id})
+		# War Stomp is non-targeted (mass exhaust) — no target_id announced.
+		var e_params := {"card_id": card.instance_id}
+		if not mass:
+			e_params["target_id"] = attacker_id
+		var act := PendingAction.make(_action_type_for(card, db), player_id, e_params)
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
+
+
+# True when the card mass-exhausts every opposing character with no target
+# (War Stomp: exhaust_all_opposing) — answers attacking heroes AND allies.
+static func _exhausts_all_opposing(def: CardDef) -> bool:
+	if not def:
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges().split(":")[0] == "exhaust_all_opposing":
+			return true
+	return false
 
 
 # True when the card's exhaust_target segment accepts heroes (Bash:

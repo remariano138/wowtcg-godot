@@ -20,18 +20,13 @@
     },
     {
       "card_def_id": "azeroth_361",
-      "count": 2,
+      "count": 3,
       "_card_name": "Zapped Giants"
     },
     {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
-    },
-    {
-      "card_def_id": "azeroth_347",
-      "count": 1,
-      "_card_name": "Battle of Darrowshire"
     },
     {
       "card_def_id": "azeroth_351",
@@ -45,7 +40,7 @@
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
@@ -74,9 +69,9 @@
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_269",
+      "card_def_id": "dark_portal_210",
       "count": 1,
-      "_card_name": "Watcher Mal'wi"
+      "_card_name": "Ghank"
     },
     {
       "card_def_id": "azeroth_235",
@@ -90,7 +85,7 @@
     },
     {
       "card_def_id": "azeroth_242",
-      "count": 1,
+      "count": 2,
       "_card_name": "Hierophant Caydiem"
     },
     {
@@ -100,8 +95,13 @@
     },
     {
       "card_def_id": "azeroth_171",
-      "count": 2,
+      "count": 1,
       "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "dark_portal_94",
+      "count": 1,
+      "_card_name": "Flame Shock"
     },
     {
       "card_def_id": "azeroth_109",
@@ -110,7 +110,7 @@
     },
     {
       "card_def_id": "dark_portal_213",
-      "count": 3,
+      "count": 2,
       "_card_name": "Guardian Steppestrider"
     },
     {
@@ -134,9 +134,9 @@
       "_card_name": "Vaerik Proudhoof"
     },
     {
-      "card_def_id": "azeroth_264",
-      "count": 1,
-      "_card_name": "Vesh'ral"
+      "card_def_id": "azeroth_266",
+      "count": 2,
+      "_card_name": "Voss Treebender"
     },
     {
       "card_def_id": "azeroth_116",

@@ -214,6 +214,8 @@ func _ready() -> void:
 		_test_ophelia_barrows_rfg_and_heal,
 		_test_ophelia_barrows_gates_and_fizzle,
 		_test_fireball_attach_and_burn,
+		_test_flame_shock_attach_and_burn,
+		_test_ai_flame_shock_targets_hero_only,
 		_test_world_in_flames_doubles_fire,
 		_test_chromatic_cloak_ability_bonus,
 		_test_ai_fireball_targets_hero_only,
@@ -11724,6 +11726,66 @@ func _test_fireball_attach_and_burn() -> void:
 	TurnManager._enter_ready(state, db)
 	eq(tank.zone_id, "p2_graveyard", "fbl-g: burn killed the host")
 	eq(state.get_card("fb").zone_id, "p1_graveyard", "fbl-h: Fireball died with its host")
+
+
+const FLAME_SHOCK_FX := "ongoing|attach:hero_or_ally|attach_deal_damage:2:fire|attached_damage_turn_start:1:fire"
+
+func _test_flame_shock_attach_and_burn() -> void:
+	_buf.append("\n-- Flame Shock: attach deals 2, burns 1 each turn start (Fireball clone) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 6, [], 3)
+	db.ability("dark_portal_94", 3, FLAME_SHOCK_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var tank := _add_ally(state, "tank", "tank_def", "p2")
+	_add_card_to_hand(state, "fs", "dark_portal_94", "p1")
+	_add_resources(state, "p1", 3)
+
+	# attach:hero_or_ally — a hero is ALSO a legal target.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "fs", "target_id": "p2_hero"}), db),
+		"fsh-a: Flame Shock can target a hero")
+
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "fs", "target_id": "tank"})
+	ok(StackResolver.can_submit(state, cast, db), "fsh-b: Flame Shock on an enemy ally is legal")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_card("fs").zone_id, "attached", "fsh-c: Flame Shock is attached")
+	eq(state.get_card("fs").attached_to, "tank", "fsh-d: host is the ally")
+	eq(tank.damage_taken, 2, "fsh-e: 2 fire dealt on attach")
+
+	# Start of the CONTROLLER's turn: hero deals 1 to the attached character.
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(tank.damage_taken, 3, "fsh-f: turn-start burn dealt 1 (3 total)")
+
+
+func _test_ai_flame_shock_targets_hero_only() -> void:
+	_buf.append("\n-- AI Flame Shock: only the opposing hero is ever targeted --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 6, [], 3)
+	db.ability("dark_portal_94", 3, FLAME_SHOCK_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "tank", "tank_def", "p2")
+	_add_card_to_hand(state, "fs", "dark_portal_94", "p1")
+	_add_resources(state, "p1", 3)
+
+	state.players["p1"].resource_placed_this_turn = true
+	var ai := BaseAI.new()
+	var fs_targets: Array = []
+	for a in ai.get_legal_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "fs":
+			fs_targets.append(a.params.get("target_id", ""))
+	eq(fs_targets.size(), 1, "aifs-a: exactly one Flame Shock action generated")
+	ok("p2_hero" in fs_targets, "aifs-b: Flame Shock aimed at the opposing hero only")
 
 
 func _test_world_in_flames_doubles_fire() -> void:

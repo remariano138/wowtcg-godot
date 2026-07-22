@@ -208,6 +208,41 @@ implementation would add complexity with no observable difference.
 first time each turn, you may pay X to ready it" trigger uses the data-driven
 `ready_on_attack:COST` flag — no card id is hardcoded in `stack_resolver.gd`.
 
+**Windfury Totem (`azeroth_118`)** grants the same trigger party-wide via the
+`party_ready_on_attack:COST` flag: `_open_ready_on_attack_point` falls back to
+`_party_ready_on_attack_cost` (the lowest such flag among the controller's
+in-play cards) when the attacker has no own `ready_on_attack`. Both sources
+share the ONE `attacked_this_turn` card counter, so a character covered by both
+(Windseer Tarus under a Windfury Totem) still readies at most once per turn — it
+can attack + ready once, never three attacks over.
+
+---
+
+## Windfury Weapon (`azeroth_119`) — ready-on-strike point
+
+**Card text:** "Attach to one of your Melee weapons. Ongoing: When you strike
+with attached weapon for the first time each turn, you may pay (1). If you do,
+ready that weapon and your hero."
+
+**Rule 303.2 / 602.1 / 602.3:** in paper play this triggered ability goes on the
+chain as you strike, with a priority window before its "may pay (1)" choice.
+
+**Deviation:** the engine resolves it immediately as a pending choice, exactly
+like the ready-on-attack point it mirrors. Inside `StackResolver.choose_strike`,
+after a successful strike, `_open_strike_ready_point` (the struck weapon carries
+a `ready_on_strike:COST` attachment, first strike this turn, affordable) sets
+`pending_strike_ready_*` and emits `ready_on_strike_opened`; `can_submit` /
+`pass_priority` hard-block until resolved via
+`StackResolver.choose_ready_on_strike(state, pay, db)` (direct call). Paying
+readies the weapon AND the striking hero inline, then opens the held combat
+window (the side the strike was in). The "first time each turn" gate is the
+`windfury_struck_this_turn` weapon counter, set when the point opens and cleared
+at each turn's ready step.
+
+**Why:** identical reasoning to the strike / ready-on-attack points — no
+implemented card responds before the choice, so a chain implementation adds
+complexity with no observable difference.
+
 ---
 
 ## Donna Calister (`azeroth_181`)

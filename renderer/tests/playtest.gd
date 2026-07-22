@@ -222,6 +222,8 @@ var _modal_nodes: Array[Node] = []
 # the strike-point UI.
 var _in_ready_mode: bool = false
 var _ready_nodes: Array[Node] = []
+var _in_strike_ready_mode: bool = false
+var _strike_ready_nodes: Array[Node] = []
 var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
 var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
@@ -419,7 +421,9 @@ func _build_scene() -> void:
 	# ── Centre section: Cancel + Pass ──────────────────────────────────────────
 	_cancel_btn = Button.new()
 	_cancel_btn.text     = "Cancel  [Esc]"
-	_cancel_btn.position = Vector2(648, 981)
+	# To the right of the pass button (pass ends at x=1075) so it never overlaps
+	# the always-present resource-placement indicator sitting to the pass's left.
+	_cancel_btn.position = Vector2(1085, 981)
 	_cancel_btn.size     = Vector2(160, 40)
 	_cancel_btn.visible  = false
 	_cancel_btn.pressed.connect(_on_cancel_btn_pressed)
@@ -1341,7 +1345,7 @@ func _refresh_ui() -> void:
 	_update_chain_panel()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
-			and not _in_whelp_bounce_mode:
+			and not _in_strike_ready_mode and not _in_whelp_bounce_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
 	_update_cancel_btn()
@@ -2221,6 +2225,15 @@ func _on_game_event(event: GameEvent) -> void:
 		"ready_on_attack_opened":
 			_window_generation += 1
 			_handle_ready_point(event.payload)
+		"ready_on_strike_opened":
+			_window_generation += 1
+			_handle_strike_ready_point(event.payload)
+		"readied_on_strike":
+			var rs_card := _state.get_card(event.payload.get("weapon_id", ""))
+			var rs_def: CardDef = _db.get_def(rs_card.card_def_id) if rs_card else null
+			_set_status("↻ %s readies %s and their hero" % [event.payload.get("player", "?"),
+				rs_def.card_name if rs_def else "a weapon"])
+			_refresh_ui()
 		"attack_exhaust_opened":
 			_window_generation += 1
 			_handle_attack_exhaust(event.payload)
@@ -3888,6 +3901,68 @@ func _resolve_ready(pay: bool) -> void:
 	# synchronously inside emit_events above.
 
 
+# ── Ready-on-strike point (Windfury Weapon) ───────────────────────────────────
+
+func _handle_strike_ready_point(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		# AI decides immediately (BaseAI.choose_ready_on_strike).
+		var pay: bool = ai.choose_ready_on_strike(_state, _db, player)
+		var events := StackResolver.choose_ready_on_strike(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_strike_ready_inline(payload)
+
+
+func _show_strike_ready_inline(payload: Dictionary) -> void:
+	_in_strike_ready_mode = true
+	_ai_timer.stop()
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var weapon_id: String = payload.get("weapon_id", "")
+	var cost: int         = payload.get("cost", 0)
+	var card := _state.get_card(weapon_id)
+	var card_name := "the weapon"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+
+	var header_text := "Windfury — pay %d to ready %s and your hero?" % [cost, card_name]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: ready %s + hero" % [cost, card_name],
+			"callback": func() -> void: _resolve_strike_ready(true),
+		},
+		{
+			"text": "Decline",
+			"callback": func() -> void: _resolve_strike_ready(false),
+		},
+	]
+
+	_strike_ready_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.8, 0.9), buttons))
+
+
+func _resolve_strike_ready(pay: bool) -> void:
+	_in_strike_ready_mode = false
+	for n in _strike_ready_nodes:
+		n.queue_free()
+	_strike_ready_nodes.clear()
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_ready_on_strike(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	# NOTE: no _drain_passes() here — choose_ready_on_strike opens the held combat
+	# window, whose handler drains synchronously inside emit_events above.
+
+
 # ── Attack-exhaust point (Chops / Voss Treebender) ─────────────────────────────
 
 func _handle_attack_exhaust(payload: Dictionary) -> void:
@@ -4092,6 +4167,8 @@ func _on_rematch() -> void:
 	_strike_nodes                 = []
 	_in_ready_mode                = false
 	_ready_nodes                  = []
+	_in_strike_ready_mode         = false
+	_strike_ready_nodes           = []
 	_in_prevention_mode           = false
 	_prevention_armor_ids         = []
 	_prevention_nodes             = []
@@ -4132,6 +4209,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Boneshanks death-trigger target choice before advancing
 	if _state.pending_ready_player != "":
 		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
+	if _state.pending_strike_ready_player != "" or _in_strike_ready_mode:
+		return  # wait for the ready-on-strike choice (Windfury Weapon) before advancing
 	if _state.pending_attack_exhaust_player != "":
 		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
@@ -4149,7 +4228,9 @@ func _schedule_next_turn() -> void:
 			and _state.pending_strike_player == "" \
 			and not _in_strike_mode \
 			and _state.pending_ready_player == "" \
-			and not _in_ready_mode:
+			and not _in_ready_mode \
+			and _state.pending_strike_ready_player == "" \
+			and not _in_strike_ready_mode:
 		_ai_timer.start()
 
 
@@ -4191,6 +4272,7 @@ func _drain_passes() -> void:
 		if _game_over or _state.in_protect_point or _in_protect_mode \
 				or _state.pending_strike_player != "" or _in_strike_mode \
 				or _state.pending_ready_player != "" or _in_ready_mode \
+				or _state.pending_strike_ready_player != "" or _in_strike_ready_mode \
 				or _state.pending_attack_exhaust_player != "" \
 				or _state.pending_prevention_player != "" or _in_prevention_mode:
 			break

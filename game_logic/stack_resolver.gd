@@ -129,6 +129,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_ready_on_attack() before priority can move.
 	if state.pending_ready_player != "":
 		return []
+	# A pending ready-on-strike decision (Windfury Weapon) must be resolved via
+	# choose_ready_on_strike() before priority can move.
+	if state.pending_strike_ready_player != "":
+		return []
 	# A pending attack-exhaust decision (Chops / Voss Treebender) must be resolved
 	# via choose_attack_exhaust() before priority can move.
 	if state.pending_attack_exhaust_player != "":
@@ -269,6 +273,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Ready-on-attack point (Windseer Tarus) blocks everything until resolved via
 	# choose_ready_on_attack().
 	if state.pending_ready_player != "":
+		return false
+
+	# Ready-on-strike point (Windfury Weapon) blocks everything until resolved via
+	# choose_ready_on_strike().
+	if state.pending_strike_ready_player != "":
 		return false
 
 	# Attack-exhaust point (Chops / Voss Treebender) blocks everything until
@@ -425,8 +434,16 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 				var t_zone := state.zones.get(state.get_card(target_id).zone_id) as Zone
 				if not t_zone or t_zone.zone_type != "ally_row":
 					return false
+				# Fall Back: "from your party" — friendly allies only.
+				if _instant_targets_friendly_ally_only(def) \
+						and state.get_card(target_id).controller != action.source_player:
+					return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id):
+					return false
+			elif _attach_targets_weapon_only(def):
+				if not _is_melee_weapon(state, target_id, db) \
+						or state.get_card(target_id).controller != action.source_player:
 					return false
 			elif destroy_target_kind(def) == "ability":
 				if not _is_in_play_ability(state, target_id, db):
@@ -463,6 +480,19 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		# Modal (707.1c): the chosen mode must be announced with the play.
 		if def and is_modal_def(def) and selected_mode(def, action) == "":
 			return false
+		# Graveyard-reanimate ability (Ancestral Spirit): the target is an ally
+		# CARD in the caster's graveyard, announced with the play — cost gated
+		# against the caster's resources (dynamic max_cost). Validate it's still
+		# a legal candidate (or, for the highlight probe, that any exists).
+		if def and _ability_reanimates_from_graveyard(def):
+			var rz_req := get_graveyard_search_requirement(def)
+			var rz_cands := get_graveyard_search_candidates(
+					state, action.source_player, rz_req, db)
+			if rz_cands.is_empty():
+				return false
+			if action.params.get("_skip_target_check", false):
+				return true
+			return action.params.get("target_id", "") in rz_cands
 		if def and _has_effect_flag_prefix(def, "chain_lightning"):
 			if not _can_play_chain_lightning(state, action, db): return false
 		elif def and _instant_needs_target(def):
@@ -475,8 +505,16 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 				if t_card:
 					var t_zone := state.zones.get(t_card.zone_id) as Zone
 					if not t_zone or t_zone.zone_type != "ally_row": return false
+					# Fall Back: "from your party" — friendly allies only.
+					if _instant_targets_friendly_ally_only(def) \
+							and t_card.controller != action.source_player:
+						return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id): return false
+			elif _attach_targets_weapon_only(def):
+				if not _is_melee_weapon(state, target_id, db) \
+						or state.get_card(target_id).controller != action.source_player:
+					return false
 			elif destroy_target_kind(def) == "ability":
 				if not _is_in_play_ability(state, target_id, db): return false
 			elif destroy_target_kind(def) == "equipment":
@@ -506,7 +544,7 @@ static func can_play_ability_no_target_check(state: GameState,
 	var probe_x := 1 if play_def and play_def.cost_x else 0
 	if db and state.get_play_cost(card_id, db, probe_x) > state.get_available_resources(player_id):
 		return false
-	if db and play_def and not _targeted_play_has_legal_target(state, play_def, db):
+	if db and play_def and not _targeted_play_has_legal_target(state, play_def, db, player_id):
 		return false
 	return true
 
@@ -534,7 +572,7 @@ static func can_play_instant_no_target_check(state: GameState,
 		var probe_x := 1 if def and def.cost_x else 0
 		if state.get_play_cost(card_id, db, probe_x) > state.get_available_resources(player_id):
 			return false
-		if def and not _targeted_play_has_legal_target(state, def, db):
+		if def and not _targeted_play_has_legal_target(state, def, db, player_id):
 			return false
 	return true
 
@@ -559,19 +597,38 @@ static func _can_afford_play(state: GameState, action: PendingAction,
 # combat_protector qualifies, and only if it's an ally. Ally-only targets
 # (Exhaustion, Vanquish): some ally must be in play and targetable.
 # Hero-or-ally targets always have a target (heroes are always in play).
-static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db) -> bool:
+static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
+		player_id := "") -> bool:
+	# Ancestral Spirit: needs at least one affordable ally card in the caster's
+	# graveyard (dynamic cost cap). player_id is the caster when known.
+	if _ability_reanimates_from_graveyard(def):
+		var scan_pid := player_id if player_id != "" else state.turn_player
+		var req := get_graveyard_search_requirement(def)
+		return not get_graveyard_search_candidates(state, scan_pid, req, db).is_empty()
 	if not _instant_needs_target(def):
 		return true
 	if _instant_targets_protecting_ally_only(def):
 		return _is_protecting_ally(state, state.combat_protector, db) \
 				and _is_legal_target(state, state.combat_protector, db)
 	if _instant_targets_ally_only(def):
-		for pid in ["p1", "p2"]:
+		# Fall Back (friendly-only) with a known caster: only their party counts.
+		var scan := ["p1", "p2"]
+		if _instant_targets_friendly_ally_only(def) and player_id != "":
+			scan = [player_id]
+		for pid in scan:
 			var zone := state.zones.get(pid + "_ally_row") as Zone
 			if zone:
 				for cid in zone.card_ids:
 					if _is_legal_target(state, cid, db):
 						return true
+		return false
+	# Windfury Weapon: at least one Melee weapon the caster controls must exist.
+	if _attach_targets_weapon_only(def):
+		var wscan := ["p1", "p2"] if player_id == "" else [player_id]
+		for pid in wscan:
+			for card in state.cards_in_zone(pid + "_hero_row"):
+				if _is_melee_weapon(state, card.instance_id, db):
+					return true
 		return false
 	# Burn Away / Shattering Blow: some in-play ability / equipment card must
 	# be a legal target.
@@ -581,6 +638,17 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db) 
 				return true
 		return false
 	return true
+
+
+# Ancestral Spirit: a hand Ability whose target is an ally card in the caster's
+# graveyard (a `graveyard_to_play` requirement segment). Distinct from the same
+# segment on a Quest reward (Finkle Einhorn) — a Quest never routes through the
+# ability play path, so this only ever fires for reanimate abilities.
+static func _ability_reanimates_from_graveyard(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	var req := get_graveyard_search_requirement(def)
+	return req.get("dest", "") == "play"
 
 
 static func _instant_needs_target(def: CardDef) -> bool:
@@ -635,7 +703,19 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
-				and parts.size() > 1 and parts[1] == "ally":
+				and parts.size() > 1 and parts[1] in ["ally", "friendly_ally"]:
+			return true
+	return false
+
+
+# Fall Back (`return_to_hand:friendly_ally`): "Put target ally from your party
+# into its owner's hand." A subset of the ally-only restriction — the target
+# ally must also be controlled by the caster.
+static func _instant_targets_friendly_ally_only(def: CardDef) -> bool:
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
+				and parts.size() > 1 and parts[1] == "friendly_ally":
 			return true
 	return false
 
@@ -644,6 +724,29 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 static func _attach_targets_hero_only(def: CardDef) -> bool:
 	var parts := attach_parts(def)
 	return parts.size() > 1 and parts[1] == "hero"
+
+
+# Windfury Weapon: `attach:melee_weapon` — "Attach to one of your Melee weapons."
+# The attachment may only target a Melee weapon (equipment in a hero row).
+static func _attach_targets_weapon_only(def: CardDef) -> bool:
+	var parts := attach_parts(def)
+	return parts.size() > 1 and parts[1] == "melee_weapon"
+
+
+# True if target_id is an in-play Melee weapon (Equipment with a weapon segment
+# and dmg_type "Melee"). Used by Windfury Weapon's attach target check.
+static func _is_melee_weapon(state: GameState, target_id: String, db) -> bool:
+	if not db or not state.is_in_play(target_id):
+		return false
+	var card := state.get_card(target_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.card_type != "Equipment":
+		return false
+	if _weapon_info(def).is_empty():
+		return false
+	return def.dmg_type.to_lower() == "melee"
 
 
 # Rule 400: an attachment carries an `attach:TARGETS[:exhaust_it]` segment
@@ -1281,6 +1384,11 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 	elif target_ok and parts.size() > 1 and parts[1] == "hero":
 		# Arcane Intellect: "Attach to target hero" — heroes only.
 		target_ok = _is_hero(state, target_id)
+	elif target_ok and parts.size() > 1 and parts[1] == "melee_weapon":
+		# Windfury Weapon: "Attach to one of your Melee weapons" — the target must
+		# still be a Melee weapon controlled by the caster (400.2 re-check).
+		target_ok = _is_melee_weapon(state, target_id, db) \
+				and state.get_card(target_id).controller == card.controller
 	if not target_ok:
 		events.append(GameEvent.make("action_fizzled", {
 			"action_type": "play_ability", "reason": "attach_target_gone",
@@ -1377,14 +1485,20 @@ static func _resolve_play_instant(state: GameState,
 						if _exhaust_target_ok(state, parts, target_id, db):
 							events.append_array(GameLogic.exhaust_card(state, target_id))
 					"return_to_hand":
-						# "Put target ally into its owner's hand." (Withdraw).
+						# "Put target ally into its owner's hand." (Withdraw), or
+						# "...from your party" friendly-only (Fall Back).
 						# Re-check at resolution (706): fizzles if the ally left
 						# play / became Untargetable. move_card destroys any
 						# attachments on it (400.5) and, if it was a proposed
 						# attacker/defender on the chain, the proposal's 601.3
 						# recheck fizzles the combat.
+						var rth_friendly_ok := parts.size() < 2 \
+								or parts[1] != "friendly_ally" \
+								or (state.get_card(target_id) != null \
+									and state.get_card(target_id).controller \
+										== state.get_card(card_id).controller)
 						if _is_legal_target(state, target_id, db) \
-								and _is_ally(state, target_id):
+								and _is_ally(state, target_id) and rth_friendly_ok:
 							var rth_card := state.get_card(target_id)
 							events.append_array(GameLogic.move_card(
 								state, target_id, rth_card.owner + "_hand"))
@@ -1536,6 +1650,38 @@ static func _resolve_play_instant(state: GameState,
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
 						for _i in draw_n:
 							events.append_array(_draw_one(state, action.source_player))
+					"graveyard_to_play":
+						# Ancestral Spirit: "Put target ally card from your graveyard
+						# into play if its cost <= the number of resources you have.
+						# That ally enters play with damage equal to its health − 1."
+						# The single target was announced at play time. Re-check at
+						# resolution (rule 706-style): it must still be an ally card in
+						# the caster's graveyard whose cost is within the (current)
+						# resource cap, else the reanimation fizzles (711.1). Optional
+						# 7th recipe field = damage-on-enter mode.
+						var rz_req := get_graveyard_search_requirement(def)
+						var rz_cands := get_graveyard_search_candidates(
+								state, action.source_player, rz_req, db)
+						if target_id in rz_cands:
+							var rz_card := state.get_card(target_id)
+							if rz_card:
+								rz_card.controller = action.source_player
+								events.append_array(
+										_bring_ally_into_play(state, target_id, db))
+								# "…enters play with damage on it equal to its health
+								# −1." A starting condition, not dealt damage — set
+								# directly (no source, no prevention, and health−1
+								# never destroys it). Read max HP AFTER it's in play so
+								# any live auras/buffs are included.
+								if rz_req.get("damage_mode", "") == "health_minus_1" \
+										and state.is_in_play(target_id):
+									var rz_hp := state.get_max_hp(target_id, db)
+									rz_card.damage_taken = max(rz_hp - 1, 0)
+									events.append(GameEvent.make(
+										"card_entered_with_damage", {
+											"card_id": target_id,
+											"damage": rz_card.damage_taken,
+										}))
 					"deal_damage_aoe_opponent":
 						# "Your hero deals N <type> damage to each opposing hero and
 						# ally." (Flamestrike) — no target needed, hits every
@@ -1774,8 +1920,99 @@ static func choose_strike(state: GameState, weapon_id: String,
 			# "Destroy this card when you strike with a weapon" — the striking
 			# player's Forms break now (their pay-return trigger may open).
 			events.append_array(_check_form_break_strike(state, player_id, db))
+			# Windfury Weapon: "When you strike with attached weapon for the first
+			# time each turn, you may pay 1. If you do, ready that weapon and your
+			# hero." Opens a pending choice BEFORE the held window (like the
+			# ready-on-attack point). Resolved via choose_ready_on_strike().
+			var sr := _open_strike_ready_point(state, weapon_id, side, db)
+			if not sr.is_empty():
+				events.append_array(sr)
+				return events
 
 	# Open the window this strike point was holding up.
+	if side == "attack":
+		state.combat_attack_window = true
+		events.append(GameEvent.attack_window_opened(
+			state.combat_attacker, state.combat_defender))
+	else:
+		state.combat_defend_window = true
+		events.append(GameEvent.defend_window_opened(
+			state.combat_attacker, state.combat_defender))
+	return events
+
+
+# Opens a ready-on-strike point (Windfury Weapon) for the striking player if the
+# just-struck weapon carries a `ready_on_strike:COST` attachment, this is its
+# first strike this turn, and the controller can afford COST. Marks the
+# once-per-turn trigger as fired (whether or not they pay). Returns [] when
+# nothing to offer, so choose_strike falls through to opening the combat window.
+# Resolved immediately (not on the chain) — see data/rules_deviations.md
+# "Windfury Weapon".
+static func _open_strike_ready_point(state: GameState, weapon_id: String,
+		side: String, db) -> Array[GameEvent]:
+	if not db:
+		return []
+	var weapon := state.get_card(weapon_id)
+	if not weapon:
+		return []
+	var cost := -1
+	for att_id in weapon.attachments:
+		var att := state.get_card(att_id)
+		if not att:
+			continue
+		var adef := db.get_def(att.card_def_id) as CardDef
+		if not adef or adef.effects == "":
+			continue
+		for seg in adef.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0].strip_edges() == "ready_on_strike":
+				var c := int(p[1]) if p.size() > 1 else 0
+				if cost < 0 or c < cost:
+					cost = c
+	if cost < 0:
+		return []
+	# "for the first time each turn" — only offer once per turn per weapon.
+	if int(weapon.counters.get("windfury_struck_this_turn", 0)) > 0:
+		return []
+	weapon.counters["windfury_struck_this_turn"] = 1
+	if state.get_available_resources(weapon.controller) < cost:
+		return []
+	state.pending_strike_ready_player    = weapon.controller
+	state.pending_strike_ready_weapon_id = weapon_id
+	state.pending_strike_ready_cost      = cost
+	state.pending_strike_ready_side      = side
+	return [GameEvent.ready_on_strike_opened(weapon.controller, weapon_id, cost)]
+
+
+# Entry point for the ready-on-strike decision (NOT chain-based — called directly
+# by the scene, like choose_ready_on_attack). pay == false means decline. Pays
+# the cost, readies the struck weapon AND the striking hero, then opens the held
+# combat window (the one choose_strike was holding up).
+static func choose_ready_on_strike(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_strike_ready_player == "":
+		return []
+	var player_id := state.pending_strike_ready_player
+	var weapon_id := state.pending_strike_ready_weapon_id
+	var cost      := state.pending_strike_ready_cost
+	var side      := state.pending_strike_ready_side
+	state.pending_strike_ready_player    = ""
+	state.pending_strike_ready_weapon_id = ""
+	state.pending_strike_ready_cost      = 0
+	state.pending_strike_ready_side      = ""
+
+	var events: Array[GameEvent] = []
+	if pay and state.is_in_play(weapon_id) \
+			and state.get_available_resources(player_id) >= cost:
+		if cost > 0:
+			events.append_array(_pay_resources(state, player_id, cost))
+		events.append_array(GameLogic.ready_card(state, weapon_id))
+		var ps := state.players.get(player_id) as PlayerState
+		if ps and ps.hero_instance_id != "" and state.is_in_play(ps.hero_instance_id):
+			events.append_array(GameLogic.ready_card(state, ps.hero_instance_id))
+		events.append(GameEvent.readied_on_strike(player_id, weapon_id, cost))
+
+	# Open the combat window this strike (and its ready point) was holding up.
 	if side == "attack":
 		state.combat_attack_window = true
 		events.append(GameEvent.attack_window_opened(
@@ -2188,9 +2425,12 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# empty-chain gate applies only to "on_your_turn" (sorcery-speed) powers below.
 	# No "turn_player" restriction either — ally powers without "use only on your turn"
 	# work on either player's turn (e.g. Grimdron blocking in an opponent's window).
+	# Powers are instant-speed (rule 701): usable in ANY priority window, not only
+	# the action phase. Do NOT gate on state.phase here — that wrongly blocked
+	# powers during the ready/draw/end priority windows (e.g. Kavai during the
+	# opponent's ready step). The action-phase restriction belongs ONLY to
+	# sorcery-speed ("on_your_turn") powers, enforced below.
 	if state.priority_player != action.source_player:
-		return false
-	if state.phase != "action":
 		return false
 	var card_id: String = action.params.get("card_id", "")
 	var card := state.get_card(card_id)
@@ -2216,6 +2456,8 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# data/rules_deviations.md).
 	if _power_effect_is(def, "on_your_turn"):
 		if state.turn_player != action.source_player:
+			return false
+		if state.phase != "action":
 			return false
 		if not state.pending_actions.is_empty():
 			return false
@@ -2988,14 +3230,22 @@ static func _open_ready_on_attack_point(state: GameState, attacker_id: String,
 	if not atk:
 		return []
 	var def := db.get_def(atk.card_def_id) as CardDef
-	if not def or def.effects == "":
-		return []
 	var cost := -1
-	for seg in def.effects.split("|"):
-		var p := seg.strip_edges().split(":")
-		if p[0].strip_edges() == "ready_on_attack":
-			cost = int(p[1]) if p.size() > 1 else 0
-			break
+	if def and def.effects != "":
+		for seg in def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0].strip_edges() == "ready_on_attack":
+				cost = int(p[1]) if p.size() > 1 else 0
+				break
+	# Windfury Totem (`party_ready_on_attack:COST`): "When each hero or ally in
+	# your party attacks for the first time each turn, you may pay X. If you do,
+	# ready that character." A party-wide grant — falls back to the controller's
+	# in-play totem when the attacker has no own `ready_on_attack` flag. Both
+	# share the `attacked_this_turn` gate below, so a character covered by BOTH
+	# (e.g. Windseer Tarus under a Windfury Totem) still gets only ONE ready per
+	# turn — it can attack + ready once, never twice over.
+	if cost < 0:
+		cost = _party_ready_on_attack_cost(state, atk.controller, db)
 	if cost < 0:
 		return []
 	# "for the first time each turn" — only offer once per turn.
@@ -3008,6 +3258,28 @@ static func _open_ready_on_attack_point(state: GameState, attacker_id: String,
 	state.pending_ready_card_id = attacker_id
 	state.pending_ready_cost    = cost
 	return [GameEvent.ready_on_attack_opened(atk.controller, attacker_id, cost)]
+
+
+# Windfury Totem: the lowest `party_ready_on_attack:COST` among controller's
+# in-play cards (a party-wide "ready that character on its first attack" grant),
+# or -1 when the controller has none in play. Read live — the grant lifts the
+# moment the totem leaves play.
+static func _party_ready_on_attack_cost(state: GameState, controller: String,
+		db) -> int:
+	if not db:
+		return -1
+	var best := -1
+	for card in state.cards_in_play(controller):
+		var d := db.get_def(card.card_def_id) as CardDef
+		if not d or d.effects == "":
+			continue
+		for seg in d.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0].strip_edges() == "party_ready_on_attack":
+				var c := int(p[1]) if p.size() > 1 else 0
+				if best < 0 or c < best:
+					best = c
+	return best
 
 
 # Entry point for the ready-on-attack decision (NOT chain-based — called directly
@@ -3407,14 +3679,24 @@ static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
 				dest = "rfg"
 			elif key == "graveyard_to_play":
 				dest = "play"
+			# MAX_COST may be the literal token "resources" (Ancestral Spirit:
+			# "cost less than or equal to the number of resources you have") — a
+			# dynamic cap resolved against the searching player's total resource
+			# count at candidate time, not a fixed number. An optional 7th field
+			# is a damage-on-enter mode for `graveyard_to_play` (Ancestral Spirit:
+			# "health_minus_1" — enters with damage = its health − 1).
+			var cost_field := parts[5].strip_edges() if parts.size() >= 6 else ""
+			var dyn_cost := cost_field == "resources"
 			return {
-				"card_type": parts[1].strip_edges(),
-				"min_count": int(parts[2]),
-				"max_count": int(parts[3]),
-				"owner":     parts[4].strip_edges(),
-				"max_cost":  int(parts[5]) if parts.size() >= 6 else -1,
-				"dest":      dest,
-				"source":    "graveyard",
+				"card_type":    parts[1].strip_edges(),
+				"min_count":    int(parts[2]),
+				"max_count":    int(parts[3]),
+				"owner":        parts[4].strip_edges(),
+				"max_cost":     -1 if (dyn_cost or cost_field == "") else int(cost_field),
+				"max_cost_dynamic": dyn_cost,
+				"damage_mode":  parts[6].strip_edges() if parts.size() >= 7 else "",
+				"dest":         dest,
+				"source":       "graveyard",
 			}
 		# Deck search (The Missing Diplomat): deck_to_hand:TYPE:MIN:MAX[:MAX_COST].
 		# Always searches the completer's own deck; the deck is shuffled afterward
@@ -3488,6 +3770,11 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 		gy_players.append(_other_player(state, player_id))
 	var type_filter: String = req.get("card_type", "any")
 	var max_cost: int = req.get("max_cost", -1)
+	# Dynamic cost cap (Ancestral Spirit): "cost <= the number of resources you
+	# have" — the searching player's total resource count (rule wording counts
+	# resources controlled, exhausted or not).
+	if req.get("max_cost_dynamic", false):
+		max_cost = state.get_total_resources(player_id)
 	for gy_player in gy_players:
 		for card in state.cards_in_zone(gy_player + zone_suffix):
 			var def := db.get_def(card.card_def_id) as CardDef

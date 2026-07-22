@@ -614,6 +614,12 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 			cn.show_card_front()
 		else:
 			cn.show_card_back()
+	# The graveyard and the "attached" zone are public: cards there are always
+	# face up, even when arriving straight from a hand that was face-down (e.g. an
+	# opponent's instant going hand → graveyard, or an opponent attaching Mark of
+	# the Wild during our turn).
+	elif cn and (to_zone.ends_with("_graveyard") or to_zone == "attached"):
+		cn.show_card_front()
 	# Re-face the card if it changed sides (e.g. control change moves it to the
 	# other player's row). Moving cards are ready in practice; the reconcile
 	# tick reasserts the exhausted angle if not.

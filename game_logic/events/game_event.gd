@@ -253,6 +253,22 @@ static func readied_on_attack(player_id: String, card_id: String, cost_paid: int
 		"cost_paid": cost_paid,
 	})
 
+# Windfury Weapon: ready-on-strike point opened (may pay to ready the struck
+# weapon and your hero), and resolved (paid → both readied).
+static func ready_on_strike_opened(player_id: String, weapon_id: String, cost: int) -> GameEvent:
+	return make("ready_on_strike_opened", {
+		"player":    player_id,
+		"weapon_id": weapon_id,
+		"cost":      cost,
+	})
+
+static func readied_on_strike(player_id: String, weapon_id: String, cost_paid: int) -> GameEvent:
+	return make("readied_on_strike", {
+		"player":    player_id,
+		"weapon_id": weapon_id,
+		"cost_paid": cost_paid,
+	})
+
 # Green Whelp Armor: bounce point opened (wielder MAY pay to return the attacking
 # ally to its owner's hand), and resolved (paid → ally bounced).
 static func whelp_bounce_opened(player_id: String, ally_id: String, cost: int) -> GameEvent:

@@ -20,7 +20,7 @@
     },
     {
       "card_def_id": "azeroth_360",
-      "count": 1,
+      "count": 2,
       "_card_name": "Your Fortune Awaits You"
     },
     {
@@ -37,11 +37,6 @@
       "card_def_id": "azeroth_340",
       "count": 3,
       "_card_name": "The Defias Brotherhood"
-    },
-    {
-      "card_def_id": "azeroth_347",
-      "count": 1,
-      "_card_name": "Battle of Darrowshire"
     },
     {
       "card_def_id": "azeroth_351",
@@ -99,14 +94,14 @@
       "_card_name": "Jeleane Nightbreeze"
     },
     {
-      "card_def_id": "azeroth_173",
+      "card_def_id": "azeroth_217",
       "count": 1,
-      "_card_name": "Acolyte Demia"
+      "_card_name": "Sha'lin Nightwind"
     },
     {
-      "card_def_id": "azeroth_217",
-      "count": 3,
-      "_card_name": "Sha'lin Nightwind"
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
     },
     {
       "card_def_id": "azeroth_197",
@@ -115,7 +110,7 @@
     },
     {
       "card_def_id": "azeroth_175",
-      "count": 1,
+      "count": 2,
       "_card_name": "Anika Berlyn"
     },
     {
@@ -144,9 +139,9 @@
       "_card_name": "Mark of the Wild"
     },
     {
-      "card_def_id": "azeroth_172",
+      "card_def_id": "azeroth_160",
       "count": 2,
-      "_card_name": "Withdraw"
+      "_card_name": "Fall Back"
     }
   ],
   "recommended_ai_id": "ai_generic",

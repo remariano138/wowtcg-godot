@@ -60,6 +60,15 @@ var pending_strike_side: String = ""  # "attack" (602.1) or "defend" (602.3)
 var pending_ready_player: String = ""
 var pending_ready_card_id: String = ""
 var pending_ready_cost: int = 0
+# Ready-on-strike point (Windfury Weapon: "When you strike with attached weapon
+# for the first time each turn, you may pay 1. If you do, ready that weapon and
+# your hero."): non-empty while the striking player may pay to ready the struck
+# weapon + their hero. Opened inside choose_strike (602.1 / 602.3), before the
+# held combat window; resolved via StackResolver.choose_ready_on_strike().
+var pending_strike_ready_player: String = ""
+var pending_strike_ready_weapon_id: String = ""
+var pending_strike_ready_cost: int = 0
+var pending_strike_ready_side: String = ""
 # Green Whelp Armor triggered bounce (rule 305.2 triggered equipment power): after
 # an attacking ally deals combat damage to the armor wielder's hero, the wielder
 # MAY pay to bounce that ally to its owner's hand. Opened at combat conclusion,
@@ -449,7 +458,10 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 			match p[0]:
 				"party_health_aura":
 					# Nerra Lifeboon: "Other allies in your party have +X health."
-					bonus += int(p[1]) if p.size() > 1 else 1
+					# Only actual allies — never equipment, abilities, or totems
+					# (which are ability cards) even if they sit in a party zone.
+					if def and def.card_type == "Ally":
+						bonus += int(p[1]) if p.size() > 1 else 1
 	for source in cards_in_zone(inst.controller + "_hero_row"):
 		var src_def2: CardDef = db.get_def(source.card_def_id)
 		if not src_def2:

@@ -62,6 +62,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
 	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
+	"azeroth_160": "combat_instant_save_bounce", # Fall Back — put target friendly ally into its owner's hand
 	"azeroth_48":  "combat_instant_evasion",     # Blink — draw + remove attacker while hero defends
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 }
@@ -876,6 +877,13 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 					if _modal_mode_playable(modal_modes[m_idx]):
 						result.append(m_act)
 				continue
+			if def and StackResolver.get_graveyard_search_requirement(def).get("dest", "") == "play":
+				# Ancestral Spirit: reanimate the best affordable ally in our
+				# own graveyard.
+				var rz_act := _reanimate_action(state, db, player_id, card.instance_id, action_type)
+				if rz_act:
+					result.append(rz_act)
+				continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
@@ -1174,6 +1182,17 @@ func choose_ready_on_attack(state: GameState, db, _player_id: String) -> bool:
 	# Attacking an ally: only pay if we outlive the retaliation.
 	var counter := state.get_atk(defender_id, db)
 	return state.get_current_hp(card_id, db) > counter
+
+
+# Ready-on-strike decision (Windfury Weapon) — called by the scene on
+# ready_on_strike_opened when the pending player is an AI. Paying readies the
+# struck weapon AND the hero, letting the hero attack again this turn. Only worth
+# it while ATTACKING (the hero exhausted to attack, so readying frees a second
+# attack); defending, the readied hero has nothing to spend it on this combat.
+func choose_ready_on_strike(state: GameState, db, _player_id: String) -> bool:
+	if not db:
+		return false
+	return state.pending_strike_ready_side == "attack"
 
 
 # Chops / Voss Treebender: "When [this] attacks, you may exhaust target hero or
@@ -2486,6 +2505,36 @@ func _chain_lightning_plan_compact(state: GameState, db, amounts: Array[int],
 	return plan
 
 
+# Ancestral Spirit: pick the highest-cost affordable ally card in our own
+# graveyard to bring back (its cost — capped at our resources — is a fair proxy
+# for board value; the reanimated ally arrives at 1 HP but is still a body).
+func _reanimate_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var req := StackResolver.get_graveyard_search_requirement(def)
+	var cands := StackResolver.get_graveyard_search_candidates(state, player_id, req, db)
+	var best := ""
+	var best_cost := -1
+	for cid in cands:
+		var c := state.get_card(cid)
+		var cdef := db.get_def(c.card_def_id) as CardDef if c else null
+		if not cdef:
+			continue
+		if cdef.cost > best_cost:
+			best_cost = cdef.cost
+			best = cid
+	if best == "":
+		return null
+	var action := PendingAction.make(action_type, player_id,
+			{"card_id": card_id, "target_id": best})
+	if StackResolver.can_submit(state, action, db):
+		return action
+	return null
+
+
 func _targeted_instant_actions(state: GameState, db, player_id: String,
 		card_id: String, action_type: String = "play_instant") -> Array[PendingAction]:
 	var result: Array[PendingAction] = []
@@ -2614,6 +2663,25 @@ func _attach_actions(state: GameState, db, player_id: String,
 	# Hero-only attachment (Arcane Intellect: `attach:hero`): always our OWN
 	# hero — the ongoing benefit (max hand size) follows the attached hero's
 	# controller, so an enemy hero would gift it away.
+	# Weapon attachment (Windfury Weapon): put it on one of our own Melee weapons
+	# (the highest-ATK one), so striking with it can ready the weapon + hero.
+	if StackResolver._attach_targets_weapon_only(def):
+		var best_w: PendingAction = null
+		var best_w_atk := -1
+		for card in state.cards_in_zone(player_id + "_hero_row"):
+			if not StackResolver._is_melee_weapon(state, card.instance_id, db):
+				continue
+			var w_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": card.instance_id})
+			if not StackResolver.can_submit(state, w_act, db):
+				continue
+			var w_atk := state.get_atk(card.instance_id, db)
+			if w_atk > best_w_atk:
+				best_w_atk = w_atk
+				best_w = w_act
+		if best_w:
+			result.append(best_w)
+		return result
 	if StackResolver._attach_targets_hero_only(def):
 		var own_hero := state.get_hero(player_id)
 		if own_hero:

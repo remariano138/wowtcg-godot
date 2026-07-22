@@ -29,6 +29,7 @@ var facing_degrees: float = 0.0
 # attachment stays hoverable (Alt+hover inspector still works) but does not
 # consume mouse clicks.
 var is_attachment: bool = false
+var _is_highlighted: bool = false
 var _base_color: Color = Color(0.25, 0.45, 0.75)
 var _mouse_inside: bool = false
 var _damage_badge: Label = null
@@ -349,6 +350,7 @@ func set_power_used(used: bool) -> void:
 
 
 func set_highlighted(highlighted: bool, color: Color = Color(0.2, 1.0, 0.3)) -> void:
+	_is_highlighted = highlighted
 	if _outline:
 		_outline.color   = color
 		_outline.visible = highlighted
@@ -469,8 +471,12 @@ func _input(event: InputEvent) -> void:
 		return
 	if not inside:
 		return
-	if is_attachment:
-		return  # click-through: let the click reach the host underneath
+	# Attachments are normally click-through so clicks reach the host underneath.
+	# Exception: while it's a highlighted legal target (e.g. Kavai's
+	# destroy-ability power aimed at Flame Shock attached to a hero), the
+	# attachment's exposed peek strip must be clickable to pick it as a target.
+	if is_attachment and not _is_highlighted:
+		return
 	var mb := event as InputEventMouseButton
 	match mb.button_index:
 		MOUSE_BUTTON_LEFT:

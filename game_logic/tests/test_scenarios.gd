@@ -69,6 +69,9 @@ func _ready() -> void:
 		_test_chasing_ame_graveyard_to_hand,
 		_test_chasing_ame_blocked_and_filtered,
 		_test_finkle_einhorn_graveyard_to_play,
+		_test_ancestral_spirit_reanimate,
+		_test_ancestral_spirit_gates,
+		_test_ancestral_spirit_ai_picks_best,
 		_test_missing_diplomat_deck_search,
 		_test_reveal_pick_takes_matching_card,
 		_test_reveal_pick_no_match_all_to_bottom,
@@ -152,6 +155,7 @@ func _ready() -> void:
 		_test_ai_claw_ambush,
 		_test_withdraw_bounce_and_spell_fizzle,
 		_test_ai_withdraw_save,
+		_test_fall_back_friendly_only,
 	_test_blink_removes_attacker,
 	_test_ai_blink_evasion,
 		_test_first_to_fall_destroys_protector,
@@ -186,11 +190,15 @@ func _ready() -> void:
 		_test_wazzuli_party_heal,
 		_test_windseer_ready_on_attack,
 		_test_windseer_ready_declined_and_unaffordable,
+		_test_windfury_totem_party_ready,
+		_test_windfury_totem_with_windseer_single_ready,
+		_test_windfury_weapon_attach_and_ready_on_strike,
 		_test_kena_shadowbrand_power,
 		_test_kena_shadowbrand_self_lethal,
 		_test_bizzik_sparkcog_sacrifice_draw,
 		_test_augustus_destroys_with_graveyard_cost,
 		_test_augustus_blocked_too_few_graveyard_allies,
+		_test_power_usable_in_nonaction_priority_window,
 		_test_kavai_sacrifice_destroys_ability_or_equipment,
 		_test_kavai_fizzles_opposing_removal,
 		_test_ai_kavai_doomed_cash_in,
@@ -3532,6 +3540,121 @@ func _test_finkle_einhorn_graveyard_to_play() -> void:
 		"finkle-h: on_enter draw trigger fired (hand +1)")
 	ok(state.get_card("finkle_inst").face_down,
 		"finkle-i: quest flipped face-down after completion")
+
+
+const ANCESTRAL_FX := "graveyard_to_play:Ally:1:1:own:resources:health_minus_1"
+
+# Ancestral Spirit (dark_portal_91, 3, Ability — Restoration): "Put target ally
+# card from your graveyard into play if its cost <= the number of resources you
+# have. That ally enters play with damage on it equal to its health -1."
+func _test_ancestral_spirit_reanimate() -> void:
+	_buf.append("\n-- Ancestral Spirit: reanimate own graveyard ally at 1 HP --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("ancestral_def", 3, ANCESTRAL_FX)
+	db.ally("bear_def", 2, 4, [], 2)          # cost 2, 4 health → enters with 3 damage
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)               # cost 3 to play; total resources 3 = cost cap
+	_add_card_to_hand(st, "ancestral", "ancestral_def", "p1")
+	var dead := CardInstance.create("dead_bear", "bear_def", "p1", "p1_graveyard")
+	st.cards["dead_bear"] = dead
+	st.zones["p1_graveyard"].card_ids.append("dead_bear")
+
+	# Requirement parses with dynamic cost + damage mode.
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("ancestral_def"))
+	eq(req.get("dest", ""), "play", "anc-a: dest=play")
+	ok(req.get("max_cost_dynamic", false), "anc-a2: dynamic cost cap")
+	eq(req.get("damage_mode", ""), "health_minus_1", "anc-a3: damage mode parsed")
+
+	# Highlight probe lights up (a candidate exists), and the target is legal.
+	ok(StackResolver.can_play_ability_no_target_check(st, "ancestral", "p1", db),
+		"anc-b: probe highlights (candidate in graveyard)")
+
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "ancestral", "target_id": "dead_bear"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	eq(st.get_card("dead_bear").zone_id, "p1_ally_row", "anc-c: ally in play")
+	eq(st.get_card("dead_bear").damage_taken, 3, "anc-d: enters with health-1 damage")
+	eq(st.get_max_hp("dead_bear", db) - st.get_card("dead_bear").damage_taken, 1,
+		"anc-d2: effective HP is 1")
+	ok(st.get_card("dead_bear").just_summoned, "anc-e: summoning sickness")
+	ok("ancestral" in st.zones["p1_graveyard"].card_ids, "anc-f: ability to graveyard")
+
+
+# Gates: cost cap (dead ally cost > total resources), own-graveyard only, and a
+# 1-health ally enters with 0 damage (no underflow).
+func _test_ancestral_spirit_gates() -> void:
+	_buf.append("\n-- Ancestral Spirit: cost/owner gates + 1-HP entry --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("ancestral_def", 3, ANCESTRAL_FX)
+	db.ally("cheap_def", 1, 1, [], 1)         # 1 health → 0 damage on enter
+	db.ally("big_def", 3, 5, [], 5)           # cost 5 → over the cap
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)               # cost cap = 3
+	_add_card_to_hand(st, "ancestral", "ancestral_def", "p1")
+	# Over-cost ally in own graveyard, plus a legal cheap ally in OPP graveyard.
+	var big := CardInstance.create("big", "big_def", "p1", "p1_graveyard")
+	st.cards["big"] = big
+	st.zones["p1_graveyard"].card_ids.append("big")
+	var opp := CardInstance.create("opp_cheap", "cheap_def", "p2", "p2_graveyard")
+	st.cards["opp_cheap"] = opp
+	st.zones["p2_graveyard"].card_ids.append("opp_cheap")
+
+	# Neither is a legal target: big is over cost cap, opp_cheap is not our graveyard.
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "ancestral", "target_id": "big"}), db),
+		"anc-g: over-cost ally illegal (cost 5 > 3 resources)")
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "ancestral", "target_id": "opp_cheap"}), db),
+		"anc-g2: opponent's graveyard ally illegal")
+	# No legal candidate at all → probe dark.
+	ok(not StackResolver.can_play_ability_no_target_check(st, "ancestral", "p1", db),
+		"anc-g3: probe dark with no legal candidate")
+
+	# Now put a legal 1-HP ally in our graveyard and reanimate it.
+	var cheap := CardInstance.create("cheap", "cheap_def", "p1", "p1_graveyard")
+	st.cards["cheap"] = cheap
+	st.zones["p1_graveyard"].card_ids.append("cheap")
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "ancestral", "target_id": "cheap"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("cheap").zone_id, "p1_ally_row", "anc-h: 1-HP ally in play")
+	eq(st.get_card("cheap").damage_taken, 0, "anc-h2: health-1 = 0 damage (no underflow)")
+
+
+# AI reanimates the highest-cost affordable ally in its own graveyard.
+func _test_ancestral_spirit_ai_picks_best() -> void:
+	_buf.append("\n-- Ancestral Spirit: AI picks highest-cost graveyard ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("ancestral_def", 3, ANCESTRAL_FX)
+	db.ally("small_def", 1, 2, [], 1)
+	db.ally("mid_def", 2, 3, [], 3)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	_add_card_to_hand(st, "ancestral", "ancestral_def", "p1")
+	for pair in [["gy_small", "small_def"], ["gy_mid", "mid_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		st.cards[pair[0]] = c
+		st.zones["p1_graveyard"].card_ids.append(pair[0])
+
+	var ai := BaseAI.new()
+	var actions: Array = ai.get_legal_actions(st, db, "p1")
+	var chosen := ""
+	for a in actions:
+		if a.action_type == "play_ability" and a.params.get("card_id", "") == "ancestral":
+			chosen = a.params.get("target_id", "")
+	eq(chosen, "gy_mid", "anc-i: AI reanimates the cost-3 ally over the cost-1 one")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8201,6 +8324,59 @@ func _test_withdraw_bounce_and_spell_fizzle() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Fall Back (azeroth_160, 2, Instant Ability): "Put target ally from your party
+# into its owner's hand." Same bounce as Withdraw but cheaper and friendly-only —
+# can't target an OPPOSING ally (or a hero).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_fall_back_friendly_only() -> void:
+	_buf.append("\n-- Fall Back: friendly-ally-only bounce --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def", 3, 4, [], 4)
+	db.ally("theirs_def", 3, 4, [], 4)
+	db.instant("azeroth_160", 2, "return_to_hand:friendly_ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine := _add_ally(state, "mine", "mine_def", "p2")
+	mine.just_summoned = false
+	mine.damage_taken = 2
+	mine.is_exhausted = true
+	_add_ally(state, "theirs", "theirs_def", "p1")
+	_add_card_to_hand(state, "fb", "azeroth_160", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p2"].resource_placed_this_turn = true
+	state.turn_player = "p2"
+	state.priority_player = "p2"
+
+	# fb-a: can't target a hero.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "fb", "target_id": "p1_hero"}), db),
+		"fb-a: Fall Back can't target a hero")
+	# fb-b: can't target an OPPOSING ally.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "fb", "target_id": "theirs"}), db),
+		"fb-b: Fall Back can't target an opposing ally")
+	# fb-c: can target our own ally.
+	var cast := PendingAction.make("play_instant", "p2",
+		{"card_id": "fb", "target_id": "mine"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"fb-c: Fall Back can target a friendly ally")
+
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → resolves
+
+	eq(state.get_card("mine").zone_id, "p2_hand",
+		"fb-d: friendly ally is back in its owner's hand")
+	eq(mine.damage_taken, 0, "fb-e: damage reset on leaving play (400.6a)")
+	ok(not mine.is_exhausted, "fb-f: exhaustion reset on leaving play")
+	ok(state.get_card("fb").zone_id == "p2_graveyard",
+		"fb-g: Fall Back is in the graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # AI holds Withdraw and plays it ONLY to interrupt opposing targeted removal
 # aimed at a worthwhile ally — never to dodge a combat attack.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -10181,6 +10357,159 @@ func _test_windseer_ready_declined_and_unaffordable() -> void:
 	ok(state2.combat_attack_window, "wt-q: attack window opens after declining")
 
 
+# ── Windfury Totem: party-wide ready-on-attack (azeroth_118) ───────────────────
+func _test_windfury_totem_party_ready() -> void:
+	_buf.append("\n-- Windfury Totem: party-wide ready-on-attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 3)   # vanilla — no own ready trigger
+	db.ability("azeroth_118", 4, "ongoing|totem:air|party_ready_on_attack:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	var totem := _add_ally(state, "wtotem", "azeroth_118", "p1")
+	totem.just_summoned = false
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "grunt", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> ready-on-attack point
+
+	eq(state.pending_ready_player, "p1", "wf-a: totem opens the party ready point for a vanilla ally")
+	eq(state.pending_ready_card_id, "grunt", "wf-b: the point is for the attacker")
+	StackResolver.choose_ready_on_attack(state, true, db)
+	ok(not state.get_card("grunt").is_exhausted, "wf-c: grunt readied by paying 1")
+	eq(state.get_available_resources("p1"), 1, "wf-d: 1 resource paid")
+	ok(state.combat_attack_window, "wf-e: attack window opened after the choice")
+
+	# No totem in play => no party grant.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 2)
+	var g2 := _add_ally(s2, "grunt", "grunt_def", "p1")
+	g2.just_summoned = false
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "grunt", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	eq(s2.pending_ready_player, "", "wf-f: no ready point without the totem")
+	ok(s2.combat_attack_window, "wf-g: attack window opens directly")
+
+
+# The party grant and a card's own ready_on_attack share the once-per-turn gate:
+# Windseer under a Windfury Totem still readies at most ONCE per turn (it can
+# attack + ready once, never three attacks over).
+func _test_windfury_totem_with_windseer_single_ready() -> void:
+	_buf.append("\n-- Windfury Totem + Windseer Tarus: still only one ready per turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("windseer_def", 3, 3, [], 4, "ready_on_attack:1")
+	db.ability("azeroth_118", 4, "ongoing|totem:air|party_ready_on_attack:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	var ws := _add_ally(state, "windseer", "windseer_def", "p1")
+	ws.just_summoned = false
+	var totem := _add_ally(state, "wtotem", "azeroth_118", "p1")
+	totem.just_summoned = false
+
+	# First attack: exactly one ready point (not one per source).
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "windseer", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_ready_player, "p1", "wfs-a: ready point opens on the first attack")
+	StackResolver.choose_ready_on_attack(state, true, db)
+	ok(not state.get_card("windseer").is_exhausted, "wfs-b: Windseer readied once")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat concludes
+	ok(not state.get_card("windseer").is_exhausted, "wfs-c: ready again after combat")
+
+	# Second attack: NO ready point — the once-per-turn gate is shared between
+	# Windseer's own trigger and the totem grant.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "windseer", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_ready_player, "", "wfs-d: no second ready point (attack + ready only once)")
+	ok(state.combat_attack_window, "wfs-e: window opens directly the second time")
+
+
+# ── Windfury Weapon: attach to a Melee weapon, ready weapon+hero on strike ──────
+func _test_windfury_weapon_attach_and_ready_on_strike() -> void:
+	_buf.append("\n-- Windfury Weapon: attach + ready-on-strike --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("krol_def", 3, 3, 1)   # Melee, strike cost 1
+	db.equipment("cloth_def", 2, "equipment:back:0")   # non-weapon equipment
+	db.instant("azeroth_119", 2, "ongoing|attach:melee_weapon|ready_on_strike:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	var cloak := CardInstance.create("cloak", "cloth_def", "p1", "p1_hero_row")
+	state.cards["cloak"] = cloak
+	state.zones["p1_hero_row"].card_ids.append("cloak")
+	_add_card_to_hand(state, "wf", "azeroth_119", "p1")
+
+	# Can't attach to a non-weapon equipment.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "wf", "target_id": "cloak"}), db), "ww-a: can't attach to non-weapon equipment")
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "wf", "target_id": "krol"})
+	ok(StackResolver.can_submit(state, cast, db), "ww-b: attach on own Melee weapon is legal")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+	eq(state.get_card("wf").zone_id, "attached", "ww-c: Windfury Weapon attached")
+	eq(state.get_card("wf").attached_to, "krol", "ww-d: host is Krol Blade")
+
+	# Attack with the hero, strike with Krol → ready-on-strike point opens.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> strike point
+	eq(state.pending_strike_player, "p1", "ww-e: strike point opened")
+	StackResolver.choose_strike(state, "krol", db)
+	eq(state.pending_strike_ready_player, "p1", "ww-f: ready-on-strike point opened after strike")
+	ok(state.get_card("krol").is_exhausted, "ww-g: weapon exhausted by the strike")
+	ok(not state.combat_attack_window, "ww-h: attack window held until the choice resolves")
+	# Blocked while pending.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"ww-h2: pass_priority blocked while ready-on-strike pending")
+
+	var res_before := state.get_available_resources("p1")
+	StackResolver.choose_ready_on_strike(state, true, db)
+	ok(not state.get_card("krol").is_exhausted, "ww-i: weapon readied by paying 1")
+	ok(not state.get_card("p1_hero").is_exhausted, "ww-j: hero readied too")
+	eq(state.get_available_resources("p1"), res_before - 1, "ww-k: 1 resource paid")
+	ok(state.combat_attack_window, "ww-l: attack window opened after the choice")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat concludes
+	eq(state.get_card("p2_hero").damage_taken, 3, "ww-m: hero dealt Krol's 3")
+
+	# Second strike this turn: NO windfury ready (first time each turn).
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # strike point again
+	eq(state.pending_strike_player, "p1", "ww-n: strike point opens again (weapon readied)")
+	StackResolver.choose_strike(state, "krol", db)
+	eq(state.pending_strike_ready_player, "", "ww-o: no second windfury ready (once per turn)")
+	ok(state.combat_attack_window, "ww-p: window opens directly after the second strike")
+
+
 # ── Kena Shadowbrand: [Activate], put 1 damage on self → draw ──────────────────
 func _test_kena_shadowbrand_power() -> void:
 	_buf.append("\n-- Kena Shadowbrand: activate + self-damage → draw --")
@@ -10336,6 +10665,74 @@ func _test_augustus_blocked_too_few_graveyard_allies() -> void:
 	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
 		{"card_id": "aug", "target_id": "victim"}), db),
 		"ab-a: Augustus power illegal with only 2 graveyard allies")
+
+
+# ── Powers are instant-speed (rule 701): usable in ANY priority window, not just
+# the action phase. Only summoning sickness (activated/tap powers) and the
+# sorcery-speed "on_your_turn" restriction limit when a power fires. Regression
+# for the bug where an instant-speed power was greyed during the opponent's
+# ready step (Kavai during p2's ready step, chain empty, p1 with priority). ─────
+
+func _test_power_usable_in_nonaction_priority_window() -> void:
+	_buf.append("\n-- Powers are instant-speed: usable in a non-action priority window --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Instant-speed activated power (Grimdron-style: [Activate], suffers summoning
+	# sickness). A sorcery-speed twin carries the "on_your_turn" segment.
+	db.pet("grim_def", 0, 1, [], 1,
+		"activated_power:1:deal_damage_to_target:1:fire:hero_or_ally")
+	db.pet("sorcery_def", 0, 1, [], 1,
+		"activated_power:1:deal_damage_to_target:1:fire:hero_or_ally|on_your_turn")
+	db.ally("dummy_def", 0, 3, [], 0)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# The reported scenario: it is p2's turn, ready step, p1 holds the ready-step
+	# priority window, chain empty.
+	state.phase           = "ready"
+	state.turn_player     = "p2"
+	state.priority_player = "p1"
+
+	var grim := _add_ally(state, "grim", "grim_def", "p1")
+	grim.just_summoned = false
+	grim.is_exhausted  = false
+	var sorcery := _add_ally(state, "sorcery", "sorcery_def", "p1")
+	sorcery.just_summoned = false
+	sorcery.is_exhausted  = false
+	_add_ally(state, "target", "dummy_def", "p2")
+	_add_resources(state, "p1", 2)
+
+	var grim_act := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "grim", "target_id": "target"})
+	var sorcery_act := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "sorcery", "target_id": "target"})
+
+	# pw-a: instant-speed power is legal in the ready-step window (the bug).
+	ok(StackResolver.can_submit(state, grim_act, db),
+		"pw-a: instant-speed power usable during the opponent's ready step")
+
+	# pw-b: sorcery-speed ("on_your_turn") power is NOT legal outside the action
+	# phase, even with priority.
+	ok(not StackResolver.can_submit(state, sorcery_act, db),
+		"pw-b: sorcery-speed power blocked outside the action phase")
+
+	# pw-c: summoning sickness still gates an [Activate] power in the same window.
+	grim.just_summoned = true
+	ok(not StackResolver.can_submit(state, grim_act, db),
+		"pw-c: summoning-sick activated power still blocked")
+	grim.just_summoned = false
+
+	# pw-d: with no priority, nothing is usable.
+	state.priority_player = "p2"
+	ok(not StackResolver.can_submit(state, grim_act, db),
+		"pw-d: no priority → power illegal")
+	state.priority_player = "p1"
+
+	# pw-e: in the action phase the sorcery-speed power becomes legal (on p1's turn).
+	state.phase       = "action"
+	state.turn_player = "p1"
+	ok(StackResolver.can_submit(state, sorcery_act, db),
+		"pw-e: sorcery-speed power legal in p1's action phase")
 
 
 # ── Kavai the Wanderer: "1, Destroy Kavai → Destroy target ability or

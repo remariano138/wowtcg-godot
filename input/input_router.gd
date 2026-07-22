@@ -97,6 +97,8 @@ var _gy_select_quest_id: String = ""
 var _gy_select_hero_id: String = ""
 # Ally/equipment power awaiting a graveyard-card target (Ophelia Barrows).
 var _gy_select_ally_id: String = ""
+# Hand Ability awaiting a graveyard-ally target (Ancestral Spirit reanimate).
+var _gy_select_ability_id: String = ""
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 # Muted cards (instance_id → true): a human convenience flag toggled via the
@@ -150,7 +152,7 @@ func handle_card_click(instance_id: String) -> void:
 		cancel_modal_choice()
 
 	# ── Graveyard browser open: board clicks are ignored (modal owns input) ──
-	if _gy_select_quest_id != "" or _gy_select_hero_id != "":
+	if _gy_select_quest_id != "" or _gy_select_hero_id != "" or _gy_select_ability_id != "":
 		return
 
 	# ── Pet sacrifice mode: click sacrifices the chosen pet ──────────────────
@@ -250,6 +252,11 @@ func handle_card_click(instance_id: String) -> void:
 		var max_x := state.get_available_resources(local_player) \
 			- state.get_play_cost(instance_id, db, 0)
 		x_select_requested.emit(instance_id, max_x)
+		return
+	# Ancestral Spirit: the target is an ally card in your graveyard — open the
+	# graveyard browser instead of board targeting.
+	if action_type == "play_ability" and _ability_reanimates_from_graveyard(instance_id):
+		start_ability_graveyard_selection(instance_id)
 		return
 	if action_type == "play_ability" and _ability_needs_target(instance_id):
 		start_targeting(instance_id, "play_ability",
@@ -415,6 +422,40 @@ func start_ally_graveyard_selection(card_id: String) -> void:
 			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
 
 
+# Ancestral Spirit: a hand Ability whose target is an ally card in the caster's
+# graveyard. Opens the same browser as the ally/quest graveyard searches; the
+# confirm submits play_ability with the chosen card as target_id.
+func start_ability_graveyard_selection(card_id: String) -> void:
+	var card := state.get_card(card_id)
+	if not card or not db:
+		return
+	var def := db.get_def(card.card_def_id) as CardDef
+	var req := StackResolver.get_graveyard_search_requirement(def) if def else {}
+	if req.is_empty():
+		return
+	var candidates := StackResolver.get_graveyard_search_candidates(
+			state, local_player, req, db)
+	if candidates.size() < int(req.get("min_count", 1)):
+		return
+	_gy_select_ability_id = card_id
+	graveyard_select_requested.emit(card_id, candidates,
+			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
+
+
+# Detect a reanimate-from-graveyard hand Ability (delegates to the resolver's
+# def-level check via the card def).
+func _ability_reanimates_from_graveyard(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return false
+	return StackResolver.get_graveyard_search_requirement(def).get("dest", "") == "play"
+
+
 # UI confirmed a selection: submit the quest completion (or hero power) with
 # the announced targets.
 func confirm_graveyard_selection(selected_ids: Array) -> void:
@@ -444,6 +485,20 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 		_pass_own_proposal(action)
 		refresh_highlights()
 		return
+	if _gy_select_ability_id != "":
+		var ability_id := _gy_select_ability_id
+		_gy_select_ability_id = ""
+		var rz_target: String = selected_ids[0] if not selected_ids.is_empty() else ""
+		var rz_action := PendingAction.make("play_ability", local_player,
+				{"card_id": ability_id, "target_id": rz_target})
+		var rz_events := StackResolver.submit_action(state, rz_action, db)
+		if rz_events.is_empty():
+			refresh_highlights()
+			return
+		EventBus.emit_events(rz_events)
+		_pass_own_proposal(rz_action)
+		refresh_highlights()
+		return
 	if _gy_select_ally_id != "":
 		var ally_id := _gy_select_ally_id
 		_gy_select_ally_id = ""
@@ -464,6 +519,7 @@ func cancel_graveyard_selection() -> void:
 	_gy_select_quest_id = ""
 	_gy_select_hero_id = ""
 	_gy_select_ally_id = ""
+	_gy_select_ability_id = ""
 	refresh_highlights()
 
 
@@ -1215,11 +1271,13 @@ func get_playable_card_ids() -> Array:
 					ap_ready_ok = true
 				else:
 					ap_ready_ok = not card.is_exhausted and not card.just_summoned
+				# Powers are instant-speed (rule 701) — legal in any priority window.
+				# Only sorcery-speed ("on_your_turn") powers require the action phase.
 				if ap_ready_ok \
 						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
-						and state.phase == "action" and state.priority_player == local_player \
-						and (state.pending_actions.is_empty() \
-							or not StackResolver._power_effect_is(def, "on_your_turn")):
+						and state.priority_player == local_player \
+						and (not StackResolver._power_effect_is(def, "on_your_turn") \
+							or (state.phase == "action" and state.pending_actions.is_empty())):
 					result.append(card.instance_id)
 			else:
 				# graveyard_ally powers (Ophelia Barrows) pick their target in the
@@ -1388,12 +1446,15 @@ func get_context_actions(instance_id: String) -> Array:
 							ap_ready_ok = true
 						else:
 							ap_ready_ok = not card.is_exhausted and not card.just_summoned
+						# Powers are instant-speed (rule 701) — legal in any priority
+						# window. Only sorcery-speed ("on_your_turn") powers need the
+						# action phase.
 						ap_enabled = ap_ready_ok \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 							and StackResolver._can_pay_extra_power_cost(state, local_player, ap_extra_cost, db) \
-							and state.phase == "action" and state.priority_player == local_player \
-							and (state.pending_actions.is_empty() \
-								or not StackResolver._power_effect_is(def, "on_your_turn"))
+							and state.priority_player == local_player \
+							and (not StackResolver._power_effect_is(def, "on_your_turn") \
+								or (state.phase == "action" and state.pending_actions.is_empty()))
 					else:
 						var ap_action := PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id})
@@ -1483,10 +1544,14 @@ func handle_context_action(action: PendingAction) -> void:
 			card_mute_changed.emit(mute_id, muted_ids.has(mute_id))
 			return
 		"play_ability":
-			if _ability_needs_target(action.params.get("card_id", "")):
-				var cid: String = action.params.get("card_id", "")
-				start_targeting(cid, "play_ability",
-					_card_dmg_type(cid), _card_dmg_amount(cid))
+			var pa_cid: String = action.params.get("card_id", "")
+			# Ancestral Spirit: graveyard-ally target → open the browser.
+			if _ability_reanimates_from_graveyard(pa_cid):
+				start_ability_graveyard_selection(pa_cid)
+				return
+			if _ability_needs_target(pa_cid):
+				start_targeting(pa_cid, "play_ability",
+					_card_dmg_type(pa_cid), _card_dmg_amount(pa_cid))
 				return
 		"play_instant":
 			if _instant_needs_target(action.params.get("card_id", "")):
@@ -1747,6 +1812,18 @@ func _get_ability_targets(card_id: String) -> Array:
 	var kind := _destroy_kind(card_id)
 	if kind in ["ability", "equipment"]:
 		return _get_destroy_kind_targets(card_id, "play_ability", kind)
+	# Windfury Weapon (`attach:melee_weapon`): targets are the caster's own Melee
+	# weapons in the hero row, not heroes/allies.
+	var src_card := state.get_card(card_id)
+	var src_def := db.get_def(src_card.card_def_id) as CardDef if src_card else null
+	if src_def and StackResolver._attach_targets_weapon_only(src_def):
+		var w_result: Array = []
+		for card in state.cards_in_zone(local_player + "_hero_row"):
+			var w_act := PendingAction.make("play_ability", local_player,
+				_instant_params(card_id, card.instance_id))
+			if StackResolver.can_submit(state, w_act, db):
+				w_result.append(card.instance_id)
+		return w_result
 	var result: Array = []
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
@@ -1919,7 +1996,7 @@ func _card_dmg_type(card_id: String) -> String:
 		var key := entry.strip_edges().split(":")[0].strip_edges()
 		match key:
 			"destroy_target", "destroy_exhausted_ally": return "destroy"
-			"deal_damage_to_target", "deal_damage_and_heal":
+			"deal_damage_to_target", "deal_damage_and_heal", "attach_deal_damage":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 2: return parts[2].to_lower()
 			"chain_lightning":
@@ -1961,7 +2038,7 @@ func _card_dmg_amount(card_id: String) -> int:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		match parts[0].strip_edges():
-			"deal_damage_to_target":
+			"deal_damage_to_target", "attach_deal_damage":
 				if parts.size() > 1: return int(parts[1])
 			"chain_lightning":
 				if parts.size() > 1: return int(parts[1])

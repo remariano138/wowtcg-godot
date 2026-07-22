@@ -7,6 +7,11 @@
       "card_def_id": "azeroth_360",
       "count": 1,
       "_card_name": "Your Fortune Awaits You"
+    },    
+    {
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
     },
     {
       "card_def_id": "azeroth_352",
@@ -37,6 +42,11 @@
       "card_def_id": "azeroth_350",
       "count": 2,
       "_card_name": "Chasing A-Me 01"
+    },    
+    {
+      "card_def_id": "azeroth_282",
+      "count": 1,
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_248",
@@ -44,14 +54,9 @@
       "_card_name": "Ka'tali Stonetusk"
     },
     {
-      "card_def_id": "azeroth_226",
-      "count": 3,
-      "_card_name": "Bala Silentblade"
-    },
-    {
-      "card_def_id": "azeroth_323",
-      "count": 1,
-      "_card_name": "The Hammer of Grace"
+      "card_def_id": "dark_portal_272",
+      "count": 2,
+      "_card_name": "Fel Iron Hatchet"
     },
     {
       "card_def_id": "azeroth_246",
@@ -79,14 +84,14 @@
       "_card_name": "Elder Moorf"
     },
     {
-      "card_def_id": "azeroth_344",
+      "card_def_id": "azeroth_242",
       "count": 1,
-      "_card_name": "For the Horde!"
+      "_card_name": "Hierophant Caydiem"
     },
     {
-      "card_def_id": "azeroth_242",
-      "count": 2,
-      "_card_name": "Hierophant Caydiem"
+      "card_def_id": "azeroth_118",
+      "count": 1,
+      "_card_name": "Windfury Totem"
     },
     {
       "card_def_id": "dark_portal_137",
@@ -114,11 +119,6 @@
       "_card_name": "Guardian Steppestrider"
     },
     {
-      "card_def_id": "azeroth_282",
-      "count": 1,
-      "_card_name": "Chromatic Cloak"
-    },
-    {
       "card_def_id": "azeroth_106",
       "count": 1,
       "_card_name": "Chain Lightning"
@@ -130,18 +130,13 @@
     },
     {
       "card_def_id": "azeroth_262",
-      "count": 1,
+      "count": 3,
       "_card_name": "Vaerik Proudhoof"
     },
     {
-      "card_def_id": "azeroth_266",
+      "card_def_id": "dark_portal_91",
       "count": 2,
-      "_card_name": "Voss Treebender"
-    },
-    {
-      "card_def_id": "azeroth_116",
-      "count": 2,
-      "_card_name": "Searing Totem"
+      "_card_name": "Ancestral Spirit"
     },
     {
       "card_def_id": "azeroth_240",
@@ -149,9 +144,19 @@
       "_card_name": "Guardian Steelhorn"
     },
     {
+      "card_def_id": "azeroth_116",
+      "count": 2,
+      "_card_name": "Searing Totem"
+    },    
+    {
       "card_def_id": "azeroth_107",
       "count": 1,
       "_card_name": "Earthbind Totem"
+    },
+    {
+      "card_def_id": "azeroth_111",
+      "count": 1,
+      "_card_name": "Healing Stream Totem"
     },
     {
       "card_def_id": "dark_portal_235",
@@ -162,11 +167,6 @@
       "card_def_id": "azeroth_274",
       "count": 1,
       "_card_name": "Zorm Stonefury"
-    },
-    {
-      "card_def_id": "azeroth_111",
-      "count": 1,
-      "_card_name": "Healing Stream Totem"
     },
     {
       "card_def_id": "azeroth_249",

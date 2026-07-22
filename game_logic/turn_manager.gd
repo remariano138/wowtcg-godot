@@ -130,8 +130,12 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	for pid in state.players:
 		for card in state.cards_in_play(pid):
 			card.used_this_turn = false
-			# "attacks for the first time each turn" trigger gate (Windseer Tarus).
+			# "attacks for the first time each turn" trigger gate (Windseer Tarus /
+			# Windfury Totem).
 			card.counters.erase("attacked_this_turn")
+			# "strike with attached weapon for the first time each turn" gate
+			# (Windfury Weapon).
+			card.counters.erase("windfury_struck_this_turn")
 
 	# Triggered effects: "at the start of each turn" (all players' in-play chars).
 	for pid in state.players:

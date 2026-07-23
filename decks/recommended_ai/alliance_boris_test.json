@@ -19,9 +19,9 @@
       "_card_name": "In Dreams"
     },
     {
-      "card_def_id": "azeroth_360",
-      "count": 1,
-      "_card_name": "Your Fortune Awaits You"
+      "card_def_id": "azeroth_355",
+      "count": 3,
+      "_card_name": "Kibler's Exotic Pets"
     },
     {
       "card_def_id": "azeroth_342",
@@ -30,17 +30,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
-      "card_def_id": "azeroth_347",
-      "count": 2,
-      "_card_name": "Battle of Darrowshire"
-    },
-    {
       "card_def_id": "azeroth_340",
-      "count": 4,
+      "count": 2,
       "_card_name": "The Defias Brotherhood"
     },
     {
@@ -50,7 +45,7 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 3,
       "_card_name": "Chasing A-Me 01"
     },
     {
@@ -130,8 +125,13 @@
     },
     {
       "card_def_id": "azeroth_214",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ryn Dreamstrider"
+    },
+    {
+      "card_def_id": "azeroth_218",
+      "count": 1,
+      "_card_name": "Stylean Silversteel"
     },
     {
       "card_def_id": "azeroth_200",

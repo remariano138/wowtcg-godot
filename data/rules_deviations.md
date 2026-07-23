@@ -125,27 +125,42 @@ resolving it inline.
 **Printed text:** "Ongoing: At the start of each turn, Searing Totem deals 1
 fire damage to target hero or ally."
 
-**Rule 501.1a / 410:** like Infernal above, a paper "at the start of each
-turn" triggered ability is added to the chain during the ready step, with a
-priority window before it resolves and its target is chosen.
+**Rule 501.1a / 410:** a paper "at the start of each turn" triggered ability is
+added to the chain during the ready step, with its target chosen and a priority
+window before it resolves.
 
-**Deviation:** the engine resolves the trigger immediately, with no priority
-window — `TurnManager._collect_ongoing_turn_triggers` (called from
-`_enter_ready`) queues each in-play Totem's trigger and opens a mandatory
-target choice resolved via `StackResolver.choose_totem_target()` (a direct
-call, like the strike / reveal / control-discard choices;
-`pending_totem_target_player` hard-blocks `can_submit` / `pass_priority`
-while open). Turn player's totems fire first (501.1a ordering is preserved).
+**Now chain-based (respondable):** `TurnManager._collect_ongoing_turn_triggers`
+(called from `_enter_ready`) queues each in-play Totem's trigger (turn player's
+first — 501.1a) and opens a mandatory target choice resolved via
+`StackResolver.choose_totem_target()`. The target choice is still a direct-call
+point (`pending_totem_target_player` hard-blocks `can_submit` / `pass_priority`
+while open — the target is chosen as the trigger goes on the chain, 410). Once
+picked, the trigger becomes a `resolve_totem_trigger` **chain link** and a normal
+priority window opens (turn player first); either player may respond with an
+instant (heal the target, use its activated power) before the damage lands.
+`_resolve_totem_trigger` re-checks the target (709.2a) and deals the damage
+through the prevention pipeline (717.2c); the `totem_next` after-hook then opens
+the next queued trigger, so triggers drain one window at a time.
 
-**Why:** identical reasoning to Infernal — no implemented card can respond to
-a triggered ability before it resolves, so a chain-based implementation would
-add complexity with no observable difference. This reuses the established
-immediate-resolution mandatory-choice pattern.
+**Remaining minor deviations:**
+
+1. **Sequential windows, not one shared window.** Paper puts ALL simultaneous
+   start-of-turn triggers on the chain at once (turn player orders theirs), then a
+   single priority window. The engine chooses each trigger's target, opens a
+   window, resolves it, then moves to the next — a window *after each* trigger
+   rather than one window over all of them. Observably this only differs with
+   multiple simultaneous totems and gives *more* interaction points, not fewer;
+   501.1a firing order (turn player first) is preserved.
+
+2. **AI doesn't respond in the window.** Per the AI convention, the non-turn AI
+   passes every priority window (`get_all_legal_actions` returns nothing for the
+   non-turn player), so an AI opponent won't heal/save an ally its opponent's
+   totem targets. A HUMAN opponent gets the full window. Extending the window AI
+   to defensive instant plays is the same open item noted for combat windows.
 
 **How to apply this pattern to future cards:** an ongoing "start of each turn"
 targeted-damage Totem uses the `ongoing|totem[:element]|ongoing_damage_each_turn:AMOUNT:TYPE`
-recipe. If a future trigger must be respondable, the same chain-based rework
-noted under Infernal applies here.
+recipe and is respondable for free via the chain path above.
 
 ---
 

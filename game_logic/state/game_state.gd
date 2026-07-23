@@ -293,7 +293,7 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 				var dfd := get_card(combat_defender)
 				if dfd and dfd.is_exhausted:
 					atk += int(parts[1]) if parts.size() > 1 else 0
-		elif parts[0] == "weapon":
+		elif parts[0] == "strike_cost":
 			is_weapon = true
 	# (2b) Elendril's flip: "Your Ranged weapons have +3 ATK this turn."
 	# Player-tracked bonus (ranged_weapon_atk_bonus) applied to this player's

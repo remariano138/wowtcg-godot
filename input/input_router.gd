@@ -829,8 +829,10 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 
 
 func _handle_totem_targeting_click(instance_id: String) -> void:
-	# Ongoing Totem start-of-turn damage (Searing Totem). Mandatory, direct-call
-	# resolution (no chain) — like the strike / reveal choices.
+	# Ongoing Totem start-of-turn damage (Searing Totem). The TARGET choice is a
+	# mandatory direct-call point; choose_totem_target then puts the trigger on the
+	# chain and opens a priority window (the emitted action_proposed drives the
+	# scene's _drain_passes) before the damage resolves (rule 501.1a / 410).
 	if instance_id in StackResolver.get_totem_targets(state, db):
 		var events := StackResolver.choose_totem_target(state, instance_id, db)
 		cancel_targeting()

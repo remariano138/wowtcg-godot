@@ -1031,6 +1031,8 @@ static func _resolve(state: GameState, action: PendingAction,
 			return _resolve_use_ally_power(state, action, db)
 		"choose_enter_play_target":
 			return _resolve_choose_enter_play_target(state, action, db)
+		"resolve_totem_trigger":
+			return _resolve_totem_trigger(state, action, db)
 
 	# Unknown action type — should not happen if can_submit gate is correct.
 	return [GameEvent.make("action_fizzled", {
@@ -1100,6 +1102,17 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							state.pending_discard_player = opp
 							state.pending_discard_count  = n
 							events.append(GameEvent.discard_choice_opened(opp, n, "card_effect"))
+					"heal_party":
+						# Stylean Silversteel: "When [this] enters play, she heals
+						# N damage from each hero and ally in your party." Non-
+						# targeted — the entering card is already in the ally_row,
+						# so it's included. Fires inline (no choice, no chain).
+						var heal_n := int(parts[2]) if parts.size() > 2 else 0
+						for party_ally in state.cards_in_zone(card.controller + "_ally_row"):
+							events.append_array(GameLogic.heal(state, party_ally.instance_id, heal_n, db, card_id))
+						var party_hero2 := state.get_hero(card.controller)
+						if party_hero2:
+							events.append_array(GameLogic.heal(state, party_hero2.instance_id, heal_n, db, card_id))
 					"deal_damage_to_target":
 						var amount := int(parts[2]) if parts.size() > 2 else 0
 						var dmg_type := parts[3].to_lower().strip_edges() if parts.size() > 3 else ""
@@ -1804,7 +1817,7 @@ static func _equipment_info(def: CardDef) -> Dictionary:
 
 # ── Weapons and striking (rules 303, 602.1, 602.3) ────────────────────────────
 #
-# Effects segment "weapon:STRIKE_COST" marks an Equipment card as a weapon
+# Effects segment "strike_cost:STRIKE_COST" marks an Equipment card as a weapon
 # (alongside its "equipment:SLOT:DEF" segment, which drives play + slot
 # uniqueness). The weapon's ATK is the CSV atk column; damage type is the CSV
 # dmg_type column ("Melee" gates Gorebelly's strike discount).
@@ -1817,13 +1830,13 @@ static func _equipment_info(def: CardDef) -> Dictionary:
 # GameState.get_atk). Only heroes are wielders; the hero may be exhausted;
 # one weapon per combat (303.2c).
 
-# Parse the "weapon:STRIKE_COST" segment. Returns {} if the card isn't a weapon.
+# Parse the "strike_cost:STRIKE_COST" segment. Returns {} if the card isn't a weapon.
 static func _weapon_info(def: CardDef) -> Dictionary:
 	if not def:
 		return {}
 	for segment in def.effects.split("|"):
 		var parts := segment.split(":")
-		if parts[0] == "weapon":
+		if parts[0] == "strike_cost":
 			return {"strike_cost": int(parts[1]) if parts.size() > 1 else 0}
 	return {}
 
@@ -4645,8 +4658,13 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 
 
 # ── Ongoing Totem "start of each turn" targeted damage (Searing Totem) ──────────
-# A direct-call mandatory choice (like choose_strike / choose_reveal_pick), NOT a
-# chain action — the trigger fires during the ready step, outside normal priority.
+# Rule 501.1a / 410: the triggered ability is put on the CHAIN during the ready
+# step with its target chosen up front, and a priority window opens before it
+# resolves — so either player may respond with an instant (heal the target, use
+# its activated power) before the damage lands. The target choice itself is still
+# a direct-call mandatory point (choose_totem_target); once picked, the trigger
+# becomes a `resolve_totem_trigger` chain link that the normal pass/resolve
+# machinery drains. See _resolve_totem_trigger.
 
 # Peek the front pending totem trigger, skipping any whose source left play
 # (711.1), and mark its controller as the player who must pick a target. Returns
@@ -4668,9 +4686,12 @@ static func _open_next_totem_trigger(state: GameState, db) -> Array[GameEvent]:
 	return []
 
 
-# Resolve the active totem trigger: the controller deals its damage to the chosen
-# hero or ally, then the next queued trigger (if any) opens. target_id must be a
-# legal hero or ally in play. Direct call — no chain, no priority pass.
+# Announce the active totem trigger's target: put the trigger on the chain as a
+# `resolve_totem_trigger` link (target baked in) and open a priority window. The
+# turn player gets priority first (rule 410). target_id must be a legal hero or
+# ally in play — 706 is re-checked here (at announcement) and again at resolution
+# (709.2a) so a target that leaves play / becomes Untargetable in the window
+# fizzles. Direct call for the CHOICE; the damage itself resolves off the chain.
 static func choose_totem_target(state: GameState, target_id: String, db) -> Array[GameEvent]:
 	if state.pending_totem_target_player == "" or state.pending_ongoing_triggers.is_empty():
 		return []
@@ -4678,17 +4699,53 @@ static func choose_totem_target(state: GameState, target_id: String, db) -> Arra
 	state.pending_totem_target_player = ""
 	var source_id: String = trigger.get("card_id", "")
 	var amount := int(trigger.get("amount", 0))
+	var source := state.get_card(source_id)
 	var events: Array[GameEvent] = []
-	# 706 re-check: the source must still be in play and the target legal.
-	if state.is_in_play(source_id) and amount > 0 and _is_legal_target(state, target_id, db):
-		# Rule 717.2c: the packet goes through the prevention machinery — a hero
-		# target whose controller has ready DEF armor gets the point first; the
-		# "totem_next" after-hook opens the next queued trigger once it lands.
+	# 706 re-check at announcement: the source must still be in play and the
+	# target legal. If so, the trigger goes on the chain and a window opens.
+	if source and state.is_in_play(source_id) and amount > 0 \
+			and _is_legal_target(state, target_id, db):
+		var link := PendingAction.make("resolve_totem_trigger", source.controller, {
+			"card_id":  source_id,
+			"target_id": target_id,
+			"amount":   amount,
+		})
+		state.pending_actions.push_back(link)
+		state.consecutive_passes = 0
+		state.priority_player    = state.turn_player   # rule 410: turn player first
+		events.append(GameEvent.make("action_proposed", {
+			"action_type": "resolve_totem_trigger",
+			"player":      source.controller,
+			"card_id":     source_id,
+		}))
+		return events
+	# Fizzled at announcement — open the next queued totem trigger, if any.
+	events.append_array(_open_next_totem_trigger(state, db))
+	return events
+
+
+# Resolve a totem trigger's damage after its priority window closed. Re-checks the
+# target at resolution (709.2a — it may have left play or become Untargetable in
+# the window), then hands the packet to the prevention machinery (717.2c — an
+# armored hero target gets the point first). The "totem_next" after-hook opens the
+# next queued trigger once the packet lands.
+static func _resolve_totem_trigger(state: GameState, action: PendingAction,
+		db = null) -> Array[GameEvent]:
+	var source_id: String = action.params.get("card_id", "")
+	var target_id: String = action.params.get("target_id", "")
+	var amount := int(action.params.get("amount", 0))
+	var events: Array[GameEvent] = []
+	if state.is_in_play(source_id) and state.is_in_play(target_id) and amount > 0 \
+			and _is_legal_target(state, target_id, db):
 		events.append_array(defer_packets(state, db,
 			[{"source": source_id, "target": target_id, "amount": amount}],
 			"totem_next"))
 		return events
-	# Fizzled — open the next queued totem trigger, if any.
+	# Fizzled (source/target gone or now Untargetable) — still open the next
+	# queued totem trigger so the chain of start-of-turn triggers drains.
+	events.append(GameEvent.make("action_fizzled", {
+		"action_type": "resolve_totem_trigger", "reason": "target_gone",
+	}))
 	events.append_array(_open_next_totem_trigger(state, db))
 	return events
 

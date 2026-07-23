@@ -44,6 +44,7 @@ func _ready() -> void:
 		_test_prevention_noncombat_sources,
 		_test_prevention_reduces_discard_per_damage,
 		_test_grimdron_ally_power,
+		_test_tim_ally_power,
 		_test_sarmoth_taunt_forces_attacker,
 		_test_sarmoth_taunt_multiple_attackers,
 		_test_sarmoth_elusive_no_taunt,
@@ -181,6 +182,7 @@ func _ready() -> void:
 		_test_ai_hero_protect_decisions,
 		_test_searing_totem_enters_ally_row_cant_attack,
 		_test_searing_totem_fires_each_turn,
+		_test_searing_totem_priority_window,
 		_test_searing_totem_can_be_attacked,
 		_test_searing_totem_instant_timing,
 		_test_earthbind_totem_ready_lock,
@@ -188,6 +190,7 @@ func _ready() -> void:
 		_test_watcher_malwi_pings_entering_opposing_ally,
 		_test_watcher_malwi_ignores_own_allies,
 		_test_wazzuli_party_heal,
+		_test_stylean_enter_play_party_heal,
 		_test_windseer_ready_on_attack,
 		_test_windseer_ready_declined_and_unaffordable,
 		_test_windfury_totem_party_ready,
@@ -839,11 +842,11 @@ class MockDB extends RefCounted:
 		d.card_subtype   = subtype
 		_defs[def_id] = d
 
-	# Weapon (rule 303): Equipment with ATK, dmg_type, and a weapon:STRIKE_COST segment.
+	# Weapon (rule 303): Equipment with ATK, dmg_type, and a strike_cost:STRIKE_COST segment.
 	func weapon(def_id: String, cost: int, atk: int, strike_cost: int,
 			dmg_type: String = "Melee", slot: String = "melee_weapon",
 			extra_effects: String = "") -> void:
-		var fx := "equipment:%s:0|weapon:%d" % [slot, strike_cost]
+		var fx := "equipment:%s:0|strike_cost:%d" % [slot, strike_cost]
 		if extra_effects != "":
 			fx += "|" + extra_effects
 		equipment(def_id, cost, fx)
@@ -2396,6 +2399,11 @@ func _test_prevention_noncombat_sources() -> void:
 		{"card_id": "totem_inst", "amount": 1, "dmg_type": "fire"}]
 	s1.pending_totem_target_player = "p2"
 	StackResolver.choose_totem_target(s1, "p1_hero", db)
+	# 501.1a / 410: the trigger is now a chain link — its damage (and so the
+	# prevention point) lands only after the priority window closes (both pass).
+	eq(s1.pending_prevention_player, "", "nc-a0: no damage until the totem link resolves")
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
 	eq(s1.pending_prevention_player, "p1", "nc-a: totem packet opens the prevention point")
 	StackResolver.choose_prevention(s1, "pads_inst", db)
 	eq(s1.get_card("p1_hero").damage_taken, 0, "nc-b: totem's 1 fire fully prevented")
@@ -2595,6 +2603,51 @@ func _test_grimdron_ally_power() -> void:
 	# sc10-f: power no longer available (exhausted).
 	ok(not StackResolver.can_submit(state, good_action, db),
 		"sc10-f: use_ally_power not available again (Grimdron exhausted)")
+
+
+# Tim (dark_portal_192): 3-cost 1/1 Alliance Human Mage, Elusive.
+#   Power: [Activate] -> Tim deals 1 arcane damage to target hero or ally.
+#   Cost-0 activated power (exhaust only, no resources). Mirrors Grimdron.
+func _test_tim_ally_power() -> void:
+	_buf.append("\n-- Scenario: Tim ally power deals 1 arcane damage (cost 0) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tim_def", 1, 1, (["elusive"] as Array[String]), 3,
+		"activated_power:0:deal_damage_to_target:1:arcane:hero_or_ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	# Tim in p1_ally_row, ready, not summoning-sick.
+	var tim := _add_ally(state, "tim_inst", "tim_def", "p1")
+	tim.just_summoned = false
+	tim.is_exhausted  = false
+
+	# tim-a: power is usable with 0 available resources (cost is 0).
+	for res_card in state.cards_in_zone("p1_resource_row"):
+		res_card.is_exhausted = true
+	var action := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "tim_inst", "target_id": "p2_hero"})
+	ok(StackResolver.can_submit(state, action, db),
+		"tim-a: use_ally_power legal even with 0 available resources (cost 0)")
+
+	# tim-b/c: resolve the power onto the enemy hero.
+	var events: Array[GameEvent] = []
+	events.append_array(StackResolver.submit_action(state, action, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	var p2_hero := state.get_card("p2_hero")
+	eq(p2_hero.damage_taken if p2_hero else -1, 1,
+		"tim-b: p2 hero took 1 arcane damage from Tim's power")
+
+	var tim_after := state.get_card("tim_inst")
+	ok(tim_after != null and tim_after.is_exhausted,
+		"tim-c: Tim is exhausted after using its power")
+
+	# tim-d: power no longer available (exhausted).
+	ok(not StackResolver.can_submit(state, action, db),
+		"tim-d: use_ally_power not available again (Tim exhausted)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -10012,6 +10065,50 @@ func _test_searing_totem_fires_each_turn() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Searing Totem: rule 501.1a / 410 — once the target is chosen the
+# trigger goes on the CHAIN and a priority window opens (turn player first) before
+# the damage resolves. The opponent (whose ally is targeted) can respond with an
+# instant before it dies. Here we just verify the window opens and drains.
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_searing_totem_priority_window() -> void:
+	_buf.append("\n-- Searing Totem: opens a priority window before damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	db.ally("victim_def", 0, 1)   # a 0/1 the totem damage would kill
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.phase = "ready"
+	_add_ally(state, "searing", "searing_def", "p1")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+
+	# Simulate the ready-step collection: queue the trigger and open the choice.
+	state.pending_ongoing_triggers = [
+		{"card_id": "searing", "amount": 1, "dmg_type": "fire"}]
+	StackResolver._open_next_totem_trigger(state, db)
+	eq(state.pending_totem_target_player, "p1", "stw-a: p1 must pick the totem target")
+
+	# p1 aims at the opposing 0/1 ally.
+	StackResolver.choose_totem_target(state, "victim", db)
+	eq(state.pending_totem_target_player, "", "stw-b: target choice consumed")
+	eq(state.pending_actions.size(), 1, "stw-c: trigger is now a chain link")
+	eq(state.pending_actions[0].action_type, "resolve_totem_trigger",
+		"stw-d: link is a resolve_totem_trigger")
+	eq(state.priority_player, "p1", "stw-e: turn player gets priority first (410)")
+	eq(victim.damage_taken, 0, "stw-f: no damage yet — window is open")
+
+	# Both players pass with the link on the chain → it resolves, damage lands.
+	StackResolver.pass_priority(state, db)     # p1 passes → p2 priority
+	eq(state.priority_player, "p2", "stw-g: priority passed to p2 in the window")
+	eq(victim.damage_taken, 0, "stw-h: still no damage — p2 can still respond")
+	StackResolver.pass_priority(state, db)     # p2 passes → link resolves
+	eq(state.pending_actions.size(), 0, "stw-i: chain link resolved")
+	eq(state.get_card("victim").zone_id, "p2_graveyard",
+		"stw-j: totem damage landed after the window and killed the 0/1")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO — Searing Totem: "can be attacked or targeted like an ally" — it is a
 # legal defender and a legal target for targeted effects.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -10270,6 +10367,43 @@ func _test_wazzuli_party_heal() -> void:
 	eq(state.get_card("wazzuli").damage_taken, 1, "wz-b: Wazzuli healed 1")
 	eq(state.get_card("grunt").damage_taken, 0,   "wz-c: friendly ally healed 1")
 	eq(state.get_card("enemy").damage_taken, 2,   "wz-d: opposing ally NOT healed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stylean Silversteel — enter-play party heal (3 from each hero and ally)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_stylean_enter_play_party_heal() -> void:
+	_buf.append("\n-- Stylean Silversteel: heals 3 from each hero and ally in your party on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("stylean_def", 4, 5, [], 6, "on_enter:heal_party:3")
+	db.ally("grunt_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+
+	# Damaged friendly hero + ally, plus a damaged opposing ally (must NOT heal).
+	state.get_card("p1_hero").damage_taken = 5
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
+	grunt.damage_taken = 2
+	var enemy := _add_ally(state, "enemy", "grunt_def", "p2")
+	enemy.damage_taken = 2
+
+	var stylean := CardInstance.create("stylean_inst", "stylean_def", "p1", "p1_hand")
+	state.cards["stylean_inst"] = stylean
+	state.zones["p1_hand"].card_ids.append("stylean_inst")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "stylean_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolve → enter-play heal fires
+
+	eq(state.get_card("stylean_inst").zone_id, "p1_ally_row", "st-a: Stylean in play")
+	eq(state.get_card("p1_hero").damage_taken, 2, "st-b: your hero healed 3 (5→2)")
+	eq(state.get_card("grunt").damage_taken, 0,   "st-c: friendly ally healed 3 (2→0)")
+	eq(state.get_card("enemy").damage_taken, 2,   "st-d: opposing ally NOT healed")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

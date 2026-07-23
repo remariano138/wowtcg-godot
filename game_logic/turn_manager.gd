@@ -153,8 +153,10 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 
 	# Ongoing Totem "at the start of each turn" targeted damage (Searing Totem).
 	# Collected AFTER the window opens so the pending targeting choice sits on top
-	# of a normal ready window; the scene resolves it (choose_enter_play_target)
-	# before priority can advance. Turn player's totems fire first (rule 501.1a).
+	# of a normal ready window; the scene resolves the target choice
+	# (choose_totem_target), which puts the trigger on the chain and opens a
+	# priority window before the damage resolves (rule 501.1a / 410). Turn player's
+	# totems fire first (501.1a).
 	events.append_array(_collect_ongoing_turn_triggers(state, db))
 	return events
 
@@ -371,8 +373,9 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 # triggers (Totems). Build the queue in rule-501.1a order (turn player's totems
 # first), then open the first one (emits totem_target_required); the rest wait in
 # state.pending_ongoing_triggers.
-# The trigger resolves immediately (mandatory target choice, no priority window)
-# rather than going on the chain — see data/rules_deviations.md "Searing Totem".
+# The target choice is a mandatory direct-call point; once picked, the trigger
+# goes on the chain with a priority window before its damage resolves (rule
+# 501.1a / 410 — see StackResolver.choose_totem_target).
 static func _collect_ongoing_turn_triggers(state: GameState, db) -> Array[GameEvent]:
 	if not db:
 		return []

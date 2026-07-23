@@ -242,6 +242,7 @@ func _ready() -> void:
 		_test_ghank_enter_play_destroy,
 		_test_ghank_no_target_no_prompt,
 		_test_ghank_decline,
+		_test_ghank_window_lets_opponent_respond,
 	]
 
 	for t in tests:
@@ -12770,3 +12771,60 @@ func _test_ghank_decline() -> void:
 	ok(state.pending_enter_play_effect.is_empty(), "ghd-b: decline clears the pending effect")
 	eq(events.size(), 1, "ghd-c: decline event emitted")
 	eq(state.get_card("victim").zone_id, "p1_ally_row", "ghd-d: ally survives")
+
+
+# Rule 501.1 / 410: once Ghank's target is chosen the trigger sits on the chain
+# with a REAL priority window — the opponent may respond before it resolves. Here
+# the opponent bounces its own targeted ally (Withdraw) in the window; Ghank's
+# destroy then fizzles at the 706 recheck (target left play). Regression guard for
+# the bug where pending_enter_play_effect stayed set through the window and
+# can_submit blocked every response.
+func _test_ghank_window_lets_opponent_respond() -> void:
+	_buf.append("\n-- Ghank: opponent can respond in the enter-play window --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ghank_def", 3, 3, (["stealth"] as Array[String]), 4,
+		"on_enter:destroy_exhausted_damaged_ally")
+	db.ally("victim_def", 2, 3, [], 3)
+	db.instant("withdraw_def", 3, "return_to_hand:ally")   # Withdraw-style bounce
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_resources(state, "p2", 3)
+	_add_card_to_hand(state, "ghank", "ghank_def", "p1")
+	_add_card_to_hand(state, "withdraw", "withdraw_def", "p2")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.is_exhausted = true
+	victim.damage_taken = 1
+
+	# p1 plays Ghank; it resolves into play and the enter-play choice opens.
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "ghank"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# p1 announces Ghank's target (p2's exhausted damaged ally).
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "ghank", "target_id": "victim"}), db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"ghw-a: pending marker cleared at announcement — the window is real")
+	eq(state.get_card("victim").zone_id, "p2_ally_row",
+		"ghw-b: target not destroyed yet — it waits on the chain")
+
+	# p1 passes → p2 gets priority IN the window and CAN respond (the fix).
+	StackResolver.pass_priority(state, db)
+	eq(state.priority_player, "p2", "ghw-c: opponent has priority in the window")
+	var resp := PendingAction.make("play_instant", "p2",
+		{"card_id": "withdraw", "target_id": "victim"})
+	ok(StackResolver.can_submit(state, resp, db),
+		"ghw-d: opponent's instant is submittable — guard no longer blocks it")
+
+	# p2 bounces its own targeted ally; the chain drains, Ghank's destroy fizzles.
+	StackResolver.submit_action(state, resp, db)
+	StackResolver.pass_priority(state, db)   # p2 passes
+	StackResolver.pass_priority(state, db)   # p1 passes → Withdraw resolves
+	StackResolver.pass_priority(state, db)   # drain toward the enter-play link
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("victim").zone_id, "p2_hand",
+		"ghw-e: ally saved to hand — Ghank's destroy fizzled (706 recheck)")

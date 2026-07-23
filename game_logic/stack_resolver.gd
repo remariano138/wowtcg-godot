@@ -95,6 +95,17 @@ static func submit_action(state: GameState, action: PendingAction,
 			if ps:
 				ps.has_used_hero_power = true
 			events.append(GameEvent.hero_power_used(action.source_player, hero_id))
+		"choose_enter_play_target":
+			# Rule 501.1 / 410: the enter-play trigger's target is chosen AS it goes
+			# on the chain; a real priority window then opens so the opponent can
+			# respond (e.g. sacrifice the targeted ally to its own power before Ghank
+			# destroys it). Capture the effect onto the chain link and CLEAR the
+			# pending marker NOW — leaving it set would make can_submit's guard
+			# (see below) block every response, collapsing the window (the bug this
+			# fixes; identical in spirit to the old Searing Totem no-window issue).
+			# _resolve_choose_enter_play_target reads the effect from here, not state.
+			action.params["_effect_dict"] = state.pending_enter_play_effect.duplicate()
+			state.pending_enter_play_effect = {}
 
 	state.pending_actions.push_back(action)
 	state.consecutive_passes = 0
@@ -4630,8 +4641,9 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 		db = null) -> Array[GameEvent]:
 	var source_id: String = action.params.get("source_card_id", "")
 	var target_id: String = action.params.get("target_id", "")
-	var effect_dict: Dictionary = state.pending_enter_play_effect
-	state.pending_enter_play_effect = {}
+	# The effect was captured onto the chain link at submission (submit_action),
+	# where pending_enter_play_effect was cleared so the priority window is real.
+	var effect_dict: Dictionary = action.params.get("_effect_dict", {})
 
 	var events: Array[GameEvent] = []
 	var effect_str: String = effect_dict.get("effect", "")

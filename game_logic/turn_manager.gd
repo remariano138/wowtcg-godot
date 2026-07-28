@@ -119,7 +119,11 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):
 		card.just_summoned = false
-		if _ready_blocked(state, card, db):
+		var blocked := _ready_blocked(state, card, db)
+		# Gouge's one-shot lock is consumed at the controller's ready step,
+		# whether or not something else also blocked the ready this turn.
+		card.counters.erase("gouge_skip_ready")
+		if blocked:
 			continue
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
 	for card in state.cards_in_zone(state.turn_player + "_resource_row"):
@@ -245,6 +249,11 @@ static func is_ready_blocked(state: GameState, card: CardInstance, db) -> bool:
 static func _ready_blocked(state: GameState, card: CardInstance, db) -> bool:
 	if not db:
 		return false
+	# Gouge: "It can't ready during its controller's next ready step." One-shot
+	# flag set at resolution; consumed in _enter_ready at that ready step. Live
+	# read here (drives the ⛓ badge probe) — consumption is done in _enter_ready.
+	if card.counters.has("gouge_skip_ready"):
+		return true
 	# Earthbind Totem: "Opposing allies can't ready during their controllers'
 	# ready step." Static aura — live scan of every opponent's in-play cards.
 	# Only allies (ally_row cards, totems included) are locked; heroes, equipment

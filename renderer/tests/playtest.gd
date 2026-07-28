@@ -289,8 +289,9 @@ func _build_scene() -> void:
 	# ── Side column labels ─────────────────────────────────────────────────────
 	# Symmetric board: each player's hero column sits on THEIR right-hand side —
 	# P1 (facing up) on screen-right, P2 (facing down) on screen-left.
-	_add_label("P2 deck",   Vector2(65,   95), 11, Color(0.4, 0.4, 0.5))
-	_add_label("P2 grave",  Vector2(245,  95), 11, Color(0.5, 0.4, 0.4))
+	# P2's labels are rotated 180° so they read upright from P2's seat (TTS-style).
+	_rotate_label_180(_add_label("P2 deck",   Vector2(65,   95), 11, Color(0.4, 0.4, 0.5)))
+	_rotate_label_180(_add_label("P2 grave",  Vector2(245,  95), 11, Color(0.5, 0.4, 0.4)))
 	_add_label("P1 grave",  Vector2(1590, 832), 11, Color(0.4, 0.5, 0.4))
 	_add_label("P1 deck",   Vector2(1750, 832), 11, Color(0.4, 0.4, 0.5))
 
@@ -531,8 +532,8 @@ func _build_scene() -> void:
 	# extra strip that wide displays reveal — the panel above covers it).
 	_mulligan_hint_label = _add_label(
 		"Left-click = play/place\nRight-click = options\nEsc = retract\nCtrl+Space/Enter = wrap up / end turn\nF = auto-pass combat windows",
-		Vector2(1930, 979), 11, Color(0.38, 0.38, 0.38), true)
-	_mulligan_hint_label.size = Vector2(200, 96)
+		Vector2(1788, 963), 10, Color(0.38, 0.38, 0.38), true)
+	_mulligan_hint_label.size = Vector2(128, 128)
 	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	_mulligan_hint_label.visible = false
@@ -540,10 +541,10 @@ func _build_scene() -> void:
 	# ── Far right: Animation speed slider (scales every GameTiming pause live) ──
 	# animation_speed: 0 = instant (no pauses), 1 = base timing, up to 3x slower.
 	var speed_lbl := _add_label("Speed", Vector2(1690, 971), 10, Color(0.55, 0.55, 0.55), true)
-	speed_lbl.size = Vector2(180, 16)
+	speed_lbl.size = Vector2(90, 16)
 	_speed_slider = HSlider.new()
 	_speed_slider.position   = Vector2(1690, 995)
-	_speed_slider.size       = Vector2(180, 24)
+	_speed_slider.size       = Vector2(90, 24)
 	_speed_slider.min_value  = 0.0
 	_speed_slider.max_value  = 3.0
 	_speed_slider.step       = 0.1
@@ -555,6 +556,8 @@ func _build_scene() -> void:
 	_hud.add_child(_speed_slider)
 	_speed_value_label = _add_label("%.1fx" % GameTiming.animation_speed,
 		Vector2(1690, 1025), 11, Color(0.6, 0.6, 0.65), true)
+	_speed_value_label.size = Vector2(90, 16)
+	_speed_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	_ai_timer = Timer.new()
 	_ai_timer.wait_time = AI_THINK_TIME
@@ -1160,6 +1163,14 @@ func _add_label(text: String, pos: Vector2, size: int, color: Color, hud: bool =
 	else:
 		add_child(lbl)
 	return lbl
+
+
+# Rotate a world-space label 180° about its own centre (so P2's side labels
+# read upright from P2's seat). Deferred so the Label has auto-sized first.
+func _rotate_label_180(lbl: Label) -> void:
+	lbl.call_deferred("set", "pivot_offset", lbl.size * 0.5)
+	lbl.rotation_degrees = 180
+	return
 
 
 # ── Game state setup ───────────────────────────────────────────────────────────

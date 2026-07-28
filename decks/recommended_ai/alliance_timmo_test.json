@@ -125,13 +125,23 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 4,
+      "count": 1,
       "_card_name": "Liba Wobblebonk"
     },
     {
       "card_def_id": "azeroth_172",
-      "count": 2,
+      "count": 1,
       "_card_name": "Withdraw"
+    },
+    {
+      "card_def_id": "azeroth_99",
+      "count": 2,
+      "_card_name": "Gouge"
+    },
+    {
+      "card_def_id": "azeroth_93",
+      "count": 2,
+      "_card_name": "Coup de Grace"
     },
     {
       "card_def_id": "azeroth_221",

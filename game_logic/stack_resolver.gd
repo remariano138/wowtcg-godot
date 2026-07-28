@@ -449,6 +449,10 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 				if _instant_targets_friendly_ally_only(def) \
 						and state.get_card(target_id).controller != action.source_player:
 					return false
+				# Coup de Grâce: target ally must be exhausted.
+				if _destroy_requires_exhausted(def) \
+						and not state.get_card(target_id).is_exhausted:
+					return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id):
 					return false
@@ -519,6 +523,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 					# Fall Back: "from your party" — friendly allies only.
 					if _instant_targets_friendly_ally_only(def) \
 							and t_card.controller != action.source_player:
+						return false
+					# Coup de Grâce: target ally must be exhausted.
+					if _destroy_requires_exhausted(def) and not t_card.is_exhausted:
 						return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id): return false
@@ -626,12 +633,17 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		var scan := ["p1", "p2"]
 		if _instant_targets_friendly_ally_only(def) and player_id != "":
 			scan = [player_id]
+		var need_exhausted := _destroy_requires_exhausted(def)
 		for pid in scan:
 			var zone := state.zones.get(pid + "_ally_row") as Zone
 			if zone:
 				for cid in zone.card_ids:
-					if _is_legal_target(state, cid, db):
-						return true
+					if not _is_legal_target(state, cid, db):
+						continue
+					# Coup de Grâce: only exhausted allies qualify.
+					if need_exhausted and not state.get_card(cid).is_exhausted:
+						continue
+					return true
 		return false
 	# Windfury Weapon: at least one Melee weapon the caster controls must exist.
 	if _attach_targets_weapon_only(def):
@@ -714,9 +726,23 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
-				and parts.size() > 1 and parts[1] in ["ally", "friendly_ally"]:
+				and parts.size() > 1 and parts[1] in ["ally", "friendly_ally", "exhausted_ally"]:
 			return true
 	return false
+
+
+# Coup de Grâce (`destroy_target:exhausted_ally`): "Destroy target exhausted
+# ally." A subset of the ally-only restriction — the target ally must also be
+# exhausted. Checked at submission and re-checked at resolution (706).
+static func _destroy_requires_exhausted(def: CardDef) -> bool:
+	return destroy_target_kind(def) == "exhausted_ally"
+
+
+static func _is_exhausted_ally(state: GameState, target_id: String, db) -> bool:
+	var card := state.get_card(target_id)
+	return card != null and card.is_exhausted \
+			and _is_ally(state, target_id) \
+			and _is_legal_target(state, target_id, db)
 
 
 # Fall Back (`return_to_hand:friendly_ally`): "Put target ally from your party
@@ -1492,6 +1518,10 @@ static func _resolve_play_instant(state: GameState,
 							match parts[1]:
 								"protecting_ally":
 									dt_ok = _is_protecting_ally(state, target_id, db)
+								"exhausted_ally":
+									# Coup de Grâce: re-check ally + exhausted (706 /
+									# glossary 4217) — fizzles if it left play or readied.
+									dt_ok = _is_exhausted_ally(state, target_id, db)
 								"ability":
 									dt_ok = _is_in_play_ability(state, target_id, db)
 								"equipment":
@@ -1508,6 +1538,14 @@ static func _resolve_play_instant(state: GameState,
 						# 601.3 recheck then fizzles the proposal (attacker not ready).
 						if _exhaust_target_ok(state, parts, target_id, db):
 							events.append_array(GameLogic.exhaust_card(state, target_id))
+							# Gouge: "It can't ready during its controller's next
+							# ready step." Flag the target — consumed at that ready
+							# step (TurnManager._enter_ready). Applies even if the
+							# target was already exhausted.
+							if _has_effect_flag(def, "gouge_cant_ready"):
+								state.get_card(target_id).counters["gouge_skip_ready"] = 1
+								events.append(GameEvent.make("card_ready_locked",
+										{"card_id": target_id, "source_id": card_id}))
 					"return_to_hand":
 						# "Put target ally into its owner's hand." (Withdraw), or
 						# "...from your party" friendly-only (Fall Back).

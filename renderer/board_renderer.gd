@@ -426,6 +426,15 @@ func _on_game_event(event: GameEvent) -> void:
 				_update_hero_bar(hero_player, cid, new_hp, max_hp)
 			else:
 				cn.update_damage(max_hp - new_hp)
+		"card_entered_with_damage":
+			# Ancestral Spirit: the ally is reanimated with damage set directly on
+			# the CardInstance (not dealt), so no hp_changed/damage_dealt fires —
+			# refresh the damage overlay explicitly or it reads as full HP.
+			var ecd_id: String = event.payload.get("card_id", "")
+			var ecd_dmg: int   = event.payload.get("damage", 0)
+			var ecd_cn := card_nodes.get(ecd_id) as CardNode
+			if ecd_cn and ecd_cn.has_method("update_damage"):
+				ecd_cn.update_damage(ecd_dmg)
 		"card_destroyed":
 			_play_death_animation(event.payload.get("card", ""))
 		"card_revealed":
@@ -1270,10 +1279,16 @@ func _refresh_deck_label(zone_id: String) -> void:
 		return
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if anchor:
-		var offset := Vector2(-CardNode.W * 0.5, CardNode.H * 0.5 + 4)
 		if zone_id.begins_with("p2"):
-			offset = Vector2(CardNode.W * 0.5, CardNode.H * 0.5 + 4)
-		lbl.global_position = anchor.global_position + offset
+			# Rotate 180° so the count reads upright for P2, and sit it
+			# "under" the deck from P2's perspective (above it on screen).
+			lbl.pivot_offset      = Vector2(CardNode.W * 0.5, 10)
+			lbl.rotation_degrees  = 180
+			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, -(CardNode.H * 0.5 + 24))
+		else:
+			lbl.pivot_offset      = Vector2.ZERO
+			lbl.rotation_degrees  = 0
+			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, CardNode.H * 0.5 + 4)
 	lbl.text = str(_deck_counts.get(zone_id, 0))
 
 

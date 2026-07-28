@@ -145,6 +145,8 @@ func _ready() -> void:
 		_test_ai_exhaustion_freeze_save,
 		_test_war_stomp_mass_exhaust,
 		_test_ai_war_stomp_freeze_save,
+		_test_coup_de_grace_destroys_exhausted_ally,
+		_test_gouge_exhaust_and_ready_lock,
 		_test_cat_form_hero_attack,
 		_test_form_break_and_pay_return,
 		_test_form_uniqueness_shapeshift,
@@ -8313,6 +8315,142 @@ func _test_ai_exhaustion_freeze_save() -> void:
 	StackResolver.pass_priority(state2, db)
 	ok(ai.decide_action(state2, db, "p2") == null,
 		"ax-c: AI holds Exhaustion against a 2-ATK chip attack")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Coup de Grâce (azeroth_93, 2, Ability — Assassination): "Destroy target
+# exhausted ally." A sorcery-speed destroy restricted to exhausted allies of
+# either party. AI destroys the most valuable exhausted OPPOSING ally.
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_coup_de_grace_destroys_exhausted_ally() -> void:
+	_buf.append("\n-- Coup de Grâce destroys only exhausted allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("victim_def", 3, 4, [], 3)
+	db.ability("azeroth_93", 2, "destroy_target:exhausted_ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "cdg", "azeroth_93", "p1")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+	victim.is_exhausted  = false
+
+	var cdg_def := db.get_def("azeroth_93") as CardDef
+
+	# cdg-a: no legal target while the only ally is ready → not highlightable.
+	ok(not StackResolver._targeted_play_has_legal_target(state, cdg_def, db, "p1"),
+		"cdg-a: no highlight while no exhausted ally exists")
+
+	# cdg-b: hero target rejected.
+	var hit_hero := PendingAction.make("play_ability", "p1",
+		{"card_id": "cdg", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, hit_hero, db),
+		"cdg-b: enemy hero is NOT a legal target")
+
+	# cdg-c: ready ally rejected.
+	var hit_ready := PendingAction.make("play_ability", "p1",
+		{"card_id": "cdg", "target_id": "victim"})
+	ok(not StackResolver.can_submit(state, hit_ready, db),
+		"cdg-c: a ready ally is NOT a legal target")
+
+	# Now exhaust the ally.
+	victim.is_exhausted = true
+
+	ok(StackResolver._targeted_play_has_legal_target(state, cdg_def, db, "p1"),
+		"cdg-d: highlightable once an exhausted ally exists")
+	ok(StackResolver.can_submit(state, hit_ready, db),
+		"cdg-e: an exhausted ally IS a legal target")
+
+	# cdg-f: resolve — the exhausted ally is destroyed.
+	StackResolver.submit_action(state, hit_ready, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.is_in_play("victim"),
+		"cdg-f: exhausted ally destroyed by Coup de Grâce")
+
+	# cdg-g: fizzles if the target readies before resolution (706 recheck).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state2, "cdg2", "azeroth_93", "p1")
+	var v2 := _add_ally(state2, "v2", "victim_def", "p2")
+	v2.just_summoned = false
+	v2.is_exhausted  = true
+	var hit2 := PendingAction.make("play_ability", "p1",
+		{"card_id": "cdg2", "target_id": "v2"})
+	StackResolver.submit_action(state2, hit2, db)
+	v2.is_exhausted = false   # target readies in response
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	ok(state2.is_in_play("v2"),
+		"cdg-g: fizzles — target readied before resolution, not destroyed")
+
+	# cdg-h: AI targets the MOST valuable exhausted opposing ally.
+	var ai := GenericAI.new()
+	db.ally("weak_def",  1, 1, [], 1)
+	db.ally("prize_def", 5, 5, [], 5)
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state3, "p1", 2)
+	_add_card_to_hand(state3, "cdg3", "azeroth_93", "p1")
+	var weak  := _add_ally(state3, "weak",  "weak_def",  "p2")
+	var prize := _add_ally(state3, "prize", "prize_def", "p2")
+	weak.just_summoned = false;  weak.is_exhausted  = true
+	prize.just_summoned = false; prize.is_exhausted = true
+	var acts := ai._targeted_instant_actions(state3, db, "p1", "cdg3", "play_ability")
+	ok(acts.size() == 1 and acts[0].params.get("target_id") == "prize",
+		"cdg-h: AI destroys the higher-value exhausted enemy ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Gouge (azeroth_99, 1, Instant Ability — Combat Combo): "Exhaust target hero or
+# ally. It can't ready during its controller's next ready step." The lock is a
+# one-shot flag consumed at the target controller's next ready step.
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_gouge_exhaust_and_ready_lock() -> void:
+	_buf.append("\n-- Gouge exhausts + locks the next ready step --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_def", 3, 4, [], 3)
+	db.instant("azeroth_99", 1, "exhaust_target:hero_or_ally|gouge_cant_ready")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "gouge", "azeroth_99", "p1")
+	var tgt := _add_ally(state, "tgt", "target_def", "p2")
+	tgt.just_summoned = false
+	tgt.is_exhausted  = false
+
+	# gg-a: heroes are legal targets (hero_or_ally).
+	var hit_hero := PendingAction.make("play_instant", "p1",
+		{"card_id": "gouge", "target_id": "p2_hero"})
+	ok(StackResolver.can_submit(state, hit_hero, db),
+		"gg-a: an enemy hero is a legal Gouge target")
+
+	# gg-b: resolve on the ally — exhausted + ready-locked.
+	var hit := PendingAction.make("play_instant", "p1",
+		{"card_id": "gouge", "target_id": "tgt"})
+	StackResolver.submit_action(state, hit, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("tgt").is_exhausted,
+		"gg-b: target is exhausted")
+	ok(TurnManager.is_ready_blocked(state, state.get_card("tgt"), db),
+		"gg-c: target is flagged ready-locked")
+
+	# gg-d: p2's next ready step skips it (stays exhausted) and consumes the flag.
+	state.turn_player = "p1"
+	state.phase       = "end"
+	TurnManager.advance_phase(state, db)   # → _next_turn → p2 ready step
+	eq(state.turn_player, "p2", "gg-d0: turn passed to p2")
+	ok(state.get_card("tgt").is_exhausted,
+		"gg-d: target NOT readied during its controller's ready step")
+	ok(not TurnManager.is_ready_blocked(state, state.get_card("tgt"), db),
+		"gg-e: lock consumed — no longer blocked after that ready step")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

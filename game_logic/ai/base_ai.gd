@@ -59,6 +59,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
 	"azeroth_17":  "combat_instant_exhaust",     # Bash — exhaust target hero or ally (+ bear form ongoing)
 	"dark_portal_137": "combat_instant_exhaust", # War Stomp — exhaust ALL opposing heroes and allies (no target)
+	"azeroth_99":  "combat_instant_exhaust",     # Gouge — exhaust target hero or ally (+ can't-ready-next-step rider, not modeled for AI)
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
 	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
@@ -2560,6 +2561,28 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 				{"card_id": card_id, "target_id": cid})
 			if StackResolver.can_submit(state, d_act, db):
 				result.append(d_act)
+		return result
+
+	# Coup de Grâce (destroy_target:exhausted_ally): destroy the MOST valuable
+	# exhausted opposing ally (random tie-break by iteration order). Always worth
+	# it — an exhausted ally is a spent attacker; unconditional removal for 2.
+	if destroy_kind == "exhausted_ally":
+		var best_id := ""
+		var best_score := -1.0
+		for ally in state.cards_in_zone(opp + "_ally_row"):
+			if not ally.is_exhausted:
+				continue
+			var cg_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": ally.instance_id})
+			if not StackResolver.can_submit(state, cg_act, db):
+				continue
+			var score := card_value_score(state, db, ally.instance_id)
+			if score > best_score:
+				best_score = score
+				best_id = ally.instance_id
+		if best_id != "":
+			result.append(PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": best_id}))
 		return result
 
 	# X-cost spell (Aimed Shot, "1+X" — deal X damage): announce X with the

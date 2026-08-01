@@ -3534,7 +3534,8 @@ func _resolve_protection(protector_id: String) -> void:
 	_in_protect_mode = false
 	_protect_protectors = []
 	for n in _protect_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_protect_nodes.clear()
 	_pass_btn.visible = true
 	_renderer.set_card_outline(_protect_attacker_id, false)
@@ -3575,7 +3576,16 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 # callers append just the panel to their existing `_*_nodes` array.
 const CHOICE_POPUP_CENTER := Vector2(960, 470)
 
-func _build_choice_popup(header_text: String, header_color: Color, buttons: Array) -> Panel:
+# `block_board` makes the choice fully modal: while the popup is up, board cards
+# can't be clicked (CardNode.input_blocked) so a card sitting under a button can't
+# steal the click, and the player must answer the popup before doing anything else.
+# Callers that opt in MUST release the block (CardNode.input_blocked = false) when
+# they tear the popup down. Points that intentionally keep board cards clickable as
+# the choice itself (strike → weapon, prevention → armor, ready) leave it false.
+func _build_choice_popup(header_text: String, header_color: Color, buttons: Array,
+		block_board: bool = false) -> Panel:
+	if block_board:
+		CardNode.input_blocked = true
 	const PAD        := 26
 	const BTN_H      := 40
 	const BTN_GAP    := 12
@@ -3649,7 +3659,7 @@ func _on_modal_choice_opened(card_id: String, mode_labels: Array) -> void:
 		"callback": func() -> void: _router.cancel_modal_choice(),
 	})
 
-	_modal_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons))
+	_modal_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons, true))
 
 
 func _on_modal_choice_cancelled() -> void:
@@ -3658,7 +3668,10 @@ func _on_modal_choice_cancelled() -> void:
 
 func _clear_modal_buttons() -> void:
 	for node in _modal_nodes:
-		node.queue_free()
+		if is_instance_valid(node):
+			node.queue_free()
+	if not _modal_nodes.is_empty():
+		CardNode.input_blocked = false   # release the modal board-block (see _build_choice_popup)
 	_modal_nodes.clear()
 
 
@@ -3738,7 +3751,8 @@ func _resolve_strike(weapon_id: String) -> void:
 	_in_strike_mode    = false
 	_strike_weapon_ids = []
 	for n in _strike_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_strike_nodes.clear()
 	_pass_btn.visible = true
 	_router.refresh_highlights()
@@ -3827,7 +3841,8 @@ func _apply_prevention_highlights(armor_ids: Array) -> void:
 
 func _clear_prevention_nodes() -> void:
 	for n in _prevention_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_prevention_nodes.clear()
 
 
@@ -3899,7 +3914,8 @@ func _show_ready_inline(payload: Dictionary) -> void:
 func _resolve_ready(pay: bool) -> void:
 	_in_ready_mode = false
 	for n in _ready_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_ready_nodes.clear()
 	_pass_btn.visible = true
 	_router.refresh_highlights()
@@ -3962,7 +3978,8 @@ func _show_strike_ready_inline(payload: Dictionary) -> void:
 func _resolve_strike_ready(pay: bool) -> void:
 	_in_strike_ready_mode = false
 	for n in _strike_ready_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_strike_ready_nodes.clear()
 	_pass_btn.visible = true
 	_router.refresh_highlights()
@@ -4042,7 +4059,7 @@ func _show_whelp_bounce_inline(payload: Dictionary) -> void:
 		},
 	]
 
-	_whelp_bounce_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons))
+	_whelp_bounce_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
 
 
 # Form pay-return choice (Bear/Cat Form death trigger). Board-public like the
@@ -4090,14 +4107,16 @@ func _show_form_return_inline(payload: Dictionary) -> void:
 			"callback": func() -> void: _resolve_form_return(false),
 		},
 	]
-	_form_return_nodes.append(_build_choice_popup(header_text, Color(0.7, 0.55, 0.35), buttons))
+	_form_return_nodes.append(_build_choice_popup(header_text, Color(0.7, 0.55, 0.35), buttons, true))
 
 
 func _resolve_form_return(pay: bool) -> void:
 	_in_form_return_mode = false
 	for n in _form_return_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_form_return_nodes.clear()
+	CardNode.input_blocked = false   # release the modal board-block (see _build_choice_popup)
 	_pass_btn.visible = true
 	_router.refresh_highlights()
 
@@ -4111,8 +4130,10 @@ func _resolve_form_return(pay: bool) -> void:
 func _resolve_whelp_bounce(pay: bool) -> void:
 	_in_whelp_bounce_mode = false
 	for n in _whelp_bounce_nodes:
-		n.queue_free()
+		if is_instance_valid(n):
+			n.queue_free()
 	_whelp_bounce_nodes.clear()
+	CardNode.input_blocked = false   # release the modal board-block (see _build_choice_popup)
 	_pass_btn.visible = true
 	_router.refresh_highlights()
 

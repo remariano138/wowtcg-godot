@@ -85,8 +85,13 @@
     },
     {
       "card_def_id": "azeroth_291",
-      "count": 2,
+      "count": 1,
       "_card_name": "Green Whelp Armor"
+    },
+    {
+      "card_def_id": "azeroth_213",
+      "count": 1,
+      "_card_name": "Randipan"
     },
     {
       "card_def_id": "azeroth_173",
@@ -100,8 +105,13 @@
     },
     {
       "card_def_id": "azeroth_197",
-      "count": 4,
+      "count": 2,
       "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "dark_portal_192",
+      "count": 2,
+      "_card_name": "Tim"
     },
     {
       "card_def_id": "azeroth_214",
@@ -125,23 +135,18 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 1,
+      "count": 3,
       "_card_name": "Liba Wobblebonk"
     },
     {
-      "card_def_id": "azeroth_172",
+      "card_def_id": "dark_portal_164",
       "count": 1,
+      "_card_name": "Gertha, The Old Crone"
+    },
+    {
+      "card_def_id": "azeroth_172",
+      "count": 2,
       "_card_name": "Withdraw"
-    },
-    {
-      "card_def_id": "azeroth_99",
-      "count": 2,
-      "_card_name": "Gouge"
-    },
-    {
-      "card_def_id": "azeroth_93",
-      "count": 2,
-      "_card_name": "Coup de Grace"
     },
     {
       "card_def_id": "azeroth_221",

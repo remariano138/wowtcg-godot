@@ -2146,6 +2146,25 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 					if StackResolver.can_submit(state, act, db):
 						result.append(ps.hero_instance_id)
 		return result
+	if _is_ally_sacrifice_destroy_power(ally_id):
+		# Gertha, The Old Crone: two-pick. Phase 1 = the ally to sacrifice (our
+		# own party, Gertha included); phase 2 = the destroy target (any ally,
+		# either party, minus the one we already chose to sacrifice).
+		if _targeting_first_target == "":
+			for card in state.cards_in_zone(local_player + "_ally_row"):
+				result.append(card.instance_id)
+		else:
+			for pid in state.players:
+				for card in state.cards_in_zone(pid + "_ally_row"):
+					if card.instance_id == _targeting_first_target:
+						continue
+					var act := PendingAction.make("use_ally_power", local_player, {
+						"card_id": ally_id, "sacrifice_id": _targeting_first_target,
+						"target_id": card.instance_id,
+					})
+					if StackResolver.can_submit(state, act, db):
+						result.append(card.instance_id)
+		return result
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
 			var act := PendingAction.make("use_ally_power", local_player,
@@ -2159,6 +2178,20 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
 	return result
+
+
+func _is_ally_sacrifice_destroy_power(ally_id: String) -> bool:
+	if not db or not state:
+		return false
+	var ally := state.get_card(ally_id)
+	if not ally:
+		return false
+	var def := db.get_def(ally.card_def_id) as CardDef
+	if not def:
+		return false
+	var ap := StackResolver._ally_activated_power(def)
+	return (ap.get("effect", "") as String) == "destroy_ally" \
+		and (ap.get("extra_cost", "") as String) == "sacrifice_ally"
 
 
 func _is_ally_damage_and_heal_power(ally_id: String) -> bool:
@@ -2334,6 +2367,38 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 				return
 			EventBus.emit_events(events)
 			return
+	if _is_ally_sacrifice_destroy_power(_targeting_source):
+		var sd_legal := _get_ally_power_targets(_targeting_source)
+		if _targeting_first_target == "":
+			# Phase 1: instance_id is the ally to SACRIFICE (one of our own party,
+			# Gertha herself included). Esc cancels; clicking a non-candidate no-ops.
+			if instance_id in sd_legal:
+				_targeting_first_target = instance_id
+				targeting_started.emit(_targeting_source, "destroy", 0)
+				refresh_highlights()
+			return
+		# Phase 2: instance_id is the destroy target (any ally, either party).
+		if instance_id == _targeting_first_target:
+			# Clicked the sacrifice again — step back to the sacrifice pick.
+			_targeting_first_target = ""
+			targeting_started.emit(_targeting_source, "destroy", 0)
+			refresh_highlights()
+			return
+		if instance_id not in sd_legal:
+			return
+		var sd_action := PendingAction.make("use_ally_power", local_player, {
+			"card_id": _targeting_source,
+			"sacrifice_id": _targeting_first_target,
+			"target_id": instance_id,
+		})
+		_targeting_source       = ""
+		_targeting_first_target = ""
+		targeting_cancelled.emit()
+		var sd_events := StackResolver.submit_action(state, sd_action, db)
+		if sd_events.is_empty():
+			return
+		EventBus.emit_events(sd_events)
+		return
 	var legal := _get_ally_power_targets(_targeting_source)
 	if instance_id not in legal:
 		return

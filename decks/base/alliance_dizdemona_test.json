@@ -2,17 +2,7 @@
   "deck_id": "alliance_dizdemona_test",
   "display_name": "Alliance_test (Dizdemona)",
   "hero_card_def_id": "azeroth_2",
-  "card_entries": [
-    {
-      "card_def_id": "azeroth_298",
-      "count": 1,
-      "_card_name": "Mooncloth Robe"
-    },
-    {
-      "card_def_id": "azeroth_332",
-      "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
-    },
+  "card_entries": [    
     {
       "card_def_id": "azeroth_355",
       "count": 2,
@@ -42,6 +32,16 @@
       "card_def_id": "azeroth_350",
       "count": 2,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_298",
+      "count": 1,
+      "_card_name": "Mooncloth Robe"
+    },
+    {
+      "card_def_id": "azeroth_332",
+      "count": 1,
+      "_card_name": "Rod of the Ogre Magi"
     },
     {
       "card_def_id": "azeroth_176",
@@ -100,8 +100,13 @@
     },
     {
       "card_def_id": "azeroth_197",
-      "count": 4,
+      "count": 3,
       "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_206",
+      "count": 1,
+      "_card_name": "Melgwy Pingzot"
     },
     {
       "card_def_id": "azeroth_214",
@@ -119,9 +124,9 @@
       "_card_name": "Tristan Rapidstrike"
     },
     {
-      "card_def_id": "azeroth_179",
+      "card_def_id": "azeroth_213",
       "count": 1,
-      "_card_name": "Braxiss the Sleeper"
+      "_card_name": "Randipan"
     },
     {
       "card_def_id": "azeroth_127",
@@ -130,8 +135,13 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 4,
+      "count": 3,
       "_card_name": "Liba Wobblebonk"
+    },
+    {
+      "card_def_id": "dark_portal_164",
+      "count": 1,
+      "_card_name": "Gertha, The Old Crone"
     }
   ],
   "recommended_ai_id": "ai_generic",

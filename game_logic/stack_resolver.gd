@@ -2556,6 +2556,19 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# since the target is picked interactively after the power is chosen.
 	var skip_target: bool = action.params.get("_skip_target_check", false)
 	var targets_kind: String = ap.get("targets", "")
+	# Gertha, The Old Crone (destroy_ally effect + sacrifice_ally cost): a
+	# two-pick power. Beyond the destroy target (validated by the "ally" block
+	# below), the sacrifice cost picks one of the source player's OWN allies,
+	# named separately in sacrifice_id (Bizzik, whose sacrifice IS its only
+	# target, rides target_id instead and doesn't reach this branch). Required at
+	# submission; the no-target probe omits it, like the destroy target itself.
+	if ap.get("effect", "") == "destroy_ally" and extra_cost_str == "sacrifice_ally" \
+			and not skip_target:
+		var sac_id: String = action.params.get("sacrifice_id", "")
+		var sac_card := state.get_card(sac_id)
+		if not _is_ally(state, sac_id) or not sac_card \
+				or sac_card.controller != action.source_player:
+			return false
 	# Graveyard-card-targeted powers (Ophelia Barrows): even the no-target probe
 	# requires a legal candidate in some graveyard (per the card's paired
 	# graveyard_to_rfg requirement segment); a chosen target must be one of them.
@@ -2729,9 +2742,15 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				events.append(GameEvent.card_removed_from_game(gy_card.instance_id, action.source_player))
 				removed += 1
 	elif extra_cost == "sacrifice_ally":
-		# Bizzik Sparkcog: destroy a chosen ally in your party as a cost. The
-		# target_id names the sacrifice (may be Bizzik himself).
-		var sac_id: String = action.params.get("target_id", "")
+		# Destroy a chosen ally in your party as a cost. Bizzik Sparkcog's
+		# sacrifice IS its only target, so it rides target_id (may be Bizzik
+		# himself); Gertha, The Old Crone names it separately in sacrifice_id
+		# because her target_id is the ally her effect destroys. Like
+		# sacrifice_self, the cost is paid here at resolution — if the chosen
+		# ally already left play (killed in response), the sacrifice no-ops and
+		# the effect still resolves, matching "costs are paid at announcement".
+		var sac_id: String = action.params.get("sacrifice_id",
+			action.params.get("target_id", ""))
 		if _is_ally(state, sac_id):
 			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
 	elif extra_cost == "sacrifice_self":
@@ -3571,6 +3590,45 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		atk_events, def_events, db))
 
+	# Iceblade Hacker (rule 305.2 triggered equipment power): "When your hero
+	# deals combat damage to an ally, that ally can't ready during its
+	# controller's next ready step." Same trigger point as Devilsaur Leggings,
+	# but applies the gouge ready-lock instead of a destroy — so it matters
+	# when the ally SURVIVES the combat damage.
+	events.append_array(_fire_hero_combat_dmg_locks_ally_ready(
+		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
+		atk_events, def_events, db))
+
+	return events
+
+
+# hero_combat_dmg_locks_ally_ready equipment flag (Iceblade Hacker). See the
+# call site in _do_combat_conclusion. Mirrors _fire_hero_combat_dmg_destroys_ally
+# but sets the gouge_skip_ready counter (consumed at the ally controller's next
+# ready step — TurnManager._enter_ready) instead of destroying the ally.
+static func _fire_hero_combat_dmg_locks_ally_ready(state: GameState,
+		attacker_id: String, defender_id: String,
+		attacker_was_ally: bool, defender_was_ally: bool,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Hero as attacker → ally defender.
+	if defender_was_ally \
+			and _hero_wields_flag(state, attacker_id, "hero_combat_dmg_locks_ally_ready", db) \
+			and _combat_dmg_landed(atk_events, defender_id) > 0 \
+			and state.is_in_play(defender_id):
+		state.get_card(defender_id).counters["gouge_skip_ready"] = 1
+		events.append(GameEvent.make("card_ready_locked",
+				{"card_id": defender_id, "source_id": attacker_id}))
+	# Hero as protecting defender → retaliation onto the attacking ally.
+	if attacker_was_ally \
+			and _hero_wields_flag(state, defender_id, "hero_combat_dmg_locks_ally_ready", db) \
+			and _combat_dmg_landed(def_events, attacker_id) > 0 \
+			and state.is_in_play(attacker_id):
+		state.get_card(attacker_id).counters["gouge_skip_ready"] = 1
+		events.append(GameEvent.make("card_ready_locked",
+				{"card_id": attacker_id, "source_id": defender_id}))
 	return events
 
 

@@ -169,6 +169,7 @@ func _ready() -> void:
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
 		_test_devilsaur_leggings,
+		_test_iceblade_hacker,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
 		_test_ai_elendril_flip_for_lethal,
@@ -203,6 +204,8 @@ func _ready() -> void:
 		_test_bizzik_sparkcog_sacrifice_draw,
 		_test_augustus_destroys_with_graveyard_cost,
 		_test_augustus_blocked_too_few_graveyard_allies,
+		_test_gertha_sacrifice_destroy,
+		_test_melgwy_pingzot_fire_ping,
 		_test_power_usable_in_nonaction_priority_window,
 		_test_kavai_sacrifice_destroys_ability_or_equipment,
 		_test_kavai_fizzles_opposing_removal,
@@ -9303,6 +9306,106 @@ func _test_devilsaur_leggings() -> void:
 	eq(s3.get_card("tank3").damage_taken, 3, "dl-c2: ally kept its 3 combat damage")
 
 
+# Iceblade Hacker (azeroth_328, Weapon—Axe, Melee (1), 2 ATK / strike 2): "When
+# your hero deals combat damage to an ally, that ally can't ready during its
+# controller's next ready step." Same trigger point as Devilsaur Leggings, but
+# applies the gouge ready-lock — meaningful when the ally SURVIVES.
+func _test_iceblade_hacker() -> void:
+	_buf.append("\n-- Iceblade Hacker: hero combat damage locks the ally's next ready --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Iceblade Hacker: 2 ATK, strike cost 2, with the ready-lock trigger.
+	db.weapon("ice_def", 2, 2, 2)
+	db.get_def("ice_def").effects = \
+		"equipment:melee_weapon:0|strike_cost:2|hero_combat_dmg_locks_ally_ready"
+	db.ally("tank_def", 0, 5)   # 0/5 — survives a 2-damage strike, no retaliation
+	db.ally("biter_def", 2, 5)  # 2/5 — attacks, survives the 2 counter
+
+	# ── Case 1: hero ATTACKS an ally; the ally survives the 2, gets ready-locked.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 2)
+	var tank := _add_ally(s1, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	var ice := CardInstance.create("ice", "ice_def", "p1", "p1_hero_row")
+	s1.cards["ice"] = ice
+	s1.zones["p1_hero_row"].card_ids.append("ice")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # combat starts -> attack strike point
+	StackResolver.choose_strike(s1, "ice", db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # attack window closes -> defend window (no protector)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # defend window closes -> conclusion
+
+	ok(s1.is_in_play("tank"), "ih-a: attacked ally survived the 2 damage")
+	ok(s1.get_card("tank").counters.has("gouge_skip_ready"),
+		"ih-a2: surviving ally is ready-locked for its next ready step")
+	ok(TurnManager._ready_blocked(s1, s1.get_card("tank"), db),
+		"ih-a3: ready-lock probe reports the ally as blocked")
+
+	# The lock is consumed at p2's next ready step (an exhausted ally stays so).
+	s1.get_card("tank").is_exhausted = true
+	s1.turn_player = "p2"
+	s1.priority_player = "p2"
+	TurnManager._enter_ready(s1, db)
+	ok(s1.get_card("tank").is_exhausted, "ih-a4: ally stayed exhausted through its ready step")
+	ok(not s1.get_card("tank").counters.has("gouge_skip_ready"),
+		"ih-a5: lock counter consumed after that ready step")
+
+	# ── Case 2: an ally attacks the hero; the hero strikes back for 2, the ally
+	# survives (2/5) and is ready-locked by the retaliation.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player     = "p2"
+	s2.priority_player = "p2"
+	_add_resources(s2, "p1", 2)
+	var biter := _add_ally(s2, "biter", "biter_def", "p2")
+	biter.just_summoned = false
+	var ice2 := CardInstance.create("ice2", "ice_def", "p1", "p1_hero_row")
+	s2.cards["ice2"] = ice2
+	s2.zones["p1_hero_row"].card_ids.append("ice2")
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "biter", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # combat starts -> attack window (ally attacker, no strike)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # attack window closes -> defend strike point
+	StackResolver.choose_strike(s2, "ice2", db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # defend window closes -> conclusion
+
+	ok(s2.is_in_play("biter"), "ih-b: attacking ally survived the 2 retaliation")
+	ok(s2.get_card("biter").counters.has("gouge_skip_ready"),
+		"ih-b2: retaliated-on attacking ally is ready-locked")
+
+	# ── Gate: without the weapon flag, a surviving ally is NOT ready-locked.
+	db.get_def("ice_def").effects = "equipment:melee_weapon:0|strike_cost:2"
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 2)
+	var tank3 := _add_ally(s3, "tank3", "tank_def", "p2")
+	tank3.just_summoned = false
+	var ice3 := CardInstance.create("ice3", "ice_def", "p1", "p1_hero_row")
+	s3.cards["ice3"] = ice3
+	s3.zones["p1_hero_row"].card_ids.append("ice3")
+
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.choose_strike(s3, "ice3", db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+
+	ok(not s3.get_card("tank3").counters.has("gouge_skip_ready"),
+		"ih-c: no ready-lock flag -> surviving ally readies normally")
+
+
 # Ancient Bone Bow: striking with it grants the attacking hero long-range for
 # the combat — the defender deals no combat damage back.
 func _test_bone_bow_grants_long_range() -> void:
@@ -10938,6 +11041,84 @@ func _test_augustus_blocked_too_few_graveyard_allies() -> void:
 	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
 		{"card_id": "aug", "target_id": "victim"}), db),
 		"ab-a: Augustus power illegal with only 2 graveyard allies")
+
+
+# ── Gertha, The Old Crone: 1, [Activate], destroy an ally in your party →
+# destroy target ally. Two-pick power: sacrifice_id names the party ally paid as
+# the cost, target_id names the ally the effect destroys. ──────────────────────
+func _test_gertha_sacrifice_destroy() -> void:
+	_buf.append("\n-- Gertha, The Old Crone: sacrifice a party ally → destroy target ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("gertha_def", 1, 3, [], 3, "activated_power:1:destroy_ally:0::ally:sacrifice_ally")
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	var gertha := _add_ally(state, "gertha", "gertha_def", "p1")
+	gertha.just_summoned = false
+	var chump := _add_ally(state, "chump", "body_def", "p1")
+	chump.just_summoned = false
+	var victim := _add_ally(state, "victim", "body_def", "p2")
+	victim.just_summoned = false
+
+	# ge-a: illegal without a sacrifice named (the cost must be paid).
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gertha", "target_id": "victim"}), db),
+		"ge-a: illegal with no sacrifice_id")
+	# ge-b: the sacrifice must be one of our OWN allies, not the enemy.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gertha", "target_id": "victim", "sacrifice_id": "victim"}), db),
+		"ge-b: enemy ally is not a legal sacrifice")
+	# ge-c: sacrifice our chump, destroy the enemy body — legal.
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gertha", "target_id": "victim", "sacrifice_id": "chump"})
+	ok(StackResolver.can_submit(state, use, db), "ge-c: legal with own sacrifice + enemy target")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("chump").zone_id, "p1_graveyard", "ge-d: chump sacrificed to graveyard")
+	eq(state.get_card("victim").zone_id, "p2_graveyard", "ge-e: target ally destroyed")
+	ok(state.get_card("gertha").is_exhausted, "ge-f: Gertha exhausted (tap symbol)")
+	eq(state.get_available_resources("p1"), 0, "ge-g: paid the 1 resource cost")
+
+
+# ── Melgwy Pingzot: 5, [Activate] → deal 5 fire damage to target hero or ally.
+# Plain activated damage power (same machinery as Grimdron) — a pure CSV recipe. ─
+func _test_melgwy_pingzot_fire_ping() -> void:
+	_buf.append("\n-- Melgwy Pingzot: 5, [Activate] -> 5 fire to target hero or ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("melgwy_def", 1, 3, [], 2,
+		"activated_power:5:deal_damage_to_target:5:fire:hero_or_ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var melgwy := _add_ally(state, "melgwy", "melgwy_def", "p1")
+	melgwy.just_summoned = false
+
+	# me-a: illegal without the 5 resources.
+	_add_resources(state, "p1", 4)
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "melgwy", "target_id": "p2_hero"}), db),
+		"me-a: illegal with only 4 resources")
+
+	# me-b: with 5 resources it's legal; fire the ping at the enemy hero.
+	_add_resources(state, "p1", 1)
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "melgwy", "target_id": "p2_hero"})
+	ok(StackResolver.can_submit(state, use, db), "me-b: legal with 5 resources")
+
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_current_hp("p2_hero", db), 25, "me-c: 5 fire damage dealt to enemy hero")
+	eq(state.get_available_resources("p1"), 0, "me-d: paid the 5 resource cost")
+	ok(state.get_card("melgwy").is_exhausted, "me-e: Melgwy exhausted (tap symbol)")
 
 
 # ── Powers are instant-speed (rule 701): usable in ANY priority window, not just

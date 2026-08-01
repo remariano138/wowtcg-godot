@@ -1345,6 +1345,36 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_id})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
+		elif ap.get("effect", "") == "destroy_ally" and extra_cost_str == "sacrifice_ally":
+			# Gertha, The Old Crone: "1, Destroy an ally in your party -> Destroy
+			# target ally." Sacrifice our LOWEST-value own ally (never Gertha
+			# herself — she's the engine) to destroy the enemy's HIGHEST-value
+			# ally, and only when the kill is worth more than what we give up
+			# (don't trade a body for a token). Random tiebreak on equal value.
+			var opp_g := "p2" if player_id == "p1" else "p1"
+			var kill_id := ""
+			var kill_val := -1.0
+			for enemy in state.cards_in_zone(opp_g + "_ally_row"):
+				var v := card_value_score(state, db, enemy.instance_id)
+				if v > kill_val or (v == kill_val and randi() % 2 == 0):
+					kill_val = v
+					kill_id = enemy.instance_id
+			var sac_id := ""
+			var sac_val := INF
+			for own in state.cards_in_zone(player_id + "_ally_row"):
+				if own.instance_id == card.instance_id:
+					continue  # keep Gertha in play to reuse the power
+				var v := card_value_score(state, db, own.instance_id)
+				if v < sac_val or (v == sac_val and randi() % 2 == 0):
+					sac_val = v
+					sac_id = own.instance_id
+			if kill_id != "" and sac_id != "" and kill_val > sac_val:
+				var act := PendingAction.make("use_ally_power", player_id, {
+					"card_id": card.instance_id, "target_id": kill_id,
+					"sacrifice_id": sac_id,
+				})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
 		elif ap.get("effect", "") == "destroy_ally":
 			# Augustus Corpsemonger: "Destroy target ally" (cost: exile 3 ally
 			# cards from your graveyard). Enemy allies only, and only when the

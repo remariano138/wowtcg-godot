@@ -323,7 +323,10 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 					if alignment != "" and def.alignment != alignment:
 						continue
 					atk += int(grant.get("amount", 0))
-	return atk
+	# ATK floors at 0 — a character can't have negative ATK. Only the clamp is
+	# applied here; the raw negative buff (Ravenous Bite's -3) stays on the card,
+	# so a later +ATK effect counts from the true value, not from 0.
+	return max(atk, 0)
 
 
 # Preview helper: what would this card's ATK be if it were the combat attacker

@@ -2,7 +2,12 @@
   "deck_id": "horde_senzir_test",
   "display_name": "Horde_test (Sen'zir)",
   "hero_card_def_id": "azeroth_14",
-  "card_entries": [
+  "card_entries": [    
+    {
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
+    },
     {
       "card_def_id": "azeroth_355",
       "count": 1,
@@ -15,12 +20,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_345",
-      "count": 4,
+      "count": 2,
       "_card_name": "Torek's Assault"
     },
     {
@@ -40,7 +45,7 @@
     },
     {
       "card_def_id": "dark_portal_32",
-      "count": 2,
+      "count": 3,
       "_card_name": "Chops"
     },
     {
@@ -50,7 +55,7 @@
     },
     {
       "card_def_id": "azeroth_45",
-      "count": 1,
+      "count": 2,
       "_card_name": "Rayder"
     },
     {
@@ -59,9 +64,9 @@
       "_card_name": "Arcane Shot"
     },
     {
-      "card_def_id": "azeroth_42",
+      "card_def_id": "azeroth_271",
       "count": 1,
-      "_card_name": "Old Bones"
+      "_card_name": "Windseer Tarus"
     },
     {
       "card_def_id": "azeroth_165",
@@ -89,28 +94,33 @@
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_266",
+      "card_def_id": "azeroth_44",
       "count": 2,
-      "_card_name": "Voss Treebender"
+      "_card_name": "Ravenous Bite"
     },
     {
       "card_def_id": "azeroth_264",
-      "count": 4,
+      "count": 2,
       "_card_name": "Vesh'ral"
     },
     {
       "card_def_id": "azeroth_236",
-      "count": 4,
+      "count": 2,
       "_card_name": "Fa'tafi"
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 4,
+      "count": 3,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
+      "card_def_id": "dark_portal_210",
+      "count": 3,
+      "_card_name": "Ghank"
+    },
+    {
       "card_def_id": "azeroth_226",
-      "count": 1,
+      "count": 3,
       "_card_name": "Bala Silentblade"
     },
     {
@@ -120,7 +130,7 @@
     },
     {
       "card_def_id": "azeroth_246",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kagra of the Crossroads"
     },
     {

@@ -65,6 +65,12 @@ static func hp_changed(card_id: String, old_hp: int, new_hp: int, max_hp: int, s
 static func buff_added(card_id: String, buff_id: String) -> GameEvent:
 	return make("buff_added", {"card": card_id, "buff_id": buff_id})
 
+# A "target ally has +/-N ATK this turn" grant (Ravenous Bite). Carries the
+# signed amount so the renderer/log can show the pump and the shrink apart.
+static func atk_swing_applied(target_id: String, source_id: String, amount: int) -> GameEvent:
+	return make("atk_swing_applied",
+		{"target_id": target_id, "source_id": source_id, "amount": amount})
+
 static func buff_removed(card_id: String, buff_id: String) -> GameEvent:
 	return make("buff_removed", {"card": card_id, "buff_id": buff_id})
 

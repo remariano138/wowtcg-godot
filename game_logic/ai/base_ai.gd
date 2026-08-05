@@ -66,6 +66,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_160": "combat_instant_save_bounce", # Fall Back — put target friendly ally into its owner's hand
 	"azeroth_48":  "combat_instant_evasion",     # Blink — draw + remove attacker while hero defends
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
+	"azeroth_44":  "combat_instant_atk_swing",   # Ravenous Bite — +3 ATK / -3 ATK on two allies (see atk_swing_action)
 }
 
 
@@ -100,6 +101,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var dodge := evasion_action(state, db, player_id)
 	if dodge != null:
 		return dodge
+	var swing := atk_swing_action(state, db, player_id)
+	if swing != null:
+		return swing
 	return bear_form_action(state, db, player_id)
 
 
@@ -554,6 +558,125 @@ func choose_form_return(_state: GameState, _db, _player_id: String) -> bool:
 #   • that protector's cost >= this card's cost (the standard "only spend removal
 #     on something at least as expensive as the removal" heuristic — cost 2 here).
 # The target is announced at submission: always state.combat_protector.
+# ── Ravenous Bite (azeroth_44) — combat ATK swing ─────────────────────────────
+# "Target ally has +3 ATK this turn. Target ally has -3 ATK this turn."
+#
+# Held (COMBAT_INSTANT_TAGS), never blind-played: off combat the swing expires
+# the same turn and changes nothing. Played on an open attack/defend window,
+# from EITHER side of the combat (unlike the damage ambush, which is
+# defender-only — a +3 pump is at its best on our own attacker).
+#
+# HARD GATE — the -3 must land on the OPPOSING character in this combat, and
+# that character must be an ALLY. Both halves target allies, so with no enemy
+# ally in the fight (e.g. an enemy HERO attacking our ally) the -3 would be
+# forced onto our own board — at best a wasted card, at worst self-sabotage or
+# a net-zero double-pick on the same ally. In that case we never play it.
+#
+# With the shrink target settled, we play only when the swing FLIPS the fight:
+#   - it saves our character that would otherwise die (their ATK - 3 < our HP), or
+#   - it kills theirs when ours alone wouldn't (our ATK + 3 >= their HP).
+# Plus the usual card-economy gate: the ally saved or killed must be worth at
+# least the spell's cost.
+#
+# The +3 goes on our own character in the combat when that's an ally; when our
+# HERO is the one fighting, the pump is a dump onto our best ally and we only
+# spend the card to stop lethal-ish damage to the hero.
+# Not modeled: Long-Range (no retaliation), protectors swapping in later, and
+# the pump's value on a future attack.
+func atk_swing_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not (state.combat_attack_window or state.combat_defend_window):
+		return null
+	if not state.pending_actions.is_empty():
+		return null
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var attacker := state.get_card(attacker_id)
+	var defender := state.get_card(defender_id)
+	if not attacker or not defender:
+		return null
+	if attacker.controller != player_id and defender.controller != player_id:
+		return null
+	var we_attack := attacker.controller == player_id
+	var ours_id: String   = attacker_id if we_attack else defender_id
+	var theirs_id: String = defender_id if we_attack else attacker_id
+
+	# The -3 target: the opposing combatant, and it must be an ally.
+	if not StackResolver._is_ally(state, theirs_id):
+		return null
+	if not StackResolver._is_legal_target(state, theirs_id, db):
+		return null   # Untargetable — 706 blocks BOTH slots of this card
+
+	var ours_is_ally := StackResolver._is_ally(state, ours_id)
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_atk_swing":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var amounts := StackResolver.atk_swing_amounts(def)
+		if amounts.size() < 2:
+			continue
+		var up: int   = amounts[0]
+		var down: int = amounts[1]
+		# Who receives the pump.
+		var pump_id := ours_id if ours_is_ally else _best_pump_ally(state, db, player_id)
+		if pump_id == "" or not StackResolver._is_legal_target(state, pump_id, db):
+			continue
+		var their_atk := state.get_atk(theirs_id, db)
+		var their_hp  := state.get_current_hp(theirs_id, db)
+		var our_hp    := state.get_current_hp(ours_id, db)
+		var our_atk   := forecast_atk(state, db, ours_id, we_attack)
+		var their_atk_after := maxi(their_atk + down, 0)
+		var our_atk_after   := our_atk + (up if pump_id == ours_id else 0)
+		var play := false
+		if ours_is_ally:
+			# Save our ally from a lethal hit, or turn a non-kill into a kill.
+			var saved := our_hp <= their_atk and our_hp > their_atk_after
+			var kills := their_hp > our_atk and their_hp <= our_atk_after
+			# Worth the card: whatever we save or kill must cost at least as
+			# much as the spell (same cheap-bait guard as the damage ambush).
+			var stake_id := theirs_id if kills else ours_id
+			var stake_def := db.get_def(state.get_card(stake_id).card_def_id) as CardDef
+			play = (saved or kills) and stake_def != null and stake_def.cost >= def.cost
+		else:
+			# Our HERO is in this combat: no legal pump target on it, so the
+			# card is bought purely for the -3. Only worth it against a hit
+			# the hero can't take, and only when the shrink actually saves it.
+			play = their_atk >= our_hp and their_atk_after < our_hp
+		if not play:
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id, {
+			"card_id": card.instance_id,
+			"target_id": pump_id,       # +ATK half
+			"target_id_2": theirs_id,   # -ATK half
+		})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Highest-ATK own ally to soak Ravenous Bite's mandatory +ATK half when our
+# hero, not an ally, is the one in combat. "" when we control no ally — the
+# pump would then have to go on an enemy ally, so the card isn't played.
+func _best_pump_ally(state: GameState, db, player_id: String) -> String:
+	var best := ""
+	var best_atk := -1
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		if not StackResolver._is_legal_target(state, card.instance_id, db):
+			continue
+		var a := state.get_atk(card.instance_id, db)
+		if a > best_atk:
+			best_atk = a
+			best = card.instance_id
+	return best
+
+
 func destroy_protector_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null

@@ -156,7 +156,9 @@ var _gy_max:           int = 1
 var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
-var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). Empty = all selectable.
+var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). See _gy_filter_active.
+var _gy_reveal_card_type: String = ""   # reveal-pick: required card type, kept so the choice can be re-opened if a pick is refused
+var _gy_filter_active: bool = false   # true = _gy_selectable is authoritative, INCLUDING when empty (reveal-pick with no matching card ⇒ nothing is pickable). Without this an empty dict read as "all selectable" and let the player submit an illegal pick, which the engine refuses — leaving the choice pending forever and hard-locking the turn.
 var _end_turn_dialog: ConfirmationDialog
 var _played_this_action_phase: Dictionary = {}   # player_id -> bool
 var _game_over: bool = false
@@ -2778,6 +2780,8 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 		_gy_selectable.clear()
 		for cid: String in selectable:
 			_gy_selectable[cid] = true
+		_gy_filter_active = true
+		_gy_reveal_card_type = card_type
 		var has_pick := not selectable.is_empty()
 		var title := "Revealed top %d — choose a %s card to keep (rest go to bottom of deck)" \
 				% [revealed.size(), card_type]
@@ -2847,6 +2851,38 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 				var dact := PendingAction.make("choose_enter_play_target", ctrl,
 					{"source_card_id": card_id, "target_id": best_id})
 				EventBus.emit_events(StackResolver.submit_action(_state, dact, _db))
+				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
+			_refresh_ui()
+			_schedule_next_turn()
+		else:
+			_router.start_enter_play_targeting(card_id, dmg_type, amount)
+			_refresh_ui()
+		return
+	# Hur Shieldsmasher / Zygore Bladebreaker: optional destroy-equipment
+	# trigger. AI only destroys OPPOSING equipment (declines otherwise);
+	# humans may Esc to decline.
+	var enter_eff: String = _state.pending_enter_play_effect.get("effect", "")
+	if enter_eff == "destroy_armor" or enter_eff == "destroy_armor_or_weapon":
+		if ctrl_type != "human":
+			var opp2 := "p2" if ctrl == "p1" else "p1"
+			var best_id2 := ""
+			var best_cost2 := -1
+			var include_weapons := enter_eff == "destroy_armor_or_weapon"
+			for tid in StackResolver.get_enter_play_equipment_targets(_state, _db, include_weapons):
+				var t2 := _state.get_card(tid)
+				if not t2 or t2.controller != opp2:
+					continue
+				var tdef2 := _db.get_def(t2.card_def_id) as CardDef
+				var tcost2: int = tdef2.cost if tdef2 else 0
+				if tcost2 > best_cost2:
+					best_cost2 = tcost2
+					best_id2 = tid
+			if best_id2 == "":
+				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+			else:
+				var dact2 := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": best_id2})
+				EventBus.emit_events(StackResolver.submit_action(_state, dact2, _db))
 				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
 			_refresh_ui()
 			_schedule_next_turn()
@@ -3000,6 +3036,17 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	var name_str := def.card_name if def else source_id
 	if dmg_type == "heal":
 		_set_status("✚ %s — select a target to heal  [Esc to cancel]" % name_str)
+	# Ravenous Bite's two sequential ally picks (see InputRouter._is_atk_swing).
+	elif dmg_type in ["atk_up", "atk_down"]:
+		var swing: Array = StackResolver.atk_swing_amounts(def)
+		var idx := 0 if dmg_type == "atk_up" else 1
+		var amt: int = swing[idx] if idx < swing.size() else 0
+		if dmg_type == "atk_up":
+			_set_status("▲ %s — select the ally that gets %+d ATK this turn  [Esc to cancel]"
+				% [name_str, amt])
+		else:
+			_set_status("▼ %s — select the ally that gets %+d ATK this turn  [click the spell to go back]"
+				% [name_str, amt])
 	else:
 		_set_status("⚔ %s — select a target  [Esc to cancel]" % name_str)
 	_refresh_ui()
@@ -3278,7 +3325,7 @@ func _make_gy_card_button(instance_id: String) -> Button:
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
 	# Reveal-pick: cards that fail the filter are shown (important context) but
 	# tinted red and non-selectable. Empty _gy_selectable ⇒ every card selectable.
-	var pickable := _gy_selectable.is_empty() or _gy_selectable.has(instance_id)
+	var pickable := (not _gy_filter_active) or _gy_selectable.has(instance_id)
 	var btn := Button.new()
 	btn.custom_minimum_size = GY_CARD_SIZE
 	btn.toggle_mode = not _gy_view_only and pickable
@@ -3319,8 +3366,20 @@ func _on_gy_confirm_pressed() -> void:
 		return
 	if _gy_reveal_mode:
 		var pick: String = _gy_selected[0] if not _gy_selected.is_empty() else ""
+		var payload := {
+			"player": _state.pending_reveal_pick_player,
+			"selectable": _state.pending_reveal_pick_ids.duplicate(),
+			"revealed": _state.pending_reveal_pick_all.duplicate(),
+			"card_type": _gy_reveal_card_type,
+		}
 		_close_gy_dialog()
 		var events := StackResolver.choose_reveal_pick(_state, pick, _db)
+		# Safety net: the engine refuses an illegal pick and leaves the choice
+		# pending — nothing else can resolve it, so re-open rather than stall
+		# the game with a hidden pending choice (see _gy_filter_active).
+		if _state.pending_reveal_pick_player != "":
+			_handle_reveal_pick(payload)
+			return
 		EventBus.emit_events(events)
 		_set_status("")
 		_refresh_ui()
@@ -3344,6 +3403,7 @@ func _on_gy_cancel_pressed() -> void:
 func _close_gy_dialog() -> void:
 	_gy_reveal_mode = false
 	_gy_selectable.clear()
+	_gy_filter_active = false
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
 	CardNode.input_blocked = false

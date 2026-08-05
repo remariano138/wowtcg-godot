@@ -267,6 +267,11 @@ func handle_card_click(instance_id: String) -> void:
 		if _is_modal(instance_id):
 			_open_modal_choice(instance_id)
 			return
+		# Ravenous Bite: sequential picks, the +ATK ally first.
+		if _is_atk_swing(instance_id):
+			_targeting_first_target = ""
+			start_targeting(instance_id, "play_instant", "atk_up", 0)
+			return
 		start_targeting(instance_id, "play_instant",
 			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
@@ -959,12 +964,29 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
 		return
+	# Ravenous Bite: phase 1 picks the +ATK ally, phase 2 the -ATK ally.
+	if _is_atk_swing(_targeting_source) and _targeting_first_target == "":
+		if instance_id == _targeting_source:
+			cancel_targeting()
+			return
+		var probe := PendingAction.make("play_instant", local_player,
+			_instant_params(_targeting_source, instance_id))
+		if not StackResolver.can_submit(state, probe, db):
+			return
+		_targeting_first_target = instance_id
+		# Re-emit so the prompt switches to the -ATK half and the remaining
+		# legal allies re-highlight (the same ally stays legal — it may be
+		# named twice, netting 0).
+		targeting_started.emit(_targeting_source, "atk_down", 0)
+		refresh_highlights()
+		return
 	var action := PendingAction.make("play_instant", local_player,
 		_instant_params(_targeting_source, instance_id))
 	if StackResolver.can_submit(state, action, db):
 		_targeting_source = ""
 		_targeting_mode   = -1
 		_targeting_x_value = 0
+		_targeting_first_target = ""
 		targeting_cancelled.emit()
 		var events := StackResolver.submit_action(state, action, db)
 		if events.is_empty():
@@ -973,6 +995,13 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		_pass_own_proposal(action)
 		refresh_highlights()
 	elif instance_id == _targeting_source:
+		# Ravenous Bite phase 2: clicking the spell again steps back to the
+		# +ATK pick instead of cancelling the whole cast.
+		if _is_atk_swing(_targeting_source) and _targeting_first_target != "":
+			_targeting_first_target = ""
+			targeting_started.emit(_targeting_source, "atk_up", 0)
+			refresh_highlights()
+			return
 		cancel_targeting()
 
 
@@ -1803,6 +1832,16 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 				{"source_card_id": source_card_id, "target_id": card.instance_id})
 			if StackResolver.can_submit(state, act, db):
 				result.append(card.instance_id)
+	# Hur Shieldsmasher / Zygore Bladebreaker: target equipment (armor/weapon).
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_hero_row"):
+			var eq_def := db.get_def(card.card_def_id) as CardDef if db else null
+			if not eq_def or eq_def.card_type != "Equipment":
+				continue
+			var act := PendingAction.make("choose_enter_play_target", local_player,
+				{"source_card_id": source_card_id, "target_id": card.instance_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(card.instance_id)
 	return result
 
 
@@ -1913,11 +1952,34 @@ func _get_destroy_kind_targets(card_id: String, action_type: String, kind: Strin
 # and the announced X (Aimed Shot) when it came from the X-select dialog.
 func _instant_params(card_id: String, target_id: String) -> Dictionary:
 	var params := {"card_id": card_id, "target_id": target_id}
+	# Ravenous Bite: two sequential ally picks ride one submission. During
+	# phase 1 (no first pick yet) the probe fills BOTH slots with the clicked
+	# ally — legal, since the card may name the same ally twice — so
+	# can_submit answers "is this a legal +ATK target?" on its own.
+	if _is_atk_swing(card_id):
+		if _targeting_first_target == "":
+			params["target_id_2"] = target_id
+		else:
+			params["target_id"]   = _targeting_first_target
+			params["target_id_2"] = target_id
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
 	if _targeting_x_value > 0:
 		params["x_value"] = _targeting_x_value
 	return params
+
+
+# True for a two-target ATK-swing spell (Ravenous Bite, `atk_swing:3:-3`):
+# "+3 ATK" ally picked first, "-3 ATK" ally second. Unlike Chain Lightning /
+# Multi-Shot both picks are mandatory and both respect Untargetable, so this
+# uses the two-phase `_targeting_first_target` flow (deal_damage_and_heal's)
+# rather than the multi-target list.
+func _is_atk_swing(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.is_atk_swing_def(def)
 
 
 func _card_cost_x(card_id: String) -> bool:

@@ -33,6 +33,8 @@ func _ready() -> void:
 		_test_pet_uniqueness,
 		_test_mooncloth_robe_power,
 		_test_mooncloth_robe_hero_exhausted,
+		_test_activate_costs_paid_on_announce,
+		_test_activate_costs_refunded_on_retract,
 		_test_equipment_slot_uniqueness,
 		_test_ai_plays_equipment,
 		_test_pads_block_combat,
@@ -156,6 +158,9 @@ func _ready() -> void:
 		_test_ai_bash_freezes_attacking_hero,
 		_test_ai_hero_attack_lethal_gate,
 		_test_ai_claw_ambush,
+		_test_ravenous_bite_atk_swing,
+		_test_ravenous_bite_same_target_and_fizzle,
+		_test_ai_ravenous_bite_swing,
 		_test_withdraw_bounce_and_spell_fizzle,
 		_test_ai_withdraw_save,
 		_test_fall_back_friendly_only,
@@ -248,6 +253,11 @@ func _ready() -> void:
 		_test_ghank_no_target_no_prompt,
 		_test_ghank_decline,
 		_test_ghank_window_lets_opponent_respond,
+		_test_hur_shieldsmasher_destroys_armor,
+		_test_hur_shieldsmasher_ignores_weapon,
+		_test_hur_shieldsmasher_no_armor_no_prompt,
+		_test_zygore_bladebreaker_destroys_weapon,
+		_test_zygore_bladebreaker_destroys_armor,
 	]
 
 	for t in tests:
@@ -2007,6 +2017,110 @@ func _test_mooncloth_robe_hero_exhausted() -> void:
 	state.cards_in_zone("p1_resource_row")[0].is_exhausted = true
 	ok(not StackResolver.can_submit(state, use, db),
 		"me-c: robe power illegal with only 1 ready resource")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Activated-power exhaust costs are paid ON CHAIN ENTRY (rule 412.2)
+#
+# The [Activate] tap symbol and the "Exhaust your hero" extra cost are paid at
+# announcement, not at resolution. Deferring them left the source and the hero
+# READY while the power sat on the chain, so a second copy of the same power —
+# or Rod of the Ogre Magi + The Hammer of Grace off one hero — validated and
+# both resolved off a single exhaust.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const ROD_EFFECTS := "equipment:melee_weapon:0|strike_cost:4|two_handed|power_weapon|activated_power:2:deal_damage_to_target:1::hero_or_ally:exhaust_hero"
+
+func _test_activate_costs_paid_on_announce() -> void:
+	_buf.append("\n-- Activated power: exhaust costs paid at announcement --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("robe_def", 4, ROBE_EFFECTS, "Cloth")
+	db.equipment("rod_def", 4, ROD_EFFECTS, "Staff")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Robe + Rod both already in play and ready; both cost 2 and exhaust the hero.
+	for pair in [["robe_inst", "robe_def"], ["rod_inst", "rod_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_hero_row")
+		state.cards[pair[0]] = c
+		state.zones["p1_hero_row"].card_ids.append(pair[0])
+
+	for i in 2:
+		var dc := CardInstance.create("deck_%d" % i, "robe_def", "p1", "p1_deck")
+		state.cards["deck_%d" % i] = dc
+		state.zones["p1_deck"].card_ids.append("deck_%d" % i)
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "robe_inst"})
+	StackResolver.submit_action(state, use, db)
+
+	# ac-a/b: both exhausts land at announcement, while the power is still on the chain.
+	ok(state.get_card("robe_inst").is_exhausted, "ac-a: source exhausted at announcement")
+	ok(state.get_card("p1_hero").is_exhausted, "ac-b: hero exhausted at announcement")
+	eq(state.get_card("deck_0").zone_id, "p1_deck",
+		"ac-c: effect has NOT resolved yet (card still in deck)")
+
+	# ac-d: the same power can't be announced twice off one exhaust.
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("use_ally_power", "p1", {"card_id": "robe_inst"}), db),
+		"ac-d: same power not re-announceable while on the chain")
+
+	# ac-e: a DIFFERENT exhaust_hero power can't ride the same (now spent) hero.
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("use_ally_power", "p1",
+			{"card_id": "rod_inst", "target_id": "p2_hero"}), db),
+		"ac-e: second exhaust_hero power illegal off an already-spent hero")
+
+	# ac-f: costs were paid at announcement, so an opponent exhausting the hero in
+	# response (War Stomp) changes nothing — the effect still resolves.
+	state.get_card("p1_hero").is_exhausted = true
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("deck_0").zone_id, "p1_hand",
+		"ac-f: effect resolves normally after the costs were already paid")
+
+
+func _test_activate_costs_refunded_on_retract() -> void:
+	_buf.append("\n-- Activated power: retraction refunds the exhaust costs --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("robe_def", 4, ROBE_EFFECTS, "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	var dc := CardInstance.create("deck_0", "robe_def", "p1", "p1_deck")
+	state.cards["deck_0"] = dc
+	state.zones["p1_deck"].card_ids.append("deck_0")
+
+	var robe := CardInstance.create("robe_inst", "robe_def", "p1", "p1_hero_row")
+	state.cards["robe_inst"] = robe
+	state.zones["p1_hero_row"].card_ids.append("robe_inst")
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_ally_power", "p1", {"card_id": "robe_inst"}), db)
+	StackResolver.retract_last(state, "p1", db)
+
+	# rt-a/b: both exhausts undone.
+	ok(not state.get_card("robe_inst").is_exhausted, "rt-a: source readied by retraction")
+	ok(not state.get_card("p1_hero").is_exhausted, "rt-b: hero readied by retraction")
+
+	# rt-c: the SOURCE stays on the board — retraction must not bounce it to hand
+	# (only cards played FROM hand go back there).
+	eq(state.get_card("robe_inst").zone_id, "p1_hero_row",
+		"rt-c: power source stays in play after retraction")
+
+	# rt-d: resources refunded.
+	eq(state.get_available_resources("p1"), 2, "rt-d: resource cost refunded")
+
+	# rt-e: the power is fully usable again.
+	ok(StackResolver.can_submit(state,
+		PendingAction.make("use_ally_power", "p1", {"card_id": "robe_inst"}), db),
+		"rt-e: power re-announceable after retraction")
 
 
 func _test_equipment_slot_uniqueness() -> void:
@@ -8457,6 +8571,252 @@ func _test_gouge_exhaust_and_ready_lock() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Ravenous Bite (azeroth_44, 2, Instant Ability — Beast Mastery): "Target ally
+# has +3 ATK this turn. Target ally has -3 ATK this turn." Two independent
+# mandatory ally targets, both respecting Untargetable (706), same ally legal
+# twice. ATK floors at 0 but the raw negative buff is kept on the card.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ravenous_bite_atk_swing() -> void:
+	_buf.append("\n-- Ravenous Bite: +3 / -3 ATK on two allies this turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def",   2, 4, [], 3)
+	db.ally("theirs_def", 4, 4, [], 3)
+	db.ally("small_def",  1, 2, [], 1)
+	var ghost_kw: Array[String] = ["untargetable"]
+	db.ally("ghost_def",  3, 3, ghost_kw, 3)
+	db.instant("azeroth_44", 2, "atk_swing:3:-3")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine   := _add_ally(state, "mine",   "mine_def",   "p1")
+	var theirs := _add_ally(state, "theirs", "theirs_def", "p2")
+	var small  := _add_ally(state, "small",  "small_def",  "p1")
+	_add_ally(state, "ghost", "ghost_def", "p2")
+	mine.just_summoned   = false
+	theirs.just_summoned = false
+	small.just_summoned  = false
+	_add_card_to_hand(state, "bite",  "azeroth_44", "p1")
+	_add_card_to_hand(state, "bite2", "azeroth_44", "p1")
+	_add_card_to_hand(state, "bite3", "azeroth_44", "p1")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Heroes are not legal targets in EITHER slot (both halves say "ally").
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "bite", "target_id": "p1_hero", "target_id_2": "theirs"}), db),
+		"rb-a: +ATK half can't target a hero")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "bite", "target_id": "mine", "target_id_2": "p2_hero"}), db),
+		"rb-b: -ATK half can't target a hero")
+	# Both slots respect Untargetable (unlike Multi-Shot's exception).
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "bite", "target_id": "mine", "target_id_2": "ghost"}), db),
+		"rb-c: -ATK half can't target an Untargetable ally")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "bite", "target_id": "ghost", "target_id_2": "theirs"}), db),
+		"rb-d: +ATK half can't target an Untargetable ally")
+	# The second target is mandatory — one target alone is not a legal play.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "bite", "target_id": "mine"}), db),
+		"rb-e: both targets must be announced")
+
+	var cast := PendingAction.make("play_instant", "p1",
+		{"card_id": "bite", "target_id": "mine", "target_id_2": "theirs"})
+	ok(StackResolver.can_submit(state, cast, db), "rb-f: legal with two ally targets")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_atk("mine", db),   5, "rb-g: pumped ally is 2 + 3 = 5 ATK")
+	eq(state.get_atk("theirs", db), 1, "rb-h: shrunk ally is 4 - 3 = 1 ATK")
+
+	# ATK floors at 0, but the raw -3 stays on the card, so a later +3 counts
+	# from the true value (1 - 3 = -2 → shown as 0; +3 → 1, not 3).
+	var cast2 := PendingAction.make("play_instant", "p1",
+		{"card_id": "bite2", "target_id": "mine", "target_id_2": "small"})
+	StackResolver.submit_action(state, cast2, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_atk("small", db), 0, "rb-i: 1 ATK shrunk by 3 floors at 0, not -2")
+	var cast3 := PendingAction.make("play_instant", "p1",
+		{"card_id": "bite3", "target_id": "small", "target_id_2": "theirs"})
+	StackResolver.submit_action(state, cast3, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_atk("small", db), 1, "rb-j: +3 counts from the true -2, giving 1")
+	eq(state.get_atk("mine", db),  8, "rb-k: two pumps stack (2 + 3 + 3)")
+
+	# "This turn" — the end-of-turn buff sweep (TurnManager._enter_end) clears
+	# every swing, on both players' cards.
+	state.turn_player = "p1"
+	state.phase       = "action"
+	TurnManager.advance_phase(state, db)   # → end phase → sweep
+	eq(state.phase, "end", "rb-l0: reached the end phase")
+	eq(state.get_atk("mine", db),   2, "rb-l: pump gone after the turn ends")
+	eq(state.get_atk("theirs", db), 4, "rb-m: shrink gone after the turn ends")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Ravenous Bite: the same ally may be named twice (nets 0), and each half
+# re-checks its own target at resolution (706) — killing one target in response
+# fizzles only that half.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ravenous_bite_same_target_and_fizzle() -> void:
+	_buf.append("\n-- Ravenous Bite: same ally twice, and per-half target recheck --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def",   2, 4, [], 3)
+	db.ally("theirs_def", 4, 2, [], 3)
+	db.instant("azeroth_44", 2, "atk_swing:3:-3")
+	db.instant("azeroth_165", 2, "deal_damage_to_target:2:melee")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine   := _add_ally(state, "mine",   "mine_def",   "p1")
+	var theirs := _add_ally(state, "theirs", "theirs_def", "p2")
+	mine.just_summoned   = false
+	theirs.just_summoned = false
+	_add_card_to_hand(state, "bite", "azeroth_44", "p1")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "qs", "azeroth_165", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var both := PendingAction.make("play_instant", "p1",
+		{"card_id": "bite", "target_id": "mine", "target_id_2": "mine"})
+	ok(StackResolver.can_submit(state, both, db),
+		"rb2-a: naming the same ally twice is legal")
+
+	# Announce it on two different allies instead, then p2 kills the -ATK target
+	# in response: only that half fizzles, the pump still lands.
+	var cast := PendingAction.make("play_instant", "p1",
+		{"card_id": "bite", "target_id": "mine", "target_id_2": "theirs"})
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)   # p1 → p2
+	var kill := PendingAction.make("play_instant", "p2",
+		{"card_id": "qs", "target_id": "theirs"})
+	ok(StackResolver.can_submit(state, kill, db),
+		"rb2-b: opponent can respond to the announced swing")
+	StackResolver.submit_action(state, kill, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Quick Strike resolves — theirs dies
+	ok(not state.is_in_play("theirs"), "rb2-c: the -ATK target died in response")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # the swing resolves
+
+	eq(state.get_atk("mine", db), 5,
+		"rb2-d: +ATK half still resolved on the surviving target")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI (Ravenous Bite): a held card, played only when it flips an open combat AND
+# the -3 has an OPPOSING ALLY to land on. With no enemy ally in the fight the
+# shrink would be forced onto our own board, so the AI holds instead.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_ravenous_bite_swing() -> void:
+	_buf.append("\n-- AI Ravenous Bite: flips the fight, holds with no enemy ally --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 4, [], 3)   # kills a 4 HP blocker; 1 ATK after the shrink
+	db.ally("blocker_def",  2, 4, [], 3)
+	db.weapon("axe_def", 2, 4, 0)
+	db.instant("azeroth_44", 2, "atk_swing:3:-3")
+
+	# p1's 4/4 attacks p2's 2/4 blocker. Without the card our blocker dies and
+	# theirs lives; the swing saves ours (4-3 < 4 HP) and kills theirs
+	# (2+3 >= 4 HP), so the AI plays it.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	var blk := _add_ally(state, "blk", "blocker_def",  "p2")
+	atk.just_summoned = false
+	blk.just_summoned = false
+	_add_card_to_hand(state, "bite", "azeroth_44", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "blk"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal resolves → attack window
+	StackResolver.pass_priority(state, db)   # turn player passes first (501.1a) → p2
+	ok(state.combat_attack_window, "ai-rb-a0: attack window open")
+	eq(state.priority_player, "p2", "ai-rb-a1: defending AI holds priority")
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.params.get("card_id") == "bite"
+			and act.params.get("target_id") == "blk"
+			and act.params.get("target_id_2") == "atk",
+		"ai-rb-a: AI pumps its blocker and shrinks the attacking ally")
+
+	# Play it out: the blocker survives and kills the attacker.
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # swing resolves
+	var guard := 0
+	while (state.combat_attack_window or state.combat_defend_window) and guard < 12:
+		StackResolver.pass_priority(state, db)
+		guard += 1
+	ok(state.is_in_play("blk") and not state.is_in_play("atk"),
+		"ai-rb-b: blocker survived, attacker died")
+
+	# An enemy HERO attacks our ally — no opposing ALLY, so the -3 would be
+	# forced onto our own board. The AI must hold the card.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var blk2 := _add_ally(state2, "blk2", "blocker_def", "p2")
+	blk2.just_summoned = false
+	var axe := CardInstance.create("axe", "axe_def", "p1", "p1_hero_row")
+	state2.cards["axe"] = axe
+	state2.zones["p1_hero_row"].card_ids.append("axe")
+	_add_card_to_hand(state2, "bite2", "azeroth_44", "p2")
+	_add_resources(state2, "p2", 2)
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "blk2"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	if state2.pending_strike_player != "":
+		StackResolver.choose_strike(state2, "axe", db)
+	var act2 := ai.decide_action(state2, db, "p2")
+	ok(act2 == null or act2.params.get("card_id") != "bite2",
+		"ai-rb-c: no enemy ally in the fight — AI holds Ravenous Bite")
+
+	# The swing changes nothing (1 ATK attacker into a 4/6 that already kills
+	# it and survives) → hold the card.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.ally("chip_def", 1, 2, [], 1)
+	db2.ally("big_def",  4, 6, [], 4)
+	db2.instant("azeroth_44", 2, "atk_swing:3:-3")
+	var state3 := _base_state(db2, "p1_hero", "p2_hero")
+	var chip := _add_ally(state3, "chip", "chip_def", "p1")
+	var big  := _add_ally(state3, "big",  "big_def",  "p2")
+	chip.just_summoned = false
+	big.just_summoned  = false
+	_add_card_to_hand(state3, "bite3", "azeroth_44", "p2")
+	_add_resources(state3, "p2", 2)
+	state3.players["p1"].resource_placed_this_turn = true
+	state3.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "chip", "defender_id": "big"}), db2)
+	StackResolver.pass_priority(state3, db2)
+	StackResolver.pass_priority(state3, db2)
+	var act3 := ai.decide_action(state3, db2, "p2")
+	ok(act3 == null or act3.params.get("card_id") != "bite3",
+		"ai-rb-d: swing flips nothing — AI holds Ravenous Bite")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Withdraw (azeroth_172, 3, Instant Ability): "Put target ally into its owner's
 # hand." Bounced in response to an opposing targeted removal spell, the spell
 # fizzles at the 709.2a recheck (target no longer in play). The bounced card
@@ -13142,8 +13502,150 @@ func _test_ghank_window_lets_opponent_respond() -> void:
 	# p2 bounces its own targeted ally; the chain drains, Ghank's destroy fizzles.
 	StackResolver.submit_action(state, resp, db)
 	StackResolver.pass_priority(state, db)   # p2 passes
-	StackResolver.pass_priority(state, db)   # p1 passes → Withdraw resolves
-	StackResolver.pass_priority(state, db)   # drain toward the enter-play link
+	StackResolver.pass_priority(state, db)   # p1 passes — Withdraw resolves
+	StackResolver.pass_priority(state, db)   # p1 passes — Ghank's target choice on chain resolves
 	StackResolver.pass_priority(state, db)
 	eq(state.get_card("victim").zone_id, "p2_hand",
-		"ghw-e: ally saved to hand — Ghank's destroy fizzled (706 recheck)")
+		"ghw-e: victim bounced to hand, not destroyed")
+	ok(state.pending_enter_play_effect.is_empty(), "ghw-f: pending effect cleared")
+
+
+func _test_hur_shieldsmasher_destroys_armor() -> void:
+	_buf.append("\n-- Hur Shieldsmasher: destroys a target armor on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("hur_def", 2, 2, [], 3, "on_enter:destroy_armor")
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_card_to_hand(state, "hur", "hur_def", "p1")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "hur"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"hur-a: enter-play choice pending after Hur resolves")
+
+	var legal := StackResolver.get_enter_play_equipment_targets(state, db, false)
+	eq(legal.size(), 1, "hur-b: exactly one legal target")
+	ok("robe" in legal, "hur-c: the armor is the legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "hur", "target_id": "robe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("robe").zone_id, "p2_graveyard", "hur-d: armor destroyed")
+	ok(state.pending_enter_play_effect.is_empty(), "hur-e: pending effect cleared")
+
+
+func _test_hur_shieldsmasher_ignores_weapon() -> void:
+	_buf.append("\n-- Hur Shieldsmasher: a weapon is not a legal target (armor only) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("hur_def", 2, 2, [], 3, "on_enter:destroy_armor")
+	db.weapon("blade_def", 2, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_card_to_hand(state, "hur", "hur_def", "p1")
+	var blade := CardInstance.create("blade", "blade_def", "p2", "p2_hero_row")
+	state.cards["blade"] = blade
+	state.zones["p2_hero_row"].card_ids.append("blade")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "hur"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"hurw-a: no pending choice — the only equipment in play is a weapon")
+	eq(state.get_card("blade").zone_id, "p2_hero_row", "hurw-b: weapon untouched")
+
+
+func _test_hur_shieldsmasher_no_armor_no_prompt() -> void:
+	_buf.append("\n-- Hur Shieldsmasher: no armor in play → trigger silently skipped --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("hur_def", 2, 2, [], 3, "on_enter:destroy_armor")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_card_to_hand(state, "hur", "hur_def", "p1")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "hur"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"hurn-a: no pending choice when no armor exists")
+	eq(state.get_card("hur").zone_id, "p1_ally_row", "hurn-b: Hur in play")
+
+
+func _test_zygore_bladebreaker_destroys_weapon() -> void:
+	_buf.append("\n-- Zygore Bladebreaker: may destroy a target weapon on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zygore_def", 4, 3, [], 6, "on_enter:destroy_armor_or_weapon")
+	db.weapon("blade_def", 2, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	_add_card_to_hand(state, "zygore", "zygore_def", "p1")
+	var blade := CardInstance.create("blade", "blade_def", "p2", "p2_hero_row")
+	state.cards["blade"] = blade
+	state.zones["p2_hero_row"].card_ids.append("blade")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "zygore"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"zyg-a: enter-play choice pending after Zygore resolves")
+
+	var legal := StackResolver.get_enter_play_equipment_targets(state, db, true)
+	eq(legal.size(), 1, "zyg-b: the weapon is a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "zygore", "target_id": "blade"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("blade").zone_id, "p2_graveyard", "zyg-c: weapon destroyed")
+
+
+func _test_zygore_bladebreaker_destroys_armor() -> void:
+	_buf.append("\n-- Zygore Bladebreaker: may also destroy a target armor on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zygore_def", 4, 3, [], 6, "on_enter:destroy_armor_or_weapon")
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	_add_card_to_hand(state, "zygore", "zygore_def", "p1")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "zygore"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	var legal := StackResolver.get_enter_play_equipment_targets(state, db, true)
+	eq(legal.size(), 1, "zyga-a: the armor is a legal target")
+	ok("robe" in legal, "zyga-b: armor found by the wider armor-or-weapon pool")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "zygore", "target_id": "robe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("robe").zone_id, "p2_graveyard", "zyga-c: armor destroyed")

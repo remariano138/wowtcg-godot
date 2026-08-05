@@ -301,3 +301,31 @@ Related Form behaviors:
 Tests: the Forms block in `game_logic/tests/test_scenarios.gd`
 (`_test_ai_bear_form_flash_in`, `_test_ai_bash_freezes_attacking_hero`,
 `_test_ai_hero_attack_lethal_gate`, `_test_ai_claw_ambush`).
+
+**Ravenous Bite ATK swing** (`azeroth_44`, tagged `"combat_instant_atk_swing"` —
+held, never blind-played; off combat the swing expires the same turn and changes
+nothing). `BaseAI.atk_swing_action`, wired into all three `decide_action`s after
+`evasion_action`. Played on an open attack/defend window from EITHER side of the
+combat (unlike the damage ambush, which is defender-only — a +3 pump is at its
+best on our own attacker).
+
+HARD GATE: the -3 must land on the OPPOSING character in this combat, and that
+character must be an ALLY. Both halves target allies, so with no enemy ally in
+the fight (an enemy HERO attacking our ally, or our ally attacking their hero)
+the shrink would be forced onto our own board — a wasted card at best, and a
+net-zero double-pick on the same ally at worst. There, we never play it.
+
+With the shrink settled, we spend the card only when it FLIPS the fight:
+  - saves our character that would otherwise die  (their ATK - 3 < our HP), or
+  - kills theirs when ours alone wouldn't          (our ATK + 3 >= their HP)
+plus the usual economy gate — the ally saved or killed must cost at least as
+much as the spell.
+
+The +3 goes on our own combatant when that's an ally. When our HERO is the one
+fighting there's no legal pump target on it, so the pump is a dump onto our
+highest-ATK ally (`_best_pump_ally`) and we only buy the card to stop a hit the
+hero can't take (their ATK >= hero HP, and the shrink actually saves it); with
+no ally of our own to receive the pump, we hold.
+
+Not modeled: Long-Range (no retaliation), a protector swapping in later, and the
+pump's value on a future attack.

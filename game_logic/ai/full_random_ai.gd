@@ -59,6 +59,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var dodge := evasion_action(state, db, player_id)
 	if dodge != null:
 		return dodge
+	# Ravenous Bite ATK swing (BaseAI) — only when it flips the open combat.
+	var swing := atk_swing_action(state, db, player_id)
+	if swing != null:
+		return swing
 	# Bear Form flash-in (BaseAI) — deterministic, never left to the dice.
 	var shift := bear_form_action(state, db, player_id)
 	if shift != null:

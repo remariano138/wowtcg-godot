@@ -70,6 +70,14 @@ static func submit_action(state: GameState, action: PendingAction,
 				var ap_cost := int(ap_data.get("resource_cost", 0))
 				if ap_cost > 0:
 					events.append_array(_pay_resources(state, action.source_player, ap_cost))
+				# Rule 412.2: the [Activate] tap symbol, the once-per-turn mark and
+				# the "exhaust your hero" extra cost are paid HERE, on chain entry —
+				# not at resolution. Deferring them left the source and the hero
+				# READY while the power sat on the chain, so a second copy of the
+				# same power (or Rod of the Ogre Magi + The Hammer of Grace off one
+				# hero) validated and both resolved off a single exhaust.
+				events.append_array(_pay_activate_costs(state, ap_card_id,
+					action.source_player, ap_data))
 		"activate_power":
 			# Pay the hero power's resource cost; mark power as used.
 			var hero_id: String = action.params.get("hero_id", "")
@@ -434,6 +442,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 			return false
 		if def and _has_effect_flag_prefix(def, "multi_shot"):
 			if not _can_play_multi_shot(state, action, db): return false
+		elif def and is_atk_swing_def(def):
+			# Ravenous Bite: two mandatory ally targets announced with the play.
+			if not _can_play_atk_swing(state, action, db): return false
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db):
@@ -510,6 +521,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 			return action.params.get("target_id", "") in rz_cands
 		if def and _has_effect_flag_prefix(def, "chain_lightning"):
 			if not _can_play_chain_lightning(state, action, db): return false
+		elif def and is_atk_swing_def(def):
+			# Ravenous Bite: two mandatory ally targets announced with the play.
+			if not _can_play_atk_swing(state, action, db): return false
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db): return false
@@ -678,7 +692,7 @@ static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
-				"return_to_hand", "attach"]:
+				"return_to_hand", "attach", "atk_swing"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -728,7 +742,46 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
 				and parts.size() > 1 and parts[1] in ["ally", "friendly_ally", "exhausted_ally"]:
 			return true
+		# Ravenous Bite: BOTH announced targets are allies (parts[1..] are the
+		# signed amounts, not a target kind).
+		if parts[0] == "atk_swing":
+			return true
 	return false
+
+
+# ── Ravenous Bite (azeroth_44) — `atk_swing:A1:A2` ────────────────────────────
+# "Target ally has +3 ATK this turn. Target ally has -3 ATK this turn." Two
+# INDEPENDENT ally targets announced in order with the play (target_id gets A1,
+# target_id_2 gets A2). Not modal and not Chain Lightning's "up to N" list:
+# both picks are mandatory, both must be legal (706 — Untargetable allies are
+# excluded from BOTH slots, unlike Multi-Shot), and the same ally may be picked
+# twice (the two grants then cancel out on the board, which is legal and
+# occasionally forced when only one ally is in play).
+static func atk_swing_amounts(def: CardDef) -> Array:
+	var amounts: Array = []
+	if not def:
+		return amounts
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "atk_swing":
+			for i in range(1, parts.size()):
+				amounts.append(int(parts[i]))
+			break
+	return amounts
+
+
+static func is_atk_swing_def(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "atk_swing")
+
+
+# Both announced targets must be legal allies (706). Used at submission; each
+# target is re-checked independently at resolution.
+static func _can_play_atk_swing(state: GameState, action: PendingAction, db) -> bool:
+	for key in ["target_id", "target_id_2"]:
+		var tid: String = action.params.get(key, "")
+		if not _is_legal_target(state, tid, db) or not _is_ally(state, tid):
+			return false
+	return true
 
 
 # Coup de Grâce (`destroy_target:exhausted_ally`): "Destroy target exhausted
@@ -1176,6 +1229,32 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							}
 							events.append(GameEvent.enter_play_target_required(
 								card_id, "destroy", 0))
+					"destroy_armor":
+						# Hur Shieldsmasher: "When [this] enters play, you may
+						# destroy target armor." Optional, same pattern as Ghank.
+						if not get_enter_play_equipment_targets(state, db, false).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "destroy_armor",
+								"dmg_type": "destroy",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "destroy", 0))
+					"destroy_armor_or_weapon":
+						# Zygore Bladebreaker: "When [this] enters play, you may
+						# destroy target armor or weapon." Optional; any equipment.
+						if not get_enter_play_equipment_targets(state, db, true).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "destroy_armor_or_weapon",
+								"dmg_type": "destroy",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "destroy", 0))
 
 	# Watcher Mal'wi: "When an opposing ally enters play, [this] deals N ranged
 	# damage to it." Any in-play card an OPPONENT of the entering ally controls
@@ -1529,6 +1608,15 @@ static func _resolve_play_instant(state: GameState,
 						if dt_ok:
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))
+					"atk_swing":
+						# Ravenous Bite: "Target ally has +3 ATK this turn.
+						# Target ally has -3 ATK this turn." The two announced
+						# targets resolve INDEPENDENTLY in printed order — each
+						# is re-checked (706 / glossary 4217, plus still-an-ally)
+						# on its own, so killing or bouncing one target in
+						# response fizzles only that half of the card. Picking
+						# the same ally for both slots nets 0, as printed.
+						events.append_array(_apply_atk_swing(state, action, def, card_id, db))
 					"exhaust_target":
 						# "Exhaust target ally." (Exhaustion) or "Exhaust target hero
 						# or ally." (hero_or_ally variant). Re-check at resolution
@@ -2699,26 +2787,12 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 
 	var events: Array[GameEvent] = []
 	var extra_cost: String = ap.get("extra_cost", "")
-	# Resource cost already paid at submission time (in submit_action).
-	if extra_cost == "once_per_turn":
-		# No [Activate] tap symbol on this power — don't exhaust the source,
-		# just mark it used until the once-per-turn flag resets next turn.
-		card.used_this_turn = true
-	elif extra_cost.begins_with("put_damage_self") or extra_cost == "no_activate" \
-			or extra_cost == "sacrifice_self":
-		# No [Activate] tap symbol on this power either (e.g. Acolyte Demia,
-		# Hierophant Caydiem, Kavai the Wanderer) — the source never exhausts.
-		pass
-	else:
-		# Exhaust the source at resolution (the activate symbol).
-		events.append_array(GameLogic.exhaust_card(state, card_id))
-	# Pay any extra card-specific cost (e.g. Mooncloth Robe also exhausts the hero).
-	if extra_cost == "exhaust_hero":
-		var ps := state.players.get(action.source_player) as PlayerState
-		var hero_id: String = ps.hero_instance_id if ps else ""
-		if hero_id != "":
-			events.append_array(GameLogic.exhaust_card(state, hero_id))
-	elif extra_cost.begins_with("put_damage_self") \
+	# Resource cost, the [Activate] tap symbol, the once-per-turn mark and the
+	# "exhaust your hero" extra cost were ALL paid at submission time, on chain
+	# entry (rule 412.2 — see _pay_activate_costs in submit_action). Only the
+	# costs below are still paid here at resolution, deliberately: a sacrifice
+	# whose card is killed in response no-ops while the effect still resolves.
+	if extra_cost.begins_with("put_damage_self") \
 			or extra_cost.begins_with("activate_put_damage_self"):
 		# Rule 405.3: put (not deal) damage on the source itself (Acolyte Demia;
 		# Kena Shadowbrand). Can be exactly fatal — check destruction after paying.
@@ -3132,6 +3206,31 @@ static func _ready_on_opposing_attack(state: GameState, attacker_id: String,
 # "+"-joined list of restriction names (e.g. "cannot_attack+cannot_protect").
 # Each becomes a restriction Buff lasting until the end of this turn (turns:1),
 # reusing the same machinery as Litori Frostburn's target_cant_attack flip.
+# Ravenous Bite: place each announced target's signed "this turn" ATK buff.
+# Duration "turns":1 rides the existing end-of-turn buff sweep (the same one
+# that clears Litori's cannot_attack), so "this turn" expiry is automatic and
+# times correctly when the card is cast during the opponent's turn.
+static func _apply_atk_swing(state: GameState, action: PendingAction,
+		def: CardDef, source_id: String, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var amounts := atk_swing_amounts(def)
+	var keys := ["target_id", "target_id_2"]
+	for i in amounts.size():
+		if i >= keys.size():
+			break
+		var tid: String = action.params.get(keys[i], "")
+		var amount: int = amounts[i]
+		# Per-target re-check (706): this half fizzles alone if its ally left
+		# play or became Untargetable after the announce.
+		if not _is_legal_target(state, tid, db) or not _is_ally(state, tid):
+			continue
+		var target := state.get_card(tid)
+		target.active_buffs.append(Buff.make(
+			"ravenous_bite_atk_this_turn", source_id, "atk", amount, "turns", 1))
+		events.append(GameEvent.atk_swing_applied(tid, source_id, amount))
+	return events
+
+
 static func _apply_damage_riders(state: GameState, target_id: String,
 		source_id: String, field: String) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
@@ -4308,6 +4407,62 @@ static func _pay_resources(state: GameState, player_id: String,
 	return events
 
 
+# Whether an activated power's extra-cost token means the printed cost carries NO
+# [Activate] tap symbol — the source neither exhausts nor cares about being
+# exhausted (Acolyte Demia's put_damage_self, Hierophant Caydiem's no_activate,
+# Kavai / Mana Agate's sacrifice_self). Note activate_put_damage_self (Kena
+# Shadowbrand) is deliberately NOT in this set: it KEEPS the tap symbol.
+static func _power_has_no_activate_symbol(extra_cost: String) -> bool:
+	return extra_cost.begins_with("put_damage_self") \
+		or extra_cost == "no_activate" or extra_cost == "sacrifice_self"
+
+
+# Pay an activated power's exhaust-style costs (rule 412.2 — paid on chain entry,
+# alongside the resource cost, NOT at resolution): the [Activate] tap symbol on
+# the source, the once-per-turn mark, and the "exhaust your hero" extra cost.
+# `_can_use_ally_power` has already verified all of these are payable.
+# The remaining extra costs (put_damage_self, sacrifice_ally, sacrifice_self,
+# rfg_allies) stay at resolution — see _resolve_use_ally_power, where a source
+# killed in response no-ops the cost but still resolves the effect.
+static func _pay_activate_costs(state: GameState, card_id: String,
+		player_id: String, ap: Dictionary) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var extra_cost: String = ap.get("extra_cost", "")
+	var card := state.get_card(card_id)
+	if extra_cost == "once_per_turn":
+		if card:
+			card.used_this_turn = true
+	elif not _power_has_no_activate_symbol(extra_cost):
+		events.append_array(GameLogic.exhaust_card(state, card_id))
+	if extra_cost == "exhaust_hero":
+		var ps := state.players.get(player_id) as PlayerState
+		var hero_id: String = ps.hero_instance_id if ps else ""
+		if hero_id != "":
+			events.append_array(GameLogic.exhaust_card(state, hero_id))
+	return events
+
+
+# Undo _pay_activate_costs when the power is retracted off the chain. Safe to
+# ready unconditionally: submission validated that the source (and the hero, for
+# exhaust_hero) were READY, so those exhausts were ours to undo.
+static func _refund_activate_costs(state: GameState, card_id: String,
+		player_id: String, ap: Dictionary) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var extra_cost: String = ap.get("extra_cost", "")
+	var card := state.get_card(card_id)
+	if extra_cost == "once_per_turn":
+		if card:
+			card.used_this_turn = false
+	elif not _power_has_no_activate_symbol(extra_cost):
+		events.append_array(GameLogic.ready_card(state, card_id))
+	if extra_cost == "exhaust_hero":
+		var ps := state.players.get(player_id) as PlayerState
+		var hero_id: String = ps.hero_instance_id if ps else ""
+		if hero_id != "":
+			events.append_array(GameLogic.ready_card(state, hero_id))
+	return events
+
+
 # ── Retract ────────────────────────────────────────────────────────────────────
 
 # Cancel the last chain entry — only legal while the proposer still has priority
@@ -4331,8 +4486,13 @@ static func retract_last(state: GameState, player_id: String,
 	var top: PendingAction = state.pending_actions.pop_back()
 	var events: Array[GameEvent] = []
 
-	# Move card back from chain zone to player's hand.
-	var card_id: String = top.params.get("card_id", "")
+	# Move card back from chain zone to player's hand. ONLY for actions that put a
+	# card on the chain from hand — use_ally_power also carries a "card_id" param,
+	# but that's the in-play SOURCE of the power (an ally or equipment), which must
+	# stay on the board.
+	var card_id: String = top.params.get("card_id", "") \
+		if top.action_type in ["play_ally", "play_instant", "play_ability",
+			"play_equipment", "place_resource"] else ""
 	if card_id != "":
 		events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
 
@@ -4351,6 +4511,9 @@ static func retract_last(state: GameState, player_id: String,
 				if res_card.is_exhausted:
 					events.append_array(GameLogic.ready_card(state, res_card.instance_id))
 					ap_cost2 -= 1
+			# Also undo the exhaust-style costs paid on chain entry.
+			events.append_array(_refund_activate_costs(state, ap_card_id2,
+				player_id, ap_data2))
 	if top.action_type in ["play_ally", "play_instant", "play_ability"] and db and card_id != "":
 		var cost: int = state.get_play_cost(card_id, db, int(top.params.get("x_value", 0)))
 		for res_card in state.cards_in_zone(player_id + "_resource_row"):
@@ -4705,6 +4868,12 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_exhausted_damaged_ally" \
 			and target_id not in get_enter_play_destroy_targets(state, db):
 		return false
+	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_armor" \
+			and target_id not in get_enter_play_equipment_targets(state, db, false):
+		return false
+	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_armor_or_weapon" \
+			and target_id not in get_enter_play_equipment_targets(state, db, true):
+		return false
 	return true
 
 
@@ -4718,6 +4887,25 @@ static func get_enter_play_destroy_targets(state: GameState, db) -> Array[String
 			if ally.is_exhausted and ally.damage_taken > 0 \
 					and _is_legal_target(state, ally.instance_id, db):
 				result.append(ally.instance_id)
+	return result
+
+
+# Legal targets for Hur Shieldsmasher / Zygore Bladebreaker's enter-play
+# triggers: in-play equipment (either party), subject to the standard
+# targeting restrictions (untargetable). include_weapons false → armor only
+# (Hur); true → any equipment, armor or weapon (Zygore).
+static func get_enter_play_equipment_targets(state: GameState, db,
+		include_weapons: bool) -> Array[String]:
+	var result: Array[String] = []
+	for eq_id in get_destroy_kind_candidates(state, db, "equipment"):
+		if not _is_legal_target(state, eq_id, db):
+			continue
+		if not include_weapons:
+			var card := state.get_card(eq_id)
+			var def := db.get_def(card.card_def_id) as CardDef if card else null
+			if not _weapon_info(def).is_empty():
+				continue
+		result.append(eq_id)
 	return result
 
 
@@ -4761,6 +4949,14 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			var tgt := state.get_card(target_id)
 			if _is_legal_target(state, target_id, db) and _is_ally(state, target_id) \
 					and tgt and tgt.is_exhausted and tgt.damage_taken > 0:
+				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
+		"destroy_armor":
+			# Hur Shieldsmasher — 706 re-check: fizzle unless still legal armor.
+			if target_id in get_enter_play_equipment_targets(state, db, false):
+				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
+		"destroy_armor_or_weapon":
+			# Zygore Bladebreaker — 706 re-check: fizzle unless still legal equipment.
+			if target_id in get_enter_play_equipment_targets(state, db, true):
 				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
 	return events
 

@@ -30,17 +30,17 @@
     },
     {
       "card_def_id": "azeroth_345",
-      "count": 4,
+      "count": 2,
       "_card_name": "Torek's Assault"
     },
     {
       "card_def_id": "azeroth_351",
-      "count": 2,
+      "count": 3,
       "_card_name": "A Donation of Wool"
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 3,
       "_card_name": "Chasing A-Me 01"
     },    
     {
@@ -79,9 +79,9 @@
       "_card_name": "Ghank"
     },
     {
-      "card_def_id": "azeroth_235",
+      "card_def_id": "azeroth_226",
       "count": 2,
-      "_card_name": "Elder Moorf"
+      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_242",
@@ -104,9 +104,9 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "dark_portal_94",
-      "count": 1,
-      "_card_name": "Flame Shock"
+      "card_def_id": "azeroth_266",
+      "count": 2,
+      "_card_name": "Voss Treebender"
     },
     {
       "card_def_id": "azeroth_109",
@@ -158,11 +158,6 @@
       "count": 1,
       "_card_name": "Healing Stream Totem"
     },
-    {
-      "card_def_id": "dark_portal_235",
-      "count": 1,
-      "_card_name": "Tanwa the Marksman"
-    },    
     {
       "card_def_id": "azeroth_274",
       "count": 1,

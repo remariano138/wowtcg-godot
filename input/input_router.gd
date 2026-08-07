@@ -272,6 +272,9 @@ func handle_card_click(instance_id: String) -> void:
 			_targeting_first_target = ""
 			start_targeting(instance_id, "play_instant", "atk_up", 0)
 			return
+		# Shock and Soothe: sequential picks, the damage target first.
+		if _is_instant_damage_and_heal(instance_id):
+			_targeting_first_target = ""
 		start_targeting(instance_id, "play_instant",
 			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
@@ -980,6 +983,21 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		targeting_started.emit(_targeting_source, "atk_down", 0)
 		refresh_highlights()
 		return
+	# Shock and Soothe: phase 1 picks the damage target, phase 2 the heal target.
+	if _is_instant_damage_and_heal(_targeting_source) and _targeting_first_target == "":
+		if instance_id == _targeting_source:
+			cancel_targeting()
+			return
+		var dh_probe := PendingAction.make("play_instant", local_player,
+			_instant_params(_targeting_source, instance_id))
+		if not StackResolver.can_submit(state, dh_probe, db):
+			return
+		_targeting_first_target = instance_id
+		# Re-emit so the prompt switches to the heal half and the remaining legal
+		# characters re-highlight (the damage target itself drops out — "another").
+		targeting_started.emit(_targeting_source, "heal", 0)
+		refresh_highlights()
+		return
 	var action := PendingAction.make("play_instant", local_player,
 		_instant_params(_targeting_source, instance_id))
 	if StackResolver.can_submit(state, action, db):
@@ -1000,6 +1018,13 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		if _is_atk_swing(_targeting_source) and _targeting_first_target != "":
 			_targeting_first_target = ""
 			targeting_started.emit(_targeting_source, "atk_up", 0)
+			refresh_highlights()
+			return
+		# Shock and Soothe phase 2: same step-back to the damage pick.
+		if _is_instant_damage_and_heal(_targeting_source) and _targeting_first_target != "":
+			_targeting_first_target = ""
+			targeting_started.emit(_targeting_source,
+				_card_dmg_type(_targeting_source), _card_dmg_amount(_targeting_source))
 			refresh_highlights()
 			return
 		cancel_targeting()
@@ -1962,11 +1987,56 @@ func _instant_params(card_id: String, target_id: String) -> Dictionary:
 		else:
 			params["target_id"]   = _targeting_first_target
 			params["target_id_2"] = target_id
+	# Shock and Soothe: two sequential picks ride one submission. During phase 1
+	# (no first pick yet) the probe pairs the clicked character with SOME other
+	# legal character, so can_submit answers "is this a legal damage target?" on
+	# its own — the two slots must be distinct ("another"), so the clicked one
+	# can't stand in for both the way Ravenous Bite's can.
+	if _is_instant_damage_and_heal(card_id):
+		if _targeting_first_target == "":
+			params["heal_target_id"] = _any_valid_instant_heal_target(card_id, target_id)
+		else:
+			params["target_id"]      = _targeting_first_target
+			params["heal_target_id"] = target_id
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
 	if _targeting_x_value > 0:
 		params["x_value"] = _targeting_x_value
 	return params
+
+
+# True for a two-target damage+heal spell played from hand (Shock and Soothe,
+# `deal_damage_and_heal:3:nature:3`): damage target picked first, heal target
+# second, and the two must differ. Same two-phase `_targeting_first_target`
+# flow as the Grennan hero power version.
+func _is_instant_damage_and_heal(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.is_damage_and_heal_def(def)
+
+
+# Some legal heal target to pair with `dmg_target` while probing phase 1 ("" if
+# none — the damage target then isn't offerable). Builds the params by hand to
+# avoid recursing through _instant_params.
+func _any_valid_instant_heal_target(card_id: String, dmg_target: String) -> String:
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		var candidates: Array = []
+		if ps and ps.hero_instance_id != "":
+			candidates.append(ps.hero_instance_id)
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			candidates.append(card.instance_id)
+		for cand in candidates:
+			if cand == dmg_target:
+				continue
+			var probe := PendingAction.make(_action_type_for(card_id), local_player, {
+				"card_id": card_id, "target_id": dmg_target, "heal_target_id": cand,
+			})
+			if StackResolver.can_submit(state, probe, db):
+				return cand
+	return ""
 
 
 # True for a two-target ATK-swing spell (Ravenous Bite, `atk_swing:3:-3`):
@@ -2102,7 +2172,7 @@ func _card_dmg_amount(card_id: String) -> int:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		match parts[0].strip_edges():
-			"deal_damage_to_target", "attach_deal_damage":
+			"deal_damage_to_target", "attach_deal_damage", "deal_damage_and_heal":
 				if parts.size() > 1: return int(parts[1])
 			"chain_lightning":
 				if parts.size() > 1: return int(parts[1])

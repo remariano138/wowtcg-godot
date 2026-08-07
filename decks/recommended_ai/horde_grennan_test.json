@@ -64,9 +64,9 @@
       "_card_name": "Kagra of the Crossroads"
     },
     {
-      "card_def_id": "dark_portal_223",
+      "card_def_id": "dark_portal_239",
       "count": 2,
-      "_card_name": "Magran Proudstep"
+      "_card_name": "Vanda Skydaughter"
     },
     {
       "card_def_id": "azeroth_260",
@@ -130,8 +130,13 @@
     },
     {
       "card_def_id": "azeroth_262",
-      "count": 3,
+      "count": 1,
       "_card_name": "Vaerik Proudhoof"
+    },
+    {
+      "card_def_id": "dark_portal_100",
+      "count": 2,
+      "_card_name": "Shock and Soothe"
     },
     {
       "card_def_id": "dark_portal_91",

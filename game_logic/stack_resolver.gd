@@ -445,6 +445,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		elif def and is_atk_swing_def(def):
 			# Ravenous Bite: two mandatory ally targets announced with the play.
 			if not _can_play_atk_swing(state, action, db): return false
+		elif def and is_damage_and_heal_def(def):
+			# Shock and Soothe: two mandatory, DISTINCT hero-or-ally targets.
+			if not _can_play_damage_and_heal(state, action, db): return false
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db):
@@ -527,6 +530,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		elif def and is_atk_swing_def(def):
 			# Ravenous Bite: two mandatory ally targets announced with the play.
 			if not _can_play_atk_swing(state, action, db): return false
+		elif def and is_damage_and_heal_def(def):
+			# Shock and Soothe: two mandatory, DISTINCT hero-or-ally targets.
+			if not _can_play_damage_and_heal(state, action, db): return false
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db): return false
@@ -643,6 +649,9 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		return not get_graveyard_search_candidates(state, scan_pid, req, db).is_empty()
 	if not _instant_needs_target(def):
 		return true
+	# Shock and Soothe: needs TWO distinct legal hero-or-ally targets.
+	if is_damage_and_heal_def(def):
+		return _has_two_legal_hero_or_ally_targets(state, db)
 	if _instant_targets_protecting_ally_only(def):
 		return _is_protecting_ally(state, state.combat_protector, db) \
 				and _is_legal_target(state, state.combat_protector, db)
@@ -703,7 +712,7 @@ static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
-				"return_to_hand", "attach", "atk_swing"]:
+				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -793,6 +802,44 @@ static func _can_play_atk_swing(state: GameState, action: PendingAction, db) -> 
 		if not _is_legal_target(state, tid, db) or not _is_ally(state, tid):
 			return false
 	return true
+
+
+# ── Shock and Soothe (dark_portal_100) — `deal_damage_and_heal` as a hand card ─
+# "Your hero deals 3 nature damage to target hero or ally and heals 3 damage
+# from ANOTHER target hero or ally." Same effect key as the Grennan hero power /
+# Hierophant Caydiem ally power (params: target_id = damage, heal_target_id =
+# heal), now reachable from the play_instant / play_ability paths. Both slots are
+# real targets (706 — Untargetable blocks either), they must be DISTINCT
+# ("another"), and each is re-checked independently at resolution, so killing or
+# bouncing one in response fizzles only that half.
+static func is_damage_and_heal_def(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "deal_damage_and_heal")
+
+
+static func _can_play_damage_and_heal(state: GameState, action: PendingAction, db) -> bool:
+	var dmg_id:  String = action.params.get("target_id", "")
+	var heal_id: String = action.params.get("heal_target_id", "")
+	if dmg_id == heal_id:
+		return false
+	for tid in [dmg_id, heal_id]:
+		if not _is_legal_target(state, tid, db) or not _is_hero_or_ally(state, tid, db):
+			return false
+	return true
+
+
+# Two distinct legal hero-or-ally targets must exist for the card to be
+# announceable (706.2) — drives the hand highlight probe. Two heroes are always
+# in play, so this only goes dark in exotic Untargetable states.
+static func _has_two_legal_hero_or_ally_targets(state: GameState, db) -> bool:
+	var seen := 0
+	for pid in ["p1", "p2"]:
+		for card: CardInstance in state.cards_in_play(pid):
+			if _is_hero_or_ally(state, card.instance_id, db) \
+					and _is_legal_target(state, card.instance_id, db):
+				seen += 1
+				if seen >= 2:
+					return true
+	return false
 
 
 # Coup de Grâce (`destroy_target:exhausted_ally`): "Destroy target exhausted
@@ -1749,6 +1796,34 @@ static func _resolve_play_instant(state: GameState,
 								"riders": parts[3] if parts.size() > 3 else "",
 								"from_ability": true,
 							}]))
+					"deal_damage_and_heal":
+						# Shock and Soothe: "Your hero deals N <type> damage to
+						# target hero or ally and heals M damage from another
+						# target hero or ally." Recipe
+						# deal_damage_and_heal:DMG:TYPE:HEAL — same key as the
+						# Grennan hero power. The two announced targets resolve
+						# INDEPENDENTLY, each re-checked (706 / glossary 4217),
+						# so answering one of them in response fizzles only that
+						# half. The heal is unconditional (not per-damage) and
+						# lands inline; the damage packet goes through the
+						# prevention pipeline (`from_ability` — Chromatic Cloak's
+						# +1 applies, World in Flames doubles a fire version).
+						var dh_dmg  := int(parts[1]) if parts.size() > 1 else 0
+						var dh_heal := int(parts[3]) if parts.size() > 3 else 0
+						var dh_ps := state.players.get(action.source_player) as PlayerState
+						var dh_hero: String = dh_ps.hero_instance_id if dh_ps else ""
+						var dh_heal_id: String = action.params.get("heal_target_id", "")
+						if dh_hero != "":
+							if dh_heal > 0 and _is_legal_target(state, dh_heal_id, db):
+								events.append_array(GameLogic.heal(
+									state, dh_heal_id, dh_heal, db, dh_hero))
+							if dh_dmg > 0 and _is_legal_target(state, target_id, db):
+								events.append_array(defer_packets(state, db, [{
+									"source": dh_hero, "target": target_id,
+									"amount": dh_dmg,
+									"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+									"from_ability": true,
+								}]))
 					"chain_lightning":
 						# "Your hero deals A1 <type> damage to target hero or ally. Your
 						# hero may deal A2 <type> damage to another hero or ally. Your

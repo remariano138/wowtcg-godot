@@ -161,6 +161,8 @@ func _ready() -> void:
 		_test_ravenous_bite_atk_swing,
 		_test_ravenous_bite_same_target_and_fizzle,
 		_test_ai_ravenous_bite_swing,
+		_test_shock_and_soothe,
+		_test_ai_shock_and_soothe,
 		_test_withdraw_bounce_and_spell_fizzle,
 		_test_ai_withdraw_save,
 		_test_fall_back_friendly_only,
@@ -8569,6 +8571,143 @@ func _test_gouge_exhaust_and_ready_lock() -> void:
 		"gg-d: target NOT readied during its controller's ready step")
 	ok(not TurnManager.is_ready_blocked(state, state.get_card("tgt"), db),
 		"gg-e: lock consumed — no longer blocked after that ready step")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shock and Soothe (dark_portal_100, 4, Instant Ability — Elemental): "Your hero
+# deals 3 nature damage to target hero or ally and heals 3 damage from ANOTHER
+# target hero or ally." Two mandatory, DISTINCT hero-or-ally targets, both
+# respecting Untargetable (706); each half re-checked independently at
+# resolution.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_shock_and_soothe() -> void:
+	_buf.append("\n-- Shock and Soothe: 3 damage + 3 heal on two distinct targets --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def",   2, 6, [], 3)
+	db.ally("theirs_def", 4, 6, [], 3)
+	var ghost_kw: Array[String] = ["untargetable"]
+	db.ally("ghost_def",  3, 3, ghost_kw, 3)
+	db.instant("dark_portal_100", 4, "deal_damage_and_heal:3:nature:3")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine   := _add_ally(state, "mine",   "mine_def",   "p1")
+	var theirs := _add_ally(state, "theirs", "theirs_def", "p2")
+	_add_ally(state, "ghost", "ghost_def", "p2")
+	mine.just_summoned   = false
+	theirs.just_summoned = false
+	mine.damage_taken    = 4          # 2 HP left — the heal target
+	_add_card_to_hand(state, "ss",  "dark_portal_100", "p1")
+	_add_card_to_hand(state, "ss2", "dark_portal_100", "p1")
+	_add_resources(state, "p1", 8)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# The two targets must differ ("another target hero or ally").
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ss", "target_id": "theirs", "heal_target_id": "theirs"}), db),
+		"ss-a: the same character can't fill both slots")
+	# The heal target is mandatory — one target alone is not a legal play.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ss", "target_id": "theirs"}), db),
+		"ss-b: both targets must be announced")
+	# Both slots are real targets (706) — Untargetable is illegal in either.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ss", "target_id": "ghost", "heal_target_id": "mine"}), db),
+		"ss-c: damage half can't target an Untargetable ally")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ss", "target_id": "theirs", "heal_target_id": "ghost"}), db),
+		"ss-d: heal half can't target an Untargetable ally")
+	# Heroes are legal in both slots ("target hero or ally").
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "ss", "target_id": "p2_hero", "heal_target_id": "p1_hero"}), db),
+		"ss-e: heroes are legal in both slots")
+
+	var cast := PendingAction.make("play_instant", "p1",
+		{"card_id": "ss", "target_id": "theirs", "heal_target_id": "mine"})
+	ok(StackResolver.can_submit(state, cast, db), "ss-f: legal with two distinct targets")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_current_hp("theirs", db), 3, "ss-g: damage target took 3 (6 → 3)")
+	eq(state.get_current_hp("mine", db),   5, "ss-h: heal target healed 3 (2 → 5)")
+
+	# Each half re-checks its own target (706 / glossary 4217): bouncing the
+	# damage target in response fizzles ONLY the damage, the heal still lands.
+	db.instant("azeroth_172", 3, "return_to_hand:ally")
+	_add_card_to_hand(state, "wd", "azeroth_172", "p2")
+	_add_resources(state, "p2", 3)
+	state.players["p2"].resource_placed_this_turn = true
+	mine.damage_taken = 4                     # damaged again, 2 HP
+
+	var cast2 := PendingAction.make("play_instant", "p1",
+		{"card_id": "ss2", "target_id": "theirs", "heal_target_id": "mine"})
+	StackResolver.submit_action(state, cast2, db)
+	StackResolver.pass_priority(state, db)    # p1 → p2
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "wd", "target_id": "theirs"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)    # Withdraw resolves — theirs bounces
+	ok(not state.is_in_play("theirs"), "ss-i: damage target left play in response")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)    # Shock and Soothe resolves
+
+	eq(state.get_current_hp("mine", db), 5,
+		"ss-j: heal half still resolved after the damage half fizzled")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI (Shock and Soothe): damages an enemy and heals one of OUR damaged
+# characters — never the reverse. With nothing of ours damaged and no kill
+# available it holds the card rather than wasting the heal half.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_shock_and_soothe() -> void:
+	_buf.append("\n-- AI Shock and Soothe: damage enemy, heal own damaged ally --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def",   2, 6, [], 3)
+	db.ally("theirs_def", 4, 6, [], 3)
+	db.instant("dark_portal_100", 4, "deal_damage_and_heal:3:nature:3")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine   := _add_ally(state, "mine",   "mine_def",   "p1")
+	var theirs := _add_ally(state, "theirs", "theirs_def", "p2")
+	mine.just_summoned   = false
+	theirs.just_summoned = false
+	_add_card_to_hand(state, "ss", "dark_portal_100", "p1")
+	_add_resources(state, "p1", 8)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Nothing of ours is damaged and 3 doesn't kill the 6 HP ally: hold.
+	var held: Array = ai.get_legal_actions(state, db, "p1")
+	var found_hold := false
+	for a in held:
+		if (a as PendingAction).params.get("card_id", "") == "ss":
+			found_hold = true
+	ok(not found_hold, "ai-ss-a: no damaged friendly and no kill — card is held")
+
+	# Damage our ally: now the heal half has a home and the AI casts.
+	mine.damage_taken = 4
+	var acts: Array = ai.get_legal_actions(state, db, "p1")
+	var cast: PendingAction = null
+	for a in acts:
+		if (a as PendingAction).params.get("card_id", "") == "ss":
+			cast = a
+	ok(cast != null, "ai-ss-b: AI generates the cast once a friendly is damaged")
+	if cast:
+		var dmg_card := state.get_card(cast.params.get("target_id", ""))
+		var heal_card := state.get_card(cast.params.get("heal_target_id", ""))
+		ok(dmg_card != null and dmg_card.controller == "p2",
+			"ai-ss-c: damage half aimed at an opposing character")
+		eq(cast.params.get("heal_target_id", ""), "mine",
+			"ai-ss-d: heal half aimed at our damaged ally")
+		ok(heal_card != null and heal_card.controller == "p1",
+			"ai-ss-e: heal half never aimed at the opponent")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

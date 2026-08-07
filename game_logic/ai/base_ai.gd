@@ -2024,6 +2024,87 @@ func _damage_and_heal_actions(state: GameState, db, player_id: String,
 	return []
 
 
+# Hand-card version of _damage_and_heal_actions (Shock and Soothe): pick the
+# single best (dmg_target, heal_target) pair for a play_instant/play_ability.
+# Enemy-only damage, friendly-only heal (AI targeting convention), and the two
+# must differ ("another target"). Unlike the free, repeatable hero power this is
+# a one-shot 4-drop, so it also fires with no damaged friendly to heal when the
+# damage KILLS something — the heal half is then simply wasted.
+func _instant_damage_and_heal_actions(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> Array[PendingAction]:
+	var def := _card_def(state, db, card_id)
+	var damage := 0
+	if def:
+		for seg in def.effects.split("|"):
+			var parts := seg.strip_edges().split(":")
+			if parts[0] == "deal_damage_and_heal" and parts.size() > 1:
+				damage = int(parts[1])
+				break
+	if damage <= 0:
+		return []
+
+	var all_ids: Array[String] = []
+	for pid in state.players:
+		var ps := state.players.get(pid) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			all_ids.append(ps.hero_instance_id)
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			all_ids.append(card.instance_id)
+
+	var _mk := func(dmg_id: String, heal_id: String) -> PendingAction:
+		return PendingAction.make(action_type, player_id,
+			{"card_id": card_id, "target_id": dmg_id, "heal_target_id": heal_id})
+
+	# Damage candidates: opposing characters that can legally be paired with SOME
+	# heal target (the pairing is what can_submit validates).
+	var valid_dmg: Array[String] = []
+	for dmg_id in all_ids:
+		var dmg_card := state.get_card(dmg_id)
+		if not dmg_card or dmg_card.controller == player_id:
+			continue
+		for heal_id in all_ids:
+			if heal_id == dmg_id:
+				continue
+			if StackResolver.can_submit(state, _mk.call(dmg_id, heal_id), db):
+				valid_dmg.append(dmg_id)
+				break
+	if valid_dmg.is_empty():
+		return []
+	var best_dmg := _best_damage_target(state, db, player_id, valid_dmg, damage)
+	if best_dmg == "":
+		return []
+
+	# Heal candidates: our own DAMAGED characters (healing a full-HP character is
+	# legal but wastes the heal half).
+	var valid_heal: Array[String] = []
+	var any_heal := ""
+	for heal_id in all_ids:
+		if heal_id == best_dmg:
+			continue
+		var heal_card := state.get_card(heal_id)
+		if not heal_card or heal_card.controller != player_id:
+			continue
+		if not StackResolver.can_submit(state, _mk.call(best_dmg, heal_id), db):
+			continue
+		if any_heal == "":
+			any_heal = heal_id
+		if state.get_current_hp(heal_id, db) < state.get_max_hp(heal_id, db):
+			valid_heal.append(heal_id)
+
+	var best_heal := _best_heal_target(state, db, player_id, valid_heal) \
+		if not valid_heal.is_empty() else ""
+	if best_heal == "":
+		# No damaged friendly: cast anyway only if the damage kills the target.
+		if any_heal == "" or state.get_current_hp(best_dmg, db) > damage:
+			return []
+		best_heal = any_heal
+
+	var final_act := _mk.call(best_dmg, best_heal) as PendingAction
+	if StackResolver.can_submit(state, final_act, db):
+		return [final_act]
+	return []
+
+
 # Ally-power version of _damage_and_heal_actions (e.g. Hierophant Caydiem):
 # pick the single best (dmg_target, heal_target) pair via use_ally_power.
 func _ally_damage_and_heal_actions(state: GameState, db, player_id: String,
@@ -2696,6 +2777,11 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 	var spell_def  := db.get_def(spell_card.card_def_id) as CardDef if spell_card else null
 
 	var opp := "p2" if player_id == "p1" else "p1"
+
+	# Shock and Soothe (deal_damage_and_heal from hand): two distinct targets —
+	# damage an enemy, heal a friendly. Same shape as the hero-power version.
+	if spell_def and StackResolver.is_damage_and_heal_def(spell_def):
+		return _instant_damage_and_heal_actions(state, db, player_id, card_id, action_type)
 
 	# Burn Away / Shattering Blow (destroy_target:ability / :equipment): targets
 	# are opposing in-play ability / equipment cards, not heroes and allies.

@@ -193,6 +193,7 @@ func _ready() -> void:
 		_test_searing_totem_enters_ally_row_cant_attack,
 		_test_searing_totem_fires_each_turn,
 		_test_searing_totem_priority_window,
+		_test_searing_totem_source_killed_in_window,
 		_test_searing_totem_can_be_attacked,
 		_test_searing_totem_instant_timing,
 		_test_earthbind_totem_ready_lock,
@@ -10848,6 +10849,62 @@ func _test_searing_totem_priority_window() -> void:
 	eq(state.pending_actions.size(), 0, "stw-i: chain link resolved")
 	eq(state.get_card("victim").zone_id, "p2_graveyard",
 		"stw-j: totem damage landed after the window and killed the 0/1")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Searing Totem: killing the TOTEM during the trigger's priority window
+# does NOT stop the damage. Once announced, a triggered ability is independent of
+# its source (711.1 gates announcement only) — only the TARGET leaving play or
+# becoming Untargetable fizzles it (709.2a).
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_searing_totem_source_killed_in_window() -> void:
+	_buf.append("\n-- Searing Totem: source killed in the window still deals damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	db.ally("victim_def", 0, 2)   # 0/2 — survives the ping so the damage is visible
+	                              # (a dead card's damage_taken resets on leaving play)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.phase = "ready"
+	_add_ally(state, "searing", "searing_def", "p1")
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+
+	state.pending_ongoing_triggers = [
+		{"card_id": "searing", "amount": 1, "dmg_type": "fire"}]
+	StackResolver._open_next_totem_trigger(state, db)
+	StackResolver.choose_totem_target(state, "victim", db)
+	eq(state.pending_actions.size(), 1, "stk-a: trigger is on the chain")
+
+	# p2 answers by destroying the totem while the trigger sits on the chain.
+	GameLogic.move_card(state, "searing", "p1_graveyard")
+	ok(not state.is_in_play("searing"), "stk-b: totem left play during the window")
+
+	StackResolver.pass_priority(state, db)     # p1 passes
+	StackResolver.pass_priority(state, db)     # p2 passes → link resolves
+	eq(state.pending_actions.size(), 0, "stk-c: chain link resolved")
+	eq(victim.damage_taken, 1, "stk-d: damage still landed — source is irrelevant")
+	ok(state.is_in_play("victim"), "stk-e: 0/2 survived with 1 damage on it")
+
+	# Control: the TARGET leaving play in the window DOES fizzle the trigger.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.phase = "ready"
+	_add_ally(state2, "searing", "searing_def", "p1")
+	_add_ally(state2, "victim", "victim_def", "p2")
+	state2.pending_ongoing_triggers = [
+		{"card_id": "searing", "amount": 1, "dmg_type": "fire"}]
+	StackResolver._open_next_totem_trigger(state2, db)
+	StackResolver.choose_totem_target(state2, "victim", db)
+	GameLogic.move_card(state2, "victim", "p2_hand")
+	StackResolver.pass_priority(state2, db)
+	var fizz_events := StackResolver.pass_priority(state2, db)
+	var fizzled := false
+	for e in fizz_events:
+		if e.event_type == "action_fizzled":
+			fizzled = true
+	ok(fizzled, "stk-f: target gone in the window still fizzles the trigger")
+	eq(state2.get_card("victim").damage_taken, 0, "stk-g: bounced target took no damage")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

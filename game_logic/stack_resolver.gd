@@ -5157,17 +5157,23 @@ static func choose_totem_target(state: GameState, target_id: String, db) -> Arra
 
 
 # Resolve a totem trigger's damage after its priority window closed. Re-checks the
-# target at resolution (709.2a — it may have left play or become Untargetable in
+# TARGET at resolution (709.2a — it may have left play or become Untargetable in
 # the window), then hands the packet to the prevention machinery (717.2c — an
 # armored hero target gets the point first). The "totem_next" after-hook opens the
 # next queued trigger once the packet lands.
+#
+# The SOURCE is deliberately NOT re-checked: once the trigger is announced onto
+# the chain it is independent of the totem that produced it (711.1 only gates
+# announcement, in _open_next_totem_trigger), so destroying Searing Totem in the
+# response window is too late — the ping still resolves. deal_damage and the
+# prevention offer only use source_id for reporting, so a graveyard source is safe.
 static func _resolve_totem_trigger(state: GameState, action: PendingAction,
 		db = null) -> Array[GameEvent]:
 	var source_id: String = action.params.get("card_id", "")
 	var target_id: String = action.params.get("target_id", "")
 	var amount := int(action.params.get("amount", 0))
 	var events: Array[GameEvent] = []
-	if state.is_in_play(source_id) and state.is_in_play(target_id) and amount > 0 \
+	if state.is_in_play(target_id) and amount > 0 \
 			and _is_legal_target(state, target_id, db):
 		events.append_array(defer_packets(state, db,
 			[{"source": source_id, "target": target_id, "amount": amount}],

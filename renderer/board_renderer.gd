@@ -773,17 +773,33 @@ func _hero_card_id_for_zone(zone_id: String) -> String:
 	return _hero_card_ids.get(pid, "")
 
 
+# Left-to-right screen order for a zone's cards.
+#
+# Zone lists are in engine order (index 0 = oldest / first paid), and every
+# player must see that order identically FROM THEIR OWN SEAT: first card on
+# their left, newly drawn cards on their right, resources exhausting left to
+# right. P2's row is viewed from the opposite side (cards face 180°), so its
+# world order is the mirror of the list order. True in every mode — the p2
+# seat's rotated camera flips it back again.
+static func _spread_order(zone_id: String, ids: Array) -> Array:
+	if not zone_id.begins_with("p2_"):
+		return ids
+	var out: Array = ids.duplicate()
+	out.reverse()
+	return out
+
+
 # Cards in a hero_row zone, excluding the pinned hero card — used for the spread.
 func _spread_cards(zone_id: String) -> Array:
 	var zc: Array = _zone_cards.get(zone_id, [])
 	var hero_id := _hero_card_id_for_zone(zone_id)
-	if hero_id == "":
-		return zc
-	var out: Array = []
-	for cid in zc:
-		if cid != hero_id:
-			out.append(cid)
-	return out
+	if hero_id != "":
+		var out: Array = []
+		for cid in zc:
+			if cid != hero_id:
+				out.append(cid)
+		zc = out
+	return _spread_order(zone_id, zc)
 
 
 func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
@@ -849,6 +865,7 @@ func _zone_settled(zone_id: String, ids: Array) -> bool:
 		for cid in ids:
 			if cid != hero_id:
 				spread_ids.append(cid)
+	spread_ids = _spread_order(zone_id, spread_ids)
 	var gap: float = _spread_gap(zone_id)
 	var count := spread_ids.size()
 	var total := gap * (count - 1)

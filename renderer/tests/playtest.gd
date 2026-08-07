@@ -2013,6 +2013,11 @@ func _log_event(event: GameEvent) -> void:
 			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			_drain_passes()  # human chose protector; drain the defend window
+		"combat_cancelled":
+			var can_att: String = _log_card(event.payload.get("attacker_id", ""))
+			var can_def: String = _log_card(event.payload.get("defender_id", ""))
+			_log_entry("[color=#a66][b]-- combat cancelled --[/b] (%s ⚔ %s, no damage)[/color]"
+				% [can_att, can_def])
 		"attacker_removed_from_combat":
 			var rem_att: String = _log_card(event.payload.get("attacker_id", ""))
 			var rem_src: String = _log_card(event.payload.get("source_id", ""))
@@ -2229,6 +2234,8 @@ func _on_game_event(event: GameEvent) -> void:
 			call_deferred("_on_window_closed")
 		"deck_empty":
 			_set_status("Deck empty for %s" % event.payload.get("player", "?"))
+		"combat_cancelled":
+			_show_combat_cancelled_notice(event.payload)
 		"combat_concluded":
 			if _in_protect_mode:
 				_resolve_protection("")   # safety: clean up any orphaned protect UI
@@ -2358,6 +2365,10 @@ func _refresh_atk_badges() -> void:
 				cn.update_atk(_state.get_atk(card.instance_id, _db), def.printed_atk,
 						_state.get_atk_if_attacking(card.instance_id, _db))
 				cn.update_hp(_state.get_max_hp(card.instance_id, _db), def.printed_health)
+				# Berserk counters (Berserking) — same badge treatment as a
+				# buffed ATK value, in the ATK badge's corner (the card has
+				# no printed ATK of its own).
+				cn.update_counter(int(card.counters.get("berserk", 0)))
 
 
 func _on_window_closed() -> void:
@@ -3701,6 +3712,56 @@ func _build_choice_popup(header_text: String, header_color: Color, buttons: Arra
 		btn_x += btn_widths[i] + BTN_GAP
 
 	return panel
+
+
+# ── Transient notice (no choice — just tells the player what happened) ────────
+# Non-blocking: shows a centered banner in the HUD that fades itself out, so it
+# never stalls the AI or an auto-passing hotseat seat.
+func _show_transient_notice(text: String, color: Color, hold: float = 1.6) -> void:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", 20)
+	label.add_theme_color_override("font_color", color)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+
+	var panel_w: int = clampi(text.length() * 12 + 60, 260, 900)
+	var panel_h := 68
+	var panel := Panel.new()
+	panel.size     = Vector2(panel_w, panel_h)
+	panel.position = CHOICE_POPUP_CENTER - Vector2(panel_w, panel_h) * 0.5
+	panel.add_theme_stylebox_override("panel", _make_stylebox(Color(0.10, 0.11, 0.16, 0.97)))
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud.add_child(panel)
+
+	label.size     = Vector2(panel_w, panel_h)
+	label.position = Vector2.ZERO
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(label)
+
+	var tw := create_tween()
+	tw.tween_interval(hold)
+	tw.tween_property(panel, "modulate:a", 0.0, 0.35)
+	tw.tween_callback(panel.queue_free)
+
+
+# Rule 603.1b — a combatant was bounced / destroyed / removed from combat before
+# the conclusion. The engine emits combat_cancelled; the renderer skips the
+# attack animation (cancelled flag on combat_concluded) and we say so here.
+func _show_combat_cancelled_notice(payload: Dictionary) -> void:
+	var reason: String = payload.get("reason", "")
+	var att: String = _log_card(payload.get("attacker_id", ""))
+	var def: String = _log_card(payload.get("defender_id", ""))
+	var detail := ""
+	match reason:
+		"attacker_removed":
+			detail = "the attacker was removed from combat"
+		"attacker_gone":
+			detail = "%s left play" % (att if att != "" else "the attacker")
+		_:
+			detail = "%s left play" % (def if def != "" else "the defender")
+	_show_transient_notice("⚔ Combat cancelled — %s. No damage dealt." % detail,
+		Color(0.95, 0.55, 0.45))
 
 
 # ── Modal spell mode choice (rule 707.1c — "Choose one:", Natural Selection) ───

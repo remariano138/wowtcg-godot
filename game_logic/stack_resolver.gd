@@ -3495,6 +3495,11 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	# starts (before the strike point / attack window) so she's ready to
 	# protect this same combat. See data/rules_deviations.md "Donna Calister".
 	events.append_array(_ready_on_opposing_attack(state, attacker_id, db))
+	# Berserking: "When your hero attacks, remove all berserk counters from
+	# Berserking. Your hero has +1 ATK this combat for each counter you removed."
+	# Fires as the combat step starts, before the strike point / attack window —
+	# no cost, no choice, so it resolves inline rather than on the chain.
+	events.append_array(_fire_berserking_on_attack(state, attacker_id, db))
 	# Rule 602.1: the attacking player can strike with weapons now (and only
 	# now), before the attack window opens. Doesn't use the chain.
 	var strike := _open_strike_point(state, attacker_id, "attack", db)
@@ -3522,6 +3527,43 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 		return events
 	state.combat_attack_window = true
 	events.append(GameEvent.attack_window_opened(attacker_id, defender_id))
+	return events
+
+
+# Berserking (`berserk_counter_on_hero_damage` + `berserk_atk_on_hero_attack:N`):
+# when the controller's HERO attacks, every Berserking they control dumps its
+# berserk counters into a "+N ATK this combat" grant on that hero. Only the hero
+# attacking triggers it — an attacking ally leaves the counters alone.
+static func _fire_berserking_on_attack(state: GameState, attacker_id: String,
+		db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	var atk := state.get_card(attacker_id)
+	if not atk:
+		return events
+	var ps := state.players.get(atk.controller) as PlayerState
+	if not ps or ps.hero_instance_id != attacker_id:
+		return events
+	for card in state.cards_in_zone(atk.controller + "_hero_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.effects == "":
+			continue
+		var per := 0
+		for seg in def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0].strip_edges() == "berserk_atk_on_hero_attack":
+				per = int(p[1]) if p.size() > 1 else 1
+				break
+		if per <= 0:
+			continue
+		var removed := int(card.counters.get("berserk", 0))
+		if removed <= 0:
+			continue
+		card.counters.erase("berserk")
+		events.append(GameEvent.counter_changed(card.instance_id, "berserk", removed, 0))
+		state.combat_atk_bonus[attacker_id] = \
+			int(state.combat_atk_bonus.get(attacker_id, 0)) + per * removed
 	return events
 
 
@@ -3726,11 +3768,21 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	if not attacker or not defender \
 			or not state.is_in_play(attacker_id) \
 			or not state.is_in_play(defender_id):
+		# Announce WHY nothing happened: the combat is cancelled, not resolved.
+		# The renderer uses this (and the cancelled flag below) to show a notice
+		# and skip the attack animation.
+		var reason := "defender_gone"
+		if attacker_id == "":
+			reason = "attacker_removed"   # Blink & co. cleared combat_attacker
+		elif not attacker or not state.is_in_play(attacker_id):
+			reason = "attacker_gone"
 		state.combat_attacker = ""
 		state.combat_defender = ""
 		state.combat_protector = ""
 		state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
-		events.append(GameEvent.combat_concluded(attacker_id, defender_id, 0, 0))
+		state.combat_atk_bonus.clear()        # "this combat" grants end too (Berserking)
+		events.append(GameEvent.combat_cancelled(attacker_id, defender_id, reason))
+		events.append(GameEvent.combat_concluded(attacker_id, defender_id, 0, 0, true))
 		_clear_damage_prevention(state)   # threat gone — unspent block expires
 		return events
 
@@ -3750,6 +3802,7 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	state.combat_defender = ""
 	state.combat_protector = ""
 	state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
+	state.combat_atk_bonus.clear()        # "this combat" grants end too (Berserking)
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
 	# Trigger key facts, captured BEFORE damage lands (a combatant's zone / role

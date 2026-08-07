@@ -524,8 +524,14 @@ func _on_game_event(event: GameEvent) -> void:
 				_set_status("⚔ No protection — combat proceeds")
 			else:
 				_set_status("⚔ Protector intercepts!")
+		"combat_cancelled":
+			_set_status("⚔ Combat cancelled — a combatant left combat")
 		"combat_concluded":
 			var attacker_id: String = event.payload.get("attacker_id", "")
+			if event.payload.get("cancelled", false):
+				# 603.1b: no damage was dealt and a combatant is gone — no lunge.
+				_set_status("⚔ Combat cancelled — no damage dealt")
+				return
 			await _animate_attack(attacker_id, event.payload.get("defender_id", ""))
 			# Re-spread the attacker's zone: layout tweens can conflict with the
 			# attack tween (they're not tracked in _pos_tweens), leaving cards misaligned.

@@ -47,6 +47,10 @@ var combat_defend_window: bool  = false  # true during the Defend Window
 # instance_ids associated with it for the current combat step. Cleared at
 # combat conclusion. Feeds the strike modifier (+weapon ATK) in get_atk.
 var combat_struck_weapons: Dictionary = {}
+# "+N ATK this combat" grants (Berserking: "Your hero has +1 ATK this combat for
+# each counter you removed."): wielder instance_id -> int. Applied live in
+# get_atk, cleared alongside combat_struck_weapons at combat conclusion.
+var combat_atk_bonus: Dictionary = {}
 # Strike point (rules 602.1 / 602.3): non-empty while a hero's controller must
 # decide whether to strike with a weapon. Doesn't use the chain — resolved via
 # StackResolver.choose_strike() (direct call, like the protect point).
@@ -308,6 +312,17 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 	# wielder for the current combat step. Live lookup — never cached.
 	for weapon_id in combat_struck_weapons.get(instance_id, []):
 		atk += get_atk(weapon_id, db)
+	# (3c) "+N ATK this combat" grants (Berserking). Live lookup — never cached;
+	# cleared with the combat step.
+	atk += int(combat_atk_bonus.get(instance_id, 0))
+	# (3d) Berserking, forecast half: an attacking hero WILL cash its berserk
+	# counters in as +N ATK the moment the combat step starts, so show them here
+	# too (attacker gate + attack cursor). No double-count once combat is real —
+	# the trigger erases the counters as it fills combat_atk_bonus above.
+	if is_attacking:
+		var b_ps := players.get(inst.controller) as PlayerState
+		if b_ps and b_ps.hero_instance_id == instance_id:
+			atk += _pending_berserk_atk(inst.controller, db)
 	# (4) Party-wide "while attacking this turn" grants (Rayder, For the
 	# Horde!) — tracked per-player, not per-card, so they also cover allies
 	# that entered play after the effect resolved. Card text is "allies", so
@@ -338,6 +353,27 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 # real game state and must not influence rules decisions.
 func get_atk_if_attacking(instance_id: String, db) -> int:
 	return get_atk(instance_id, db, true)
+
+
+# ATK this player's hero would gain from berserk counters sitting on their
+# in-play Berserkings (`berserk_atk_on_hero_attack:N`) if it attacked right now.
+func _pending_berserk_atk(player_id: String, db) -> int:
+	if not db:
+		return 0
+	var bonus := 0
+	for card in cards_in_zone(player_id + "_hero_row"):
+		var count := int(card.counters.get("berserk", 0))
+		if count <= 0:
+			continue
+		var def: CardDef = db.get_def(card.card_def_id)
+		if not def or def.effects == "":
+			continue
+		for seg in def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0].strip_edges() == "berserk_atk_on_hero_attack":
+				bonus += (int(p[1]) if p.size() > 1 else 1) * count
+				break
+	return bonus
 
 
 # Sum of ATK bonuses this card receives from static "aura" sources in its

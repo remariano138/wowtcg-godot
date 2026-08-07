@@ -149,6 +149,7 @@ func _ready() -> void:
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
 		_test_gouge_exhaust_and_ready_lock,
+		_test_berserking,
 		_test_cat_form_hero_attack,
 		_test_form_break_and_pay_return,
 		_test_form_uniqueness_shapeshift,
@@ -167,6 +168,7 @@ func _ready() -> void:
 		_test_ai_withdraw_save,
 		_test_fall_back_friendly_only,
 	_test_blink_removes_attacker,
+	_test_combat_cancelled_event,
 	_test_ai_blink_evasion,
 		_test_first_to_fall_destroys_protector,
 		_test_ai_first_to_fall_destroys_protector,
@@ -8530,6 +8532,76 @@ func _test_coup_de_grace_destroys_exhausted_ally() -> void:
 # ally. It can't ready during its controller's next ready step." The lock is a
 # one-shot flag consumed at the target controller's next ready step.
 # ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# Berserking (dark_portal_134, 3, Ability — Horde, Troll Hero Required):
+# "Ongoing: When your hero is dealt damage, put a berserk counter on Berserking.
+#  When your hero attacks, remove all berserk counters from Berserking. Your hero
+#  has +1 ATK this combat for each counter you removed."
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_berserking() -> void:
+	_buf.append("\n-- Berserking: counters on hero damage, cashed in on attack --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("biter_def", 2, 3, [], 2)
+	db.ability("bers_def", 3,
+		"ongoing|requires_hero_race:Troll|berserk_counter_on_hero_damage|berserk_atk_on_hero_attack:1")
+	db.instant("bolt_def", 1, "deal_damage_to_target:2:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bers := CardInstance.create("bers", "bers_def", "p1", "p1_hero_row")
+	state.cards["bers"] = bers
+	state.zones["p1_hero_row"].card_ids.append("bers")
+
+	# bk-a: no counters to start; the 0-ATK hero isn't a legal attacker yet.
+	eq(int(bers.counters.get("berserk", 0)), 0, "bk-a: starts with no counters")
+	ok(not ("p1_hero" in StackResolver.get_legal_attackers(state, "p1", db)),
+		"bk-a2: 0-ATK hero with no counters can't attack")
+
+	# bk-b: one counter per damage EVENT dealt to the controller's hero.
+	GameLogic.deal_damage(state, "p2_hero", "p1_hero", 3, db)
+	eq(int(bers.counters.get("berserk", 0)), 1, "bk-b: 3 damage in one hit = 1 counter")
+	GameLogic.deal_damage(state, "p2_hero", "p1_hero", 1, db)
+	eq(int(bers.counters.get("berserk", 0)), 2, "bk-c: a second hit = 2 counters")
+
+	# bk-d: damage to the OPPOSING hero, and to our allies, doesn't count.
+	var mine := _add_ally(state, "mine", "biter_def", "p1")
+	mine.just_summoned = false
+	GameLogic.deal_damage(state, "p1_hero", "p2_hero", 2, db)
+	GameLogic.deal_damage(state, "p2_hero", "mine", 1, db)
+	eq(int(bers.counters.get("berserk", 0)), 2,
+		"bk-d: opposing-hero / own-ally damage adds no counters")
+
+	# bk-e: the pending counters make the 0-ATK hero a legal attacker and show
+	# up in the attack forecast.
+	eq(state.get_atk("p1_hero", db), 0, "bk-e: hero ATK unchanged outside combat")
+	eq(state.get_atk_if_attacking("p1_hero", db), 2,
+		"bk-e2: forecast shows +2 from the two counters")
+	ok("p1_hero" in StackResolver.get_legal_attackers(state, "p1", db),
+		"bk-e3: hero is a legal attacker while holding counters")
+
+	# bk-f: attacking cashes the counters in as +2 ATK for this combat.
+	var atk_action := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"})
+	StackResolver.submit_action(state, atk_action, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(int(bers.counters.get("berserk", 0)), 0, "bk-f: all counters removed")
+	eq(state.get_atk("p1_hero", db), 2, "bk-f2: attacking hero has +2 ATK this combat")
+
+	# bk-g: the grant ends with the combat step.
+	var p2_hp_before := state.get_current_hp("p2_hero", db)
+	StackResolver.pass_priority(state, db)   # close attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # close defend window → conclusion
+	StackResolver.pass_priority(state, db)
+	eq(state.get_current_hp("p2_hero", db), p2_hp_before - 2,
+		"bk-g: the boosted 2 damage landed")
+	eq(state.get_atk("p1_hero", db), 0, "bk-g2: bonus cleared after the combat step")
+	eq(state.get_atk_if_attacking("p1_hero", db), 0,
+		"bk-g3: forecast back to 0 — counters were spent")
+
+
 func _test_gouge_exhaust_and_ready_lock() -> void:
 	_buf.append("\n-- Gouge exhausts + locks the next ready step --")
 	var db := MockDB.new()
@@ -9257,6 +9329,87 @@ func _test_blink_removes_attacker() -> void:
 	StackResolver.pass_priority(state3, db)
 	StackResolver.pass_priority(state3, db)   # conclusion
 	eq(state3.get_card("p2_hero").damage_taken, 4, "bl-d2: attack landed on the hero")
+
+
+# Rule 603.1b: a combatant that leaves play before the conclusion cancels the
+# combat. The engine must SAY SO (combat_cancelled + cancelled flag on
+# combat_concluded) so the UI can show a notice and skip the attack animation.
+func _test_combat_cancelled_event() -> void:
+	_buf.append("\n-- Combat cancelled event when a combatant leaves play --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("raider_def", 4, 4, [], 3)
+	db.instant("azeroth_172", 3, "return_to_hand:ally")   # Withdraw
+
+	# cc-a: the ATTACKER is bounced during the defend window.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	var raider := _add_ally(state, "raider", "raider_def", "p1")
+	raider.just_summoned = false
+	_add_card_to_hand(state, "withdraw", "azeroth_172", "p2")
+	_add_resources(state, "p2", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # no protectors → defend window
+	StackResolver.pass_priority(state, db)   # p1 passes → p2
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "withdraw", "target_id": "raider"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Withdraw resolves — attacker bounced
+	eq(state.get_card("raider").zone_id, "p1_hand", "cc-a0: attacker bounced to hand")
+	StackResolver.pass_priority(state, db)
+	var end_events := StackResolver.pass_priority(state, db)   # window closes → conclusion
+
+	var cancelled: GameEvent = null
+	var concluded: GameEvent = null
+	for ev in end_events:
+		if ev.event_type == "combat_cancelled":
+			cancelled = ev
+		elif ev.event_type == "combat_concluded":
+			concluded = ev
+	ok(cancelled != null, "cc-a: combat_cancelled event emitted")
+	if cancelled:
+		eq(cancelled.payload.get("reason", ""), "attacker_gone",
+			"cc-a2: reason is attacker_gone")
+		eq(cancelled.payload.get("attacker_id", ""), "raider", "cc-a3: names the attacker")
+	ok(concluded != null and concluded.payload.get("cancelled", false),
+		"cc-a4: combat_concluded carries cancelled = true (renderer skips the lunge)")
+	eq(state.get_card("p2_hero").damage_taken, 0, "cc-a5: no damage dealt")
+
+	# cc-b: a normal combat's conclusion is NOT flagged cancelled.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p1"
+	state2.priority_player = "p1"
+	var raider2 := _add_ally(state2, "raider2", "raider_def", "p1")
+	raider2.just_summoned = false
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider2", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # defend window
+	StackResolver.pass_priority(state2, db)
+	var end2 := StackResolver.pass_priority(state2, db)   # conclusion
+	var saw_cancel := false
+	var flagged := false
+	for ev in end2:
+		if ev.event_type == "combat_cancelled":
+			saw_cancel = true
+		elif ev.event_type == "combat_concluded":
+			flagged = ev.payload.get("cancelled", false)
+	ok(not saw_cancel, "cc-b: no combat_cancelled on a normal combat")
+	ok(not flagged, "cc-b2: combat_concluded not flagged cancelled")
+	eq(state2.get_card("p2_hero").damage_taken, 4, "cc-b3: damage landed")
 
 
 func _test_ai_blink_evasion() -> void:
@@ -10864,7 +11017,7 @@ func _test_searing_totem_source_killed_in_window() -> void:
 	db.hero("p2_hero", 30)
 	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
 	db.ally("victim_def", 0, 2)   # 0/2 — survives the ping so the damage is visible
-	                              # (a dead card's damage_taken resets on leaving play)
+								  # (a dead card's damage_taken resets on leaving play)
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	state.phase = "ready"

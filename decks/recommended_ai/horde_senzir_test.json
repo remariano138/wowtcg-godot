@@ -115,8 +115,13 @@
     },
     {
       "card_def_id": "dark_portal_210",
-      "count": 3,
+      "count": 2,
       "_card_name": "Ghank"
+    },
+    {
+      "card_def_id": "dark_portal_134",
+      "count": 1,
+      "_card_name": "Berserking"
     },
     {
       "card_def_id": "azeroth_226",

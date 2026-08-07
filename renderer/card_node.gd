@@ -40,6 +40,8 @@ var _ready_lock_badge: Label = null
 var _outline: ColorRect = null
 var _atk_badge_bg: Panel = null
 var _atk_badge_lbl: Label = null
+var _counter_badge_bg: Panel = null
+var _counter_badge_lbl: Label = null
 var _hp_badge_bg: Panel = null
 var _hp_badge_lbl: Label = null
 var _stats_lbl: Label = null
@@ -144,6 +146,34 @@ static func create(inst_id: String, card_name: String,
 	atk_lbl.visible  = false
 	node.add_child(atk_lbl)
 	node._atk_badge_lbl = atk_lbl
+
+	# Counter badge — white number in an orange circle, bottom-left corner
+	# (same treatment as the ATK-buff badge; used by cards that accumulate
+	# counters and have no printed ATK of their own, e.g. Berserking's berserk
+	# counters). Hidden while the count is 0.
+	var ctr_bg := Panel.new()
+	var ctr_style := StyleBoxFlat.new()
+	ctr_style.bg_color = Color(0.85, 0.4, 0.1)
+	ctr_style.set_corner_radius_all(int(BADGE_D * 0.5))
+	ctr_bg.add_theme_stylebox_override("panel", ctr_style)
+	ctr_bg.size     = Vector2(BADGE_D, BADGE_D)
+	ctr_bg.position = Vector2(-W * 0.5 + 2, H * 0.5 - BADGE_D - 2)
+	ctr_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ctr_bg.visible  = false
+	node.add_child(ctr_bg)
+	node._counter_badge_bg = ctr_bg
+
+	var ctr_lbl := Label.new()
+	ctr_lbl.add_theme_font_size_override("font_size", 13)
+	ctr_lbl.add_theme_color_override("font_color", Color.WHITE)
+	ctr_lbl.size     = Vector2(BADGE_D, BADGE_D)
+	ctr_lbl.position = ctr_bg.position
+	ctr_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ctr_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	ctr_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ctr_lbl.visible  = false
+	node.add_child(ctr_lbl)
+	node._counter_badge_lbl = ctr_lbl
 
 	# HP-buff badge — white number in a blue circle, bottom-right corner.
 	# Hidden by default; shown (replacing the printed HP) while a buff is active.
@@ -254,6 +284,8 @@ static func create(inst_id: String, card_name: String,
 	node._atk_badge_lbl.visible = false
 	node._hp_badge_bg.visible   = false
 	node._hp_badge_lbl.visible  = false
+	node._counter_badge_bg.visible  = false
+	node._counter_badge_lbl.visible = false
 	return node
 
 
@@ -280,6 +312,18 @@ func update_damage(damage_taken: int) -> void:
 # combat, so current_atk == printed_atk even though the card carries a
 # conditional buff — in that case we still show the badge with a trailing
 # "*" so the player knows the buff exists but only fires on attack.
+# Show/hide the counter badge (white number in an orange circle, bottom-left) —
+# the same visual treatment as a buffed ATK value. Pass 0 to hide it.
+func update_counter(count: int) -> void:
+	if not _counter_badge_bg or not _counter_badge_lbl:
+		return
+	var show_it := count > 0
+	_counter_badge_bg.visible  = show_it
+	_counter_badge_lbl.visible = show_it
+	if show_it:
+		_counter_badge_lbl.text = str(count)
+
+
 func update_atk(current_atk: int, printed_atk: int, atk_if_attacking: int = -1) -> void:
 	if not _atk_badge_bg or not _atk_badge_lbl:
 		return

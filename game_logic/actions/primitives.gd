@@ -164,6 +164,32 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 	events.append(GameEvent.damage_dealt(source_id, target_id, actual))
 	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))
 
+	# Berserking: "Ongoing: When your hero is dealt damage, put a berserk counter
+	# on Berserking." One counter per damage EVENT (the card says "is dealt
+	# damage", not "for each damage"), regardless of source or amount. Only
+	# damage that is DEALT counts — put_damage (405.3) has its own path.
+	if target_ps and target_ps.hero_instance_id == target_id:
+		events.append_array(_add_berserk_counters(state, target.controller, db))
+
+	return events
+
+
+# Fires the `berserk_counter_on_hero_damage` flag on every in-play card the
+# player controls (Berserking). Returns the counter_changed events.
+static func _add_berserk_counters(state: GameState, player_id: String,
+		db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		var def: CardDef = db.get_def(card.card_def_id)
+		if not def or def.effects == "":
+			continue
+		if not ("berserk_counter_on_hero_damage" in def.effects.split("|")):
+			continue
+		var n: int = int(card.counters.get("berserk", 0)) + 1
+		card.counters["berserk"] = n
+		events.append(GameEvent.counter_changed(card.instance_id, "berserk", n - 1, n))
 	return events
 
 

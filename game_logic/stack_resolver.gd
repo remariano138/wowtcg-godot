@@ -472,7 +472,10 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 						or state.get_card(target_id).controller != action.source_player:
 					return false
 			elif destroy_target_kind(def) == "ability":
-				if not _is_in_play_ability(state, target_id, db):
+				# Purge: friendly-attached abilities are excluded (see
+				# _is_destroyable_ability).
+				if not _is_destroyable_ability(state, def, target_id,
+						action.source_player, db):
 					return false
 			elif destroy_target_kind(def) == "equipment":
 				if not _is_in_play_equipment(state, target_id, db):
@@ -548,7 +551,8 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 						or state.get_card(target_id).controller != action.source_player:
 					return false
 			elif destroy_target_kind(def) == "ability":
-				if not _is_in_play_ability(state, target_id, db): return false
+				if not _is_destroyable_ability(state, def, target_id,
+						action.source_player, db): return false
 			elif destroy_target_kind(def) == "equipment":
 				if not _is_in_play_equipment(state, target_id, db): return false
 	return true
@@ -670,9 +674,16 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 	# Burn Away / Shattering Blow: some in-play ability / equipment card must
 	# be a legal target.
 	if destroy_target_kind(def) in ["ability", "equipment"]:
-		for cid in get_destroy_kind_candidates(state, db, destroy_target_kind(def)):
-			if _is_legal_target(state, cid, db):
-				return true
+		var d_kind := destroy_target_kind(def)
+		for cid in get_destroy_kind_candidates(state, db, d_kind):
+			if not _is_legal_target(state, cid, db):
+				continue
+			# Purge goes dark when every in-play ability is attached to one of
+			# the caster's own characters.
+			if d_kind == "ability" \
+					and not _is_destroyable_ability(state, def, cid, player_id, db):
+				continue
+			return true
 		return false
 	return true
 
@@ -903,6 +914,44 @@ static func _is_in_play_ability(state: GameState, target_id: String, db) -> bool
 		return false
 	var def := db.get_def(card.card_def_id) as CardDef
 	return def != null and def.card_type == "Ability"
+
+
+# Purge ("Destroy target ability unless it's attached to a friendly hero or
+# ally."): an `except_friendly_attached` flag riding a `destroy_target:ability`
+# segment. Narrows Burn Away's target pool — the caster's OWN characters'
+# attachments are off-limits, which notably means Purge can't strip an
+# opponent's Entangling Roots off your own ally.
+static func _destroy_excludes_friendly_attached(def: CardDef) -> bool:
+	return _has_effect_flag(def, "except_friendly_attached")
+
+
+# Whether an in-play ability is an attachment whose HOST is a hero or ally
+# controlled by player_id. "Friendly" is judged on the HOST's controller, not
+# the attachment's — an opponent's Entangling Roots on your ally is friendly-
+# attached (and so protected from your Purge). An attachment on a weapon
+# (Windfury Weapon) is not on a hero or ally, so it stays targetable.
+static func _is_friendly_attached_ability(state: GameState, target_id: String,
+		player_id: String, db) -> bool:
+	var card := state.get_card(target_id)
+	if not card or card.attached_to == "":
+		return false
+	var host := state.get_card(card.attached_to)
+	if not host or host.controller != player_id:
+		return false
+	return _is_hero_or_ally(state, host.instance_id, db)
+
+
+# Full `destroy_target:ability` target check for a given caster: an in-play
+# ability card, minus Purge's friendly-attachment exclusion. player_id "" skips
+# the exclusion (caster-agnostic probes).
+static func _is_destroyable_ability(state: GameState, def: CardDef,
+		target_id: String, player_id: String, db) -> bool:
+	if not _is_in_play_ability(state, target_id, db):
+		return false
+	if player_id != "" and _destroy_excludes_friendly_attached(def) \
+			and _is_friendly_attached_ability(state, target_id, player_id, db):
+		return false
+	return true
 
 
 # An in-play equipment card (armor or weapon — equipment only lives in the
@@ -1602,7 +1651,11 @@ static func _resolve_play_instant(state: GameState,
 									# glossary 4217) — fizzles if it left play or readied.
 									dt_ok = _is_exhausted_ally(state, target_id, db)
 								"ability":
-									dt_ok = _is_in_play_ability(state, target_id, db)
+									# Purge also re-checks the friendly-attachment
+									# exclusion: a host that changed control (or an
+									# attachment that moved) can fizzle the destroy.
+									dt_ok = _is_destroyable_ability(state, def,
+											target_id, action.source_player, db)
 								"equipment":
 									dt_ok = _is_in_play_equipment(state, target_id, db)
 						if dt_ok:

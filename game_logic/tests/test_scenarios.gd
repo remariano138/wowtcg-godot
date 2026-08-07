@@ -229,6 +229,7 @@ func _ready() -> void:
 		_test_attach_fizzles_when_target_dies,
 		_test_ai_attach_target_choice,
 		_test_burn_away_destroys_ability,
+		_test_purge_spares_friendly_attachments,
 		_test_shattering_blow_destroys_equipment,
 		_test_randipan_draw_on_hero_combat_damage,
 		_test_samuel_grey_discard_on_hero_combat_damage,
@@ -12409,6 +12410,140 @@ func _test_burn_away_destroys_ability() -> void:
 	var ai := BaseAI.new()
 	var acts := ai._targeted_instant_actions(state2, db, "p1", "burn3", "play_ability")
 	ok(acts.is_empty(), "ba-k: AI skips a target cheaper than the spell (cost 2 < 3)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Purge (azeroth_114): "Destroy target ability unless it's attached to a
+# friendly hero or ally." Instant Ability — Burn Away's target pool minus every
+# ability attached to one of the CASTER's own characters. "Friendly" is judged
+# on the HOST's controller, so an opponent's Entangling Roots sitting on your
+# own ally is protected from your Purge; an attachment on a weapon isn't
+# attached to a hero or ally at all, so it stays fair game.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_purge_spares_friendly_attachments() -> void:
+	_buf.append("\n-- Purge: destroys abilities except friendly-attached ones --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.instant("roots_def", 2, "ongoing|attach:ally:exhaust_it|attached_cannot_ready")
+	db.instant("wf_def", 2, "ongoing|attach:melee_weapon|ready_on_strike:1")
+	db.equipment("krol_def", 3, "equipment:melee_weapon:0|strike_cost:1")
+	db.instant("azeroth_114", 1, "destroy_target:ability|except_friendly_attached")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var my_ally  := _add_ally(state, "mine", "bear_def", "p1")
+	var opp_ally := _add_ally(state, "theirs", "bear_def", "p2")
+	_add_resources(state, "p1", 6)
+
+	# p2's ongoing ability (unattached) — always a legal target.
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	# p1's OWN Mark of the Wild on p1's own ally — protected.
+	var mark := CardInstance.create("mark", "mark_def", "p1", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "mine"
+	my_ally.attachments.append("mark")
+	# p2's Entangling Roots on p1's ally — the sad case: host is friendly, so
+	# Purge can't strip it.
+	var roots := CardInstance.create("roots", "roots_def", "p2", "attached")
+	state.cards["roots"] = roots
+	state.zones["attached"].card_ids.append("roots")
+	roots.attached_to = "mine"
+	my_ally.attachments.append("roots")
+	# p2's Mark on p2's OWN ally — not friendly to p1, so targetable.
+	var opp_mark := CardInstance.create("opp_mark", "mark_def", "p2", "attached")
+	state.cards["opp_mark"] = opp_mark
+	state.zones["attached"].card_ids.append("opp_mark")
+	opp_mark.attached_to = "theirs"
+	opp_ally.attachments.append("opp_mark")
+	# p1's OWN Windfury Weapon on p1's OWN weapon — a weapon is not a hero or
+	# ally, so the exclusion does NOT cover it.
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	var wf := CardInstance.create("wf", "wf_def", "p1", "attached")
+	state.cards["wf"] = wf
+	state.zones["attached"].card_ids.append("wf")
+	wf.attached_to = "krol"
+	krol.attachments.append("wf")
+
+	_add_card_to_hand(state, "purge1", "azeroth_114", "p1")
+	_add_card_to_hand(state, "purge2", "azeroth_114", "p1")
+
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "purge1", "target_id": "ongo"}), db),
+		"pg-a: unattached ongoing ability is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "purge1", "target_id": "opp_mark"}), db),
+		"pg-b: attachment on an OPPOSING ally is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "purge1", "target_id": "mark"}), db),
+		"pg-c: own attachment on own ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "purge1", "target_id": "roots"}), db),
+		"pg-d: opponent's attachment on OUR ally is NOT a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "purge1", "target_id": "wf"}), db),
+		"pg-e: own attachment on own WEAPON is still a legal target")
+	# p2 casting the same card sees the mirror image of the restriction (p2 needs
+	# priority for the instant's timing to be legal in the first place).
+	_add_card_to_hand(state, "purge_p2", "azeroth_114", "p2")
+	_add_resources(state, "p2", 6)
+	state.priority_player = "p2"
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p2",
+			{"card_id": "purge_p2", "target_id": "mark"}), db),
+		"pg-f: 'friendly' is caster-relative — p2 may destroy p1's attachment")
+	state.priority_player = "p1"
+
+	# Resolves like Burn Away on a legal target.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "purge1", "target_id": "opp_mark"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(opp_mark.zone_id, "p2_graveyard", "pg-g: opposing attachment destroyed")
+	ok(opp_ally.attachments.is_empty(),  "pg-h: host attachment list cleared")
+	eq(state.get_atk("theirs", db), 2,   "pg-i: host ATK back to printed value")
+
+	# 706 / glossary 4217 re-check: an attachment that becomes friendly-attached
+	# after the announce fizzles at resolution.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "purge2", "target_id": "wf"}), db)
+	krol.controller = "p2"          # weapon changes hands mid-chain…
+	wf.attached_to  = "mine"        # …and the attachment ends up on our own ally
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(wf.zone_id, "attached", "pg-j: fizzles when the target became friendly-attached")
+
+	# Highlight probe: with only friendly-attached abilities in play, Purge goes
+	# dark (706.2 — a targeted card can't be announced with no legal target).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 6)
+	var solo := _add_ally(state2, "solo", "bear_def", "p1")
+	var only_mark := CardInstance.create("only_mark", "mark_def", "p1", "attached")
+	state2.cards["only_mark"] = only_mark
+	state2.zones["attached"].card_ids.append("only_mark")
+	only_mark.attached_to = "solo"
+	solo.attachments.append("only_mark")
+	_add_card_to_hand(state2, "purge3", "azeroth_114", "p1")
+	ok(not StackResolver.can_play_instant_no_target_check(state2, "purge3", "p1", db),
+		"pg-k: unplayable when every in-play ability is friendly-attached")
+
+	# AI: destroys the opponent's ability, never reaches for a protected one.
+	var ai := BaseAI.new()
+	var acts := ai._targeted_instant_actions(state2, db, "p1", "purge3", "play_instant")
+	ok(acts.is_empty(), "pg-l: AI has no play with only our own attachment in play")
+	var opp_ongo := CardInstance.create("opp_ongo", "ongo_def", "p2", "p2_hero_row")
+	state2.cards["opp_ongo"] = opp_ongo
+	state2.zones["p2_hero_row"].card_ids.append("opp_ongo")
+	acts = ai._targeted_instant_actions(state2, db, "p1", "purge3", "play_instant")
+	eq(acts.size(), 1, "pg-m: AI finds the opposing ongoing ability")
+	eq(acts[0].params.get("target_id", ""), "opp_ongo", "pg-n: AI targets it")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

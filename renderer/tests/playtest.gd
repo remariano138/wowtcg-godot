@@ -2196,6 +2196,13 @@ func _on_game_event(event: GameEvent) -> void:
 		"phase_changed":
 			if event.payload.get("new") == "action":
 				_played_this_action_phase[event.payload.get("player", "")] = false
+				# Same self-heal as turn_changed: force a reconcile that ignores the
+				# wiggle-skip, so the active player starts their action phase with
+				# every card drawn at its true ready/exhausted angle. Covers cards
+				# left upright by an animation race (e.g. Chops' attack-exhaust
+				# targeting wiggle re-basing on top of the exhaust tween).
+				if _renderer and _state:
+					_renderer.reconcile_from_state(_state, true)
 			if event.payload.get("new", "") != "end":
 				_stop_for_end_window = false   # one-shot hold expires with the end phase
 			# Hotseat: hand the screen over at the START of the outgoing player's

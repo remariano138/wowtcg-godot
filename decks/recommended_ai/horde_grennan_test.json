@@ -1,4 +1,4 @@
-﻿{
+{
   "deck_id": "horde_grennan_test",
   "display_name": "Horde_test (Grennan)",
   "hero_card_def_id": "azeroth_10",
@@ -7,7 +7,7 @@
       "card_def_id": "azeroth_360",
       "count": 1,
       "_card_name": "Your Fortune Awaits You"
-    },    
+    },
     {
       "card_def_id": "azeroth_344",
       "count": 1,
@@ -20,7 +20,7 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 3,
+      "count": 4,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
@@ -30,7 +30,7 @@
     },
     {
       "card_def_id": "azeroth_345",
-      "count": 2,
+      "count": 1,
       "_card_name": "Torek's Assault"
     },
     {
@@ -42,11 +42,11 @@
       "card_def_id": "azeroth_350",
       "count": 3,
       "_card_name": "Chasing A-Me 01"
-    },    
+    },
     {
-      "card_def_id": "azeroth_282",
+      "card_def_id": "azeroth_114",
       "count": 1,
-      "_card_name": "Chromatic Cloak"
+      "_card_name": "Purge"
     },
     {
       "card_def_id": "azeroth_248",
@@ -80,7 +80,7 @@
     },
     {
       "card_def_id": "azeroth_226",
-      "count": 2,
+      "count": 3,
       "_card_name": "Bala Silentblade"
     },
     {
@@ -89,9 +89,9 @@
       "_card_name": "Hierophant Caydiem"
     },
     {
-      "card_def_id": "azeroth_118",
+      "card_def_id": "azeroth_275",
       "count": 1,
-      "_card_name": "Windfury Totem"
+      "_card_name": "Zygore Bladebreaker"
     },
     {
       "card_def_id": "dark_portal_137",
@@ -147,7 +147,7 @@
       "card_def_id": "azeroth_116",
       "count": 2,
       "_card_name": "Searing Totem"
-    },    
+    },
     {
       "card_def_id": "azeroth_107",
       "count": 1,
@@ -157,11 +157,6 @@
       "card_def_id": "azeroth_111",
       "count": 1,
       "_card_name": "Healing Stream Totem"
-    },
-    {
-      "card_def_id": "azeroth_274",
-      "count": 1,
-      "_card_name": "Zorm Stonefury"
     },
     {
       "card_def_id": "azeroth_249",

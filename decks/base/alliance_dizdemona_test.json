@@ -20,8 +20,13 @@
     },
     {
       "card_def_id": "azeroth_340",
-      "count": 4,
+      "count": 3,
       "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_356",
+      "count": 1,
+      "_card_name": "The Love Potion"
     },
     {
       "card_def_id": "azeroth_351",

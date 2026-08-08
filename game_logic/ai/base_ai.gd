@@ -1039,6 +1039,12 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 							state, player_id, gy_req, db)
 					params["target_ids"] = _choose_graveyard_targets(
 							state, db, player_id, gy_req, candidates)
+				# "Exhaust N allies" extra cost (The Love Potion): announce the
+				# allies with the completion. Overridable hook.
+				var exh_req := StackResolver.get_quest_ally_exhaust_requirement(q_def)
+				if exh_req > 0:
+					params["ally_ids"] = _choose_quest_exhaust_allies(
+							state, db, player_id, exh_req)
 			var action := PendingAction.make("use_quest", player_id, params)
 			if StackResolver.can_submit(state, action, db):
 				result.append(action)
@@ -2270,6 +2276,22 @@ func _choose_graveyard_targets(state: GameState, db, _player_id: String,
 		return _def_cost(state, db, a) > _def_cost(state, db, b))
 	var take: int = min(int(gy_req.get("max_count", 1)), picks.size())
 	return picks.slice(0, take)
+
+
+# Hook: pick which allies pay an "exhaust N allies" quest cost (The Love Potion).
+# Base heuristic: spend the allies we'd miss least — ones that can't attack right
+# now (summoning-sick, 0 ATK, totems) first, then the lowest-value bodies.
+func _choose_quest_exhaust_allies(state: GameState, db, player_id: String,
+		count: int) -> Array[String]:
+	var candidates := StackResolver.get_quest_exhaust_candidates(state, player_id)
+	var attackers := StackResolver.get_legal_attackers(state, player_id, db)
+	candidates.sort_custom(func(a, b):
+		var a_att := 1 if a in attackers else 0
+		var b_att := 1 if b in attackers else 0
+		if a_att != b_att:
+			return a_att < b_att
+		return card_value_score(state, db, a) < card_value_score(state, db, b))
+	return candidates.slice(0, min(count, candidates.size()))
 
 
 # Hook: pick the card to discard when this player must discard (wrap-up or

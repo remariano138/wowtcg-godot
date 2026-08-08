@@ -163,6 +163,11 @@ var pending_reveal_pick_player: String = ""   # owner: whose deck was revealed, 
 var pending_reveal_pick_chooser: String = ""  # decider: who makes the pick ("" while no choice is open)
 var pending_reveal_pick_ids: Array[String] = []   # revealed cards matching the type — the selectable set
 var pending_reveal_pick_all: Array[String] = []   # every revealed card, in top→down order
+# It's a Secret to Everybody: the picked card goes back on TOP of the owner's
+# deck instead of into hand (the rest still go to the bottom), and the reveal is
+# a private "look at" rather than a public reveal — the opponent sees nothing.
+var pending_reveal_pick_to_top: bool = false
+var pending_reveal_pick_private: bool = false
 # Ongoing Totem "at the start of each turn" targeted-damage triggers (Searing
 # Totem) waiting to fire this ready step. Each entry is a dict
 # {card_id, amount, dmg_type}. They are drained one at a time: index 0 is the

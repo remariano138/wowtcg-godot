@@ -242,6 +242,19 @@ var _in_prevention_mode: bool = false
 var _prevention_armor_ids: Array = []
 var _prevention_nodes: Array[Node] = []
 
+# Quest "exhaust N allies" completion cost (The Love Potion) — a PRE-submission
+# picker, not an engine choice point. Clicking a legal ally only marks it
+# (green legal outline → blue selected); nothing is exhausted and no resource is
+# spent until Confirm, so Cancel leaves the game state untouched.
+var _in_ally_exhaust_mode: bool = false
+var _ally_exhaust_quest_id: String = ""
+var _ally_exhaust_candidates: Array = []
+var _ally_exhaust_selected: Array = []
+var _ally_exhaust_count: int = 0
+var _ally_exhaust_nodes: Array[Node] = []
+const ALLY_EXHAUST_SELECTED_COLOR := Color(0.35, 0.6, 1.0)   # blue — selected
+const ALLY_EXHAUST_LEGAL_COLOR    := Color(0.2, 1.0, 0.3)    # green — selectable
+
 # ── Combat window highlight (attacker/defender in red during attack/defend windows) ──
 var _combat_highlight_ids: Array = []
 
@@ -375,6 +388,7 @@ func _build_scene() -> void:
 	_router.form_sacrifice_mode_ended.connect(_on_form_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
+	_router.ally_exhaust_select_requested.connect(_on_ally_exhaust_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
 	_router.graveyard_peek_requested.connect(_on_graveyard_peek_requested)
 	_router.graveyard_peek_closed.connect(_on_graveyard_peek_closed)
@@ -1784,6 +1798,11 @@ func _input(event: InputEvent) -> void:
 			_set_status("")
 			get_viewport().set_input_as_handled()
 			return
+		# Escape: cancel the quest ally-exhaust cost picker (nothing was paid).
+		if _in_ally_exhaust_mode:
+			_cancel_ally_exhaust()
+			get_viewport().set_input_as_handled()
+			return
 		# Escape: close/cancel the graveyard browser.
 		if _gy_dialog and _gy_dialog.visible and not _gy_peek_active:
 			_on_gy_cancel_pressed()
@@ -1850,6 +1869,9 @@ func _try_pass(skip_confirm: bool = false) -> void:
 	# Discard peek: the router temporarily acts for the OFF-SCREEN discarding
 	# player — the seated player's Space must not pass (or discard) for them.
 	if _in_choice_peek:
+		return
+	# The quest ally-exhaust picker is modal: answer it (Confirm/Cancel) first.
+	if _in_ally_exhaust_mode:
 		return
 	# Infernal choice pending for the human: Space/pass = decline the discard
 	# and give the opponent control of the source.
@@ -2097,7 +2119,12 @@ func _log_event(event: GameEvent) -> void:
 		"reveal_pick_resolved":
 			var rp:  String = _log_player(event.payload.get("player", ""))
 			var rcid: String = event.payload.get("card_id", "")
-			_log_entry("[color=#af8]%s takes %s (rest to bottom of deck)[/color]" % [rp, _log_card(rcid)])
+			# to_top (It's a Secret to Everybody) is a private "look at" - the log
+			# is shared, so never name the card that was kept on top.
+			if bool(event.payload.get("to_top", false)):
+				_log_entry("[color=#af8]%s keeps a card on top of their deck (rest to bottom)[/color]" % rp)
+			else:
+				_log_entry("[color=#af8]%s takes %s (rest to bottom of deck)[/color]" % [rp, _log_card(rcid)])
 		"armor_prevention_used":
 			var p:  String = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("card_id", "")
@@ -2827,9 +2854,14 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 	var revealed: Array = payload.get("revealed", [])
 	var card_type: String = payload.get("card_type", "")
 	var hostile := chooser != player
-	# The revealed cards are shown to BOTH players, so this choice is public —
-	# an off-screen chooser only needs the input re-pointed, nothing hidden.
-	if _route_choice(chooser, "public") == "ai":
+	# The picked card goes back on TOP of the deck instead of into hand.
+	var to_top: bool = payload.get("to_top", false)
+	# A public "reveal" is shown to BOTH players; a private "look at" (It's a
+	# Secret to Everybody) is the chooser's alone. In hotseat both players share
+	# a screen so the difference is nominal, but it is what a two-device build
+	# keys off to send the opponent nothing.
+	var visibility := "private" if bool(payload.get("private", false)) else "public"
+	if _route_choice(chooser, visibility) == "ai":
 		# AI keeps the most valuable revealed card of the required type — or, when
 		# choosing for the opponent, hands them the LEAST valuable one.
 		var pick_id := _pick_ai_reveal(selectable, hostile)
@@ -2851,7 +2883,10 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 		var type_label := "" if card_type == "Any" else card_type + " "
 		var title := "Revealed top %d — choose a %scard to keep (rest go to bottom of deck)" \
 				% [revealed.size(), type_label]
-		if hostile:
+		if to_top:
+			title = "Looked at top %d — choose one to put back on top (rest go to bottom)" \
+					% revealed.size()
+		elif hostile:
 			title = "%s revealed top %d — %s chooses which card %s keeps (rest to bottom of deck)" \
 					% [player.to_upper(), revealed.size(), chooser.to_upper(), player.to_upper()]
 		elif not has_pick:
@@ -2864,6 +2899,8 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 		if hostile:
 			_set_status("🎯 %s: choose a card to put into %s's hand"
 					% [chooser.to_upper(), player.to_upper()])
+		elif to_top:
+			_set_status("Choose a card to put back on top of your deck")
 		elif has_pick:
 			_set_status("Choose a %scard to put into your hand" % type_label)
 		else:
@@ -3448,6 +3485,8 @@ func _on_gy_confirm_pressed() -> void:
 			"selectable": _state.pending_reveal_pick_ids.duplicate(),
 			"revealed": _state.pending_reveal_pick_all.duplicate(),
 			"card_type": _gy_reveal_card_type,
+			"to_top": _state.pending_reveal_pick_to_top,
+			"private": _state.pending_reveal_pick_private,
 		}
 		_close_gy_dialog()
 		var events := StackResolver.choose_reveal_pick(_state, pick, _db)
@@ -3708,6 +3747,8 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 		_resolve_strike(instance_id)
 	elif _in_prevention_mode and instance_id in _prevention_armor_ids:
 		_resolve_prevention(instance_id)
+	elif _in_ally_exhaust_mode and instance_id in _ally_exhaust_candidates:
+		_toggle_ally_exhaust_pick(instance_id)
 
 
 # ── Central choice popup (every non-Protect player choice) ─────────────────────
@@ -3973,6 +4014,115 @@ func _resolve_strike(weapon_id: String) -> void:
 	# choose_strike opens the held window (attack_window_opened / defend_window_opened),
 	# whose handler drains synchronously inside emit_events above. A second drain
 	# would re-read the just-held window as "already seen" and Layer-2 auto-pass it.
+
+
+# ── Quest "exhaust N allies" cost picker (The Love Potion) ────────────────────
+# Same shape as the armor-prevention popup — a centered panel plus clickable
+# board cards — but it runs BEFORE anything is submitted to the engine. Clicking
+# a candidate toggles selection (green → blue) and rebuilds the panel; Confirm
+# only lights up at exactly N picks and hands the ids to the router, which
+# submits the completion (that is where the allies actually exhaust and the
+# resource is paid). Cancel throws the picks away with the game state unchanged.
+
+func _on_ally_exhaust_select_requested(quest_id: String, candidate_ids: Array,
+		count: int) -> void:
+	_in_ally_exhaust_mode    = true
+	_ally_exhaust_quest_id   = quest_id
+	_ally_exhaust_candidates = candidate_ids.duplicate()
+	_ally_exhaust_selected   = []
+	_ally_exhaust_count      = count
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+	_show_ally_exhaust_popup()
+
+
+func _show_ally_exhaust_popup() -> void:
+	_clear_ally_exhaust_nodes()
+
+	var quest_name := "this quest"
+	var q_card := _state.get_card(_ally_exhaust_quest_id)
+	if q_card and _db:
+		var q_def: CardDef = _db.get_def(q_card.card_def_id)
+		if q_def:
+			quest_name = q_def.card_name
+	var header_text := "%s — select %d allies to exhaust  (%d/%d)" % [
+		quest_name, _ally_exhaust_count,
+		_ally_exhaust_selected.size(), _ally_exhaust_count]
+
+	var buttons: Array = []
+	if _ally_exhaust_selected.size() == _ally_exhaust_count:
+		buttons.append({
+			"text": "Complete quest",
+			"callback": func() -> void: _confirm_ally_exhaust(),
+		})
+	buttons.append({
+		"text": "Cancel",
+		"callback": func() -> void: _cancel_ally_exhaust(),
+	})
+
+	# Modal except the candidate allies — clicking one toggles its selection.
+	_ally_exhaust_nodes.append(_build_choice_popup(
+		header_text, ALLY_EXHAUST_SELECTED_COLOR, buttons, true, _ally_exhaust_candidates))
+
+	# Deferred for the same reason as the prevention/protect outlines.
+	call_deferred("_apply_ally_exhaust_highlights")
+
+
+func _apply_ally_exhaust_highlights() -> void:
+	if not _in_ally_exhaust_mode:
+		return   # already resolved before this frame fired
+	for cid in _ally_exhaust_candidates:
+		_renderer.set_card_outline(cid, true,
+			ALLY_EXHAUST_SELECTED_COLOR if cid in _ally_exhaust_selected
+			else ALLY_EXHAUST_LEGAL_COLOR)
+
+
+func _toggle_ally_exhaust_pick(instance_id: String) -> void:
+	if instance_id in _ally_exhaust_selected:
+		_ally_exhaust_selected.erase(instance_id)
+	elif _ally_exhaust_selected.size() < _ally_exhaust_count:
+		_ally_exhaust_selected.append(instance_id)
+	else:
+		return   # already at N picks — deselect one first
+	_show_ally_exhaust_popup()
+
+
+func _clear_ally_exhaust_nodes() -> void:
+	for n in _ally_exhaust_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_ally_exhaust_nodes.clear()
+
+
+# Tear the picker down. Clears the blue/green outlines that _apply_* painted
+# directly (they are not part of the router's highlight set).
+func _end_ally_exhaust_mode() -> void:
+	for cid in _ally_exhaust_candidates:
+		_renderer.set_card_outline(cid, false)
+	_in_ally_exhaust_mode    = false
+	_ally_exhaust_quest_id   = ""
+	_ally_exhaust_candidates = []
+	_ally_exhaust_selected   = []
+	_ally_exhaust_count      = 0
+	_clear_ally_exhaust_nodes()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_pass_btn.visible = true
+
+
+func _confirm_ally_exhaust() -> void:
+	var picks := _ally_exhaust_selected.duplicate()
+	_end_ally_exhaust_mode()
+	_router.confirm_ally_exhaust_selection(picks)
+	_refresh_ui()
+	_drain_passes()
+	_schedule_next_turn()
+
+
+func _cancel_ally_exhaust() -> void:
+	_end_ally_exhaust_mode()
+	_router.cancel_ally_exhaust_selection()
+	_refresh_ui()
 
 
 # ── Armor prevention point (rule 717.2c) ───────────────────────────────────────
@@ -4424,6 +4574,12 @@ func _on_rematch() -> void:
 	_in_prevention_mode           = false
 	_prevention_armor_ids         = []
 	_prevention_nodes             = []
+	_in_ally_exhaust_mode         = false
+	_ally_exhaust_quest_id        = ""
+	_ally_exhaust_candidates      = []
+	_ally_exhaust_selected        = []
+	_ally_exhaust_count           = 0
+	_ally_exhaust_nodes           = []
 	_in_form_return_mode          = false
 	_form_return_nodes            = []
 	_p1_has_mulliganed            = false
@@ -4469,6 +4625,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Green Whelp Armor bounce choice before advancing
 	if _state.pending_prevention_player != "" or _in_prevention_mode:
 		return  # wait for the armor-prevention choice (717.2c) before advancing
+	if _in_ally_exhaust_mode:
+		return  # wait for the quest ally-exhaust cost picker (The Love Potion)
 	var pid := _state.priority_player
 	var pid_type := _p1_type if pid == "p1" else _p2_type
 	# Auto-drive AI players AND, in hotseat, the off-screen human (auto-pass).
@@ -4526,7 +4684,8 @@ func _drain_passes() -> void:
 				or _state.pending_ready_player != "" or _in_ready_mode \
 				or _state.pending_strike_ready_player != "" or _in_strike_ready_mode \
 				or _state.pending_attack_exhaust_player != "" \
-				or _state.pending_prevention_player != "" or _in_prevention_mode:
+				or _state.pending_prevention_player != "" or _in_prevention_mode \
+				or _in_ally_exhaust_mode:
 			break
 		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \

@@ -51,6 +51,12 @@ signal x_select_requested(hero_id: String, max_x: int)
 # confirm_graveyard_selection(ids) or cancel_graveyard_selection().
 signal graveyard_select_requested(quest_id: String, candidate_ids: Array,
 		min_count: int, max_count: int)
+# Emitted when a quest's completion COST needs allies chosen for exhaustion
+# (The Love Potion). The UI shows a popup over candidate_ids; nothing is paid or
+# submitted until it calls confirm_ally_exhaust_selection(ids) — or
+# cancel_ally_exhaust_selection(), which leaves the game state untouched.
+signal ally_exhaust_select_requested(quest_id: String, candidate_ids: Array,
+		count: int)
 # Emitted when the player wants to browse a graveyard (view-only, no selection).
 signal graveyard_examine_requested(graveyard_player: String, card_ids: Array)
 # Alt+hover peek over a graveyard pile (view-only, non-modal, closes on its own).
@@ -95,6 +101,8 @@ var _targeting_mode: int = -1
 # Quest awaiting graveyard-target selection; "" = no browser open.
 var _gy_select_quest_id: String = ""
 var _gy_select_hero_id: String = ""
+# Quest awaiting its "exhaust N allies" cost selection; "" = no popup open.
+var _ally_exhaust_quest_id: String = ""
 # Ally/equipment power awaiting a graveyard-card target (Ophelia Barrows).
 var _gy_select_ally_id: String = ""
 # Hand Ability awaiting a graveyard-ally target (Ancestral Spirit reanimate).
@@ -153,6 +161,11 @@ func handle_card_click(instance_id: String) -> void:
 
 	# ── Graveyard browser open: board clicks are ignored (modal owns input) ──
 	if _gy_select_quest_id != "" or _gy_select_hero_id != "" or _gy_select_ability_id != "":
+		return
+
+	# ── Ally-exhaust cost popup open: the scene owns those clicks (selection
+	# toggling), so the router must not also act on them. ────────────────────
+	if _ally_exhaust_quest_id != "":
 		return
 
 	# ── Pet sacrifice mode: click sacrifices the chosen pet ──────────────────
@@ -222,6 +235,11 @@ func handle_card_click(instance_id: String) -> void:
 				var needs_gy := not StackResolver.get_graveyard_search_requirement(qdef).is_empty()
 				if needs_gy:
 					start_graveyard_selection(instance_id)
+					return
+				# "Exhaust N allies" completion cost (The Love Potion): pick the
+				# allies first. Nothing is paid until the popup confirms.
+				if StackResolver.get_quest_ally_exhaust_requirement(qdef) > 0:
+					start_ally_exhaust_selection(instance_id)
 					return
 				var quest_action := PendingAction.make("use_quest", local_player,
 					{"quest_id": instance_id})
@@ -528,6 +546,49 @@ func cancel_graveyard_selection() -> void:
 	_gy_select_hero_id = ""
 	_gy_select_ally_id = ""
 	_gy_select_ability_id = ""
+	refresh_highlights()
+
+
+# ── Quest "exhaust N allies" cost selection (The Love Potion) ──────────────────
+# A pre-submission picker, not an engine choice point: the allies are chosen and
+# CONFIRMED before use_quest is ever submitted, so cancelling leaves the game
+# state byte-identical (no resource spent, no ally exhausted).
+
+func start_ally_exhaust_selection(quest_id: String) -> void:
+	var card := state.get_card(quest_id)
+	if not card or not db:
+		return
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return
+	var count := StackResolver.get_quest_ally_exhaust_requirement(def)
+	if count <= 0:
+		return
+	var candidates := StackResolver.get_quest_exhaust_candidates(state, local_player)
+	if candidates.size() < count:
+		return
+	_ally_exhaust_quest_id = quest_id
+	ally_exhaust_select_requested.emit(quest_id, candidates, count)
+
+
+func confirm_ally_exhaust_selection(selected_ids: Array) -> void:
+	if _ally_exhaust_quest_id == "":
+		return
+	var quest_id := _ally_exhaust_quest_id
+	_ally_exhaust_quest_id = ""
+	var action := PendingAction.make("use_quest", local_player,
+			{"quest_id": quest_id, "ally_ids": selected_ids})
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		refresh_highlights()
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
+
+
+func cancel_ally_exhaust_selection() -> void:
+	_ally_exhaust_quest_id = ""
 	refresh_highlights()
 
 

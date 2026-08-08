@@ -60,6 +60,13 @@ static func submit_action(state: GameState, action: PendingAction,
 					var def := db.get_def(q_card.card_def_id) as CardDef
 					if def:
 						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0) as int))
+						# Rule 412.2: the "exhaust N allies" extra cost (The Love
+						# Potion) is paid on chain entry too, so the same allies
+						# can't pay for two announcements at once. Refunded by
+						# retract_last if the completion is taken back.
+						if get_quest_ally_exhaust_requirement(def) > 0:
+							for aid in action.params.get("ally_ids", []):
+								events.append_array(GameLogic.exhaust_card(state, str(aid)))
 		"use_ally_power":
 			# Pay the ally power's resource cost at submission time, same as play_ally.
 			var ap_card_id: String = action.params.get("card_id", "")
@@ -4158,6 +4165,32 @@ static func get_quest_ally_count_requirement(def: CardDef) -> int:
 	return 0
 
 
+# Extra completion COST paid in exhausted allies (The Love Potion: "Exhaust two
+# allies in your party and pay (1) to complete this quest"). Returns 0 when the
+# quest has no such cost. The allies are announced WITH the completion (like the
+# graveyard-target rewards) and exhausted on chain entry — rule 412.2, same
+# timing as an [Activate] tap.
+static func get_quest_ally_exhaust_requirement(def: CardDef) -> int:
+	if not def or def.effects == "":
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() >= 2 and parts[0].strip_edges() == "exhaust_allies":
+			return int(parts[1])
+	return 0
+
+
+# Allies that could pay an "exhaust N allies" quest cost: every READY card in the
+# player's ally row (totems included — they are allies in the party).
+static func get_quest_exhaust_candidates(state: GameState,
+		player_id: String) -> Array[String]:
+	var result: Array[String] = []
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		if not card.is_exhausted:
+			result.append(card.instance_id)
+	return result
+
+
 # Torek's Assault-style condition: an opposing hero must have been dealt
 # damage this turn by an ally in the quest controller's party.
 static func quest_requires_hero_damaged_by_ally(def: CardDef) -> bool:
@@ -4261,6 +4294,20 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	var resource_cost: int = max(def.cost, 0)
 	if resource_cost > state.get_available_resources(action.source_player):
 		return false
+	# Extra cost in exhausted allies (The Love Potion). The allies are announced
+	# with the completion and must all be ready allies in the completer's party.
+	var exhaust_req := get_quest_ally_exhaust_requirement(def)
+	if exhaust_req > 0:
+		var exhaust_candidates := get_quest_exhaust_candidates(state, action.source_player)
+		if exhaust_candidates.size() < exhaust_req:
+			return false
+		if not action.params.get("_skip_target_check", false):
+			var ally_ids: Array = action.params.get("ally_ids", [])
+			if ally_ids.size() != exhaust_req:
+				return false
+			for aid in ally_ids:
+				if aid not in exhaust_candidates or ally_ids.count(aid) > 1:
+					return false
 	# Party-size gating condition (e.g. The Defias Brotherhood: 4+ allies).
 	var ally_req := get_quest_ally_count_requirement(def)
 	if ally_req > 0 \
@@ -4411,12 +4458,26 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 				# least one matching card is revealed.
 				var want_type := parts[1].strip_edges()
 				var reveal_n := int(parts[2]) if parts.size() > 2 else 1
-				# Optional 4th field: who CHOOSES. "opponent" (The Princess
-				# Trapped) hands the pick to the other player; default "self".
+				# Optional trailing flags, order-independent:
+				#   "opponent" — the OTHER player makes the pick (The Princess
+				#                Trapped); default is the controller.
+				#   "to_top"   — the picked card goes back on TOP of the deck instead
+				#                of into hand (It's a Secret to Everybody).
+				#   "private"  — a "look at", not a reveal: only the chooser sees the
+				#                cards (It's a Secret to Everybody).
 				var chooser := player_id
-				if parts.size() > 3 and parts[3].strip_edges() == "opponent":
-					chooser = "p2" if player_id == "p1" else "p1"
-				events.append_array(_reveal_pick(state, player_id, want_type, reveal_n, db, chooser))
+				var to_top := false
+				var is_private := false
+				for i in range(3, parts.size()):
+					match parts[i].strip_edges():
+						"opponent":
+							chooser = "p2" if player_id == "p1" else "p1"
+						"to_top":
+							to_top = true
+						"private":
+							is_private = true
+				events.append_array(_reveal_pick(state, player_id, want_type, reveal_n,
+						db, chooser, to_top, is_private))
 			"deck_to_hand":
 				# The Missing Diplomat: search your deck, reveal the chosen ally,
 				# put it into your hand. Re-check each target is still in the
@@ -4450,7 +4511,8 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 # (The Princess Trapped: "Target opponent chooses one"). `want_type` "Any"
 # makes every revealed card selectable.
 static func _reveal_pick(state: GameState, player_id: String, want_type: String,
-		n: int, db, chooser: String = "") -> Array[GameEvent]:
+		n: int, db, chooser: String = "", to_top: bool = false,
+		is_private: bool = false) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	var deck := state.zones.get(player_id + "_deck") as Zone
 	if not deck or deck.card_ids.is_empty():
@@ -4475,8 +4537,10 @@ static func _reveal_pick(state: GameState, player_id: String, want_type: String,
 	state.pending_reveal_pick_chooser = chooser if chooser != "" else player_id
 	state.pending_reveal_pick_ids = selectable
 	state.pending_reveal_pick_all = revealed
+	state.pending_reveal_pick_to_top = to_top
+	state.pending_reveal_pick_private = is_private
 	events.append(GameEvent.reveal_pick_opened(player_id, selectable, revealed,
-			want_type, state.pending_reveal_pick_chooser))
+			want_type, state.pending_reveal_pick_chooser, to_top, is_private))
 	return events
 
 
@@ -4498,17 +4562,24 @@ static func choose_reveal_pick(state: GameState, card_id: String,
 		return []   # must pick a card of the required type
 	var player_id := state.pending_reveal_pick_player
 	var revealed := state.pending_reveal_pick_all.duplicate()
+	var to_top := state.pending_reveal_pick_to_top
 	# Clear pending state up front so subsequent moves can't re-enter this path.
 	state.pending_reveal_pick_player = ""
 	state.pending_reveal_pick_chooser = ""
 	state.pending_reveal_pick_ids = []
 	state.pending_reveal_pick_all = []
+	state.pending_reveal_pick_to_top = false
+	state.pending_reveal_pick_private = false
 
 	var events: Array[GameEvent] = []
 	if not no_pick:
-		events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
+		# to_top (It's a Secret to Everybody): the picked card simply STAYS where
+		# it is — the revealed cards never left the top of the deck, so once the
+		# others are pushed to the bottom below it is back on top by itself.
+		if not to_top:
+			events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
 		events.append(GameEvent.make("reveal_pick_resolved", {
-			"player": player_id, "card_id": card_id,
+			"player": player_id, "card_id": card_id, "to_top": to_top,
 		}))
 	for cid: String in revealed:
 		if cid == card_id:
@@ -4757,6 +4828,23 @@ static func retract_last(state: GameState, player_id: String,
 			if res_card.is_exhausted:
 				events.append_array(GameLogic.ready_card(state, res_card.instance_id))
 				cost -= 1
+
+	# Quest completion: undo the resource cost and the "exhaust N allies" extra
+	# cost (The Love Potion), both paid on chain entry.
+	if top.action_type == "use_quest" and db:
+		var q_card2 := state.get_card(top.params.get("quest_id", ""))
+		var q_def2  := db.get_def(q_card2.card_def_id) as CardDef if q_card2 else null
+		if q_def2:
+			var q_cost: int = max(q_def2.cost, 0)
+			for res_card in state.cards_in_zone(player_id + "_resource_row"):
+				if q_cost <= 0:
+					break
+				if res_card.is_exhausted:
+					events.append_array(GameLogic.ready_card(state, res_card.instance_id))
+					q_cost -= 1
+			if get_quest_ally_exhaust_requirement(q_def2) > 0:
+				for aid in top.params.get("ally_ids", []):
+					events.append_array(GameLogic.ready_card(state, str(aid)))
 
 	# Undo resource_placed_this_turn flag if a place_resource was retracted.
 	if top.action_type == "place_resource":

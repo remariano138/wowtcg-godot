@@ -71,6 +71,7 @@ func _ready() -> void:
 		_test_ryn_dreamstrider_buff_target_attacking,
 		_test_chasing_ame_graveyard_to_hand,
 		_test_chasing_ame_blocked_and_filtered,
+		_test_love_potion_exhaust_cost,
 		_test_sunken_treasure_equipment_to_hand,
 		_test_finkle_einhorn_graveyard_to_play,
 		_test_ancestral_spirit_reanimate,
@@ -80,6 +81,7 @@ func _ready() -> void:
 		_test_reveal_pick_takes_matching_card,
 		_test_reveal_pick_no_match_all_to_bottom,
 		_test_reveal_pick_blocks_other_actions,
+		_test_reveal_pick_to_top,
 		_test_princess_trapped_opponent_chooses,
 		_test_darrowshire_rfg_three_allies,
 		_test_darrowshire_blocked_with_too_few_allies,
@@ -3415,6 +3417,92 @@ func _test_chasing_ame_graveyard_to_hand() -> void:
 	ok(returned, "sc23-h: card_returned_from_graveyard event emitted")
 
 
+# The Love Potion — "Exhaust two allies in your party and pay (1) to complete
+# this quest. Reward: Draw a card." The allies are an extra COST announced with
+# the completion and exhausted on chain entry (rule 412.2), so they must be
+# ready allies of the completer, must be two DISTINCT ones, and come back ready
+# if the completion is retracted.
+func _test_love_potion_exhaust_cost() -> void:
+	_buf.append("\n-- The Love Potion: exhaust two allies as a completion cost --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("potion_def", 1, "exhaust_allies:2|draw:1")
+	db.ally("body_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	var quest := CardInstance.create("potion_inst", "potion_def", "p1", "p1_resource_row")
+	state.cards["potion_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("potion_inst")
+	# Two of p1's allies are ready; the third is already exhausted. p2 has one
+	# ready ally that must never be a candidate ("allies in YOUR party").
+	for pair in [["a1", "p1"], ["a2", "p1"], ["a3", "p1"], ["e1", "p2"]]:
+		var c := CardInstance.create(pair[0], "body_def", pair[1], pair[1] + "_ally_row")
+		state.cards[pair[0]] = c
+		state.zones[pair[1] + "_ally_row"].card_ids.append(pair[0])
+	state.get_card("a3").is_exhausted = true
+	# Something to draw, so the reward is observable.
+	var top := CardInstance.create("deck_top", "body_def", "p1", "p1_deck")
+	state.cards["deck_top"] = top
+	state.zones["p1_deck"].card_ids.append("deck_top")
+
+	eq(StackResolver.get_quest_ally_exhaust_requirement(db.get_def("potion_def")), 2,
+		"lp-a: cost parsed as two allies")
+	eq(StackResolver.get_quest_exhaust_candidates(state, "p1"), ["a1", "a2"],
+		"lp-b: only p1's READY allies are candidates")
+
+	ok(StackResolver.can_use_quest_no_target_check(state, "potion_inst", "p1", db),
+		"lp-c: no-target probe passes while two ready allies exist")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "potion_inst"}), db),
+		"lp-d: completion without announced allies is rejected")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "potion_inst", "ally_ids": ["a1", "a1"]}), db),
+		"lp-e: the same ally can't pay twice")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "potion_inst", "ally_ids": ["a1", "a3"]}), db),
+		"lp-f: an already-exhausted ally can't pay")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "potion_inst", "ally_ids": ["a1", "e1"]}), db),
+		"lp-g: an opposing ally can't pay")
+
+	# Announce → costs (resource + both allies) are paid on chain entry.
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "potion_inst", "ally_ids": ["a1", "a2"]})
+	ok(not StackResolver.submit_action(state, good, db).is_empty(),
+		"lp-h: completion with two ready allies submits")
+	ok(state.get_card("a1").is_exhausted and state.get_card("a2").is_exhausted,
+		"lp-i: both allies exhausted at announcement (412.2)")
+	# Two resources are available: the blank one plus the face-up quest itself.
+	eq(state.get_available_resources("p1"), 1, "lp-j: the (1) is paid at announcement")
+
+	# Retract puts everything back — the cost is undone with the announcement.
+	StackResolver.retract_last(state, "p1", db)
+	ok(not state.get_card("a1").is_exhausted and not state.get_card("a2").is_exhausted,
+		"lp-k: retract readies both allies again")
+	eq(state.get_available_resources("p1"), 2, "lp-l: retract refunds the resource")
+	ok(not state.get_card("potion_inst").face_down, "lp-m: quest still uncompleted")
+
+	# Re-announce and resolve: the reward draws.
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "potion_inst", "ally_ids": ["a1", "a2"]}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("potion_inst").face_down, "lp-n: quest flipped face-down")
+	eq(state.get_card("deck_top").zone_id, "p1_hand", "lp-o: reward drew a card")
+
+	# With only one ready ally left the quest is no longer completable at all.
+	for res_card in state.cards_in_zone("p1_resource_row"):
+		res_card.is_exhausted = false
+	var quest2 := CardInstance.create("potion2", "potion_def", "p1", "p1_resource_row")
+	state.cards["potion2"] = quest2
+	state.zones["p1_resource_row"].card_ids.append("potion2")
+	state.get_card("a3").is_exhausted = false   # exactly one ready ally now
+	ok(not StackResolver.can_use_quest_no_target_check(state, "potion2", "p1", db),
+		"lp-p: quest is dark with fewer than two ready allies")
+
+
 func _test_chasing_ame_blocked_and_filtered() -> void:
 	_buf.append("\n-- Scenario 24: Chasing A-Me 01 blocked with no valid graveyard target --")
 	var db := MockDB.new()
@@ -3640,6 +3728,59 @@ func _test_reveal_pick_takes_matching_card() -> void:
 		if ev.event_type == "reveal_pick_resolved" and ev.payload.get("card_id", "") == "d_eq":
 			resolved = true
 	ok(resolved, "revealpick-h: reveal_pick_resolved emitted")
+
+
+func _test_reveal_pick_to_top() -> void:
+	_buf.append("
+-- Reveal-pick to_top: It's a Secret to Everybody keeps one on top --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("secret_def", 1, "reveal_pick:Any:3:to_top:private")
+	db.ally("ally_def", 2, 2, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+
+	var quest := CardInstance.create("secret_inst", "secret_def", "p1", "p1_resource_row")
+	state.cards["secret_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("secret_inst")
+
+	for id in ["d_a1", "d_a2", "d_a3", "d_bottom"]:
+		var c := CardInstance.create(id, "ally_def", "p1", "p1_deck")
+		state.cards[id] = c
+		state.zones["p1_deck"].card_ids.append(id)
+
+	var action := PendingAction.make("use_quest", "p1", {"quest_id": "secret_inst"})
+	var events := StackResolver.submit_action(state, action, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.pending_reveal_pick_player, "p1", "secret-a: pending choice belongs to p1")
+	eq(state.pending_reveal_pick_ids, ["d_a1", "d_a2", "d_a3"],
+		"secret-b: every revealed card is selectable (Any)")
+	ok(state.pending_reveal_pick_to_top, "secret-c: to_top flag set")
+	ok(state.pending_reveal_pick_private, "secret-d: private flag set")
+	var flagged := false
+	for ev in events:
+		if ev.event_type == "reveal_pick_opened" and ev.payload.get("to_top", false) 				and ev.payload.get("private", false):
+			flagged = true
+	ok(flagged, "secret-e: reveal_pick_opened carries to_top + private")
+
+	# Keep the SECOND revealed card on top; the other two go to the bottom in
+	# revealed order, below the card that was never revealed.
+	var res := StackResolver.choose_reveal_pick(state, "d_a2", db)
+	eq(state.pending_reveal_pick_player, "", "secret-f: pending cleared after pick")
+	ok(not state.pending_reveal_pick_to_top, "secret-g: to_top flag cleared")
+	eq(state.get_card("d_a2").zone_id, "p1_deck", "secret-h: kept card stays in the deck (not hand)")
+	eq(state.zones["p1_deck"].card_ids, ["d_a2", "d_bottom", "d_a1", "d_a3"],
+		"secret-i: kept card on top, rest to bottom in revealed order")
+	eq(state.zones["p1_hand"].card_ids, [], "secret-j: nothing went to hand")
+	var resolved := false
+	for ev in res:
+		if ev.event_type == "reveal_pick_resolved" and ev.payload.get("to_top", false):
+			resolved = true
+	ok(resolved, "secret-k: reveal_pick_resolved flagged to_top")
 
 
 func _test_reveal_pick_no_match_all_to_bottom() -> void:

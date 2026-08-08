@@ -43,7 +43,7 @@ func _ready() -> void:
 func _setup_specific_scenario() -> void:
 	# ── Database (real cards + the mock instants the parent scene expects) ─────
 	_db = CardDatabase.new()
-	_db.load_csv("res://data/cards.csv")
+	_db.load_all()
 	_db.add_def(_make_mock_def("mock_quick_shot", "Quick Shot", 0, 0, true, "Ability"))
 	_db.add_def(_make_mock_def("mock_dark_bolt",  "Dark Bolt",  0, 0, true, "Ability"))
 

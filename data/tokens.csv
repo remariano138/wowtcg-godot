@@ -1,0 +1,3 @@
+expansion, collector_number, name, cost, type, alignment, class, subtype, tags, atk, dmg_type, health, rarity, keywords, power_text, data_status, engine_status, effects, image_path
+token, mechanical_dragonling, Mechanical Dragonling, , Ally, , , Mechanical Dragonling, Ally Token, 1, , 1, , , , verified, implemented, , assets\cards\tokens\mechanical_dragonling.jpg
+token, tooga, Tooga, , Ally, , , Turtle, Ally Token, 1, , 1, , Unique, "At the start of your next turn, remove Tooga from the game. If you do, draw two cards.", verified, implemented, rfg_self_next_turn:draw:2, assets\cards\tokens\tooga.jpg

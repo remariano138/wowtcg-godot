@@ -5,7 +5,8 @@ Always check the rules in `References/wow_rules.txt` before implementing any
 keyword or card effect — do not rely on general CCG knowledge (Magic,
 Hearthstone) since WoW TCG has its own specific rulings.
 
-Card data lives in: `data/cards.csv`
+Card data lives in: `data/cards.csv` (plus `data/tokens.csv` for effect-created
+tokens — both load into one `CardDatabase` via `load_all()`)
 Active playtest scene: `renderer/tests/playtest.gd` (human vs AI, full UI)
 Engine lives in: `game_logic/` — see Architecture section below.
 
@@ -108,6 +109,9 @@ power_text, data_status, engine_status, effects, image_path
 | `opposing_allies_cant_ready` | Static aura (Earthbind Totem): opposing **allies** (ally_row cards, totems included; heroes/equipment/resources unaffected) can't ready during their controllers' ready step. Live scan in `TurnManager._ready_blocked` — lifts the moment the aura card leaves play. The UI shows a ⛓ badge on every ready-blocked card (`TurnManager.is_ready_blocked` probe → `CardNode.set_ready_locked`, refreshed from playtest `_refresh_ready_lock_badges`; Entangling Roots hosts get it too) |
 | `ongoing_damage_each_turn:AMOUNT:DMG_TYPE` | Ongoing Totem power: at the start of **each** turn, the totem's controller deals AMOUNT DMG_TYPE damage to a chosen target hero or ally. Collected in `TurnManager._collect_ongoing_turn_triggers` (ready step, turn player's totems first — 501.1a); each opens a mandatory **target choice** resolved via `StackResolver.choose_totem_target()` (direct call, `pending_totem_target_player` hard-blocks `can_submit`/`pass_priority` — like the strike/reveal choices). Once the target is picked, the trigger goes on the **chain** as a `resolve_totem_trigger` link and a normal priority window opens (turn player first, rule 501.1a/410) — either player may respond with an instant before the damage lands; `_resolve_totem_trigger` re-checks the target (709.2a) and deals it through the prevention pipeline, then `totem_next` opens the next queued trigger. Scene handles `totem_target_required`: AI auto-targets (opposing kill else opposing hero), human targets via `start_totem_targeting`; the emitted `action_proposed` drives the window drain. Windows are sequential (one per trigger) and the non-turn AI passes them — see `data/rules_deviations.md` "Searing Totem" |
 | `on_enter:EFFECT:AMOUNT:DMG_TYPE` | Enter-play triggered effect (rule 501.1). Fires as the ally resolves into play (`_resolve_play_ally` sets `pending_enter_play_effect` + emits `enter_play_target_required`). **Targeted** enter-play effects (Taz'dingo `deal_damage_to_target`, Ghank `destroy_exhausted_damaged_ally`) are a two-step chain flow: the controller picks a target via a mandatory point (`choose_enter_play_target`, gated by `pending_enter_play_effect`), and that submission puts the trigger **on the chain** with the target chosen. `submit_action` captures the effect onto the chain link's `params._effect_dict` and **clears `pending_enter_play_effect` at announcement** so the ensuing priority window is REAL — the opponent can respond before it resolves (e.g. sacrifice/bounce the targeted ally to its own power). `_resolve_choose_enter_play_target` reads the effect from the link and re-checks the target (706/709.2a, fizzles if it left play). Clearing the marker at announcement (not resolution) is the fix for the dead-window bug where `can_submit`'s guard blocked every response |
+| `on_enter:create_token:TOKEN_DEF_ID[:N]` | Enter-play token creation (Mya, Dragonling Wrangler `dark_portal_184`): "When Mya enters play, put a Mechanical Dragonling ally token with 1 ATK and 1 health into play." Non-targeted and mandatory, so it fires **inline** in `_bring_ally_into_play` — no choice, nothing on the chain. `TOKEN_DEF_ID` is a def id from `data/tokens.csv`. `StackResolver._put_token_into_play` mints the instance (`GameLogic.create_token`, id `<controller>_token_<n>` off `GameState.token_counter`, `owner` = the creating player) and brings it in through `_bring_ally_into_play` like any ally — summoning sickness, its own on_enter triggers, Watcher Mal'wi reactions, and the Pet/Unique uniqueness checks all apply. Emits `token_created`. The token is a normal ally in every respect except that it ceases to exist when it leaves play — see the Tokens section |
+| `create_token:TOKEN_DEF_ID[:N]` (quest reward) | Same effect as a quest reward segment (Tooga's Quest `azeroth_359`): "Reward: Put a unique Turtle ally token named Tooga with 1 ATK and 1 health into play." Handled in `_apply_quest_reward`, same `_put_token_into_play` path |
+| `rfg_self_next_turn:draw:N` | Delayed self-removal carried by a token (Tooga): "At the start of your next turn, remove Tooga from the game. If you do, draw N cards." Fires in `TurnManager._apply_start_of_turn_effects` (controller's turn only), gated on `CardInstance.created_on_turn` so it can't fire on the turn the token was created. The removal is a plain `move_card` to RFG — **not** a destroy, so no `card_destroyed` and no destruction triggers; the draw is the "if you do" rider and only happens because the removal did. Putting the trigger on the TOKEN rather than on the quest is what makes the fizzle free: a token destroyed before then simply isn't in play to be scanned, so no removal and no draw. Resolved inline, not on the chain — see `data/rules_deviations.md` "Tooga" |
 | `destroy_target:ally` | Destroy a target ally (Vanquish-style) |
 | `destroy_target:exhausted_ally` | Destroy a target **exhausted** ally, either party (Coup de Grâce `azeroth_93`, 2, Ability — Assassination). A subset of the ally-only destroy restriction (`_instant_targets_ally_only` includes `exhausted_ally`): the target must be an ally AND exhausted, checked at submission (`_destroy_requires_exhausted`) and re-checked at resolution (`_is_exhausted_ally`, 706 — fizzles if it left play OR readied in response). The highlight probe (`_targeted_play_has_legal_target`) also filters to exhausted allies, so the card goes dark when none is exhausted. AI (`_targeted_instant_actions`): destroys the single most valuable exhausted OPPOSING ally by `card_value_score` (always worth it — a spent attacker) |
 | `except_friendly_attached` | Rider on a `destroy_target:ability` segment (Purge `azeroth_114`, 1, Instant Ability — Elemental, Shaman): "Destroy target ability **unless it's attached to a friendly hero or ally**." Narrows Burn Away's pool — an in-play ability is illegal when it is an attachment whose HOST is a hero or ally controlled by the CASTER. "Friendly" is judged on the host's controller, not the attachment's, so an opponent's Entangling Roots sitting on your own ally is protected from your own Purge (the card's deliberate blind spot); an attachment on a *weapon* (Windfury Weapon) isn't on a hero or ally and stays targetable. `_is_destroyable_ability` gates submission (`_can_play_instant`/`_can_play_ability`), the highlight probe (`_targeted_play_has_legal_target` — the card goes dark when every in-play ability is friendly-attached) and the resolution re-check (706/4217 — a host that changes control mid-chain fizzles the destroy). AI: inherits Burn Away's `_targeted_instant_actions` branch (opposing targets with cost ≥ spell cost; at cost 1 that's effectively always) — not tagged as a combat instant |
@@ -126,7 +130,8 @@ power_text, data_status, engine_status, effects, image_path
 | `requires_hero_race:RACE` | Deckbuilding restriction only (rule 100.2b — "[Race] Hero Required", War Stomp: Tauren). No in-game effect; enforced in `DeckManager.authorize_deck_def` (`required_hero_race`) by substring-matching RACE against the hero's tags column ("Tauren Shaman"; covers multi-word races like Night Elf) |
 | `sarmoth_taunt` | Opposing characters that can attack this must attack only this |
 | `heal_x_from_target:DMG_TYPE` | Hero power: pay X resources → heal X from target hero or ally (Boris) |
-| `reveal_pick:CARD_TYPE:N` | Quest reward: reveal the top N cards; put a revealed card of `CARD_TYPE` (`Equipment`/`Ally`/`Ability`; matches the parsed `CardDef.card_type`, so `Instant Ally`→`Ally`) into hand, rest to the bottom of the deck in revealed order. If at least one matches, sets `pending_reveal_pick_*` and emits `reveal_pick_opened`; the scene resolves it via `StackResolver.choose_reveal_pick()` (direct call, not the stack — like pet sacrifice; `can_submit`/`pass_priority` hard-block while pending). The choice ALWAYS opens (even with no match) so the player sees the revealed cards; the browser shows every revealed card graveyard-style, non-matching ones tinted red and non-selectable, a matching card MUST be picked before OK, and if none match the player clicks OK (empty pick — `choose_reveal_pick(state, "")`) to send all revealed cards to the bottom. Big Game Hunter (Equipment:4), Kibler's Exotic Pets (Ally:3), Zapped Giants (Ability:3) |
+| `reveal_pick:CARD_TYPE:N` | Quest reward: reveal the top N cards; put a revealed card of `CARD_TYPE` (`Equipment`/`Ally`/`Ability`; matches the parsed `CardDef.card_type`, so `Instant Ally`→`Ally`) into hand, rest to the bottom of the deck in revealed order. If at least one matches, sets `pending_reveal_pick_*` and emits `reveal_pick_opened`; the scene resolves it via `StackResolver.choose_reveal_pick()` (direct call, not the stack — like pet sacrifice; `can_submit`/`pass_priority` hard-block while pending). The choice ALWAYS opens (even with no match) so the player sees the revealed cards; the browser shows every revealed card graveyard-style, non-matching ones tinted red and non-selectable, a matching card MUST be picked before OK, and if none match the player clicks OK (empty pick — `choose_reveal_pick(state, "")`) to send all revealed cards to the bottom. Big Game Hunter (Equipment:4), Kibler's Exotic Pets (Ally:3), Zapped Giants (Ability:3). `CARD_TYPE` `Any` makes every revealed card selectable. Optional 4th field `opponent` hands the PICK to the other player (The Princess Trapped) — see `reveal_pick:Any:N:opponent` below |
+| `reveal_pick:Any:N:opponent` | **Opponent-decided** reveal-pick (The Princess Trapped `azeroth_357`, Quest, pay 2): "Reveal the top two cards of your deck. Target opponent chooses one. Put that card into your hand and the other one on the bottom of your deck." First card whose DECIDER differs from its owner, so the pending choice now carries both: `GameState.pending_reveal_pick_player` is the OWNER (whose deck was revealed, whose hand the pick goes to) and `pending_reveal_pick_chooser` is the DECIDER. Every blocker (`can_submit` / `pass_priority`) still keys off the owner field — only input routing and AI pick-quality key off the chooser. `reveal_pick_opened` carries `chooser`; `choose_reveal_pick` is unchanged (the picked card still goes to the OWNER's hand, the rest to the bottom of the OWNER's deck). "Target opponent" is auto-chosen — see `data/rules_deviations.md` "The Princess Trapped". UI: the reveal browser opens for the chooser via `_route_choice(chooser, "public")` — in hotseat the revealed cards are shown to both players and only the input is re-pointed (no hand hiding, no handoff). AI: `_pick_ai_reveal(candidates, hostile)` inverts its ranking when choosing FOR the opponent — it hands them the worst revealed card |
 | `turn_start_discard_or_give_control` | At the start of your turn: discard a card, or the opponent gains control of this (Infernal). Fires in `TurnManager._apply_start_of_turn_effects`; resolves via `choose_control_discard` / `decline_control_discard` |
 | `end_of_turn_damage_opposing:AMOUNT:DMG_TYPE` | At the end of your turn, this deals AMOUNT damage to each opposing hero and ally (Infernal). Fires in `TurnManager._apply_end_of_turn_effects` |
 | `target_cant_attack` | Hero flip power (Litori Frostburn): target hero or ally can't attack this turn (`cannot_attack` restriction Buff, duration "turns":1, cleared by the end-of-turn buff sweep). Instant speed. Key timing (601.3 vs 602.1/602.4): played in RESPONSE to a combat proposal still on the chain, the proposal's legality recheck interrupts it — combat never starts and the attacker never exhausts. Played during an attack/defend window it's too late — "can't attack" is not a remove-from-combat effect; the current combat proceeds. AI: never blind-played; `BaseAI.hero_disable_action` answers an opposing propose_combat on the chain (hero defender taking lethal/≥4, or an ally cost ≥2 dying in a bad trade), holding it if a combat-instant kill is available |
@@ -173,6 +178,41 @@ power_text, data_status, engine_status, effects, image_path
 
 **`data_status`**: `verified` = card text confirmed from image  
 **`engine_status`**: `implemented` = effects string is live in engine
+
+### Tokens (`data/tokens.csv`)
+
+Cards created by an effect rather than dealt from a deck (Mya's Mechanical
+Dragonling, Tooga's Quest's Tooga). They live in their **own CSV** with the
+same columns as `cards.csv`, and are loaded into the **same `CardDatabase`** —
+every lookup in the engine, renderer and AI resolves a card by id, so tokens
+must share the database. `CardDatabase.load_all()` loads both files and is the
+only thing call sites should use (`load_csv(path, as_tokens)` is its plumbing);
+defs from `tokens.csv` get `CardDef.is_token = true`.
+
+- **Ids** are `token_<slug>` (no collector number). Instances are minted at
+  runtime as `<controller>_token_<n>` off `GameState.token_counter`.
+- **Not deckable** — `DeckManager.authorize_deck_def` rejects any `is_token`
+  def alongside the rule 100.1 hero check. Without that gate a token would look
+  legal in a deck list purely because it resolves in the database.
+- **A token ceases to exist when it leaves play.** The redirect lives in
+  `GameLogic.move_card`: ANY play → non-play move of a card with
+  `CardInstance.is_token` goes to the owner's RFG zone instead. One branch
+  covers destroy, bounce (Withdraw), discard and every future removal by
+  construction, and no token can ever reach a graveyard for recursion
+  (Ophelia, Augustus) to find. It changes only the DESTINATION — `destroy_card`
+  still emits `card_destroyed` first, so `on_destroyed` triggers and "when an
+  ally is destroyed" watchers see a token exactly as a real card.
+  See `data/rules_deviations.md` "Tokens".
+- **Renderer:** a token has never been in a zone, so no CardNode exists for it —
+  `playtest.gd`'s `card_moved` handler spawns one as it enters the ally_row
+  (same pattern as the drawn-card branch). Art of any resolution renders at card
+  size for free: `CardNode`'s TextureRect is a fixed 75×105 with
+  `STRETCH_SCALE` + `EXPAND_IGNORE_SIZE`, so the source pixel size is ignored.
+  Aspect ratio is NOT preserved — a source far off 5:7 would be stretched.
+- Adding a token: drop the art in `assets/cards/tokens/`, add a row to
+  `data/tokens.csv` (`engine_status=implemented`, `image_path` set), and run the
+  Godot importer once so the image has a `.import` file — `load()` returns null
+  without it.
 
 **CSV field quoting:** always quote `power_text` and `card_subtype` values to safely handle special characters (commas, quotes, line breaks). Use standard CSV quoting: wrap the field in double quotes and escape internal quotes as `""`. For example:
 ```
@@ -261,6 +301,7 @@ Notable implemented mechanics:
 - **Hero powers**: Ta'zo flip (deal_damage_to_target:3:fire), Dizdemona (deal_x_damage_to_ally), Omedus (deal_damage_aoe), Grennan (heal), Boris Brightbeard (heal_x_from_target — pay X resources, heal X from any hero or ally), Radak Doombringer (radak_pet_sacrifice — flip: sacrifice Pet with cost X, deal X shadow dmg to target)
 - **Quest cards** — basic cost-based quest completion
 - **Reveal-and-pick quests** — Big Game Hunter (`azeroth_348`, Equipment:4), Kibler's Exotic Pets (`azeroth_355`, Ally:3), Zapped Giants (`azeroth_361`, Ability:3): reveal top N, keep one revealed card of a type, rest to bottom (`reveal_pick` recipe; human picks via the reveal browser, AI keeps highest-cost via `_pick_ai_reveal`)
+- **The Princess Trapped** (`azeroth_357`, Quest, pay 2) — "Reveal the top two cards of your deck. Target opponent chooses one. Put that card into your hand and the other one on the bottom of your deck" (`reveal_pick:Any:2:opponent`). First card whose **decider differs from its owner**, which is what introduced `pending_reveal_pick_chooser` and the scene's `_route_choice` funnel (see the effects-table row and the Hotseat section).
 - **Totem** (rule 305.3) — Searing Totem (`azeroth_116`, Instant Ability—Elemental, Fire Totem, 0/1). Ability ally that enters the ally_row, can't attack, can be attacked/targeted like an ally. Ongoing power deals 1 fire damage to a chosen hero/ally at the start of each turn (`totem:fire` + `ongoing_damage_each_turn:1:fire`; direct-call `choose_totem_target` picks the target, then the trigger goes on the chain with a priority window before the damage — rule 501.1a/410). First card of the general Totem framework.
 - **Earthbind Totem** (`azeroth_107`, 2, Instant Ability—Elemental, Earth Totem (1), 0/1) — "Ongoing: Opposing allies can't ready during their controllers' ready step" (`ongoing|totem:earth|opposing_allies_cant_ready`). First ready-lock aura; ready-blocked cards show the ⛓ badge.
 - **Healing Stream Totem** (`azeroth_111`, 1, Instant Ability—Restoration, Water Totem (1), 0/1) — "Ongoing: At the start of each turn, [this] heals 1 damage from each hero and ally in your party" (`ongoing|totem:water|heal_party_each_turn:1`).
@@ -285,6 +326,7 @@ Notable implemented mechanics:
 - **Withdraw** (`azeroth_172`, 3, Instant Ability) — "Put target ally into its owner's hand" (`return_to_hand:ally`). First bounce effect; the counter-spell save play (bounce your own targeted ally, the opposing removal fizzles per 709.2a). See the `return_to_hand` effects-table row.
 - **War Stomp** (`dark_portal_137`, 3, Instant Ability, Horde, **Tauren Hero Required**) — "Exhaust all opposing heroes and allies" (`requires_hero_race:Tauren|exhaust_all_opposing`). First mass exhaust and first "[Race] Hero Required" deckbuilding restriction (rule 100.2b, enforced in the deck authorizer) — see both effects-table rows.
 - **Berserking** (`dark_portal_134`, 3, Ability — Horde, **Troll Hero Required**) — "Ongoing: When your hero is dealt damage, put a berserk counter on Berserking. When your hero attacks, remove all berserk counters from Berserking. Your hero has +1 ATK this combat for each counter you removed" (`ongoing|requires_hero_race:Troll|berserk_counter_on_hero_damage|berserk_atk_on_hero_attack:1`). First card with **visible counters** (orange badge, ATK-badge corner) and the first "+N ATK this combat" grant (`GameState.combat_atk_bonus`) — see the effects-table row.
+- **Tokens** (`data/tokens.csv`) — general framework: a separate CSV loaded into the same `CardDatabase`, non-deckable, and voided on any play → non-play move (see the Tokens section under Card data format). First cards: **Mya, Dragonling Wrangler** (`dark_portal_184`, 3-cost 2/2 Alliance Gnome Mage): "When Mya enters play, put a Mechanical Dragonling ally token with 1 ATK and 1 health into play" (`on_enter:create_token:token_mechanical_dragonling`) — first token creator. **Tooga's Quest** (`azeroth_359`, Quest, pay 3 during your turn): "Reward: Put a unique Turtle ally token named Tooga with 1 ATK and 1 health into play. At the start of your next turn, remove Tooga from the game. If you do, draw two cards" (`create_token:token_tooga|require_turn_player`, with `rfg_self_next_turn:draw:2` on the token) — first token from a quest reward and first delayed self-removal trigger. Tooga is Unique (414.3a). No AI modeling needed: Mya is played as a plain ally and the quest completion is generic.
 - **Lady Jaina Proudmoore** (`azeroth_195`, 7/4 Ally, Unique) — "Opposing allies can't attack." Live static aura (`opposing_allies_cant_attack`) + first card exercising **name-based Unique uniqueness** (rule 414.3a — see Card uniqueness).
 - **Bala Silentblade** (`azeroth_226`, 3-cost 1/4 Horde Orc Rogue) — "+3 ATK while attacking an exhausted hero or ally." Live conditional self-modifier (`atk_vs_exhausted_defender:3`), natural partner of the Chops/Voss attack-exhaust trigger. See the effects-table row.
 - **Chops** (`dark_portal_32`, 3-cost 3/4 Boar, Pet) / **Voss Treebender** (`azeroth_266`, 1-cost 2/1 Horde Tauren Druid) — "When [this] attacks, you may exhaust target hero or ally." First attack-triggered targeted power (`on_attack_exhaust_target`): resolves before the attack window, so it can exhaust a ready Protector and deny the protect point. See the effects-table row.
@@ -407,17 +449,26 @@ human can also sit in the p2 seat vs an AI).
   with no legal response still auto-skip. Mode exits when priority leaves the ambusher
   (`_refresh_ui` guard) or on Skip; `_drain_passes`/`_schedule_next_turn` freeze while
   `_in_ambush_mode`. `_stance` survives rematches.
-- **Discard peek mode:** when the OFF-SCREEN human owes a mandatory discard (Mias
-  the Putrid / Hypnotic Blade), `_handle_discard_choice` calls
-  `_enter_discard_peek_mode(player)` before `start_discard_mode`: the router is
-  pointed at the discarding player (their hand highlights red and clicks discard
-  for them) while the renderer perspective stays with the seat — their hand stays
-  face-down, the hovered card alone shows its front (same peek as ambush mode,
-  social contract). `_try_pass` is hard-blocked while peeking (the seated player's
-  Space must not act through the re-pointed router); `_drain_passes` /
-  `_schedule_next_turn` / `_maybe_turbo_pass` already stall on
-  `pending_discard_count`. Exits via `_on_discard_mode_ended` → `_exit_discard_peek_mode`
-  (router back to `_local_player`, hand visibility re-hidden).
+- **Mandatory-choice routing (`_route_choice`) — the one funnel:** the engine
+  already addresses every pending choice to a specific player
+  (`pending_*_player`, and `pending_reveal_pick_chooser` where the decider differs
+  from the owner), so the scene's only job is turning "who decides" into "how do I
+  collect it here". `_route_choice(decider, visibility)` returns:
+  `"ai"` (decider is an AI — the caller auto-resolves via the AI hook),
+  `"local"` (the human in this seat — render inline), or
+  `"peek"` (a human who is NOT in this seat — hotseat: `_enter_choice_peek_mode`
+  re-points the InputRouter at them so their clicks resolve the choice).
+  `visibility` is `"private"` (a mandatory discard — their hand stays face-down
+  with one-card-at-a-time hover peek, gated on `_choice_peek_hides_hand`) or
+  `"public"` (The Princess Trapped's reveal — both players are meant to see the
+  cards, so nothing is hidden and no handoff happens). `_try_pass` is hard-blocked
+  while peeking (the seated player's Space must not act through the re-pointed
+  router); exits via `_exit_choice_peek_mode` (`_on_discard_mode_ended`, and the
+  reveal browser's confirm) — router back to `_local_player`, hand visibility
+  re-hidden. **A network build replaces the `"peek"` branch alone** (serialize the
+  choice, await the remote player's answer); no card-level code changes. New
+  mandatory choices should go through this funnel rather than adding another
+  `if _hotseat and pid != _local_player` branch.
 - **Hand hover magnify:** the local player's own hand cards scale ×1.2 (`HOVER_MAGNIFY`
   on top of `HAND_CARD_SCALE`) + z-bump while hovered; hover/unhover signals are wired
   in `_spawn_card_node`.

@@ -11,7 +11,7 @@ const STALL_LIMIT := 200   # ticks with no observable progress -> deadlock
 
 func _init() -> void:
 	var db := CardDatabase.new()
-	db.load_csv("res://data/cards.csv")
+	db.load_all()
 
 	var deck_ids := DeckManager.get_available_decks().all()
 	var games := 0

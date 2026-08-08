@@ -125,6 +125,12 @@ static func authorize_deck_def(deck: DeckDefinition, db) -> Array[String]:
 		if def.card_type == "Hero":
 			errors.append("'%s' is a Hero — heroes can't be deck cards (rule 100.1)." % def.card_name)
 			continue
+		# Tokens (data/tokens.csv) resolve in the database because the engine
+		# looks every card up by id, but they exist only once an effect creates
+		# them — they are not deck cards.
+		if def.is_token:
+			errors.append("'%s' is a token — tokens can't be deck cards." % def.card_name)
+			continue
 		copies_by_name[def.card_name] = copies_by_name.get(def.card_name, 0) + entry.count
 		var spec := talent_spec(def)
 		if spec != "":

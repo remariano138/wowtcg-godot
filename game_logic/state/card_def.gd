@@ -24,6 +24,10 @@ var rarity: String = ""        # "Common", "Uncommon", "Rare", "Epic"
 var keywords: Array[String] = []   # lowercase, e.g. ["protector", "ferocity"]
 var effects: String = ""       # raw recipe string from CSV effects column
 var image_path: String = ""    # relative path under res://
+# True for defs loaded from data/tokens.csv. Tokens are created by effects, are
+# never deckable (DeckManager.authorize_deck_def rejects them), and cease to
+# exist the moment they leave play (GameLogic.move_card redirects them to RFG).
+var is_token: bool = false
 
 
 # Build a CardDef from a raw CSV row dictionary (as returned by CardDatabase).

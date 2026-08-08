@@ -1251,6 +1251,28 @@ static func _resolve_play_ally(state: GameState,
 	return _bring_ally_into_play(state, card_id, db)
 
 
+# Create an ally token and put it into play under `controller` (Mya's Mechanical
+# Dragonling, Tooga's Quest's Tooga). Non-targeted and mandatory, so it fires
+# inline — no choice, nothing to put on the chain.
+#
+# The token goes in through _bring_ally_into_play like any other ally, so it
+# gets summoning sickness, its own on_enter triggers, Watcher Mal'wi-style
+# reactions, and the Pet/Unique uniqueness checks (Tooga is Unique — a second
+# copy triggers the normal sacrifice choice).
+static func _put_token_into_play(state: GameState, controller: String,
+		token_def_id: String, count: int, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	for _i in max(count, 1):
+		var tid := GameLogic.create_token(state, controller, token_def_id, db)
+		if tid == "":
+			continue
+		events.append(GameEvent.make("token_created", {
+			"card": tid, "def": token_def_id, "player": controller,
+		}))
+		events.append_array(_bring_ally_into_play(state, tid, db))
+	return events
+
+
 # Move an ally into its controller's ally_row and fire its enter-play effects.
 # Shared by normal play (_resolve_play_ally) and effects that put an ally into
 # play from elsewhere (e.g. Finkle Einhorn's graveyard reward) — the on_enter
@@ -1280,6 +1302,15 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						var n := int(parts[2]) if parts.size() > 2 else 1
 						for _i in n:
 							events.append_array(_draw_one(state, card.controller))
+					"create_token":
+						# Mya, Dragonling Wrangler: "When Mya enters play, put a
+						# Mechanical Dragonling ally token with 1 ATK and 1 health
+						# into play." No target, no choice — fires inline.
+						var token_def_id := parts[2].strip_edges() if parts.size() > 2 else ""
+						var token_n := int(parts[3]) if parts.size() > 3 else 1
+						if token_def_id != "":
+							events.append_array(_put_token_into_play(
+								state, card.controller, token_def_id, token_n, db))
 					"discard_opponent":
 						var n := int(parts[2]) if parts.size() > 2 else 1
 						var opp := _other_player(state, card.controller)
@@ -4317,6 +4348,18 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 				var n := int(parts[1])
 				for _i in n:
 					events.append_array(_draw_one(state, player_id))
+			"create_token":
+				# Tooga's Quest: "Reward: Put a unique Turtle ally token named
+				# Tooga with 1 ATK and 1 health into play." The delayed half of
+				# the reward ("at the start of your next turn, remove Tooga from
+				# the game — if you do, draw two cards") rides on the TOKEN as a
+				# rfg_self_next_turn segment, so it simply doesn't happen if the
+				# token is gone by then. See TurnManager._apply_start_of_turn_effects.
+				var q_token_id := parts[1].strip_edges()
+				var q_token_n := int(parts[2]) if parts.size() > 2 else 1
+				if q_token_id != "":
+					events.append_array(_put_token_into_play(
+						state, player_id, q_token_id, q_token_n, db))
 			"discard_from_hand":
 				var n := int(parts[1])
 				state.pending_discard_player = player_id
@@ -4368,7 +4411,12 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 				# least one matching card is revealed.
 				var want_type := parts[1].strip_edges()
 				var reveal_n := int(parts[2]) if parts.size() > 2 else 1
-				events.append_array(_reveal_pick(state, player_id, want_type, reveal_n, db))
+				# Optional 4th field: who CHOOSES. "opponent" (The Princess
+				# Trapped) hands the pick to the other player; default "self".
+				var chooser := player_id
+				if parts.size() > 3 and parts[3].strip_edges() == "opponent":
+					chooser = "p2" if player_id == "p1" else "p1"
+				events.append_array(_reveal_pick(state, player_id, want_type, reveal_n, db, chooser))
 			"deck_to_hand":
 				# The Missing Diplomat: search your deck, reveal the chosen ally,
 				# put it into your hand. Re-check each target is still in the
@@ -4398,8 +4446,11 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 # pending choice and emit reveal_pick_opened (the scene resolves it via
 # choose_reveal_pick). If none match, all revealed cards go straight to the
 # bottom of the deck with no choice.
+# `chooser` is who makes the pick — the owner unless the card says otherwise
+# (The Princess Trapped: "Target opponent chooses one"). `want_type` "Any"
+# makes every revealed card selectable.
 static func _reveal_pick(state: GameState, player_id: String, want_type: String,
-		n: int, db) -> Array[GameEvent]:
+		n: int, db, chooser: String = "") -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	var deck := state.zones.get(player_id + "_deck") as Zone
 	if not deck or deck.card_ids.is_empty():
@@ -4414,16 +4465,18 @@ static func _reveal_pick(state: GameState, player_id: String, want_type: String,
 		events.append(GameEvent.card_revealed_from_deck(cid, player_id))
 		var c := state.get_card(cid)
 		var d := db.get_def(c.card_def_id) as CardDef if c and db else null
-		if d and d.card_type == want_type:
+		if want_type == "Any" or (d and d.card_type == want_type):
 			selectable.append(cid)
 	# Always open the choice — even when nothing matches, the controller still
 	# gets to SEE the revealed cards before they go to the bottom of the deck
 	# (they acknowledge with an empty pick via choose_reveal_pick). selectable
 	# may be empty; the resolver then sends every revealed card to the bottom.
 	state.pending_reveal_pick_player = player_id
+	state.pending_reveal_pick_chooser = chooser if chooser != "" else player_id
 	state.pending_reveal_pick_ids = selectable
 	state.pending_reveal_pick_all = revealed
-	events.append(GameEvent.reveal_pick_opened(player_id, selectable, revealed, want_type))
+	events.append(GameEvent.reveal_pick_opened(player_id, selectable, revealed,
+			want_type, state.pending_reveal_pick_chooser))
 	return events
 
 
@@ -4447,6 +4500,7 @@ static func choose_reveal_pick(state: GameState, card_id: String,
 	var revealed := state.pending_reveal_pick_all.duplicate()
 	# Clear pending state up front so subsequent moves can't re-enter this path.
 	state.pending_reveal_pick_player = ""
+	state.pending_reveal_pick_chooser = ""
 	state.pending_reveal_pick_ids = []
 	state.pending_reveal_pick_all = []
 

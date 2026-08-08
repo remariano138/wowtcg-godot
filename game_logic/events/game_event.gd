@@ -376,10 +376,13 @@ static func card_removed_from_game(card_id: String, player_id: String) -> GameEv
 # A reveal-and-pick quest reward (Big Game Hunter etc.) revealed the top cards
 # and found at least one card of the required type — the controller must choose
 # one to keep. selectable = matching-type ids; revealed = all revealed ids.
+# `chooser` is the player who makes the pick — the owner unless the card hands
+# the choice to the opponent (The Princess Trapped).
 static func reveal_pick_opened(player_id: String, selectable_ids: Array,
-		revealed_ids: Array, card_type: String) -> GameEvent:
+		revealed_ids: Array, card_type: String, chooser: String = "") -> GameEvent:
 	return make("reveal_pick_opened", {
 		"player":     player_id,
+		"chooser":    chooser if chooser != "" else player_id,
 		"selectable": selectable_ids,
 		"revealed":   revealed_ids,
 		"card_type":  card_type,

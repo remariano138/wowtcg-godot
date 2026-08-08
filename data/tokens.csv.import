@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://caf0l18kol3wn"
+
+[deps]
+
+files=["res://data/tokens. collector.translation", "res://data/tokens. name.translation", "res://data/tokens. cost.translation", "res://data/tokens. type.translation", "res://data/tokens. alignment.translation", "res://data/tokens. class.translation", "res://data/tokens. subtype.translation", "res://data/tokens. tags.translation", "res://data/tokens. atk.translation", "res://data/tokens. dmg.translation", "res://data/tokens. health.translation", "res://data/tokens. rarity.translation", "res://data/tokens. keywords.translation", "res://data/tokens. power.translation", "res://data/tokens. data.translation", "res://data/tokens. engine.translation", "res://data/tokens. effects.translation", "res://data/tokens. image.translation"]
+
+source_file="res://data/tokens.csv"
+dest_files=["res://data/tokens. collector.translation", "res://data/tokens. name.translation", "res://data/tokens. cost.translation", "res://data/tokens. type.translation", "res://data/tokens. alignment.translation", "res://data/tokens. class.translation", "res://data/tokens. subtype.translation", "res://data/tokens. tags.translation", "res://data/tokens. atk.translation", "res://data/tokens. dmg.translation", "res://data/tokens. health.translation", "res://data/tokens. rarity.translation", "res://data/tokens. keywords.translation", "res://data/tokens. power.translation", "res://data/tokens. data.translation", "res://data/tokens. engine.translation", "res://data/tokens. effects.translation", "res://data/tokens. image.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

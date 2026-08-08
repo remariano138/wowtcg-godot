@@ -1,22 +1,37 @@
 class_name CardDatabase
 extends RefCounted
 
-# Loads card definitions from data/cards.csv.
+# Loads card definitions from data/cards.csv and data/tokens.csv.
 # Only cards whose engine_status column equals "implemented" are surfaced to
 # the engine. Every other card is silently skipped — this is the manual gate
 # that prevents half-finished cards from reaching game logic.
 #
 # Usage:
 #   var db := CardDatabase.new()
-#   db.load_csv("res://data/cards.csv")
+#   db.load_all()
 #   var def: CardDef = db.get_def("swift_wolf")
 
 const ENGINE_READY_TAG := "implemented"
 
+const CARDS_PATH  := "res://data/cards.csv"
+const TOKENS_PATH := "res://data/tokens.csv"
+
 var _defs: Dictionary = {}   # card_def_id (String) -> CardDef
 
 
-func load_csv(path: String) -> void:
+# Load every data file into this one database. Card defs are resolved by id
+# everywhere in the engine (GameState, renderer, AI), so tokens have to live in
+# the SAME database as normal cards — they're only kept in a separate file
+# because they are not deckable (see CardDef.is_token). Prefer this over
+# calling load_csv per file: a new data file gets picked up by every call site
+# at once.
+func load_all() -> void:
+	load_csv(CARDS_PATH)
+	load_csv(TOKENS_PATH, true)
+
+
+# `as_tokens` marks every def from this file as a token (CardDef.is_token).
+func load_csv(path: String, as_tokens: bool = false) -> void:
 	var file := FileAccess.open(path, FileAccess.READ)
 	if not file:
 		push_error("CardDatabase: cannot open %s" % path)
@@ -64,10 +79,12 @@ func load_csv(path: String) -> void:
 		# Use expansion + collector_number as a stable unique ID.
 		var def_id := "%s_%s" % [row.get("expansion", ""), row.get("collector_number", "")]
 		var def := CardDef.from_csv_row(def_id, row)
+		def.is_token = as_tokens
 		_defs[def_id] = def
 		loaded += 1
 
-	print("CardDatabase: loaded %d cards (%d skipped — not implemented)" % [loaded, skipped])
+	print("CardDatabase: loaded %d %s (%d skipped — not implemented)"
+		% [loaded, "tokens" if as_tokens else "cards", skipped])
 
 
 # Inject a CardDef directly — used by test scenes for mock cards that have no

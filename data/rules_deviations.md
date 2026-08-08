@@ -519,3 +519,71 @@ ability-resolution packet sites (instants/abilities, ongoing-ability on-play
 damage, attachments including Fireball's turn-start burn). Hero flip POWERS,
 ally/equipment activated powers, totem triggers, enter-play ally effects, and
 combat damage are not abilities and never get the bonus.
+
+## Tokens — "ceases to exist" is modelled as the RFG zone
+
+**Cards:** Mechanical Dragonling (`token_mechanical_dragonling`, from Mya),
+Tooga (`token_tooga`, from Tooga's Quest)
+**Enforcement site:** `GameLogic.move_card` (the `card.is_token` redirect)
+
+Printed rule: a token that leaves play ceases to exist — it is not a card in
+any zone afterwards. The engine instead moves it to its owner's RFG zone and
+leaves the `CardInstance` registered in `state.cards`. This is unobservable in
+play: nothing in the engine reads an RFG zone as a resource (it is only ever a
+destination), so a voided token can never be recurred, exiled, counted or
+targeted. Keeping the instance means the renderer can animate the card away and
+no already-captured `instance_id` can dangle into a null lookup mid-resolution.
+
+The redirect deliberately lives in `move_card` rather than in each removal
+effect, so it covers destruction, bounce (Withdraw), discard and any future
+"put into its owner's hand/deck" by construction. It only changes the
+DESTINATION: `GameLogic.destroy_card` still emits `card_destroyed` before the
+move, so `on_destroyed` triggers and every "when an ally is destroyed" watcher
+fire on a token exactly as on a real card.
+
+## Tooga — delayed self-removal fires inline, not on the chain
+
+**Card:** Tooga's Quest (`azeroth_359`) → the Tooga token (`token_tooga`)
+**Enforcement site:** `TurnManager._apply_start_of_turn_effects`
+(the `rfg_self_next_turn` branch)
+
+"At the start of your next turn, remove Tooga from the game. If you do, draw
+two cards" is a delayed triggered effect, which by rule 501.1a would go on the
+chain with a priority window before it resolves. The engine resolves it inline
+during the ready step instead — the same deviation (and for the same reason)
+as every other start-of-turn trigger here: there is no cost, no choice and no
+target, so nothing an opponent could respond to changes the outcome. The one
+observable difference is that an opponent cannot kill Tooga *in response to the
+trigger* to deny the two cards; killing it any time before the ready step works
+normally.
+
+The trigger is carried by the token itself rather than remembered by the quest,
+which is what makes the fizzle free: a Tooga that is already gone is not in
+play to be scanned, so there is no removal and — "if you do" — no draw. The
+removal is a plain move to RFG with no `card_destroyed` event, so it correctly
+triggers nothing, unlike an opponent destroying the token.
+
+---
+
+## The Princess Trapped — "target opponent" is auto-chosen
+
+**Card:** The Princess Trapped (`azeroth_357`, Quest). Printed text: "Pay (2) to
+complete this quest. Reward: Reveal the top two cards of your deck. Target
+opponent chooses one. Put that card into your hand and the other one on the
+bottom of your deck." Recipe `reveal_pick:Any:2:opponent`.
+
+**Deviation:** "target opponent" is a real target in the printed rules (a
+multiplayer game picks one, and 706 Untargetable-style restrictions could in
+principle apply to players). Here the sole opponent is chosen automatically,
+with no target pick and no fizzle path — the same treatment as Hypnotic Blade's
+"target player".
+
+**Why:** the duel format has exactly one opponent, so the choice is degenerate.
+This is the first card where the DECIDER of a mandatory choice differs from its
+owner, so the engine now carries both explicitly:
+`GameState.pending_reveal_pick_player` is the owner (whose deck was revealed and
+whose hand the pick goes to) and `pending_reveal_pick_chooser` is the decider.
+Every blocker (`can_submit` / `pass_priority`) still keys off the owner field;
+only input routing and AI pick-quality key off the chooser. Enforcement site:
+the `reveal_pick` branch of `_apply_quest_reward` in
+`game_logic/stack_resolver.gd` (4th recipe field `opponent`).

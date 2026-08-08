@@ -17,6 +17,20 @@ var zone_id: String         # current zone:
                             #   "p2_*" equivalents
                             #   "attached" — in play but physically under a host card (rule 400.5)
 
+# ── Token identity ─────────────────────────────────────────────────────────────
+# True for cards created by an effect rather than dealt from a deck (Mya's
+# Mechanical Dragonling, Tooga's Quest's Tooga). A token ceases to exist the
+# moment it leaves play: GameLogic.move_card redirects ANY play → non-play move
+# of a token to its owner's RFG zone, so no token ever reaches a graveyard, a
+# hand or a deck. Destruction is unaffected — card_destroyed still fires and
+# every "when destroyed" trigger sees it; only the destination differs.
+# Mirrored from CardDef.is_token at creation so move_card needs no db lookup.
+var is_token: bool = false
+# Turn number on which this card was put into play. Only meaningful for tokens:
+# delayed "at the start of your NEXT turn" triggers (Tooga) use it to avoid
+# firing on the turn the token was created.
+var created_on_turn: int = 0
+
 # ── Attachment relationship (rule 400) ────────────────────────────────────────
 # Attachments have zone_id == "attached" and attached_to set.
 # Hosts carry the instance_ids of all cards attached to them.
@@ -104,6 +118,8 @@ func to_dict() -> Dictionary:
 		"owner":            owner,
 		"controller":       controller,
 		"zone_id":          zone_id,
+		"is_token":         is_token,
+		"created_on_turn":  created_on_turn,
 		"attached_to":      attached_to,
 		"attachments":      attachments.duplicate(),
 		"is_exhausted":     is_exhausted,
@@ -125,6 +141,8 @@ static func from_dict(d: Dictionary) -> CardInstance:
 	inst.owner           = d["owner"]
 	inst.controller      = d["controller"]
 	inst.zone_id         = d["zone_id"]
+	inst.is_token        = d.get("is_token", false)
+	inst.created_on_turn = d.get("created_on_turn", 0)
 	inst.attached_to     = d.get("attached_to", "")
 	inst.attachments.assign(d.get("attachments", []))
 	inst.is_exhausted    = d.get("is_exhausted", false)

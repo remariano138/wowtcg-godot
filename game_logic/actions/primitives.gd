@@ -11,6 +11,33 @@ extends RefCounted
 # See CLAUDE.md — architecture invariants.
 
 
+# ── create_token ───────────────────────────────────────────────────────────────
+# Register a brand-new token CardInstance and return its instance_id (or "" if
+# the def is unknown / isn't a token). The instance starts in NO zone — the
+# caller puts it into play (StackResolver._put_token_into_play), which is what
+# fires its enter-play triggers and uniqueness checks.
+#
+# The token has no deck of origin, so `owner` is set to the player whose effect
+# created it: party, graveyard-side and control-change logic all key off owner
+# and controller, and a later control change (Infernal) moves it without
+# changing owner, exactly like any other card.
+static func create_token(state: GameState, controller: String,
+		token_def_id: String, db) -> String:
+	if not db:
+		return ""
+	var def := db.get_def(token_def_id) as CardDef
+	if not def or not def.is_token:
+		push_warning("create_token: '%s' is not a known token def" % token_def_id)
+		return ""
+	state.token_counter += 1
+	var inst_id := "%s_token_%d" % [controller, state.token_counter]
+	var inst := CardInstance.create(inst_id, token_def_id, controller, "")
+	inst.is_token       = true
+	inst.created_on_turn = state.turn_number
+	state.cards[inst_id] = inst
+	return inst_id
+
+
 # ── move_card ──────────────────────────────────────────────────────────────────
 # Move a card from one zone to another. All zone changes go through here —
 # never mutate zone.card_ids or card.zone_id directly elsewhere.
@@ -31,6 +58,28 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 
 	var events: Array[GameEvent] = []
 	var from_zone_id := card.zone_id
+
+	# A token that leaves play ceases to exist — it never reaches a graveyard, a
+	# hand or a deck, whatever sent it there (destroyed, bounced by Withdraw,
+	# discarded). Redirecting here rather than at each removal effect means the
+	# rule holds by construction for every present and future one.
+	#
+	# This is purely a change of DESTINATION: a destroy still emits
+	# card_destroyed before calling move_card, so "when [this] is destroyed" and
+	# "when an ally is destroyed" triggers fire on tokens exactly as on real
+	# cards (see GameLogic.destroy_card / StackResolver._destroy_card_trigger).
+	#
+	# The instance stays in state.cards rather than being deleted — the RFG zone
+	# is the void here (nothing in the engine reads it as a resource), and
+	# keeping it means the renderer can animate it away and no stale instance_id
+	# reference can crash a lookup.
+	if card.is_token:
+		var was_in_play := state.is_in_play(card_id)
+		var dest_zone := state.zones.get(to_zone_id) as Zone
+		var goes_to_play: bool = dest_zone != null \
+			and dest_zone.zone_type in GameState.PLAY_ZONE_TYPES
+		if was_in_play and not goes_to_play:
+			to_zone_id = card.owner + "_rfg"
 
 	# If leaving an attachment relationship, clean up the host's list.
 	if card.attached_to != "" and to_zone_id != "attached":

@@ -13,6 +13,9 @@ extends Resource
 var players: Dictionary = {}   # player_id (String) -> PlayerState
 var zones: Dictionary = {}     # zone_id (String)   -> Zone
 var cards: Dictionary = {}     # instance_id (String) -> CardInstance
+# Monotonic counter behind token instance ids (GameLogic.create_token). Tokens
+# are minted mid-game, so unlike deck cards they can't get a setup-time id.
+var token_counter: int = 0
 
 # ── Turn / phase state ─────────────────────────────────────────────────────────
 # Phases follow the WoW TCG turn structure:
@@ -151,7 +154,13 @@ var pending_control_discard_ids: Array[String] = []  # source instance_ids, reso
 # the rest on the bottom of your deck." The revealed cards stay physically at the
 # top of the deck while pending (everything else is blocked); on resolution the
 # picked card goes to hand and the rest are pushed to the bottom in revealed order.
-var pending_reveal_pick_player: String = ""
+# The DECIDER may differ from the owner (The Princess Trapped: "Target opponent
+# chooses one" — the cards are revealed from, and go to, pending_reveal_pick_player's
+# deck/hand, but pending_reveal_pick_chooser is who clicks). The chooser defaults
+# to the owner; every guard/blocker keys off _player, only the input routing and
+# the AI's pick-quality key off _chooser.
+var pending_reveal_pick_player: String = ""   # owner: whose deck was revealed, whose hand the pick goes to
+var pending_reveal_pick_chooser: String = ""  # decider: who makes the pick ("" while no choice is open)
 var pending_reveal_pick_ids: Array[String] = []   # revealed cards matching the type — the selectable set
 var pending_reveal_pick_all: Array[String] = []   # every revealed card, in top→down order
 # Ongoing Totem "at the start of each turn" targeted-damage triggers (Searing
@@ -581,6 +590,7 @@ func to_dict() -> Dictionary:
 		"players":           players_data,
 		"zones":             zones_data,
 		"cards":             cards_data,
+		"token_counter":     token_counter,
 		"turn_number":       turn_number,
 		"turn_player":       turn_player,
 		"phase":             phase,
@@ -597,6 +607,7 @@ static func from_dict(d: Dictionary) -> GameState:
 		gs.zones[zid] = Zone.from_dict(d["zones"][zid])
 	for cid in d.get("cards", {}):
 		gs.cards[cid] = CardInstance.from_dict(d["cards"][cid])
+	gs.token_counter      = d.get("token_counter", 0)
 	gs.turn_number        = d.get("turn_number", 0)
 	gs.turn_player        = d.get("turn_player", "")
 	gs.phase              = d.get("phase", "setup")

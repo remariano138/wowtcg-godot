@@ -76,7 +76,7 @@ func _test_validate_rejects_bad_decks() -> void:
 
 func _make_db() -> CardDatabase:
 	var db := CardDatabase.new()
-	db.load_csv("res://data/cards.csv")
+	db.load_all()
 	return db
 
 

@@ -53,6 +53,14 @@ var _stats_lbl: Label = null
 # top, unless callers explicitly gate it with this flag.
 static var input_blocked: bool = false
 
+# Exception list for `input_blocked`: instance ids that STAY clickable while the
+# board is blocked. Used by choice points where clicking a specific board card IS
+# one of the popup's options (armor at the prevention point, weapon at the strike
+# point, ally at the protect point) — everything else on the board is inert, so a
+# missed click can't be re-read as e.g. an attacker selection. Always cleared by
+# whoever set it (see `_set_board_block` in playtest.gd).
+static var input_allowlist: Array = []
+
 # ── Wiggle state ───────────────────────────────────────────────────────────────
 var _wiggle_tween: Tween = null
 var _wiggle_base: float = 0.0
@@ -493,7 +501,7 @@ func settle_rotation(exhausted: bool) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if input_blocked:
+	if input_blocked and not input_allowlist.has(instance_id):
 		if _mouse_inside:
 			_mouse_inside = false
 			card_unhovered.emit(instance_id)

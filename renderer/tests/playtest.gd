@@ -95,11 +95,15 @@ const HOVER_MAGNIFY := 1.2   # local player's own hand cards magnify on hover
 var _stance: Dictionary = {"p1": "ambush", "p2": "ambush"}
 var _in_ambush_mode: bool = false
 var _ambush_player: String = ""
-# Discard peek: in hotseat, when the OFF-SCREEN human must discard (Mias the
-# Putrid / Hypnotic Blade), the router acts for them ambush-style — their hand
-# stays face-down, hover peeks one card at a time, click discards it.
-var _in_discard_peek: bool = false
-var _discard_peek_player: String = ""
+# Choice peek: in hotseat, when a mandatory choice is owed by the OFF-SCREEN
+# human, the router acts for THEM ambush-style while the renderer perspective
+# stays with the seat. PRIVATE choices (a mandatory discard — Mias the Putrid /
+# Hypnotic Blade) keep their hand face-down with one-card-at-a-time hover peek;
+# PUBLIC ones (The Princess Trapped's reveal — both players are meant to see the
+# revealed cards) skip the hiding and only re-point the input. See _route_choice.
+var _in_choice_peek: bool = false
+var _choice_peek_player: String = ""
+var _choice_peek_hides_hand: bool = false
 var _skip_btn: Button
 var _stance_passive_btn: Button
 var _stance_ambush_btn: Button
@@ -292,10 +296,10 @@ func _build_scene() -> void:
 	# Symmetric board: each player's hero column sits on THEIR right-hand side —
 	# P1 (facing up) on screen-right, P2 (facing down) on screen-left.
 	# P2's labels are rotated 180° so they read upright from P2's seat (TTS-style).
-	_rotate_label_180(_add_label("P2 deck",   Vector2(65,   95), 11, Color(0.4, 0.4, 0.5)))
-	_rotate_label_180(_add_label("P2 grave",  Vector2(245,  95), 11, Color(0.5, 0.4, 0.4)))
-	_add_label("P1 grave",  Vector2(1590, 832), 11, Color(0.4, 0.5, 0.4))
-	_add_label("P1 deck",   Vector2(1750, 832), 11, Color(0.4, 0.4, 0.5))
+	_rotate_label_180(_add_label("P2 deck",   Vector2(65,   72), 11, Color(0.4, 0.4, 0.5)))
+	_rotate_label_180(_add_label("P2 grave",  Vector2(245,  72), 11, Color(0.5, 0.4, 0.4)))
+	_add_label("P1 grave",  Vector2(1590, 866), 11, Color(0.4, 0.5, 0.4))
+	_add_label("P1 deck",   Vector2(1750, 866), 11, Color(0.4, 0.4, 0.5))
 
 	# Status label must exist before renderer.set_status_label is called below.
 	# Positioned under the pass button (centered) once the control panel is built below.
@@ -329,10 +333,14 @@ func _build_scene() -> void:
 	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1000, 646)))
 	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 761)))
 	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 895)))
-	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2( 280,  35)))
-	_renderer.register_zone("p2_deck",         _make_anchor(Vector2( 100,  35)))
-	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 875)))
-	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 875)))
+	# Deck/graveyard are pushed to the outer edge (y = -10 / 960, mirrored about the
+	# board pivot at y=475) so a wide resource row can never overlap them. Each sits
+	# half off-board — the active player's pair tucks under the control panel with
+	# ~50px of card top still visible, enough to hover/click (graveyard peek).
+	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2( 280, -10)))
+	_renderer.register_zone("p2_deck",         _make_anchor(Vector2( 100, -10)))
+	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 960)))
+	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 960)))
 
 	# Hero card itself stays pinned to the player's side column, above the deck,
 	# at the same height as its hero_row (equipment / ongoing abilities live there).
@@ -863,7 +871,7 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 	# >4 copies, wrong faction/class) with a readable message instead of a
 	# broken game. Runs before the menu is torn down so errors land in it.
 	var auth_db := CardDatabase.new()
-	auth_db.load_csv("res://data/cards.csv")
+	auth_db.load_all()
 	for pick in [["P1", p1_deck_id], ["P2", p2_deck_id]]:
 		var auth_errors := DeckManager.authorize_deck(pick[1], auth_db)
 		if not auth_errors.is_empty():
@@ -913,7 +921,7 @@ func _begin_handoff(next_player: String, reason: String, on_confirm: Callable) -
 	_ai_timer.stop()
 	_renderer.set_perspective("__handoff__")
 	_renderer.refresh_hand_visibility()
-	CardNode.input_blocked = true
+	_set_board_block(true)
 	# The table turns to the incoming player while the overlay is up.
 	_orient_camera(next_player, true)
 
@@ -959,7 +967,7 @@ func _confirm_handoff(next_player: String, on_confirm: Callable) -> void:
 	if _handoff_layer:
 		_handoff_layer.queue_free()
 		_handoff_layer = null
-	CardNode.input_blocked = false
+	_set_board_block(false)
 	_handoff_pending = false
 	_set_local_player(next_player)
 	on_confirm.call()
@@ -1051,26 +1059,45 @@ func _exit_ambush_mode() -> void:
 	_set_status("")
 
 
-# ── Discard peek mode (off-screen player must discard) ─────────────────────────
-# Same idea as ambush mode, but for the MANDATORY discard of the off-screen
-# player: the router acts for them (their hand highlights red via discard
-# mode), the renderer perspective stays with the seat — cards stay face-down
-# and only the hovered one shows its front (social contract, one at a time).
+# ── Mandatory-choice routing ───────────────────────────────────────────────────
+# THE funnel every mandatory choice goes through. The engine already addresses
+# each pending choice to a specific player (pending_*_player / _chooser), so the
+# scene's only job is turning "who decides" into "how do I collect it here":
+#
+#   "ai"     — the decider is an AI: the caller auto-resolves via the AI hook.
+#   "local"  — the decider is the human in this seat: render the choice inline.
+#   "peek"   — the decider is a human who is NOT in this seat (hotseat): the
+#              router is re-pointed at them so their clicks resolve the choice.
+#              A `private` choice also hides their hand (hover peek); a `public`
+#              one is board-visible and hides nothing.
+#
+# A network build replaces the "peek" branch alone (serialize the choice, await
+# the remote player's answer) — no card-level code changes.
+func _route_choice(decider: String, visibility: String = "private") -> String:
+	if _type_of(decider) != "human":
+		return "ai"
+	if decider == _local_player:
+		return "local"
+	_enter_choice_peek_mode(decider, visibility == "private")
+	return "peek"
 
-func _enter_discard_peek_mode(pid: String) -> void:
-	if _in_discard_peek:
+
+func _enter_choice_peek_mode(pid: String, hide_hand: bool) -> void:
+	if _in_choice_peek:
 		return
-	_in_discard_peek = true
-	_discard_peek_player = pid
+	_in_choice_peek = true
+	_choice_peek_player = pid
+	_choice_peek_hides_hand = hide_hand
 	_ai_timer.stop()
 	_router.setup(_state, _db, pid)
 
 
-func _exit_discard_peek_mode() -> void:
-	if not _in_discard_peek:
+func _exit_choice_peek_mode() -> void:
+	if not _in_choice_peek:
 		return
-	_in_discard_peek = false
-	_discard_peek_player = ""
+	_in_choice_peek = false
+	_choice_peek_player = ""
+	_choice_peek_hides_hand = false
 	_router.setup(_state, _db, _local_player)
 	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
 	_router.refresh_highlights()
@@ -1104,7 +1131,7 @@ func _on_card_hover_scene(instance_id: String) -> void:
 		cn.show_card_front()
 	# Discard peek: the off-screen player choosing a mandatory discard peeks
 	# their face-down hand one card at a time.
-	if _in_discard_peek and card.zone_id == _discard_peek_player + "_hand":
+	if _in_choice_peek and _choice_peek_hides_hand and card.zone_id == _choice_peek_player + "_hand":
 		cn.show_card_front()
 	# The local player's own hand magnifies on hover.
 	if card.zone_id == _local_player + "_hand":
@@ -1121,7 +1148,7 @@ func _on_card_unhover_scene(instance_id: String) -> void:
 		return
 	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand":
 		cn.show_card_back()
-	if _in_discard_peek and card.zone_id == _discard_peek_player + "_hand":
+	if _in_choice_peek and _choice_peek_hides_hand and card.zone_id == _choice_peek_player + "_hand":
 		cn.show_card_back()
 	if card.zone_id.ends_with("_hand"):
 		cn.scale = Vector2.ONE * BoardRenderer.HAND_CARD_SCALE
@@ -1187,7 +1214,7 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 
 	# Real database — only engine_status=implemented cards are loaded.
 	_db = CardDatabase.new()
-	_db.load_csv("res://data/cards.csv")
+	_db.load_all()
 
 	# Mock-only cards (no CSV row yet): instants and quest placeholder.
 	_db.add_def(_make_mock_def("mock_quick_shot", "Quick Shot", 0, 0, true, "Ability"))
@@ -1752,7 +1779,7 @@ func _input(event: InputEvent) -> void:
 		# Escape: close the X dialog (cancels the whole power use).
 		if _x_dialog and _x_dialog.visible:
 			_x_dialog.visible = false
-			CardNode.input_blocked = false
+			_set_board_block(false)
 			_router.cancel_targeting()
 			_set_status("")
 			get_viewport().set_input_as_handled()
@@ -1822,7 +1849,7 @@ func _try_pass(skip_confirm: bool = false) -> void:
 		return
 	# Discard peek: the router temporarily acts for the OFF-SCREEN discarding
 	# player — the seated player's Space must not pass (or discard) for them.
-	if _in_discard_peek:
+	if _in_choice_peek:
 		return
 	# Infernal choice pending for the human: Space/pass = decline the discard
 	# and give the opponent control of the source.
@@ -2174,6 +2201,18 @@ func _on_game_event(event: GameEvent) -> void:
 					var sick_cn := _renderer.card_nodes.get(moved_id) as CardNode
 					if sick_cn:
 						sick_cn.show_sick_badge(is_ferocity)
+			# A token is minted mid-game and has never been in a zone, so no node
+			# exists for it — spawn one as it enters the ally_row (same pattern as
+			# the drawn-card branch below).
+			if to_zone.ends_with("_ally_row") and not _renderer.has_card_node(moved_id):
+				var tok := _state.get_card(moved_id)
+				if tok:
+					var tok_p1 := tok.controller == "p1"
+					var tok_anchor := _renderer.zone_anchors.get(to_zone) as Node2D
+					var tok_pos := tok_anchor.global_position if tok_anchor else Vector2.ZERO
+					var tok_color := Color(0.25, 0.45, 0.75) if tok_p1 else Color(0.5, 0.25, 0.25)
+					_spawn_card_node(moved_id, tok_pos, tok_color)
+					_renderer.relayout_zone(to_zone)
 			if to_zone.ends_with("_hand") and not _renderer.has_card_node(moved_id):
 				var card := _state.get_card(moved_id)
 				if card:
@@ -2468,6 +2507,10 @@ func _on_card_right_clicked(instance_id: String) -> void:
 	if _router and _router._targeting_source != "":
 		_router.cancel_targeting()
 		return
+	# Allowlisted cards during a choice point (armor / weapon / protector) are
+	# clickable ONLY as that choice — no context menu on them either.
+	if CardNode.input_blocked:
+		return
 	_context_actions = _router.get_context_actions(instance_id)
 	if _context_actions.is_empty():
 		return
@@ -2499,16 +2542,16 @@ func _on_card_mute_changed(instance_id: String, muted: bool) -> void:
 # ── Targeting ──────────────────────────────────────────────────────────────────
 
 func _on_discard_mode_started(count: int) -> void:
-	if _in_discard_peek:
+	if _in_choice_peek:
 		_set_status("🃏 %s must discard %d card(s) — hover a red card to peek, click to discard"
-				% [_discard_peek_player.to_upper(), count])
+				% [_choice_peek_player.to_upper(), count])
 	else:
 		_set_status("Choose %d card(s) to discard — click a highlighted hand card" % count)
 	_refresh_ui()
 
 
 func _on_discard_mode_ended() -> void:
-	_exit_discard_peek_mode()
+	_exit_choice_peek_mode()
 	_set_status("")
 	_refresh_ui()
 	if _discard_reason == "wrap_up":
@@ -2647,7 +2690,9 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
 	var count: int     = payload.get("count", 1)
 	_discard_reason    = payload.get("reason", "card_effect")
-	if _type_of(player) != "human":
+	# A discard is PRIVATE — an off-screen human's hand must stay hidden while
+	# they pick (the "peek" branch of _route_choice does that re-pointing).
+	if _route_choice(player, "private") == "ai":
 		# AI: the AI instance picks each discard (BaseAI: lowest-cost non-quest;
 		# GenericAI: least valuable via sort_valuable_cards).
 		var ai: Object = _p1_ai if player == "p1" else _p2_ai
@@ -2669,12 +2714,8 @@ func _handle_discard_choice(payload: Dictionary) -> void:
 		else:
 			_schedule_next_turn()
 	else:
-		# Human: enter discard mode — red highlights + click to resolve. When the
-		# discarding human is NOT the seated player (hotseat: opponent played Mias
-		# the Putrid / used Hypnotic Blade), point the router at them first so the
-		# clicks act for them; their hand stays face-down with hover peek.
-		if player != _local_player:
-			_enter_discard_peek_mode(player)
+		# Human (seated, or off-screen with the router already re-pointed at them
+		# by _route_choice): discard mode — red highlights + click to resolve.
 		_router.start_discard_mode(count)
 
 
@@ -2775,17 +2816,23 @@ func _pick_ai_pet_keep(_player_id: String, candidates: Array) -> String:
 
 
 # Reveal-and-pick quest reward (Big Game Hunter / Kibler's Exotic Pets / Zapped
-# Giants): the top cards were revealed and at least one matches the required type.
-# The controller keeps one; the rest go to the bottom of the deck.
+# Giants; The Princess Trapped). The top cards were revealed; the card kept goes
+# to `player`'s hand, the rest to the bottom of `player`'s deck. The DECIDER is
+# `chooser` — normally `player`, but the opponent for The Princess Trapped, which
+# also flips the pick quality (they choose the card you'd least want).
 func _handle_reveal_pick(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
+	var chooser: String = payload.get("chooser", player)
 	var selectable: Array = payload.get("selectable", [])
 	var revealed: Array = payload.get("revealed", [])
 	var card_type: String = payload.get("card_type", "")
-	var player_type := _p1_type if player == "p1" else _p2_type
-	if player_type != "human":
-		# AI keeps the most valuable revealed card of the required type.
-		var pick_id := _pick_ai_reveal(selectable)
+	var hostile := chooser != player
+	# The revealed cards are shown to BOTH players, so this choice is public —
+	# an off-screen chooser only needs the input re-pointed, nothing hidden.
+	if _route_choice(chooser, "public") == "ai":
+		# AI keeps the most valuable revealed card of the required type — or, when
+		# choosing for the opponent, hands them the LEAST valuable one.
+		var pick_id := _pick_ai_reveal(selectable, hostile)
 		var events := StackResolver.choose_reveal_pick(_state, pick_id, _db)
 		EventBus.emit_events(events)
 		_refresh_ui()
@@ -2801,24 +2848,33 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 		_gy_filter_active = true
 		_gy_reveal_card_type = card_type
 		var has_pick := not selectable.is_empty()
-		var title := "Revealed top %d — choose a %s card to keep (rest go to bottom of deck)" \
-				% [revealed.size(), card_type]
-		if not has_pick:
-			title = "Revealed top %d — no %s card to keep (all go to bottom of deck)" \
-					% [revealed.size(), card_type]
+		var type_label := "" if card_type == "Any" else card_type + " "
+		var title := "Revealed top %d — choose a %scard to keep (rest go to bottom of deck)" \
+				% [revealed.size(), type_label]
+		if hostile:
+			title = "%s revealed top %d — %s chooses which card %s keeps (rest to bottom of deck)" \
+					% [player.to_upper(), revealed.size(), chooser.to_upper(), player.to_upper()]
+		elif not has_pick:
+			title = "Revealed top %d — no %scard to keep (all go to bottom of deck)" \
+					% [revealed.size(), type_label]
 		_open_gy_dialog(revealed, false, title, 1 if has_pick else 0, 1)
 		_gy_reveal_mode = true
 		_gy_cancel_btn.visible = false
 		_gy_confirm_btn.text = "OK (C)"
-		if has_pick:
-			_set_status("Choose a %s card to put into your hand" % card_type)
+		if hostile:
+			_set_status("🎯 %s: choose a card to put into %s's hand"
+					% [chooser.to_upper(), player.to_upper()])
+		elif has_pick:
+			_set_status("Choose a %scard to put into your hand" % type_label)
 		else:
-			_set_status("No %s card revealed — click OK" % card_type)
+			_set_status("No %scard revealed — click OK" % type_label)
 		_refresh_ui()
 
 
-# AI reveal-pick: keep the highest-cost card, tie-broken by total stats.
-func _pick_ai_reveal(candidates: Array) -> String:
+# AI reveal-pick: keep the highest-cost card, tie-broken by total stats. When
+# `hostile` (the AI is choosing which card the OPPONENT keeps — The Princess
+# Trapped), the ranking inverts: hand them the worst card revealed.
+func _pick_ai_reveal(candidates: Array, hostile: bool = false) -> String:
 	if candidates.is_empty():
 		return ""
 	var best: String = candidates[0]
@@ -2831,6 +2887,8 @@ func _pick_ai_reveal(candidates: Array) -> String:
 		if not def:
 			continue
 		var score: int = def.cost * 100 + def.printed_atk + def.printed_health
+		if hostile:
+			score = -score
 		if score > best_score:
 			best_score = score
 			best = cid
@@ -3158,7 +3216,7 @@ func _on_x_select_requested(hero_id: String, max_x: int) -> void:
 	var vp := get_viewport().get_visible_rect().size
 	_x_dialog.position = (vp - _x_dialog.custom_minimum_size) * 0.5
 	_x_dialog.visible = true
-	CardNode.input_blocked = true
+	_set_board_block(true)
 	_x_input.grab_focus()
 	var hero_card := _router.state.get_card(hero_id) if _router.state else null
 	var hero_def: CardDef = _router.db.get_def(hero_card.card_def_id) if hero_card and _router.db else null
@@ -3187,7 +3245,7 @@ func _confirm_x_value(text: String) -> void:
 		_x_input.grab_focus()
 		return
 	_x_dialog.visible = false
-	CardNode.input_blocked = false
+	_set_board_block(false)
 	_set_status("")
 	_router.confirm_x_value(x)
 
@@ -3334,7 +3392,7 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 	_gy_dialog.position = (Vector2(1920, 1080) - _gy_dialog.size) * 0.5
 	_gy_dimmer.visible = modal
 	_gy_dialog.visible = true
-	CardNode.input_blocked = modal
+	_set_board_block(modal)
 	_update_gy_confirm()
 
 
@@ -3386,6 +3444,7 @@ func _on_gy_confirm_pressed() -> void:
 		var pick: String = _gy_selected[0] if not _gy_selected.is_empty() else ""
 		var payload := {
 			"player": _state.pending_reveal_pick_player,
+			"chooser": _state.pending_reveal_pick_chooser,
 			"selectable": _state.pending_reveal_pick_ids.duplicate(),
 			"revealed": _state.pending_reveal_pick_all.duplicate(),
 			"card_type": _gy_reveal_card_type,
@@ -3398,6 +3457,9 @@ func _on_gy_confirm_pressed() -> void:
 		if _state.pending_reveal_pick_player != "":
 			_handle_reveal_pick(payload)
 			return
+		# Choice resolved — if an off-screen human made it, hand input back to
+		# the seated player.
+		_exit_choice_peek_mode()
 		EventBus.emit_events(events)
 		_set_status("")
 		_refresh_ui()
@@ -3424,7 +3486,7 @@ func _close_gy_dialog() -> void:
 	_gy_filter_active = false
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
-	CardNode.input_blocked = false
+	_set_board_block(false)
 	_gy_view_only = false
 	_gy_peek_active = false
 
@@ -3522,6 +3584,9 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	_protect_defender_id  = defender_id
 	_protect_attacker_id  = attacker_id
 	_ai_timer.stop()   # prevent AI from acting while human is choosing a protector
+	# Modal except the legal protectors — clicking one is the same as its button
+	# (see _build_choice_popup; the protect point renders inline, not as a popup).
+	_set_board_block(true, protectors)
 	_pass_btn.visible  = false
 	_cancel_btn.visible = false
 
@@ -3611,6 +3676,7 @@ func _apply_protect_outlines(atk_id: String, def_id: String, prot_ids: Array) ->
 func _resolve_protection(protector_id: String) -> void:
 	_in_protect_mode = false
 	_protect_protectors = []
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	for n in _protect_nodes:
 		if is_instance_valid(n):
 			n.queue_free()
@@ -3654,16 +3720,28 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 # callers append just the panel to their existing `_*_nodes` array.
 const CHOICE_POPUP_CENTER := Vector2(960, 470)
 
-# `block_board` makes the choice fully modal: while the popup is up, board cards
-# can't be clicked (CardNode.input_blocked) so a card sitting under a button can't
-# steal the click, and the player must answer the popup before doing anything else.
-# Callers that opt in MUST release the block (CardNode.input_blocked = false) when
-# they tear the popup down. Points that intentionally keep board cards clickable as
-# the choice itself (strike → weapon, prevention → armor, ready) leave it false.
+
+# Single entry point for the modal board block. `allowed_ids` (only meaningful
+# while blocking) is the set of board cards that remain clickable because clicking
+# them IS one of the open choice's options. Releasing always clears the allowlist.
+func _set_board_block(blocked: bool, allowed_ids: Array = []) -> void:
+	CardNode.input_blocked   = blocked
+	CardNode.input_allowlist = allowed_ids.duplicate() if blocked else []
+
+
+# `block_board` makes the choice modal: while the popup is up, board cards can't be
+# clicked (CardNode.input_blocked) so a card sitting under a button can't steal the
+# click, and the player must answer the popup before doing anything else.
+# `allowed_ids` are the exceptions — cards that ARE one of the popup's options and
+# stay clickable (armor at the prevention point, weapon at the strike point). The
+# general rule: while a choice point is open, nothing that isn't one of its options
+# responds to a click, so a missed click can never start e.g. attacker targeting.
+# Callers that opt in MUST release the block (`_set_board_block(false)`) when they
+# tear the popup down.
 func _build_choice_popup(header_text: String, header_color: Color, buttons: Array,
-		block_board: bool = false) -> Panel:
+		block_board: bool = false, allowed_ids: Array = []) -> Panel:
 	if block_board:
-		CardNode.input_blocked = true
+		_set_board_block(true, allowed_ids)
 	const PAD        := 26
 	const BTN_H      := 40
 	const BTN_GAP    := 12
@@ -3799,7 +3877,7 @@ func _clear_modal_buttons() -> void:
 		if is_instance_valid(node):
 			node.queue_free()
 	if not _modal_nodes.is_empty():
-		CardNode.input_blocked = false   # release the modal board-block (see _build_choice_popup)
+		_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	_modal_nodes.clear()
 
 
@@ -3862,7 +3940,9 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 		"callback": func() -> void: _resolve_strike(""),
 	})
 
-	_strike_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons))
+	# Modal except the weapons themselves — clicking one is the same as its button.
+	_strike_nodes.append(_build_choice_popup(
+		header_text, Color(0.9, 0.5, 0.2), buttons, true, weapon_ids))
 
 	# Highlight the strikeable weapons (deferred, same reason as protect outlines).
 	var captured_ids: Array = weapon_ids.duplicate()
@@ -3878,6 +3958,7 @@ func _apply_strike_highlights(weapon_ids: Array) -> void:
 func _resolve_strike(weapon_id: String) -> void:
 	_in_strike_mode    = false
 	_strike_weapon_ids = []
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	for n in _strike_nodes:
 		if is_instance_valid(n):
 			n.queue_free()
@@ -3954,7 +4035,9 @@ func _show_prevention_inline(payload: Dictionary) -> void:
 		"callback": func() -> void: _resolve_prevention(""),
 	})
 
-	_prevention_nodes.append(_build_choice_popup(header_text, Color(0.55, 0.75, 1.0), buttons))
+	# Modal except the armors themselves — clicking one is the same as its button.
+	_prevention_nodes.append(_build_choice_popup(
+		header_text, Color(0.55, 0.75, 1.0), buttons, true, _prevention_armor_ids))
 
 	# Highlight the exhaustable armors (deferred, same reason as protect outlines).
 	var captured_ids: Array = _prevention_armor_ids.duplicate()
@@ -3978,6 +4061,9 @@ func _resolve_prevention(armor_id: String) -> void:
 	_in_prevention_mode   = false
 	_prevention_armor_ids = []
 	_clear_prevention_nodes()
+	# Released here, not in _clear_prevention_nodes — that also runs when the point
+	# re-opens for a second armor, which immediately re-blocks with the new list.
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	_pass_btn.visible = true
 	_router.refresh_highlights()
 
@@ -4036,11 +4122,13 @@ func _show_ready_inline(payload: Dictionary) -> void:
 		},
 	]
 
-	_ready_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.8, 0.9), buttons))
+	# Yes/no choice — nothing on the board is an option, so block all of it.
+	_ready_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.8, 0.9), buttons, true))
 
 
 func _resolve_ready(pay: bool) -> void:
 	_in_ready_mode = false
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	for n in _ready_nodes:
 		if is_instance_valid(n):
 			n.queue_free()
@@ -4100,11 +4188,14 @@ func _show_strike_ready_inline(payload: Dictionary) -> void:
 		},
 	]
 
-	_strike_ready_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.8, 0.9), buttons))
+	# Yes/no choice — nothing on the board is an option, so block all of it.
+	_strike_ready_nodes.append(_build_choice_popup(
+		header_text, Color(0.5, 0.8, 0.9), buttons, true))
 
 
 func _resolve_strike_ready(pay: bool) -> void:
 	_in_strike_ready_mode = false
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	for n in _strike_ready_nodes:
 		if is_instance_valid(n):
 			n.queue_free()
@@ -4244,7 +4335,7 @@ func _resolve_form_return(pay: bool) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_form_return_nodes.clear()
-	CardNode.input_blocked = false   # release the modal board-block (see _build_choice_popup)
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	_pass_btn.visible = true
 	_router.refresh_highlights()
 
@@ -4261,7 +4352,7 @@ func _resolve_whelp_bounce(pay: bool) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_whelp_bounce_nodes.clear()
-	CardNode.input_blocked = false   # release the modal board-block (see _build_choice_popup)
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
 	_pass_btn.visible = true
 	_router.refresh_highlights()
 
@@ -4312,15 +4403,16 @@ func _on_rematch() -> void:
 	_camera_tween                 = null   # camera is rebuilt by _build_scene
 	_in_ambush_mode               = false  # _stance survives the rematch (player pref)
 	_ambush_player                = ""
-	_in_discard_peek              = false
-	_discard_peek_player          = ""
+	_in_choice_peek              = false
+	_choice_peek_player          = ""
+	_choice_peek_hides_hand      = false
 	_handoff_pending              = false
 	_handoff_layer                = null   # freed with the other children above
 	_mulligan_queue               = []
 	_local_player                 = "p1" if _p1_type == "human" \
 			else ("p2" if _p2_type == "human" else "p1")
 	_mulligan_current             = _local_player
-	CardNode.input_blocked        = false
+	_set_board_block(false)
 	_in_protect_mode              = false
 	_protect_nodes                = []
 	_in_strike_mode               = false

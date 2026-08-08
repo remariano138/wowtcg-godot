@@ -985,6 +985,22 @@ func _kill_pos_tween(card_id: String) -> void:
 		_pos_tweens.erase(card_id)
 
 
+# True only while a tracked position tween is actually still animating. Entries
+# in _pos_tweens are never erased when a tween finishes on its own, so a plain
+# `_pos_tweens.has(id)` check reads as "in flight" forever after a card's first
+# move — which permanently disabled the reconcile self-heal for that card (cards
+# left at a crooked angle by a power/attack animation never snapped back).
+# Dead entries are dropped here so the dictionary self-cleans.
+func _has_live_pos_tween(card_id: String) -> bool:
+	if not _pos_tweens.has(card_id):
+		return false
+	var t: Tween = _pos_tweens[card_id]
+	if t != null and is_instance_valid(t) and t.is_running():
+		return true
+	_pos_tweens.erase(card_id)
+	return false
+
+
 # Self-healing pass: snap each card's orientation to authoritative GameState.
 # Event-driven animations (wiggle, exhaust/ready swings) can leave a card at a
 # crooked resting angle if tweens race; this reasserts truth once motion settles.
@@ -995,7 +1011,7 @@ func reconcile_from_state(state, force := false) -> void:
 	if state == null:
 		return
 	for card_id in card_nodes:
-		if _pos_tweens.has(card_id):
+		if _has_live_pos_tween(card_id):
 			continue  # positional move / lunge in flight — leave it alone
 		var cn := card_nodes.get(card_id) as CardNode
 		if not cn or not is_instance_valid(cn):
@@ -1023,7 +1039,7 @@ func reconcile_from_state(state, force := false) -> void:
 				_update_host_z(card.attached_to)
 				cn.facing_degrees = host_cn.facing_degrees
 				cn.settle_rotation(false)
-				if not _pos_tweens.has(card.attached_to):
+				if not _has_live_pos_tween(card.attached_to):
 					var idx := _attachments_of(card.attached_to).find(card_id)
 					cn.global_position = _attachment_target_pos(
 						host_cn, host_cn.global_position, max(idx, 0))
@@ -1302,16 +1318,17 @@ func _refresh_deck_label(zone_id: String) -> void:
 		return
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if anchor:
+		# The deck sits half off-board (see the anchor comments in playtest.gd), so
+		# the count goes on the INNER side of the card — the half that stays visible.
 		if zone_id.begins_with("p2"):
-			# Rotate 180° so the count reads upright for P2, and sit it
-			# "under" the deck from P2's perspective (above it on screen).
+			# Rotated 180° so the count reads upright for P2.
 			lbl.pivot_offset      = Vector2(CardNode.W * 0.5, 10)
 			lbl.rotation_degrees  = 180
-			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, -(CardNode.H * 0.5 + 24))
+			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, CardNode.H * 0.5 + 6)
 		else:
 			lbl.pivot_offset      = Vector2.ZERO
 			lbl.rotation_degrees  = 0
-			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, CardNode.H * 0.5 + 4)
+			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, -(CardNode.H * 0.5 + 20))
 	lbl.text = str(_deck_counts.get(zone_id, 0))
 
 

@@ -71,6 +71,7 @@ func _ready() -> void:
 		_test_ryn_dreamstrider_buff_target_attacking,
 		_test_chasing_ame_graveyard_to_hand,
 		_test_chasing_ame_blocked_and_filtered,
+		_test_sunken_treasure_equipment_to_hand,
 		_test_finkle_einhorn_graveyard_to_play,
 		_test_ancestral_spirit_reanimate,
 		_test_ancestral_spirit_gates,
@@ -79,6 +80,7 @@ func _ready() -> void:
 		_test_reveal_pick_takes_matching_card,
 		_test_reveal_pick_no_match_all_to_bottom,
 		_test_reveal_pick_blocks_other_actions,
+		_test_princess_trapped_opponent_chooses,
 		_test_darrowshire_rfg_three_allies,
 		_test_darrowshire_blocked_with_too_few_allies,
 		_test_defias_brotherhood_requires_four_allies,
@@ -264,6 +266,12 @@ func _ready() -> void:
 		_test_hur_shieldsmasher_no_armor_no_prompt,
 		_test_zygore_bladebreaker_destroys_weapon,
 		_test_zygore_bladebreaker_destroys_armor,
+		_test_mya_creates_token,
+		_test_token_destroyed_ceases_to_exist,
+		_test_token_bounce_ceases_to_exist,
+		_test_tokens_not_deckable,
+		_test_toogas_quest,
+		_test_tooga_killed_before_trigger,
 	]
 
 	for t in tests:
@@ -849,6 +857,12 @@ class MockDB extends RefCounted:
 		for k in kw:
 			d.keywords.append(k)
 		_defs[def_id] = d
+
+	# Ally token (data/tokens.csv): a normal ally def flagged is_token, which is
+	# what makes it non-deckable and makes it cease to exist when it leaves play.
+	func token(def_id: String, atk: int, health: int, kw: Array[String] = [], effects: String = "") -> void:
+		ally(def_id, atk, health, kw, 0, effects)
+		(_defs[def_id] as CardDef).is_token = true
 
 	func pet(def_id: String, atk: int, health: int, kw: Array[String] = [], cost: int = 0, effects: String = "") -> void:
 		ally(def_id, atk, health, kw, cost, effects)
@@ -3434,6 +3448,72 @@ func _test_chasing_ame_blocked_and_filtered() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Sunken Treasure (azeroth_358) — Chasing A-Me 01 for equipment. Pure CSV recipe
+# (graveyard_to_hand:Equipment:1:1:own); this pins the Equipment type filter,
+# which must accept weapons (a subtype of Equipment) as well as armor.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sunken_treasure_equipment_to_hand() -> void:
+	_buf.append("\n-- Sunken Treasure returns an equipment card from the graveyard to hand --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("sunken_def", 3, "graveyard_to_hand:Equipment:1:1:own")
+	db.equipment("armor_def", 4, "equipment:chest:1")
+	db.weapon("weapon_def", 3, 3, 1)
+	db.ally("dead_ally_def", 2, 2, [], 4)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var quest := CardInstance.create("sunken_inst", "sunken_def", "p1", "p1_resource_row")
+	state.cards["sunken_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("sunken_inst")
+
+	# No equipment in the graveyard yet — the quest can't be completed.
+	ok(not StackResolver.can_use_quest_no_target_check(state, "sunken_inst", "p1", db),
+		"sunken-a: probe fails with no equipment in the graveyard")
+
+	# p1 graveyard: armor + a weapon (both legal) and an ally (filtered out).
+	for pair in [["dead_armor", "armor_def"], ["dead_weapon", "weapon_def"],
+			["dead_ally", "dead_ally_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+	# p2 graveyard: equipment that must NOT be a candidate (owner filter = own).
+	var opp := CardInstance.create("opp_armor", "armor_def", "p2", "p2_graveyard")
+	state.cards["opp_armor"] = opp
+	state.zones["p2_graveyard"].card_ids.append("opp_armor")
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("sunken_def"))
+	var cands := StackResolver.get_graveyard_search_candidates(state, "p1", req, db)
+	eq(cands, ["dead_armor", "dead_weapon"],
+		"sunken-b: own armor AND weapon are candidates, ally and opponent's are not")
+
+	ok(StackResolver.can_use_quest_no_target_check(state, "sunken_inst", "p1", db),
+		"sunken-c: no-target probe passes with a valid candidate")
+
+	var bad := PendingAction.make("use_quest", "p1",
+			{"quest_id": "sunken_inst", "target_ids": ["dead_ally"]})
+	ok(not StackResolver.can_submit(state, bad, db),
+		"sunken-d: a non-equipment graveyard card is an illegal target")
+
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "sunken_inst", "target_ids": ["dead_weapon"]})
+	var events := StackResolver.submit_action(state, good, db)
+	ok(not events.is_empty(), "sunken-e: completion with a valid target submits")
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	ok(state.get_card("dead_weapon").zone_id == "p1_hand",
+		"sunken-f: the chosen weapon is returned to p1's hand")
+	ok(state.get_card("dead_armor").zone_id == "p1_graveyard",
+		"sunken-g: the unchosen equipment stays in the graveyard")
+	ok(state.get_card("sunken_inst").face_down,
+		"sunken-h: quest flipped face-down after completion")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # The Missing Diplomat — search your deck for an ally, reveal it, put it into
 # your hand, then shuffle. May find nothing (min 0) — the quest still completes.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3653,6 +3733,64 @@ func _test_reveal_pick_blocks_other_actions() -> void:
 	StackResolver.choose_reveal_pick(state, "z_ab1", db)
 	eq(state.get_card("z_ab1").zone_id, "p1_hand", "revealpick-n: ability taken to hand")
 	eq(state.pending_reveal_pick_player, "", "revealpick-o: pending cleared")
+
+
+# The Princess Trapped (azeroth_357): "Reveal the top two cards of your deck.
+# Target opponent chooses one. Put that card into your hand and the other one on
+# the bottom of your deck." The DECIDER is the opponent while the owner is still
+# the completer — every card moves in the completer's zones.
+func _test_princess_trapped_opponent_chooses() -> void:
+	_buf.append("\n-- The Princess Trapped: opponent picks which revealed card you keep --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("princess_def", 2, "reveal_pick:Any:2:opponent")
+	db.ally("ally_def", 2, 2, [], 3)
+	db.ability("abil_def", 1, "")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+
+	var quest := CardInstance.create("pr_inst", "princess_def", "p1", "p1_resource_row")
+	state.cards["pr_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("pr_inst")
+
+	# Top→down: ally, ability, then a third card that must stay untouched.
+	var layout := [["pr_a", "ally_def"], ["pr_b", "abil_def"], ["pr_c", "ally_def"]]
+	for pair in layout:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_deck")
+		state.cards[pair[0]] = c
+		state.zones["p1_deck"].card_ids.append(pair[0])
+
+	var action := PendingAction.make("use_quest", "p1", {"quest_id": "pr_inst"})
+	var events := StackResolver.submit_action(state, action, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.pending_reveal_pick_player, "p1", "princess-a: owner is the quest completer")
+	eq(state.pending_reveal_pick_chooser, "p2", "princess-b: the OPPONENT is the decider")
+	# want_type "Any" — both revealed cards are selectable regardless of type.
+	eq(state.pending_reveal_pick_ids, ["pr_a", "pr_b"],
+		"princess-c: both revealed cards selectable (Any)")
+	var chooser_in_event := ""
+	for ev in events:
+		if ev.event_type == "reveal_pick_opened":
+			chooser_in_event = ev.payload.get("chooser", "")
+	eq(chooser_in_event, "p2", "princess-d: reveal_pick_opened carries the chooser")
+	eq(state.get_card("pr_c").zone_id, "p1_deck", "princess-e: 3rd card not revealed")
+
+	# The pick is still a hard block on everything else (same guards as before).
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"princess-f: passing blocked while the pick is pending")
+
+	# p2 hands p1 the ability; the ally goes to the bottom of p1's deck.
+	StackResolver.choose_reveal_pick(state, "pr_b", db)
+	eq(state.pending_reveal_pick_player, "", "princess-g: pending cleared")
+	eq(state.pending_reveal_pick_chooser, "", "princess-h: chooser cleared")
+	eq(state.get_card("pr_b").zone_id, "p1_hand",
+		"princess-i: chosen card goes to the OWNER's hand, not the chooser's")
+	eq(state.zones["p1_deck"].card_ids, ["pr_c", "pr_a"],
+		"princess-j: the other revealed card goes to the bottom of the owner's deck")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14133,3 +14271,236 @@ func _test_zygore_bladebreaker_destroys_armor() -> void:
 	StackResolver.pass_priority(state, db)
 	StackResolver.pass_priority(state, db)
 	eq(state.get_card("robe").zone_id, "p2_graveyard", "zyga-c: armor destroyed")
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# TOKENS â€” Mya, Dragonling Wrangler + Tooga's Quest
+#
+# A token is a card created by an effect rather than dealt from a deck. It plays
+# like any other ally, but it ceases to exist the moment it LEAVES play â€” the
+# redirect lives in GameLogic.move_card, so it holds for destruction, bounce and
+# discard alike. Destruction itself is unchanged: card_destroyed still fires, so
+# "when destroyed" triggers see a token exactly as they see a real card.
+#
+#   tok-a   Mya's enter-play trigger creates a 1/1 Mechanical Dragonling
+#   tok-b   the token is a real ally: in the party, correct stats and owner
+#   tok-c   destroying a token fires card_destroyed but sends it to RFG, not the
+#           graveyard (so graveyard recursion can never see it)
+#   tok-d   an on_destroyed trigger on a token still fires
+#   tok-e   bouncing a token (Withdraw) voids it instead of putting it in hand
+#   tok-f   tokens are not deckable (DeckManager)
+#   tok-g   Tooga's Quest puts Tooga into play
+#   tok-h   Tooga removes itself at the start of the controller's NEXT turn and
+#           draws two â€” not on the turn it was created, and not on the
+#           opponent's turn
+#   tok-i   a Tooga destroyed before then never triggers: no removal, no draw
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+const MYA_EFFECTS   := "on_enter:create_token:dragonling_token"
+const TOOGA_EFFECTS := "rfg_self_next_turn:draw:2"
+
+
+func _test_mya_creates_token() -> void:
+	_buf.append("\n-- Mya, Dragonling Wrangler: enter-play token creation --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mya_def", 2, 2, [], 3, MYA_EFFECTS)
+	db.token("dragonling_token", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var mya := CardInstance.create("mya", "mya_def", "p1", "p1_hand")
+	state.cards["mya"] = mya
+	state.zones["p1_hand"].card_ids.append("mya")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_ally", "p1", {"card_id": "mya"}))
+	_drive_turns(state, db, p1_ai, ScriptedAI.new(), 3)
+
+	eq(state.get_card("mya").zone_id, "p1_ally_row", "tok-a1: Mya in play")
+	var tokens := _tokens_in(state, "p1_ally_row")
+	eq(tokens.size(), 1, "tok-a2: exactly one Mechanical Dragonling created")
+	if tokens.is_empty():
+		return
+	var tok: CardInstance = tokens[0]
+	eq(tok.card_def_id, "dragonling_token", "tok-a3: it's the Mechanical Dragonling")
+	ok(tok.is_token, "tok-a4: instance flagged as a token")
+	eq(state.get_atk(tok.instance_id, db), 1, "tok-b1: 1 ATK")
+	eq(state.get_max_hp(tok.instance_id, db), 1, "tok-b2: 1 health")
+	eq(tok.owner, "p1",      "tok-b3: owned by Mya's controller")
+	eq(tok.controller, "p1", "tok-b4: controlled by Mya's controller")
+	ok(tok.instance_id in state.zones["p1_ally_row"].card_ids,
+		"tok-b5: token is in the party, not floating")
+
+
+func _test_token_destroyed_ceases_to_exist() -> void:
+	_buf.append("\n-- Token destruction: card_destroyed fires, card goes to the void --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.token("dragonling_token", 1, 1)
+	# A token that itself has a death trigger â€” proves destruction registers
+	# normally even though the card never reaches a graveyard.
+	db.token("boom_token", 1, 1, [], "on_destroyed:deal_damage_aoe:2:fire:opposing")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	StackResolver._put_token_into_play(state, "p1", "dragonling_token", 1, db)
+	var tid: String = _tokens_in(state, "p1_ally_row")[0].instance_id
+
+	var events := StackResolver._destroy_card_trigger(state, tid, "", db)
+	var saw_destroyed := false
+	for e in events:
+		if e.event_type == "card_destroyed" and e.payload.get("card", "") == tid:
+			saw_destroyed = true
+	ok(saw_destroyed, "tok-c1: destroying a token emits card_destroyed")
+	eq(state.get_card(tid).zone_id, "p1_rfg", "tok-c2: token went to RFG, not the graveyard")
+	eq(state.cards_in_zone("p1_graveyard").size(), 0,
+		"tok-c3: nothing in the graveyard for recursion to find")
+
+	# tok-d: a death trigger ON the token still fires.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	StackResolver._put_token_into_play(st2, "p1", "boom_token", 1, db)
+	var boom_id: String = _tokens_in(st2, "p1_ally_row")[0].instance_id
+	var hp_before := st2.get_current_hp("p2_hero", db)
+	StackResolver._destroy_card_trigger(st2, boom_id, "", db)
+	eq(st2.get_current_hp("p2_hero", db), hp_before - 2,
+		"tok-d1: the token's own on_destroyed trigger fired")
+	eq(st2.get_card(boom_id).zone_id, "p1_rfg", "tok-d2: and it still ceased to exist")
+
+
+func _test_token_bounce_ceases_to_exist() -> void:
+	_buf.append("\n-- Token bounce: leaving play in ANY way voids it --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.token("dragonling_token", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	StackResolver._put_token_into_play(state, "p1", "dragonling_token", 1, db)
+	var tid: String = _tokens_in(state, "p1_ally_row")[0].instance_id
+
+	# Withdraw's resolution is a plain move to the owner's hand â€” the redirect in
+	# move_card must catch it without the bounce effect knowing about tokens.
+	GameLogic.move_card(state, tid, "p1_hand")
+	eq(state.get_card(tid).zone_id, "p1_rfg", "tok-e1: bounced token voided, not returned to hand")
+	eq(state.cards_in_zone("p1_hand").size(), 0, "tok-e2: hand is empty")
+
+
+func _test_tokens_not_deckable() -> void:
+	_buf.append("\n-- Tokens can't be deck cards --")
+	var db := MockDB.new()
+	db.hero("hero_def", 30)
+	db.token("dragonling_token", 1, 1)
+	db.ally("filler_def", 1, 1, [], 1)
+
+	var deck := DeckDefinition.new()
+	deck.deck_id          = "token_deck"
+	deck.display_name     = "Token Deck"
+	deck.hero_card_def_id = "hero_def"
+	var e1 := DeckCardEntry.new()
+	e1.card_def_id = "filler_def"
+	e1.count       = 59
+	var e2 := DeckCardEntry.new()
+	e2.card_def_id = "dragonling_token"
+	e2.count       = 1
+	deck.card_entries = [e1, e2]
+
+	var errors := DeckManager.authorize_deck_def(deck, db)
+	var saw_token_error := false
+	for err in errors:
+		if "token" in err.to_lower():
+			saw_token_error = true
+	ok(saw_token_error, "tok-f: the authorizer rejects a token in the deck list")
+
+
+func _test_toogas_quest() -> void:
+	_buf.append("\n-- Tooga's Quest: token + delayed self-removal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("tooga_quest_def", 3, "create_token:tooga_token|require_turn_player")
+	db.token("tooga_token", 1, 1, ["unique"], TOOGA_EFFECTS)
+	db.ally("deck_filler", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var quest := CardInstance.create("quest", "tooga_quest_def", "p1", "p1_resource_row")
+	state.cards["quest"] = quest
+	state.zones["p1_resource_row"].card_ids.append("quest")
+	_add_resources(state, "p1", 3)
+	for i in range(6):
+		var did := "deck_%d" % i
+		var dc := CardInstance.create(did, "deck_filler", "p1", "p1_deck")
+		state.cards[did] = dc
+		state.zones["p1_deck"].card_ids.append(did)
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "quest"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	var toogas := _tokens_in(state, "p1_ally_row")
+	eq(toogas.size(), 1, "tok-g1: Tooga token put into play by the reward")
+	if toogas.is_empty():
+		return
+	var tooga: CardInstance = toogas[0]
+	eq(state.get_atk(tooga.instance_id, db), 1, "tok-g2: 1 ATK")
+	eq(state.get_max_hp(tooga.instance_id, db), 1, "tok-g3: 1 health")
+	eq(tooga.created_on_turn, state.turn_number, "tok-g4: creation turn recorded")
+
+	# tok-h: nothing happens on the opponent's turn.
+	var hand_before := state.cards_in_zone("p1_hand").size()
+	while state.turn_player != "p2":
+		TurnManager.advance_phase(state, db)
+	ok(state.is_in_play(tooga.instance_id), "tok-h1: Tooga survives the opponent's turn start")
+	eq(state.cards_in_zone("p1_hand").size(), hand_before, "tok-h2: no draw on the opponent's turn")
+
+	# ...and it fires at the start of the controller's next turn.
+	while not (state.turn_player == "p1" and state.phase == "ready"):
+		TurnManager.advance_phase(state, db)
+	eq(state.get_card(tooga.instance_id).zone_id, "p1_rfg",
+		"tok-h3: Tooga removed from the game on its controller's next turn")
+	eq(state.cards_in_zone("p1_graveyard").size(), 0,
+		"tok-h4: removal is not a destroy â€” nothing in the graveyard")
+	eq(state.cards_in_zone("p1_hand").size(), hand_before + 2,
+		"tok-h5: drew two cards for the removal")
+
+
+func _test_tooga_killed_before_trigger() -> void:
+	_buf.append("\n-- Tooga killed early: the delayed trigger simply never happens --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.token("tooga_token", 1, 1, ["unique"], TOOGA_EFFECTS)
+	db.ally("deck_filler", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	StackResolver._put_token_into_play(state, "p1", "tooga_token", 1, db)
+	var tooga_id: String = _tokens_in(state, "p1_ally_row")[0].instance_id
+	for i in range(6):
+		var did := "deck_%d" % i
+		var dc := CardInstance.create(did, "deck_filler", "p1", "p1_deck")
+		state.cards[did] = dc
+		state.zones["p1_deck"].card_ids.append(did)
+
+	# The opponent destroys Tooga before the trigger can fire â€” a normal destroy,
+	# which voids the token.
+	StackResolver._destroy_card_trigger(state, tooga_id, "p2_hero", db)
+	eq(state.get_card(tooga_id).zone_id, "p1_rfg", "tok-i1: destroyed Tooga ceased to exist")
+
+	var hand_before := state.cards_in_zone("p1_hand").size()
+	while state.turn_player != "p2":
+		TurnManager.advance_phase(state, db)
+	while not (state.turn_player == "p1" and state.phase == "ready"):
+		TurnManager.advance_phase(state, db)
+	eq(state.cards_in_zone("p1_hand").size(), hand_before,
+		"tok-i2: no bonus draw â€” the removal never happened")
+
+
+# All token instances currently sitting in `zone_id`.
+func _tokens_in(state: GameState, zone_id: String) -> Array[CardInstance]:
+	var result: Array[CardInstance] = []
+	for c in state.cards_in_zone(zone_id):
+		if c.is_token:
+			result.append(c)
+	return result

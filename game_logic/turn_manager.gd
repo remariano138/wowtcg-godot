@@ -365,6 +365,31 @@ static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
 				for pet in pets:
 					events.append_array(GameLogic.heal(state, pet.instance_id, pet_heal, db, card.instance_id))
 			continue
+		# Tooga (token, from Tooga's Quest): "At the start of your next turn,
+		# remove Tooga from the game. If you do, draw two cards." A delayed
+		# trigger carried by the token itself, so nothing has to remember it —
+		# if the token was destroyed first it simply isn't in play to be scanned,
+		# no removal and no draw. `created_on_turn` keeps it from firing on the
+		# turn the token was created (the card says "your NEXT turn").
+		#
+		# "Remove from the game" is not a destroy: the token goes straight to RFG
+		# with no card_destroyed event, so no destruction triggers see it. An
+		# opponent killing it instead is a normal destroy (which then voids the
+		# token in move_card) — the two paths stay distinct.
+		if not each_turn and key == "rfg_self_next_turn":
+			if state.turn_number <= card.created_on_turn:
+				continue
+			var rfg_pid := card.controller
+			events.append_array(GameLogic.move_card(
+				state, card.instance_id, card.owner + "_rfg"))
+			events.append(GameEvent.card_removed_from_game(card.instance_id, rfg_pid))
+			# "If you do" — the rider only happens because the removal did.
+			var rider := parts[1].strip_edges() if parts.size() > 1 else ""
+			if rider == "draw":
+				var draw_n := int(parts[2]) if parts.size() > 2 else 1
+				for _i in draw_n:
+					events.append_array(_draw_one(state, rfg_pid))
+			continue
 		if not each_turn and key == "turn_start_discard_or_give_control":
 			state.pending_control_discard_player = card.controller
 			state.pending_control_discard_ids.append(card.instance_id)

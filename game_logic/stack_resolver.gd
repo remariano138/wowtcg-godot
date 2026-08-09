@@ -728,7 +728,8 @@ static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
-				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal"]:
+				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
+				"grant_keyword_target"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -775,7 +776,8 @@ static func selected_mode(def: CardDef, action: PendingAction) -> String:
 static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
+		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach",
+				"grant_keyword_target"] \
 				and parts.size() > 1 and parts[1] in ["ally", "friendly_ally", "exhausted_ally"]:
 			return true
 		# Ravenous Bite: BOTH announced targets are allies (parts[1..] are the
@@ -872,13 +874,15 @@ static func _is_exhausted_ally(state: GameState, target_id: String, db) -> bool:
 			and _is_legal_target(state, target_id, db)
 
 
-# Fall Back (`return_to_hand:friendly_ally`): "Put target ally from your party
-# into its owner's hand." A subset of the ally-only restriction — the target
-# ally must also be controlled by the caster.
+# Fall Back (`return_to_hand:friendly_ally`), Into the Fray
+# (`grant_keyword_target:friendly_ally:ferocity`): "…target ally in your party."
+# A subset of the ally-only restriction — the target ally must also be
+# controlled by the caster.
 static func _instant_targets_friendly_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach"] \
+		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach",
+				"grant_keyword_target"] \
 				and parts.size() > 1 and parts[1] == "friendly_ally":
 			return true
 	return false
@@ -1078,7 +1082,7 @@ static func _is_legal_target(state: GameState, target_id: String, db,
 		return false
 	if not allow_untargetable:
 		var card := state.get_card(target_id)
-		if card and _has_keyword(card, "untargetable", db):
+		if card and _has_keyword(card, "untargetable", db, state):
 			return false
 	return true
 
@@ -1629,6 +1633,34 @@ static func _exhaust_target_ok(state: GameState, parts: PackedStringArray,
 	return _is_ally(state, target_id)
 
 
+# The `grant_keyword_target:KIND:KEYWORD` segment split into parts, or an empty
+# array when the def has none. Public accessor for the AI / UI.
+static func grant_keyword_parts(def: CardDef) -> PackedStringArray:
+	if not def or def.effects == "":
+		return PackedStringArray()
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "grant_keyword_target":
+			return parts
+	return PackedStringArray()
+
+
+# Resolution-side target check for `grant_keyword_target:KIND:KEYWORD`.
+# `ally` (Sneak) accepts any ally either party; `friendly_ally` (Into the Fray —
+# "target ally in your party") additionally requires the caster's control.
+# Both re-check 706 legality.
+static func _grant_keyword_target_ok(state: GameState, parts: PackedStringArray,
+		target_id: String, caster: String, db) -> bool:
+	if not _is_legal_target(state, target_id, db):
+		return false
+	if not _is_ally(state, target_id):
+		return false
+	if parts.size() > 1 and parts[1] == "friendly_ally":
+		var t := state.get_card(target_id)
+		return t != null and t.controller == caster
+	return true
+
+
 static func _is_hero(state: GameState, card_id: String) -> bool:
 	for pid in state.players:
 		var ps := state.players.get(pid) as PlayerState
@@ -1781,6 +1813,23 @@ static func _resolve_play_instant(state: GameState,
 								state.get_card(target_id).counters["gouge_skip_ready"] = 1
 								events.append(GameEvent.make("card_ready_locked",
 										{"card_id": target_id, "source_id": card_id}))
+					"grant_keyword_target":
+						# "Target ally has <keyword> this turn." — Sneak
+						# (elusive, any ally) / Into the Fray (ferocity, your
+						# party only). Buff-granted with duration turns:1 so the
+						# normal end-of-turn sweep expires it and leaving play
+						# clears it; read by _has_keyword ("grant_<keyword>").
+						# Re-check at resolution (706 / glossary 4217): fizzles
+						# if the target left play or became Untargetable.
+						if _grant_keyword_target_ok(state, parts, target_id,
+								action.source_player, db):
+							var gk_word := parts[2].strip_edges() if parts.size() > 2 else ""
+							if gk_word != "":
+								state.get_card(target_id).active_buffs.append(
+									Buff.make("granted_" + gk_word, card_id,
+										"grant_" + gk_word, 1, "turns", 1))
+								events.append(GameEvent.keyword_granted(
+									target_id, gk_word, card_id))
 					"return_to_hand":
 						# "Put target ally into its owner's hand." (Withdraw), or
 						# "...from your party" friendly-only (Fall Back).
@@ -2412,7 +2461,7 @@ static func _combat_prevention_offers(state: GameState, db) -> Array:
 	var attacker := state.get_card(attacker_id)
 	var atk_dmg := state.get_atk(attacker_id, db)
 	var def_dmg := state.get_atk(defender_id, db)
-	if _has_keyword(attacker, "long_range", db) \
+	if _has_keyword(attacker, "long_range", db, state) \
 			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
 	var defender_offer := _prevention_offer(state, db, defender_id, atk_dmg, attacker_id,
@@ -3211,7 +3260,7 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	# Rule 601.2a / 302.2: ally summoning sickness (heroes immune per 301.3).
 	var att_zone := state.zones.get(attacker.zone_id) as Zone
 	if att_zone and att_zone.zone_type == "ally_row":
-		if attacker.just_summoned and not _has_keyword(attacker, "ferocity", db):
+		if attacker.just_summoned and not _has_keyword(attacker, "ferocity", db, state):
 			return false
 		# "Opposing allies can't attack." (Lady Jaina) — locks allies only, not heroes.
 		if _allies_attack_locked(state, attacker.controller, db):
@@ -3220,7 +3269,7 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	if db and is_totem_def(db.get_def(attacker.card_def_id) as CardDef):
 		return false
 	# "can't attack" allies (e.g. Guardian Steelhorn) can never propose combat.
-	if _has_keyword(attacker, "cant_attack", db):
+	if _has_keyword(attacker, "cant_attack", db, state):
 		return false
 	# "Can't attack this turn" restriction buff (e.g. Litori Frostburn).
 	if attacker.has_restriction("cannot_attack"):
@@ -3232,7 +3281,7 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 	if not state.is_in_play(defender_id):
 		return false
 	# Rule 601.2b: defender must not be Elusive.
-	if _has_keyword(defender, "elusive", db):
+	if _has_keyword(defender, "elusive", db, state):
 		return false
 	# Taunt check: if any legal defender has sarmoth_taunt, only that card is valid.
 	if defender_id not in get_legal_defenders(state, attacker_id, db):
@@ -3261,7 +3310,7 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 		if hero and not hero.is_exhausted \
 				and (state.get_atk(hero.instance_id, db, true) > 0
 					or not get_strikeable_weapons(state, player_id, hero.instance_id, db).is_empty()) \
-				and not _has_keyword(hero, "cant_attack", db) \
+				and not _has_keyword(hero, "cant_attack", db, state) \
 				and not hero.has_restriction("cannot_attack"):
 			result.append(hero.instance_id)
 	# "Opposing allies can't attack." (Lady Jaina) locks ALL of this player's
@@ -3276,10 +3325,10 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 		# Rule 305.3a: Totems can't be proposed as attackers.
 		if db and is_totem_def(db.get_def(card.card_def_id) as CardDef):
 			continue
-		if card.just_summoned and not _has_keyword(card, "ferocity", db):
+		if card.just_summoned and not _has_keyword(card, "ferocity", db, state):
 			continue
 		# "can't attack" allies (e.g. Guardian Steelhorn) are never legal attackers.
-		if _has_keyword(card, "cant_attack", db):
+		if _has_keyword(card, "cant_attack", db, state):
 			continue
 		if card.has_restriction("cannot_attack"):
 			continue
@@ -3295,12 +3344,12 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 	var opp := _other_player(state, attacker.controller)
 	var result: Array[String] = []
 	for card in state.cards_in_zone(opp + "_ally_row"):
-		if not _has_keyword(card, "elusive", db):
+		if not _has_keyword(card, "elusive", db, state):
 			result.append(card.instance_id)
 	var ps := state.players.get(opp) as PlayerState
 	if ps and ps.hero_instance_id != "":
 		var hero := state.get_card(ps.hero_instance_id)
-		if hero and not _has_keyword(hero, "elusive", db):
+		if hero and not _has_keyword(hero, "elusive", db, state):
 			result.append(hero.instance_id)
 	# sarmoth_taunt: if a taunt card is among the legal defenders, restrict to taunt cards only.
 	if db:
@@ -3323,7 +3372,7 @@ static func get_legal_protectors(state: GameState, attacker_id: String,
 		return []
 	# Stealth (602.2a): "While an attacker has Stealth, characters can't protect."
 	var attacker := state.get_card(attacker_id)
-	if attacker and _has_keyword(attacker, "stealth", db):
+	if attacker and _has_keyword(attacker, "stealth", db, state):
 		return []
 	var defending_player := defender.controller
 	# "Opposing heroes and allies can't protect." (Hannah the Unstoppable):
@@ -3343,7 +3392,7 @@ static func get_legal_protectors(state: GameState, attacker_id: String,
 			# "Can't protect this turn" restriction buff (Frost Shock).
 			if card.has_restriction("cannot_protect"):
 				continue
-			if _has_keyword(card, "protector", db):
+			if _has_keyword(card, "protector", db, state):
 				result.append(card.instance_id)
 				continue
 			# Draconian Deflector-style grant: an in-play card with
@@ -3492,7 +3541,8 @@ static func _struck_weapon_grants_long_range(state: GameState, wielder_id: Strin
 	return false
 
 
-static func _has_keyword(card: CardInstance, keyword: String, db) -> bool:
+static func _has_keyword(card: CardInstance, keyword: String, db,
+		state: GameState = null) -> bool:
 	if keyword in card.granted_keywords:
 		return true
 	# Buff-granted keywords with a duration (Hidden Enemies: "Target ally has
@@ -3502,10 +3552,43 @@ static func _has_keyword(card: CardInstance, keyword: String, db) -> bool:
 	for b in card.active_buffs:
 		if b.stat == "grant_" + keyword and b.amount > 0:
 			return true
+	# "Ongoing: All allies have <keyword>." (Lust for Battle, From the Shadows).
+	# A board-wide continuous grant, so it can't live on the card the way the
+	# two grants above do — it is read LIVE here, from whatever aura cards are
+	# in play at this instant. That is what makes it cover BOTH parties' allies
+	# and allies that entered play after the aura resolved, and makes the grant
+	# lift the moment the aura leaves play. `state` is optional only because a
+	# handful of def-only probes have no state to give; every gate site that
+	# governs an aura-granted keyword passes it.
+	if state != null and _ally_keyword_aura(state, keyword, db) \
+			and _is_ally(state, card.instance_id):
+		return true
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def and keyword in def.keywords:
 			return true
+	return false
+
+
+# True when EITHER player controls an in-play card granting `keyword` to all
+# allies (`all_allies_keyword:<keyword>`). "All allies" is board-wide, so unlike
+# _allies_attack_locked / _protect_locked this scans both players' rows and is
+# not relative to a controller — a Horde Lust for Battle gives the Alliance
+# player's allies ferocity too. Evaluated live, never cached.
+static func _ally_keyword_aura(state: GameState, keyword: String, db) -> bool:
+	if not db or keyword == "":
+		return false
+	for pid in state.players:
+		for zone_suffix in ["_hero_row", "_ally_row"]:
+			for card in state.cards_in_zone(pid + zone_suffix):
+				var def := db.get_def(card.card_def_id) as CardDef
+				if not def or def.effects == "":
+					continue
+				for entry in def.effects.split("|"):
+					var parts := entry.strip_edges().split(":")
+					if parts[0].strip_edges() == "all_allies_keyword" \
+							and parts.size() > 1 and parts[1].strip_edges() == keyword:
+						return true
 	return false
 
 
@@ -3567,9 +3650,9 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 			or not state.is_in_play(attacker_id) \
 			or not state.is_in_play(defender_id) \
 			or attacker.is_exhausted \
-			or _has_keyword(attacker, "cant_attack", db) \
+			or _has_keyword(attacker, "cant_attack", db, state) \
 			or attacker.has_restriction("cannot_attack") \
-			or _has_keyword(defender, "elusive", db):
+			or _has_keyword(defender, "elusive", db, state):
 		return [GameEvent.make("action_fizzled", {
 			"action_type": "propose_combat", "reason": "illegal_at_resolution",
 		})]
@@ -3886,7 +3969,7 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	var def_dmg := state.get_atk(defender_id, db)   # to attacker (0 for heroes, per 205.1)
 	# Rule glossary "Long-Range": while attacking, defenders can't deal combat damage.
 	# Ancient Bone Bow grants long-range for the combat when the wielder strikes it.
-	if _has_keyword(attacker, "long_range", db) \
+	if _has_keyword(attacker, "long_range", db, state) \
 			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
 	# Annihilator: "can't be prevented" is scoped to the weapon the hero STRUCK

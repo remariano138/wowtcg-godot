@@ -1,4 +1,4 @@
-{
+﻿{
   "deck_id": "horde_grennan_test",
   "display_name": "Horde_test (Grennan)",
   "hero_card_def_id": "azeroth_10",
@@ -65,8 +65,13 @@
     },
     {
       "card_def_id": "dark_portal_239",
-      "count": 2,
+      "count": 1,
       "_card_name": "Vanda Skydaughter"
+    },
+    {
+      "card_def_id": "azeroth_153",
+      "count": 1,
+      "_card_name": "Into the Fray"
     },
     {
       "card_def_id": "azeroth_260",
@@ -87,11 +92,6 @@
       "card_def_id": "azeroth_242",
       "count": 1,
       "_card_name": "Hierophant Caydiem"
-    },
-    {
-      "card_def_id": "azeroth_275",
-      "count": 1,
-      "_card_name": "Zygore Bladebreaker"
     },
     {
       "card_def_id": "dark_portal_137",
@@ -167,6 +167,11 @@
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
+    },    
+    {
+      "card_def_id": "azeroth_275",
+      "count": 1,
+      "_card_name": "Zygore Bladebreaker"
     }
   ],
   "recommended_ai_id": "ai_generic",

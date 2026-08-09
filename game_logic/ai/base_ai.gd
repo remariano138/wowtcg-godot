@@ -67,6 +67,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_48":  "combat_instant_evasion",     # Blink — draw + remove attacker while hero defends
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 	"azeroth_44":  "combat_instant_atk_swing",   # Ravenous Bite — +3 ATK / -3 ATK on two allies (see atk_swing_action)
+	"azeroth_152": "combat_instant_save_elusive", # Sneak — target ally has elusive this turn (see elusive_save_action)
 }
 
 
@@ -86,6 +87,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
 	if power_exhaust != null:
 		return power_exhaust
+	var sneak := elusive_save_action(state, db, player_id)
+	if sneak != null:
+		return sneak
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -325,7 +329,7 @@ func hero_disable_action(state: GameState, db, player_id: String) -> PendingActi
 		var d_def := db.get_def(defender.card_def_id) as CardDef
 		var d_atk := state.get_atk(defender_id, db)
 		var kills_back := d_atk >= a_hp \
-			and not StackResolver._has_keyword(state.get_card(attacker_id), "long_range", db)
+			and not StackResolver._has_keyword(state.get_card(attacker_id), "long_range", db, state)
 		worth = a_atk >= d_hp and not kills_back and d_def != null and d_def.cost >= 2
 	if not worth:
 		return null
@@ -388,7 +392,7 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 		var d_def := db.get_def(defender.card_def_id) as CardDef
 		var d_atk := state.get_atk(defender_id, db)
 		var kills_back := d_atk >= a_hp \
-			and not StackResolver._has_keyword(attacker, "long_range", db)
+			and not StackResolver._has_keyword(attacker, "long_range", db, state)
 		worth = a_atk >= d_hp and not kills_back and d_def != null and d_def.cost >= 2
 	if not worth:
 		return null
@@ -416,6 +420,73 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 		if not mass:
 			e_params["target_id"] = attacker_id
 		var act := PendingAction.make(_action_type_for(card, db), player_id, e_params)
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Sneak (combat_instant_save_elusive): a held Instant Ability granting an ally
+# elusive ("can't be attacked") this turn. Played in RESPONSE to an opposing
+# combat proposal on the chain, aimed at our OWN proposed defender — the 601.3
+# legality recheck sees an elusive defender and fizzles the proposal, so combat
+# never starts and the attacker never exhausts. Same interrupt point and same
+# "is the trade worth answering?" math as Litori's freeze (hero_disable_action)
+# and Exhaustion (exhaust_attacker_action), with two differences that follow
+# from targeting our side rather than theirs:
+#   * the defender must be an ALLY (Sneak targets allies, so a hero being
+#     attacked can't be saved this way);
+#   * the grant lasts the TURN, so it also blanks any follow-up attack aimed at
+#     that ally — a strict bonus over the freeze, which is why there is no
+#     extra gate for it.
+# Too late once the attack window opens: elusive restricts who may be CHOSEN as
+# defender, and by then the choice is made.
+func elusive_save_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.pending_actions.is_empty():
+		return null
+	var top: PendingAction = state.pending_actions.back()
+	if top.action_type != "propose_combat" or top.source_player == player_id:
+		return null
+
+	var attacker_id: String = top.params.get("attacker_id", "")
+	var defender_id: String = top.params.get("defender_id", "")
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	var attacker := state.get_card(attacker_id)
+	var defender := state.get_card(defender_id)
+	if not attacker or not defender:
+		return null
+	if defender.controller != player_id:
+		return null   # only save our own side
+	if not StackResolver._is_ally(state, defender_id):
+		return null   # Sneak can't be cast on a hero
+
+	# Worth: our ally dies to the hit and doesn't take the attacker with it,
+	# and it cost enough to be worth spending a card on (the ally branch of
+	# hero_disable_action's math).
+	var a_atk := state.get_atk(attacker_id, db, true)
+	var a_hp  := state.get_current_hp(attacker_id, db)
+	var d_hp  := state.get_current_hp(defender_id, db)
+	var d_atk := state.get_atk(defender_id, db)
+	var d_def := db.get_def(defender.card_def_id) as CardDef
+	var kills_back := d_atk >= a_hp \
+		and not StackResolver._has_keyword(attacker, "long_range", db, state)
+	if a_atk < d_hp or kills_back or d_def == null or d_def.cost < 2:
+		return null
+
+	# A kill is strictly better than a save — hold if a combat instant answers it.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+			continue
+		var dmg_def := db.get_def(card.card_def_id) as CardDef
+		if dmg_def and _combat_instant_dmg(dmg_def) >= a_hp \
+				and dmg_def.cost <= state.get_available_resources(player_id):
+			return null
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_save_elusive":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id, "target_id": defender_id})
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
@@ -746,7 +817,7 @@ func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String)
 		var d_def := db.get_def(defender.card_def_id) as CardDef
 		var d_atk := state.get_atk(defender_id, db)
 		var kills_back := d_atk >= a_hp \
-			and not StackResolver._has_keyword(attacker, "long_range", db)
+			and not StackResolver._has_keyword(attacker, "long_range", db, state)
 		worth = a_atk >= d_hp and not kills_back and d_def != null and d_def.cost >= 2
 	if not worth:
 		return null
@@ -922,7 +993,7 @@ func _is_doomed(state: GameState, db, card_id: String, chain_threatened: String)
 	if card_id == state.combat_defender:
 		return state.get_atk(state.combat_attacker, db) >= hp
 	if card_id == state.combat_attacker:
-		if StackResolver._has_keyword(state.get_card(card_id), "long_range", db):
+		if StackResolver._has_keyword(state.get_card(card_id), "long_range", db, state):
 			return false
 		return state.get_atk(state.combat_defender, db) >= hp
 	return false
@@ -1392,7 +1463,7 @@ func choose_strike_weapon(state: GameState, db, player_id: String) -> String:
 	var attacker := state.get_card(state.combat_attacker)
 	if not attacker:
 		return ""
-	if StackResolver._has_keyword(attacker, "long_range", db):
+	if StackResolver._has_keyword(attacker, "long_range", db, state):
 		return ""   # we'd deal no combat damage back anyway
 	# A PROTECTING hero always retaliates when it can afford to (offered
 	# weapons are pre-filtered by affordability): the opponent is attacking
@@ -1592,7 +1663,7 @@ func _best_ferocity_target(state: GameState, db, player_id: String,
 			continue
 		if not card.just_summoned:
 			continue
-		if StackResolver._has_keyword(card, "ferocity", db):
+		if StackResolver._has_keyword(card, "ferocity", db, state):
 			continue
 		var atk := state.get_atk(tid, db)
 		if atk > best_atk:
@@ -3075,6 +3146,34 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 	# damage an enemy, heal a friendly. Same shape as the hero-power version.
 	if spell_def and StackResolver.is_damage_and_heal_def(spell_def):
 		return _instant_damage_and_heal_actions(state, db, player_id, card_id, action_type)
+
+	# Into the Fray (grant_keyword_target:friendly_ally:ferocity) — and any
+	# future keyword grant. Two AI policies, both narrower than the printed
+	# targeting:
+	#   * FRIENDLY ONLY. Sneak's printed text is "target ally" (an opposing ally
+	#     is a legal target for a human), but handing the opponent elusive or
+	#     ferocity is never what the AI wants, so it only ever sees its own.
+	#   * FEROCITY only on a summoning-sick ally. On an ally that can already
+	#     attack the grant does nothing — the card would be burned for no board
+	#     change. ATK > 0 too: readying a 0-ATK ally buys no attack either.
+	# Held combat saves (Sneak, tagged combat_instant_*) never reach here —
+	# get_reasonable_actions skips tagged cards; they play from their own hook.
+	var gk := StackResolver.grant_keyword_parts(spell_def) if spell_def else PackedStringArray()
+	if gk.size() > 2:
+		var gk_word := gk[2].strip_edges()
+		for ally in state.cards_in_zone(player_id + "_ally_row"):
+			if gk_word == "ferocity":
+				if not ally.just_summoned:
+					continue
+				if state.get_atk(ally.instance_id, db, true) <= 0:
+					continue
+			if StackResolver._has_keyword(ally, gk_word, db, state):
+				continue   # already has it — the grant would do nothing
+			var gk_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": ally.instance_id})
+			if StackResolver.can_submit(state, gk_act, db):
+				result.append(gk_act)
+		return result
 
 	# Burn Away / Shattering Blow (destroy_target:ability / :equipment): targets
 	# are opposing in-play ability / equipment cards, not heroes and allies.

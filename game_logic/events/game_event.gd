@@ -469,6 +469,15 @@ static func ferocity_granted(card_id: String, source_id: String) -> GameEvent:
 		"card_id": card_id, "source_id": source_id,
 	})
 
+# Sneak / Into the Fray (`grant_keyword_target:KIND:KEYWORD`): "Target ally has
+# <keyword> this turn." The generic form of ferocity_granted above — the
+# keyword rides in the payload so a new granted keyword needs no new event.
+static func keyword_granted(card_id: String, keyword: String,
+		source_id: String) -> GameEvent:
+	return make("keyword_granted", {
+		"card_id": card_id, "keyword": keyword, "source_id": source_id,
+	})
+
 # A New Plague: player must destroy an ally in their own party.
 static func plague_destroy_required(player_id: String,
 		source_id: String) -> GameEvent:

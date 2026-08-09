@@ -329,3 +329,70 @@ no ally of our own to receive the pump, we hold.
 
 Not modeled: Long-Range (no retaliation), a protector swapping in later, and the
 pump's value on a future attack.
+
+## `BaseAI.elusive_save_action(state, db, player_id) -> PendingAction`
+
+**Sneak elusive-save** (`azeroth_152`, tagged `"combat_instant_save_elusive"` —
+held, never blind-played). The mirror image of `exhaust_attacker_action`: same
+interrupt point (an opposing `propose_combat` still on the **chain**, before the
+attack window) and the same worth math, but the answer is cast on **our own
+proposed defender** rather than on their attacker. Granting it elusive makes the
+601.3 legality recheck fizzle the proposal, so combat never starts and the
+attacker never exhausts.
+
+Gates:
+
+- top of the chain is an opposing `propose_combat`, both combatants in play;
+- the defender is **ours** and is an **ALLY** — Sneak targets allies, so a hero
+  under attack can't be saved this way (`hero_disable_action` / War Stomp cover
+  that case);
+- worth it: the attacker's forecast ATK kills the defender, the defender does
+  **not** kill it back (a trade we win is not worth a card), and the defender
+  cost **>= 2**;
+- hold if an affordable `combat_instant_dmg` in hand kills the attacker outright
+  — removing a card beats blanking one attack.
+
+The grant lasts the **turn**, so it also blanks any follow-up attack aimed at
+that ally — a strict bonus over the freeze, which is why there is no extra gate
+for it. Wired into all three AIs' `decide_action`, after
+`exhaust_attacker_ally_power_action`.
+
+Note the AI's targeting is narrower than the printed card in both directions:
+Sneak's "target ally" legally includes an **opposing** ally (a human may cast it
+there), but the AI only ever sees its own — as with Into the Fray's ferocity,
+handing the opponent a keyword is never what it wants.
+
+Tests: `_test_ai_sneak_elusive_save`, `_test_sneak_elusive_fizzles_proposal`.
+
+## Into the Fray targeting (`_targeted_instant_actions`, `grant_keyword_target`)
+
+**Into the Fray** (`azeroth_153`) is untagged — a sorcery-speed Ability played
+in the normal develop step. Its branch in `_targeted_instant_actions` enumerates
+**our own ally row only**, and for a `ferocity` grant restricts further to allies
+that are **`just_summoned`** and have **ATK > 0**: on an ally that can already
+attack the grant changes nothing and burns the card, and readying a 0-ATK ally
+buys no attack either. Allies that already have the keyword are skipped.
+
+The branch is keyword-generic (`StackResolver.grant_keyword_parts`), so a future
+keyword grant inherits the friendly-only policy; only the ferocity-specific
+usefulness filter is keyed on the keyword name.
+
+Tests: `_test_ai_into_the_fray_targeting`.
+
+## `GenericAI._enters_with_ferocity(def, state, db)` — ferocity auras and lethal
+
+The lethal detectors ask "can this ally in hand attack the turn we play it?" in
+two places (`_hero_lethal_action`'s ferocity-in-hand scan and
+`_all_out_hero_lethal_action`'s attacker list). That used to be a printed-keyword
+check on the `CardDef`. With a board-wide **`all_allies_keyword:ferocity`** aura
+in play (Lust for Battle) *every* ally answers yes, so the def-only check would
+hide real kills — the AI would decline a lethal it actually has.
+
+`_enters_with_ferocity` is the printed keyword **or**
+`StackResolver._ally_keyword_aura(state, "ferocity", db)`, read live off the
+current board so it tracks the aura appearing and leaving.
+
+Neither aura card is otherwise modeled: both are untagged plain Abilities played
+in the develop step, and the AI does not reason about the fact that they help the
+opponent symmetrically (From the Shadows in particular shuts off its own ally
+attacks as much as the opponent's — a human should weigh that, the AI won't).

@@ -68,6 +68,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
 	if power_exhaust != null:
 		return power_exhaust
+	# Sneak (BaseAI) — grant our proposed defender elusive; 601.3 fizzles it.
+	var sneak := elusive_save_action(state, db, player_id)
+	if sneak != null:
+		return sneak
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -227,7 +231,7 @@ func _hero_chip_action(state: GameState, db, player_id: String) -> PendingAction
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
 			continue
 		var card := state.get_card(aid)
-		if not all_out and card and StackResolver._has_keyword(card, "protector", db) \
+		if not all_out and card and StackResolver._has_keyword(card, "protector", db, state) \
 				and not StackResolver._has_effect_flag(
 					db.get_def(card.card_def_id) as CardDef, "ready_self_at_turn_end"):
 			continue   # save Protectors to protect — unless they ready at end of
@@ -418,7 +422,7 @@ func _hero_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 		var def := db.get_def(card.card_def_id) as CardDef
 		if not def or def.card_type != "Ally":
 			continue
-		if not _has_keyword(def, "ferocity"):
+		if not _enters_with_ferocity(def, state, db):
 			continue
 		if def.printed_atk < hero_hp:
 			continue
@@ -540,7 +544,7 @@ func _all_out_hero_lethal_action(state: GameState, db, player_id: String) -> Pen
 	# Any enemy Protector can intercept one of our attacks, breaking the "every
 	# swing connects" assumption below — bail out entirely.
 	for card in state.cards_in_zone(opp + "_ally_row"):
-		if StackResolver._has_keyword(card, "protector", db):
+		if StackResolver._has_keyword(card, "protector", db, state):
 			return null
 
 	var hero_hp := state.get_current_hp(hero_id, db)
@@ -613,7 +617,7 @@ func _all_out_with_spell_hero_lethal_action(state: GameState, db, player_id: Str
 	# Same Protector guard as the pure all-out check — one Protector can
 	# absorb an attack, breaking the "every swing connects" assumption.
 	for card in state.cards_in_zone(opp + "_ally_row"):
-		if StackResolver._has_keyword(card, "protector", db):
+		if StackResolver._has_keyword(card, "protector", db, state):
 			return null
 
 	var hero_hp := state.get_current_hp(hero_id, db)
@@ -721,7 +725,7 @@ func _safe_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 		var def := db.get_def(card.card_def_id) as CardDef
 		if not def or def.card_type != "Ally":
 			continue
-		if not _has_keyword(def, "ferocity"):
+		if not _enters_with_ferocity(def, state, db):
 			continue
 		var play := PendingAction.make("play_ally", player_id,
 				{"card_id": card.instance_id})
@@ -834,3 +838,13 @@ func _has_keyword(def: CardDef, keyword: String) -> bool:
 		if str(k).to_lower() == keyword:
 			return true
 	return false
+
+
+# "Can this ally in hand attack the turn we play it?" — its printed Ferocity, or
+# a board-wide "all allies have ferocity" aura (Lust for Battle) that will grant
+# it the moment it enters play. Read live off the current board, so the answer
+# tracks the aura appearing or leaving. Used by the lethal detectors, where
+# missing it would hide a real kill.
+func _enters_with_ferocity(def: CardDef, state: GameState, db) -> bool:
+	return _has_keyword(def, "ferocity") \
+		or StackResolver._ally_keyword_aura(state, "ferocity", db)

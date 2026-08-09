@@ -144,9 +144,14 @@
       "_card_name": "Wazzuli Wildmender"
     },
     {
-      "card_def_id": "azeroth_246",
-      "count": 2,
-      "_card_name": "Kagra of the Crossroads"
+      "card_def_id": "azeroth_154",
+      "count": 1,
+      "_card_name": "Lust for Battle"
+    },
+    {
+      "card_def_id": "azeroth_153",
+      "count": 1,
+      "_card_name": "Into the Fray"
     },
     {
       "card_def_id": "azeroth_235",

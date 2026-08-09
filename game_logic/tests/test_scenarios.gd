@@ -155,6 +155,12 @@ func _ready() -> void:
 		_test_ai_litori_freeze_save,
 		_test_exhaustion_freezes_proposal,
 		_test_ai_exhaustion_freeze_save,
+		_test_into_the_fray_ferocity,
+		_test_sneak_elusive_fizzles_proposal,
+		_test_ai_into_the_fray_targeting,
+		_test_ai_sneak_elusive_save,
+		_test_lust_for_battle_all_allies_ferocity,
+		_test_from_the_shadows_all_allies_elusive,
 		_test_war_stomp_mass_exhaust,
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
@@ -15979,3 +15985,370 @@ func _test_quest_choice_ai_hooks() -> void:
 	ok(not proposes.call(s3), "ai-d: AI holds A New Plague while the opponent has no ally")
 	_add_ally(s3, "opp3", "grunt_def", "p2")
 	ok(proposes.call(s3), "ai-e: AI completes it once the opponent has an ally to lose")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Into the Fray (azeroth_153): "Target ally in your party has ferocity this
+# turn." Friendly-only targeting; the grant clears summoning sickness for the
+# turn (601.2a) and expires with the end-of-turn buff sweep.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_into_the_fray_ferocity() -> void:
+	_buf.append("\n-- Into the Fray: ferocity on a friendly ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 2)
+	db.ability("azeroth_153", 1, "grant_keyword_target:friendly_ally:ferocity")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var fresh := _add_ally(state, "fresh", "grunt_def", "p1")
+	fresh.just_summoned = true
+	_add_ally(state, "theirs", "grunt_def", "p2")
+	_add_card_to_hand(state, "fray", "azeroth_153", "p1")
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# A summoning-sick ally can't attack yet (601.2a).
+	ok("fresh" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"itf-a: summoning-sick ally is not a legal attacker")
+
+	# "in your party" — an opposing ally is not a legal target.
+	var at_theirs := PendingAction.make("play_ability", "p1",
+		{"card_id": "fray", "target_id": "theirs"})
+	ok(not StackResolver.can_submit(state, at_theirs, db),
+		"itf-b: can't target an opposing ally (friendly_ally only)")
+	# Nor a hero.
+	var at_hero := PendingAction.make("play_ability", "p1",
+		{"card_id": "fray", "target_id": "p1_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"itf-c: can't target a hero (ally-only)")
+
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "fray", "target_id": "fresh"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"itf-d: our own ally is a legal target")
+	var events: Array[GameEvent] = []
+	events.append_array(StackResolver.submit_action(state, cast, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	ok(StackResolver._has_keyword(fresh, "ferocity", db),
+		"itf-e: the ally has ferocity after resolution")
+	var saw_grant := false
+	for e in events:
+		if e.event_type == "keyword_granted" and e.payload.get("keyword", "") == "ferocity":
+			saw_grant = true
+	ok(saw_grant, "itf-f: keyword_granted event emitted")
+	ok("fresh" in StackResolver.get_legal_attackers(state, "p1", db),
+		"itf-g: it can attack immediately despite summoning sickness")
+	ok(state.get_card("fray").zone_id == "p1_graveyard",
+		"itf-h: Into the Fray is in the graveyard")
+
+	# "this turn" — duration turns:1, so the end-of-turn sweep expires it.
+	var gbuf := fresh.active_buffs[0] as Buff
+	eq(gbuf.stat, "grant_ferocity", "itf-i: grant is a grant_ferocity buff")
+	eq(gbuf.duration_type, "turns", "itf-j: duration is turn-based (swept end of turn)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sneak (azeroth_152): "Target ally has elusive this turn." Cast in RESPONSE to
+# a combat proposal aimed at our ally, the 601.3 legality recheck sees an
+# elusive defender and fizzles the proposal — the attacker never exhausts.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sneak_elusive_fizzles_proposal() -> void:
+	_buf.append("\n-- Sneak: elusive on the proposed defender fizzles the combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("attacker_def", 4, 4, [], 3)
+	db.ally("victim_def",   1, 2, [], 2)
+	db.instant("azeroth_152", 1, "grant_keyword_target:ally:elusive")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "attacker_def", "p1")
+	atk.just_summoned = false
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+	_add_card_to_hand(state, "sneak", "azeroth_152", "p2")
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var all_events: Array[GameEvent] = []
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "victim"})
+	all_events.append_array(StackResolver.submit_action(state, proposal, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # p1 → p2
+
+	# Targeting gates, checked where p2 actually holds priority.
+	# Printed text is "target ally" — no party restriction, unlike Into the Fray.
+	var at_theirs := PendingAction.make("play_instant", "p2",
+		{"card_id": "sneak", "target_id": "atk"})
+	ok(StackResolver.can_submit(state, at_theirs, db),
+		"sn-a: an opposing ally is a legal target (no 'your party' clause)")
+	var at_hero := PendingAction.make("play_instant", "p2",
+		{"card_id": "sneak", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"sn-b: can't target a hero (ally-only)")
+
+	var cast := PendingAction.make("play_instant", "p2",
+		{"card_id": "sneak", "target_id": "victim"})
+	ok(StackResolver.can_submit(state, cast, db),
+		"sn-c: Sneak is legal in response to the proposal")
+	all_events.append_array(StackResolver.submit_action(state, cast, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))   # Sneak resolves
+
+	ok(StackResolver._has_keyword(victim, "elusive", db),
+		"sn-d: the defender has elusive after resolution")
+
+	# Both pass again → the proposal resolves and must fizzle (601.3).
+	all_events.append_array(StackResolver.pass_priority(state, db))
+	all_events.append_array(StackResolver.pass_priority(state, db))
+
+	var saw_fizzle := false
+	for e in all_events:
+		if e.event_type == "action_fizzled":
+			saw_fizzle = true
+	ok(saw_fizzle, "sn-e: proposal fizzled at resolution")
+	ok(not state.combat_attack_window, "sn-f: no attack window opened")
+	ok(not atk.is_exhausted, "sn-g: the attacker never exhausted")
+	eq(victim.damage_taken, 0, "sn-h: the saved ally took no damage")
+	# Elusive lasts the turn, so it also blanks a follow-up attack.
+	ok("victim" not in StackResolver.get_legal_defenders(state, "atk", db),
+		"sn-i: it can't be chosen as defender again this turn")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI: Into the Fray is only ever aimed at our OWN summoning-sick allies — on an
+# ally that can already attack the grant changes nothing and burns the card.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_into_the_fray_targeting() -> void:
+	_buf.append("\n-- AI: Into the Fray targets only our summoning-sick allies --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 2)
+	db.ally("wall_def",  0, 4, [], 2)
+	db.ability("azeroth_153", 1, "grant_keyword_target:friendly_ally:ferocity")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var fresh := _add_ally(state, "fresh", "grunt_def", "p1")
+	fresh.just_summoned = true
+	var ready_ally := _add_ally(state, "ready", "grunt_def", "p1")
+	ready_ally.just_summoned = false
+	var wall := _add_ally(state, "wall", "wall_def", "p1")
+	wall.just_summoned = true
+	var theirs := _add_ally(state, "theirs", "grunt_def", "p2")
+	theirs.just_summoned = true
+	_add_card_to_hand(state, "fray", "azeroth_153", "p1")
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var targets: Array = []
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "fray":
+			targets.append(a.params.get("target_id", ""))
+
+	ok("fresh" in targets, "aif-a: offers the summoning-sick ally")
+	ok("ready" not in targets,
+		"aif-b: never offers an ally that can already attack")
+	ok("wall" not in targets,
+		"aif-c: never offers a 0-ATK ally (ferocity buys no attack)")
+	ok("theirs" not in targets, "aif-d: never offers an opposing ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI: Sneak is a held combat save — never blind-played, and cast on our own
+# proposed defender only when the trade is worth answering.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_sneak_elusive_save() -> void:
+	_buf.append("\n-- AI: Sneak saves a doomed defender, holds otherwise --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",    5, 5, [], 4)
+	db.ally("small_def",  1, 1, [], 1)
+	db.ally("victim_def", 1, 3, [], 3)
+	db.instant("azeroth_152", 1, "grant_keyword_target:ally:elusive")
+
+	# Held: never blind-played on our own turn.
+	var idle := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(idle, "mine", "victim_def", "p1")
+	_add_card_to_hand(idle, "sneak", "azeroth_152", "p1")
+	_add_resources(idle, "p1", 1)
+	idle.players["p1"].resource_placed_this_turn = true
+	var blind := false
+	for a in ai.get_reasonable_actions(idle, db, "p1"):
+		if a.params.get("card_id", "") == "sneak":
+			blind = true
+	ok(not blind, "asn-a: Sneak is never blind-played (held combat instant)")
+
+	# Save: a 5/5 kills our 3-cost 1/3 and survives the retaliation.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	_add_ally(state, "victim", "victim_def", "p2")
+	_add_card_to_hand(state, "sneak", "azeroth_152", "p2")
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	var proposal := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": "victim"})
+	StackResolver.submit_action(state, proposal, db)
+	StackResolver.pass_priority(state, db)   # p1 → p2
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.params.get("card_id", "") == "sneak",
+		"asn-b: AI answers the doomed defender with Sneak")
+	if act != null:
+		eq(act.params.get("target_id", ""), "victim",
+			"asn-c: it targets OUR defender, not the attacker")
+
+	# Hold: a 1/1 chip attack that kills nothing isn't worth a card.
+	var chip := _base_state(db, "p1_hero", "p2_hero")
+	var small := _add_ally(chip, "small", "small_def", "p1")
+	small.just_summoned = false
+	_add_ally(chip, "victim", "victim_def", "p2")
+	_add_card_to_hand(chip, "sneak", "azeroth_152", "p2")
+	_add_resources(chip, "p2", 1)
+	chip.players["p1"].resource_placed_this_turn = true
+	var chip_prop := PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "small", "defender_id": "victim"})
+	StackResolver.submit_action(chip, chip_prop, db)
+	StackResolver.pass_priority(chip, db)
+	ok(ai.decide_action(chip, db, "p2") == null,
+		"asn-d: AI holds Sneak against a chip attack that kills nothing")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lust for Battle (azeroth_154): "Ongoing: All allies have ferocity."
+# Board-wide and live — BOTH parties' allies, allies that arrive after the aura
+# resolved, and the grant lifts the instant the aura leaves play.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_lust_for_battle_all_allies_ferocity() -> void:
+	_buf.append("\n-- Lust for Battle: all allies (both parties) have ferocity --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 2)
+	db.ability("azeroth_154", 4, "ongoing|all_allies_keyword:ferocity")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine := _add_ally(state, "mine", "grunt_def", "p1")
+	mine.just_summoned = true
+	var theirs := _add_ally(state, "theirs", "grunt_def", "p2")
+	theirs.just_summoned = true
+	_add_card_to_hand(state, "lust", "azeroth_154", "p1")
+	_add_resources(state, "p1", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	ok("mine" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"lfb-a: summoning-sick ally can't attack before the aura")
+
+	var cast := PendingAction.make("play_ability", "p1", {"card_id": "lust"})
+	ok(StackResolver.can_submit(state, cast, db), "lfb-b: Lust for Battle is playable")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# Ongoing (305.2c): it stays in play in the controller's hero row.
+	eq(state.get_card("lust").zone_id, "p1_hero_row",
+		"lfb-c: the ongoing ability stays in play in the hero row")
+
+	ok(StackResolver._has_keyword(mine, "ferocity", db, state),
+		"lfb-d: our ally has ferocity")
+	ok(StackResolver._has_keyword(theirs, "ferocity", db, state),
+		"lfb-e: the OPPONENT's ally has ferocity too (all allies, not just ours)")
+	ok("mine" in StackResolver.get_legal_attackers(state, "p1", db),
+		"lfb-f: our summoning-sick ally can attack now")
+
+	# The hero is not an ally — no grant there (nothing to assert on ferocity
+	# itself, so check the aura probe's ally gate directly).
+	ok(not StackResolver._has_keyword(state.get_card("p1_hero"), "ferocity", db, state),
+		"lfb-g: heroes are not allies — no grant")
+
+	# Allies that arrive AFTER the aura resolved are covered too (it's a live
+	# scan, not a one-shot grant applied at resolution).
+	var latecomer := _add_ally(state, "late", "grunt_def", "p1")
+	latecomer.just_summoned = true
+	ok(StackResolver._has_keyword(latecomer, "ferocity", db, state),
+		"lfb-h: an ally played after the aura has ferocity")
+	ok("late" in StackResolver.get_legal_attackers(state, "p1", db),
+		"lfb-i: and it can attack immediately")
+
+	# The grant lifts the moment the aura leaves play.
+	GameLogic.move_card(state, "lust", "p1_graveyard")
+	ok(not StackResolver._has_keyword(mine, "ferocity", db, state),
+		"lfb-j: ferocity lifts when the aura leaves play")
+	ok("mine" not in StackResolver.get_legal_attackers(state, "p1", db),
+		"lfb-k: the ally is summoning-sick again")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# From the Shadows (azeroth_151): "Ongoing: All allies have elusive."
+# Elusive is "can't be proposed as a defender" (glossary), so with this out NO
+# ally on either board can be attacked — only heroes can.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_from_the_shadows_all_allies_elusive() -> void:
+	_buf.append("\n-- From the Shadows: all allies have elusive --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 2)
+	db.ability("azeroth_151", 5, "ongoing|all_allies_keyword:elusive")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "atk", "grunt_def", "p1")
+	atk.just_summoned = false
+	var theirs := _add_ally(state, "theirs", "grunt_def", "p2")
+	theirs.just_summoned = false
+	var mine := _add_ally(state, "mine", "grunt_def", "p1")
+	mine.just_summoned = false
+	_add_card_to_hand(state, "shadows", "azeroth_151", "p1")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	ok("theirs" in StackResolver.get_legal_defenders(state, "atk", db),
+		"fts-a: the opposing ally is attackable before the aura")
+
+	var cast := PendingAction.make("play_ability", "p1", {"card_id": "shadows"})
+	ok(StackResolver.can_submit(state, cast, db), "fts-b: From the Shadows is playable")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("shadows").zone_id, "p1_hero_row",
+		"fts-c: the ongoing ability stays in play in the hero row")
+
+	ok(StackResolver._has_keyword(theirs, "elusive", db, state),
+		"fts-d: the opposing ally has elusive")
+	ok(StackResolver._has_keyword(mine, "elusive", db, state),
+		"fts-e: OUR allies have it too — the aura is symmetric, as printed")
+	ok("theirs" not in StackResolver.get_legal_defenders(state, "atk", db),
+		"fts-f: no ally can be proposed as a defender")
+	# Heroes are not allies, so the hero stays attackable — the card doesn't
+	# stop combat, it funnels every attack at the face.
+	ok("p2_hero" in StackResolver.get_legal_defenders(state, "atk", db),
+		"fts-g: the opposing hero is still a legal defender")
+
+	# Elusive is "can't be PROPOSED as a defender" — protecting is a different
+	# thing (602.2) and is unaffected.
+	db.ally("prot_def", 2, 4, ["protector"], 3)
+	var prot := _add_ally(state, "prot", "prot_def", "p2")
+	prot.just_summoned = false
+	ok("prot" in StackResolver.get_legal_protectors(state, "atk", "p2_hero", db),
+		"fts-h: an elusive Protector can still protect")
+
+	# Lifts when the aura leaves play.
+	GameLogic.move_card(state, "shadows", "p1_graveyard")
+	ok("theirs" in StackResolver.get_legal_defenders(state, "atk", db),
+		"fts-i: allies are attackable again once the aura leaves play")

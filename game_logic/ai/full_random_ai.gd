@@ -47,6 +47,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
+	# Sneak elusive-save (BaseAI) — deterministic, never left to the dice.
+	var sneak := elusive_save_action(state, db, player_id)
+	if sneak != null:
+		return sneak
 	# Withdraw save-bounce (BaseAI) — deterministic, never left to the dice.
 	var save := save_bounce_action(state, db, player_id)
 	if save != null:

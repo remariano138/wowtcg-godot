@@ -3991,6 +3991,13 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	var defender_ps := state.players.get(defender.controller) as PlayerState
 	var defender_is_hero := defender_ps != null \
 			and defender_ps.hero_instance_id == defender_id
+	# Brigg: "…deals combat damage to an ally WITH DAMAGE ON IT". The condition
+	# describes the ally as the damage is dealt, i.e. damage it already carried —
+	# Brigg's own combat damage does not qualify it. That has to be sampled here,
+	# before the packets land, or every ally Brigg hits would trivially satisfy it
+	# and the clause would mean nothing. See data/rules_deviations.md "Brigg".
+	var attacker_was_damaged := attacker.damage_taken > 0
+	var defender_was_damaged := defender.damage_taken > 0
 
 	# Apply both damage packets first (deal_damage no longer auto-destroys),
 	# then check fatalities on both after — true simultaneity.
@@ -4062,7 +4069,63 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		atk_events, def_events, db))
 
+	# Brigg (rule 703 triggered ally power): "When Brigg deals combat damage to
+	# an ally with damage on it, destroy that ally." Devilsaur Leggings' shape
+	# with the source being the ALLY itself rather than the wielder's hero, and
+	# gated on damage the target already carried (sampled before the packets).
+	events.append_array(_fire_combat_dmg_destroys_damaged_ally(
+		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
+		attacker_was_damaged, defender_was_damaged, atk_events, def_events, db))
+
 	return events
+
+
+# on_combat_damage_destroys_damaged_ally ally flag (Brigg). See the call site in
+# _do_combat_conclusion. Mirrors _fire_hero_combat_dmg_destroys_ally, with two
+# differences: the flag is read off the SOURCE card's own def (it is an ally
+# power, not an equipment the hero wields), and the victim must have carried
+# damage BEFORE this combat's packets landed — `*_was_damaged` is sampled ahead
+# of the damage for exactly that reason.
+#
+# Like the Devilsaur trigger this is mandatory (no cost, no choice) and is a
+# no-op when the victim already died to the combat damage — the card matters
+# when a damaged ally SURVIVES the hit. It fires in both combat roles, since the
+# printed text says "deals combat damage", not "attacks": Brigg attacking into
+# an ally defender, and Brigg as a defender retaliating onto an attacking ally.
+static func _fire_combat_dmg_destroys_damaged_ally(state: GameState,
+		attacker_id: String, defender_id: String,
+		attacker_was_ally: bool, defender_was_ally: bool,
+		attacker_was_damaged: bool, defender_was_damaged: bool,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Source attacking → ally defender that already had damage on it.
+	if defender_was_ally and defender_was_damaged \
+			and _card_has_flag(state, attacker_id, "on_combat_damage_destroys_damaged_ally", db) \
+			and _combat_dmg_landed(atk_events, defender_id) > 0 \
+			and state.is_in_play(defender_id):
+		events.append_array(_destroy_card_trigger(state, defender_id, attacker_id, db))
+	# Source defending → retaliation onto an attacking ally that already had damage.
+	if attacker_was_ally and attacker_was_damaged \
+			and _card_has_flag(state, defender_id, "on_combat_damage_destroys_damaged_ally", db) \
+			and _combat_dmg_landed(def_events, attacker_id) > 0 \
+			and state.is_in_play(attacker_id):
+		events.append_array(_destroy_card_trigger(state, attacker_id, defender_id, db))
+	return events
+
+
+# True when the card itself carries `flag` in its own def's effects recipe (an
+# ally's own triggered power), as opposed to _hero_wields_flag's "a hero whose
+# controller has an equipment carrying the flag".
+static func _card_has_flag(state: GameState, card_id: String, flag: String,
+		db) -> bool:
+	if db == null:
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	return _has_effect_flag(db.get_def(card.card_def_id) as CardDef, flag)
 
 
 # hero_combat_dmg_locks_ally_ready equipment flag (Iceblade Hacker). See the

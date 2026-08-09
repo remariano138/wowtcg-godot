@@ -117,6 +117,32 @@ allies in hand to be scanned as potential attackers.
 
 ---
 
+## `BaseAI.combat_kills(state, db, source, target, source_is_attacker) -> bool`
+
+The shared "does `source` remove `target` from the board in a combat between
+them?" predicate, backing BOTH `find_safe_lethals` and `combat_trade_value` (in
+both directions there). Raw damage math (`forecast_atk >= current HP`), OR a
+triggered finisher:
+
+**Brigg** (`azeroth_231`, `on_combat_damage_destroys_damaged_ally`) destroys any
+ALLY it deals combat damage to that already had damage on it. `damage_taken > 0`
+read at decision time IS "damage it already had" (the combat hasn't happened
+yet), so a damaged ally in Brigg's reach is a kill no matter how much HP it has.
+Gated on the target being an ally (never a hero) and on `forecast_atk > 0` (no
+damage dealt, no trigger).
+
+Without this the power would be decorative for the AI: both callers asked only
+"atk >= hp", so a 1-ATK Brigg never looked like it could kill anything, and the
+kill/trade steps would never propose the attack. Because the flag is read off the
+source's def, any future finisher of the same shape is picked up everywhere for
+free.
+
+Not modeled: prevention shields that would stop the damage landing (the trigger
+needs damage to actually land) — the surrounding combat math doesn't model those
+either.
+
+Tests: `_test_ai_brigg_combat_math`.
+
 ## `BaseAI.combat_trade_value(state, db, c1, c2) -> String`
 
 *Static — callable without a BaseAI instance.*

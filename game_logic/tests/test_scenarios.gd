@@ -161,6 +161,8 @@ func _ready() -> void:
 		_test_ai_sneak_elusive_save,
 		_test_lust_for_battle_all_allies_ferocity,
 		_test_from_the_shadows_all_allies_elusive,
+		_test_brigg_destroys_damaged_ally,
+		_test_ai_brigg_combat_math,
 		_test_war_stomp_mass_exhaust,
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
@@ -16352,3 +16354,170 @@ func _test_from_the_shadows_all_allies_elusive() -> void:
 	GameLogic.move_card(state, "shadows", "p1_graveyard")
 	ok("theirs" in StackResolver.get_legal_defenders(state, "atk", db),
 		"fts-i: allies are attackable again once the aura leaves play")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Brigg (azeroth_231): "When Brigg deals combat damage to an ally with damage on
+# it, destroy that ally." The victim must have carried damage BEFORE Brigg's own
+# combat damage landed — see data/rules_deviations.md "Brigg".
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_brigg_destroys_damaged_ally() -> void:
+	_buf.append("\n-- Brigg: combat damage finishes an already-damaged ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("brigg_def", 1, 2, [], 1, "on_combat_damage_destroys_damaged_ally")
+	db.ally("tank_def", 0, 6, [], 3)    # 0 ATK — no retaliation, survives Brigg's 1
+	db.ally("biter_def", 1, 6, [], 3)   # attacks into Brigg, survives the retaliation
+
+	# ── Case 1: Brigg attacks an ally that ALREADY has damage on it and survives
+	# the hit → the trigger destroys it.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	var brigg := _add_ally(s1, "brigg", "brigg_def", "p1")
+	brigg.just_summoned = false
+	var hurt := _add_ally(s1, "hurt", "tank_def", "p2")
+	hurt.just_summoned = false
+	hurt.damage_taken = 2            # softened up earlier
+	s1.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s1, db, "p1", "brigg", "hurt")
+
+	ok(not s1.is_in_play("hurt"), "bg-a: the damaged ally is destroyed")
+	eq(s1.get_card("hurt").zone_id, "p2_graveyard", "bg-b: it is in the graveyard")
+	ok(s1.is_in_play("brigg"), "bg-c: Brigg survives (0-ATK defender)")
+
+	# ── Case 2: THE RULING. Brigg attacks an UNDAMAGED ally. His own combat
+	# damage puts damage on it, but that does not satisfy "with damage on it" —
+	# the ally survives at 1 damage and is NOT destroyed.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var brigg2 := _add_ally(s2, "brigg2", "brigg_def", "p1")
+	brigg2.just_summoned = false
+	var fresh := _add_ally(s2, "fresh", "tank_def", "p2")
+	fresh.just_summoned = false
+	s2.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s2, db, "p1", "brigg2", "fresh")
+
+	ok(s2.is_in_play("fresh"),
+		"bg-d: an UNDAMAGED ally is not destroyed — Brigg's own damage doesn't qualify it")
+	eq(s2.get_card("fresh").damage_taken, 1, "bg-e: it just took the 1 combat damage")
+
+	# ── Case 3: the same ally is now damaged, so a second combat finishes it.
+	# (Proves the condition is read live per combat, not once.)
+	var fresh_card := s2.get_card("fresh")
+	brigg2.is_exhausted = false
+	fresh_card.is_exhausted = false
+	_run_combat(s2, db, "p1", "brigg2", "fresh")
+	ok(not s2.is_in_play("fresh"),
+		"bg-f: once it carries damage, the next hit destroys it")
+
+	# ── Case 4: "deals combat damage", not "attacks" — Brigg DEFENDING destroys a
+	# damaged attacking ally via his retaliation.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.turn_player     = "p2"
+	s3.priority_player = "p2"
+	var brigg3 := _add_ally(s3, "brigg3", "brigg_def", "p1")
+	brigg3.just_summoned = false
+	var biter := _add_ally(s3, "biter", "biter_def", "p2")
+	biter.just_summoned = false
+	biter.damage_taken = 3
+	s3.players["p2"].resource_placed_this_turn = true
+
+	_run_combat(s3, db, "p2", "biter", "brigg3")
+
+	ok(not s3.is_in_play("biter"),
+		"bg-g: Brigg destroys a damaged ATTACKER with his retaliation damage")
+
+	# ── Case 5: a damaged ally that DIES to the combat damage anyway — the
+	# trigger is a no-op, not a double destroy, and nothing errors.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	var brigg4 := _add_ally(s4, "brigg4", "brigg_def", "p1")
+	brigg4.just_summoned = false
+	var dying := _add_ally(s4, "dying", "tank_def", "p2")
+	dying.just_summoned = false
+	dying.damage_taken = 5           # 0/6 at 5 damage — Brigg's 1 is lethal
+	s4.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s4, db, "p1", "brigg4", "dying")
+
+	ok(not s4.is_in_play("dying"), "bg-h: it dies to the combat damage")
+	eq(s4.get_card("dying").zone_id, "p2_graveyard", "bg-i: exactly one trip to the graveyard")
+
+	# ── Case 6: a plain ally with no flag never destroys a damaged ally.
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	db.ally("plain_def", 1, 2, [], 1)
+	var plain := _add_ally(s5, "plain", "plain_def", "p1")
+	plain.just_summoned = false
+	var hurt5 := _add_ally(s5, "hurt5", "tank_def", "p2")
+	hurt5.just_summoned = false
+	hurt5.damage_taken = 2
+	s5.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s5, db, "p1", "plain", "hurt5")
+	ok(s5.is_in_play("hurt5"), "bg-j: an ally without the power leaves it alive")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI: Brigg's finisher is visible to the shared combat math, so a damaged ally
+# counts as a kill even though Brigg's 1 ATK is nowhere near its HP.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_brigg_combat_math() -> void:
+	_buf.append("\n-- AI: Brigg's finisher counts as a kill in combat math --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("brigg_def", 1, 2, [], 1, "on_combat_damage_destroys_damaged_ally")
+	db.ally("plain_def", 1, 2, [], 1)
+	db.ally("tank_def", 0, 6, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var brigg := _add_ally(state, "brigg", "brigg_def", "p1")
+	brigg.just_summoned = false
+	var plain := _add_ally(state, "plain", "plain_def", "p1")
+	plain.just_summoned = false
+	var hurt := _add_ally(state, "hurt", "tank_def", "p2")
+	hurt.just_summoned = false
+	hurt.damage_taken = 2
+	var fresh := _add_ally(state, "fresh", "tank_def", "p2")
+	fresh.just_summoned = false
+	state.players["p1"].resource_placed_this_turn = true
+
+	# 1 ATK vs a 0/6 at 2 damage: raw math says no kill, the trigger says kill.
+	ok(BaseAI.combat_kills(state, db, "brigg", "hurt"),
+		"abg-a: Brigg kills a damaged ally the raw math can't")
+	ok(not BaseAI.combat_kills(state, db, "brigg", "fresh"),
+		"abg-b: but not an undamaged one")
+	ok(not BaseAI.combat_kills(state, db, "plain", "hurt"),
+		"abg-c: and an ally without the power still can't")
+	# Heroes are never destroyed by the trigger.
+	ok(not BaseAI.combat_kills(state, db, "brigg", "p2_hero"),
+		"abg-d: the trigger never applies to a hero")
+
+	# It reads as a safe lethal (the 0-ATK tank can't kill Brigg back), so the
+	# AI's kill step picks that attack up.
+	var safe := BaseAI.find_safe_lethals(state, db,
+		["brigg"] as Array[String], ["hurt"] as Array[String])
+	eq(safe.size(), 1, "abg-e: Brigg + damaged ally is a safe lethal")
+	eq(BaseAI.combat_trade_value(state, db, "brigg", "hurt"), "safe_lethal",
+		"abg-f: combat_trade_value agrees")
+
+	var act := ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "propose_combat",
+		"abg-g: the AI proposes a combat")
+	if act != null and act.action_type == "propose_combat":
+		eq(act.params.get("attacker_id", ""), "brigg", "abg-h: Brigg is the attacker")
+		eq(act.params.get("defender_id", ""), "hurt", "abg-i: aimed at the damaged ally")
+
+
+# Drive a full 1-on-1 combat (no strikes, no protectors) from proposal through
+# conclusion: propose, then drain the proposal window, the attack window and the
+# defend window.
+func _run_combat(state: GameState, db, attacker_player: String,
+		attacker_id: String, defender_id: String) -> void:
+	StackResolver.submit_action(state, PendingAction.make("propose_combat",
+		attacker_player, {"attacker_id": attacker_id, "defender_id": defender_id}), db)
+	for i in range(6):
+		StackResolver.pass_priority(state, db)

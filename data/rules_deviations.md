@@ -646,3 +646,33 @@ spent state as a completed quest, but no reward is applied.
 a duel — the same degenerate-choice treatment as Hypnotic Blade / The Princess
 Trapped / Innervate. Enforcement site: the `opponent_quest_face_down` branch of
 `StackResolver._run_quest_mode_queue` in `game_logic/stack_resolver.gd`.
+
+
+## Brigg — "an ally with damage on it" means damage it ALREADY had
+
+**Card:** Brigg (`azeroth_231`, 1-cost 1/2 Horde Orc Warrior Ally).
+Printed text: "When Brigg deals combat damage to an ally with damage on it,
+destroy that ally."
+
+**Interpretation (not strictly a deviation, but a ruling worth pinning):** the
+victim must have carried damage BEFORE Brigg's combat damage landed. Brigg's own
+damage does not qualify the target. The engine samples `damage_taken > 0` on both
+combatants in `_do_combat_conclusion` ahead of the damage packets, and
+`_fire_combat_dmg_destroys_damaged_ally` gates on that sample.
+
+**Why:** the condition is embedded in the trigger event ("deals combat damage to
+[an ally with damage on it]"), not a comma-set-off double-check clause (703.2),
+so it describes the ally as the damage is dealt — its state before that damage.
+The alternative reading also makes the clause vacuous: any surviving ally Brigg
+deals damage to trivially "has damage on it" afterwards, which would turn a
+1-cost 1/2 into "destroy any ally this touches" and leave the printed words doing
+nothing. The rules text has no template for "with damage on it" to settle it
+outright, so this is the reading the engine commits to.
+
+**Consequences:** the trigger is mandatory (no cost, no choice) and is a no-op
+when the victim died to the combat damage anyway — it matters when a already-
+damaged ally SURVIVES the hit. It fires in BOTH combat roles, since the text says
+"deals combat damage" rather than "attacks": Brigg attacking into a damaged ally
+defender, and Brigg defending and retaliating onto a damaged attacking ally.
+Enforcement site: `StackResolver._fire_combat_dmg_destroys_damaged_ally` in
+`game_logic/stack_resolver.gd`.

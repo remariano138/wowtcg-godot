@@ -2703,13 +2703,44 @@ static func find_safe_lethals(state: GameState, db, attackers: Array[String],
 		defenders: Array[String]) -> Array:
 	var result: Array = []
 	for a in attackers:
-		var a_atk := forecast_atk(state, db, a)   # "while attacking" bonuses + weapon strike
 		var a_hp  := state.get_current_hp(a, db)
 		for d in defenders:
-			if a_atk >= state.get_current_hp(d, db) \
+			if combat_kills(state, db, a, d) \
 					and a_hp > forecast_atk(state, db, d, false):   # defender may strike back
 				result.append([a, d])
 	return result
+
+
+# "Does `source` remove `target` from the board in a combat between them?" —
+# raw damage math, OR a Brigg-style triggered finisher.
+#
+# Brigg (`on_combat_damage_destroys_damaged_ally`): "When Brigg deals combat
+# damage to an ally with damage on it, destroy that ally." Damage the target
+# already carries is exactly what `damage_taken > 0` reads at decision time
+# (pre-combat), so a damaged ally Brigg can reach is a kill regardless of how
+# much HP it has left. Without this the AI would never use the power on purpose:
+# both find_safe_lethals and combat_trade_value ask only "atk >= hp", so Brigg
+# would look like a 1-ATK chump against anything bigger.
+#
+# Not modeled: prevention shields that would stop Brigg's damage landing (the
+# trigger needs damage to actually land), which the surrounding combat math
+# doesn't model either.
+static func combat_kills(state: GameState, db, source: String, target: String,
+		source_is_attacker: bool = true) -> bool:
+	var atk := forecast_atk(state, db, source, source_is_attacker)
+	if atk >= state.get_current_hp(target, db):
+		return true
+	if atk <= 0:
+		return false   # no damage dealt → no "deals combat damage" trigger
+	var src := state.get_card(source)
+	var tgt := state.get_card(target)
+	if not src or not tgt or tgt.damage_taken <= 0:
+		return false
+	if not StackResolver._is_ally(state, target):
+		return false   # the trigger destroys an ALLY, never a hero
+	return StackResolver._has_effect_flag(
+		db.get_def(src.card_def_id) as CardDef,
+		"on_combat_damage_destroys_damaged_ally")
 
 
 # ── combat_trade_value ───────────────────────────────────────────────────────
@@ -2735,10 +2766,11 @@ static func combat_trade_value(state: GameState, db, c1: String, c2: String,
 		c1_is_attacker: bool = true) -> String:
 	# The attacking side gets the strike forecast too (a hero that can still
 	# strike will — resources are public, so this also covers the enemy hero).
-	var c1_atk := forecast_atk(state, db, c1, c1_is_attacker)
-	var c2_atk := forecast_atk(state, db, c2, not c1_is_attacker)
-	var c2_dies := c1_atk >= state.get_current_hp(c2, db)
-	var c1_dies := c2_atk >= state.get_current_hp(c1, db)
+	# Both directions go through combat_kills, so a Brigg-style finisher counts
+	# on offence AND when the other side is the one holding it (a damaged
+	# attacker of ours dies to a defending Brigg's retaliation trigger).
+	var c2_dies := combat_kills(state, db, c1, c2, c1_is_attacker)
+	var c1_dies := combat_kills(state, db, c2, c1, not c1_is_attacker)
 	if c2_dies and not c1_dies:
 		return "safe_lethal"
 	if c2_dies and c1_dies:

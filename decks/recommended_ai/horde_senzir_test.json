@@ -170,8 +170,13 @@
     },
     {
       "card_def_id": "azeroth_249",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kulan Earthguard"
+    },
+    {
+      "card_def_id": "azeroth_231",
+      "count": 2,
+      "_card_name": "Brigg"
     }
   ],
   "recommended_ai_id": "ai_generic",

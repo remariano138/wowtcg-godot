@@ -230,6 +230,8 @@ func _ready() -> void:
 		_test_kavai_sacrifice_destroys_ability_or_equipment,
 		_test_kavai_fizzles_opposing_removal,
 		_test_ai_kavai_doomed_cash_in,
+		_test_lafiel_destroys_ability,
+		_test_lafiel_fizzles_and_ai,
 		_test_stat_tracker_counts,
 		_test_green_whelp_armor_bounces_attacker,
 		_test_green_whelp_armor_decline_and_gates,
@@ -15207,3 +15209,155 @@ func _test_game_over_explanations() -> void:
 	eq(GameEvent.game_over_explanation(fatal, {"p1": "Ta'zo", "p2": "Grennan"}),
 			"Grennan's hero received fatal damage. Ta'zo wins!",
 			"deck-d4: display names are used when supplied")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lafiel (azeroth_196): "2, [Activate] -> Destroy target ability."
+# Kavai's destroy pool narrowed to abilities only, on a normal [Activate] tap
+# power: she exhausts at announcement, so the power is unavailable until she
+# readies. No Purge-style friendly-attachment exclusion — her printed text has
+# no such clause, so the caster's own abilities are legal targets too.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const LAFIEL_RECIPE := "activated_power:2:destroy_ability:0::ability"
+
+func _test_lafiel_destroys_ability() -> void:
+	_buf.append("\n-- Lafiel: [Activate] destroy target ability --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("lafiel_def", 4, 5, [], 6, LAFIEL_RECIPE)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.totem("totem_def", 1, "ongoing|totem:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var lafiel := _add_ally(state, "lafiel", "lafiel_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 4)
+
+	# lf-a: nothing in play to destroy → illegal, even the highlight probe.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "_skip_target_check": true}), db),
+		"lf-a: power illegal with no ability in play")
+
+	# p2's ongoing ability, equipment, totem, and an attachment on its bear.
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var totem := CardInstance.create("totem", "totem_def", "p2", "p2_ally_row")
+	state.cards["totem"] = totem
+	state.zones["p2_ally_row"].card_ids.append("totem")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "ongo"}), db),
+		"lf-b: an ongoing ability is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "totem"}), db),
+		"lf-c: a totem (ability ally) is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "mark"}), db),
+		"lf-d: an attachment is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "robe"}), db),
+		"lf-e: equipment is NOT a legal target (unlike Kavai)")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "bear"}), db),
+		"lf-f: an ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "p2_hero"}), db),
+		"lf-g: a hero is NOT a legal target")
+
+	# lf-h: [Activate] tap symbol — summoning sickness and exhaustion both block.
+	lafiel.just_summoned = true
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "ongo"}), db),
+		"lf-h: blocked by summoning sickness ([Activate])")
+	lafiel.just_summoned = false
+	lafiel.is_exhausted = true
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "ongo"}), db),
+		"lf-i: blocked while exhausted ([Activate])")
+	lafiel.is_exhausted = false
+
+	# Resolve on the attachment: it dies, its host survives untouched.
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "lafiel", "target_id": "mark"}), db)
+	eq(lafiel.is_exhausted, true, "lf-j: exhausts at announcement (412.2)")
+	eq(state.get_available_resources("p1"), 2, "lf-k: 2 resources paid at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(mark.zone_id, "p2_graveyard", "lf-l: attachment destroyed")
+	eq(bear.zone_id, "p2_ally_row",  "lf-m: host ally survives")
+	eq(lafiel.zone_id, "p1_ally_row", "lf-n: Lafiel stays in play (no sacrifice cost)")
+
+	# lf-o: not reusable until she readies — exhausted, the power is gone even
+	# with resources and targets left.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lafiel", "target_id": "ongo"}), db),
+		"lf-o: not usable again until Lafiel readies")
+
+
+func _test_lafiel_fizzles_and_ai() -> void:
+	_buf.append("\n-- Lafiel: fizzles on a vanished target; AI targets opposing abilities --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("lafiel_def", 4, 5, [], 6, LAFIEL_RECIPE)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+
+	# The announced attachment dies with its host before resolution (400.5) →
+	# the destroy fizzles at the 706 / 4217 re-check, cost stays paid.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var lafiel := _add_ally(state, "lafiel", "lafiel_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 4)
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "lafiel", "target_id": "mark"}), db)
+	# Host destroyed in response — takes its attachment with it.
+	GameLogic.destroy_card(state, "bear")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(mark.zone_id, "p2_graveyard", "lf-p: attachment already gone (died with host)")
+	eq(state.get_available_resources("p1"), 2, "lf-q: cost stays paid on a fizzle")
+
+	# AI: opposing abilities only, highest cost first — never our own.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "lafiel2", "lafiel_def", "p1")
+	_add_resources(s2, "p1", 4)
+	var own := CardInstance.create("own", "ongo_def", "p1", "p1_hero_row")
+	s2.cards["own"] = own
+	s2.zones["p1_hero_row"].card_ids.append("own")
+	var ai := BaseAI.new()
+	ok(ai._get_ally_power_actions(s2, db, "p1").is_empty(),
+		"lf-r: AI never destroys its own ability")
+
+	db.ability("big_def", 5, "ongoing")
+	var cheap := CardInstance.create("cheap", "ongo_def", "p2", "p2_hero_row")
+	s2.cards["cheap"] = cheap
+	s2.zones["p2_hero_row"].card_ids.append("cheap")
+	var big := CardInstance.create("big", "big_def", "p2", "p2_hero_row")
+	s2.cards["big"] = big
+	s2.zones["p2_hero_row"].card_ids.append("big")
+	var acts := ai._get_ally_power_actions(s2, db, "p1")
+	eq(acts.size(), 1, "lf-s: AI generates exactly one Lafiel activation")
+	eq(acts[0].params.get("target_id", ""), "big",
+		"lf-t: AI destroys the most expensive opposing ability")

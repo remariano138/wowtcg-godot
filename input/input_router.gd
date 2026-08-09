@@ -1403,7 +1403,7 @@ func get_playable_card_ids() -> Array:
 				# false green with nothing to target.
 				var ap_action := PendingAction.make("use_ally_power", local_player,
 					{"card_id": card.instance_id,
-						"_skip_target_check": (ap_data.get("targets", "") as String) in ["graveyard_ally", "ability_or_equipment"]})
+						"_skip_target_check": (ap_data.get("targets", "") as String) in ["graveyard_ally", "ability_or_equipment", "ability"]})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
 	return result
@@ -1540,10 +1540,10 @@ func get_context_actions(instance_id: String) -> Array:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
 					var ap_kind: String = ap_data.get("targets", "") as String
-					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two", "ability_or_equipment"]
+					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability"]
 					var ap_needs_gy_target: bool = ap_kind == "graveyard_ally"
 					var ap_enabled: bool
-					if ap_needs_gy_target or ap_kind == "ability_or_equipment":
+					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability"]:
 						# Target picked afterward (graveyard browser / targeting mode) —
 						# the skip-target probe checks everything else, including that
 						# a candidate exists at all.
@@ -2308,8 +2308,10 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 	# through can_submit like every other targeting mode.
 	var ally_def := db.get_def(ally.card_def_id) as CardDef
 	var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
-	if (ally_ap.get("targets", "") as String) == "ability_or_equipment":
-		for kind in ["ability", "equipment"]:
+	var ally_ap_kind := (ally_ap.get("targets", "") as String)
+	if ally_ap_kind in ["ability_or_equipment", "ability"]:
+		# Lafiel narrows the same picker to abilities only.
+		for kind in (["ability", "equipment"] if ally_ap_kind == "ability_or_equipment" else ["ability"]):
 			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
 				var d_act := PendingAction.make("use_ally_power", local_player,
 					{"card_id": ally_id, "target_id": cid})

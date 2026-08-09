@@ -39,9 +39,9 @@
       "_card_name": "Rod of the Ogre Magi"
     },
     {
-      "card_def_id": "azeroth_291",
+      "card_def_id": "azeroth_196",
       "count": 1,
-      "_card_name": "Green Whelp Armor"
+      "_card_name": "Lafiel"
     },
     {
       "card_def_id": "dark_portal_260",
@@ -160,7 +160,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
-  "strategy": "Guide elusive attackers to a swift victory",
+  "strategy": "Guide powerful allies to a swift victory",
   "source": "recommended_ai",
   "metadata": {
     "author": "playtest",

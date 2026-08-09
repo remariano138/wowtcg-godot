@@ -2853,6 +2853,17 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 			return true
 		var d_tid: String = action.params.get("target_id", "")
 		return d_tid in d_cands and _is_legal_target(state, d_tid, db)
+	# Lafiel: "Destroy target ability." Same shape one kind narrower — the
+	# no-target probe still requires an in-play ability to exist. No Purge-style
+	# friendly-attachment exclusion: her printed text has no such clause.
+	if targets_kind == "ability":
+		var a_cands := get_destroy_kind_candidates(state, db, "ability")
+		if a_cands.is_empty():
+			return false
+		if skip_target:
+			return true
+		var a_tid: String = action.params.get("target_id", "")
+		return a_tid in a_cands and _is_legal_target(state, a_tid, db)
 	if skip_target:
 		return true
 	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
@@ -3058,6 +3069,15 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 					and (_is_in_play_ability(state, dae_id, db) \
 						or _is_in_play_equipment(state, dae_id, db)):
 				events.append_array(_destroy_card_trigger(state, dae_id, card_id, db))
+		"destroy_ability":
+			# Lafiel: "2, [Activate] -> Destroy target ability." Re-check at
+			# resolution (706 / glossary 4217) — fizzles if the ability left
+			# play (e.g. an attachment that died with its host) or became
+			# Untargetable after the announce.
+			var da_id: String = action.params.get("target_id", "")
+			if _is_legal_target(state, da_id, db) \
+					and _is_in_play_ability(state, da_id, db):
+				events.append_array(_destroy_card_trigger(state, da_id, card_id, db))
 		"exhaust_target":
 			# Galahandra, Keeper of the Silent Grove: "1, [Activate] -> Exhaust
 			# target ally." Re-check at resolution (706): fizzles if the ally

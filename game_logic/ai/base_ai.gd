@@ -1605,6 +1605,29 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_kill})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
+		elif ap.get("effect", "") == "destroy_ability":
+			# Lafiel: "2, [Activate] -> Destroy target ability." Opposing in-play
+			# abilities only (never our own ongoing/attachments), highest-cost
+			# first — same value bar as Burn Away's AI branch, except the power
+			# is repeatable across turns, so a cheap target is still fine once
+			# there is nothing better: the only cost is 2 and her tap.
+			var opp_ab := "p2" if player_id == "p1" else "p1"
+			var best_ab := ""
+			var best_ab_cost := -1
+			for cid in StackResolver.get_destroy_kind_candidates(state, db, "ability"):
+				var ab_card := state.get_card(cid)
+				if not ab_card or ab_card.controller != opp_ab:
+					continue
+				var ab_def := _card_def(state, db, cid)
+				var ab_cost := ab_def.cost if ab_def else 0
+				if ab_cost > best_ab_cost:
+					best_ab_cost = ab_cost
+					best_ab = cid
+			if best_ab != "":
+				var act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_ab})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
 		elif ap.get("effect", "") == "rfg_graveyard_ally":
 			# Ophelia Barrows: exile an ally card from any graveyard, heal 1 from
 			# herself if it happens. Only ever exile from the OPPONENT's graveyard

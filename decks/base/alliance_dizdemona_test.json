@@ -150,6 +150,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
+  "strategy": "Overrun your opponent with Gnomes and dark magic",
   "source": "base",
   "metadata": {
     "author": "playtest",

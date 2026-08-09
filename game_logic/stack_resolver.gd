@@ -183,6 +183,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_prevention() before priority can move.
 	if state.pending_prevention_player != "":
 		return []
+	# A pending quest reward choice (Hidden Enemies etc.) or one of its
+	# sub-choices must be resolved via the choose_quest_* calls first.
+	if _quest_choice_pending(state):
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -329,6 +333,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Armor prevention point (717.2c) blocks everything until resolved via
 	# choose_prevention().
 	if state.pending_prevention_player != "":
+		return false
+
+	# Quest reward choice (Hidden Enemies etc.) and its sub-choices block
+	# everything until resolved via the choose_quest_* calls.
+	if _quest_choice_pending(state):
 		return false
 
 	match action.action_type:
@@ -3486,6 +3495,13 @@ static func _struck_weapon_grants_long_range(state: GameState, wielder_id: Strin
 static func _has_keyword(card: CardInstance, keyword: String, db) -> bool:
 	if keyword in card.granted_keywords:
 		return true
+	# Buff-granted keywords with a duration (Hidden Enemies: "Target ally has
+	# ferocity this turn") — a Buff with stat "grant_<keyword>". Expires with
+	# the normal end-of-turn buff sweep and clears on leaving play, which plain
+	# granted_keywords (recomputed continuous grants) don't do per-turn.
+	for b in card.active_buffs:
+		if b.stat == "grant_" + keyword and b.amount > 0:
+			return true
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def and keyword in def.keywords:
@@ -4408,8 +4424,14 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def:
-			events.append_array(_apply_quest_reward(state, action.source_player, def.effects, db,
-					action.params.get("target_ids", [])))
+			# "Choose one … you may choose both" quests (qmode: segments) open a
+			# mandatory reward choice instead of applying segments directly.
+			if is_choice_quest_def(def):
+				events.append_array(_open_quest_choice(
+						state, action.source_player, quest_id, def, db))
+			else:
+				events.append_array(_apply_quest_reward(state, action.source_player, def.effects, db,
+						action.params.get("target_ids", [])))
 
 	return events
 
@@ -4631,6 +4653,298 @@ static func choose_reveal_pick(state: GameState, card_id: String,
 		if cid == card_id:
 			continue
 		events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
+	return events
+
+
+# ── Quest reward choice ("Choose one … you may choose both") ──────────────────
+# Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
+# Earth. Recipe: two `qmode:EFFECT[:ARGS]` segments (printed order) plus a
+# `qchoice_both_race:RACE` segment — when the completer's HERO has that race
+# (substring of the hero def's tags, same match as requires_hero_race) AND both
+# modes are currently available, the completer may choose both, in either
+# order. The pick and every sub-choice are direct calls (NOT the chain), like
+# the reveal pick; can_submit / pass_priority hard-block while pending.
+
+static func _quest_choice_pending(state: GameState) -> bool:
+	return state.pending_quest_choice_player != "" \
+		or state.pending_quest_ferocity_player != "" \
+		or state.pending_plague_destroy_player != "" \
+		or state.pending_quest_facedown_player != ""
+
+
+# Inner mode strings ("draw:1", "ally_ferocity_this_turn", …) in printed order.
+static func get_quest_reward_modes(def: CardDef) -> Array[String]:
+	var modes: Array[String] = []
+	if not def or def.effects == "":
+		return modes
+	for entry in def.effects.split("|"):
+		var seg := entry.strip_edges()
+		if seg.begins_with("qmode:"):
+			modes.append(seg.trim_prefix("qmode:"))
+	return modes
+
+
+static func is_choice_quest_def(def: CardDef) -> bool:
+	return not get_quest_reward_modes(def).is_empty()
+
+
+# The `qchoice_both_race:RACE` segment's race, or "" when absent.
+static func quest_choice_both_race(def: CardDef) -> String:
+	if not def or def.effects == "":
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "qchoice_both_race" and parts.size() > 1:
+			return parts[1].strip_edges()
+	return ""
+
+
+# Does the player's HERO have the given race? The race lives in the hero def's
+# tags column ("Orc Shaman", "Night Elf Priest") — substring match, same as the
+# deck authorizer's requires_hero_race check (covers multi-word races).
+static func hero_has_race(state: GameState, player_id: String, race: String,
+		db) -> bool:
+	if race == "" or not db:
+		return false
+	var hero := state.get_hero(player_id)
+	if not hero:
+		return false
+	var def := db.get_def(hero.card_def_id) as CardDef
+	return def != null and race in def.tags
+
+
+# Can this reward mode currently do anything / be legally chosen? Modes that
+# need a target or a condition are unavailable (greyed out) when it can't be
+# met — a deviation from "choose and fizzle", see data/rules_deviations.md
+# "Quest reward choices".
+static func quest_mode_available(state: GameState, player_id: String,
+		mode: String, db) -> bool:
+	var key := mode.split(":")[0].strip_edges()
+	match key:
+		"ally_ferocity_this_turn":
+			return not get_quest_ferocity_targets(state, db).is_empty()
+		"each_player_destroys_ally":
+			# "If an ally is in your party" — the completer must have one.
+			return not state.cards_in_zone(player_id + "_ally_row").is_empty()
+		"opponent_quest_face_down":
+			return not _face_up_quests(state, _other_player(state, player_id), db).is_empty()
+		_:
+			# draw / hand_to_deck_draw — always available.
+			return true
+
+
+# Legal targets for Hidden Enemies' ferocity grant: any in-play ally, either
+# party (the printed text says just "target ally"), 706 Untargetable respected.
+static func get_quest_ferocity_targets(state: GameState, db) -> Array[String]:
+	var targets: Array[String] = []
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			if _is_legal_target(state, card.instance_id, db):
+				targets.append(card.instance_id)
+	return targets
+
+
+# A player's face-up Quest cards in their resource row (Kolkar candidates).
+static func _face_up_quests(state: GameState, player_id: String,
+		db) -> Array[String]:
+	var result: Array[String] = []
+	for card in state.cards_in_zone(player_id + "_resource_row"):
+		if card.face_down:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef if db else null
+		if def and def.card_type == "Quest":
+			result.append(card.instance_id)
+	return result
+
+
+# Open the reward choice as the quest resolves. Every qmode quest carries a
+# draw mode, so at least one mode is always available.
+static func _open_quest_choice(state: GameState, player_id: String,
+		quest_id: String, def: CardDef, db) -> Array[GameEvent]:
+	var modes: Array = []
+	var available_count := 0
+	for mode in get_quest_reward_modes(def):
+		var avail := quest_mode_available(state, player_id, mode, db)
+		modes.append({"mode": mode, "available": avail})
+		if avail:
+			available_count += 1
+	var can_both := available_count >= 2 \
+		and hero_has_race(state, player_id, quest_choice_both_race(def), db)
+	state.pending_quest_choice_player   = player_id
+	state.pending_quest_choice_quest    = quest_id
+	state.pending_quest_choice_modes    = modes
+	state.pending_quest_choice_can_both = can_both
+	return [GameEvent.quest_choice_opened(player_id, quest_id, modes, can_both)]
+
+
+# Entry point: the completer picked their reward mode(s), in resolution order.
+# chosen = 1 mode string, or 2 distinct ones when can_both. Direct call.
+static func choose_quest_modes(state: GameState, chosen: Array,
+		db) -> Array[GameEvent]:
+	if state.pending_quest_choice_player == "":
+		return []
+	if chosen.is_empty() or chosen.size() > 2:
+		return []
+	if chosen.size() == 2 and (not state.pending_quest_choice_can_both
+			or chosen[0] == chosen[1]):
+		return []
+	for m in chosen:
+		var found := false
+		for entry in state.pending_quest_choice_modes:
+			if entry.get("mode", "") == m and entry.get("available", false):
+				found = true
+				break
+		if not found:
+			return []
+	var player_id := state.pending_quest_choice_player
+	var quest_id  := state.pending_quest_choice_quest
+	state.pending_quest_choice_player   = ""
+	state.pending_quest_choice_quest    = ""
+	state.pending_quest_choice_modes    = []
+	state.pending_quest_choice_can_both = false
+	for m in chosen:
+		state.quest_mode_queue.append(
+			{"player": player_id, "quest_id": quest_id, "mode": m})
+	return _run_quest_mode_queue(state, db)
+
+
+# Run queued reward modes front-first until the queue is empty or a mode opens
+# a sub-choice (the choose_* resolver for that sub-choice re-enters here).
+static func _run_quest_mode_queue(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	while not state.quest_mode_queue.is_empty():
+		var entry: Dictionary = state.quest_mode_queue.pop_front()
+		var player_id: String = entry.get("player", "")
+		var quest_id: String  = entry.get("quest_id", "")
+		var mode: String      = entry.get("mode", "")
+		var parts := mode.split(":")
+		match parts[0].strip_edges():
+			"draw":
+				var n := int(parts[1]) if parts.size() > 1 else 1
+				for _i in n:
+					events.append_array(_draw_one(state, player_id))
+			"hand_to_deck_draw":
+				# Crown of the Earth: "Put your hand on the bottom of your deck,
+				# then draw that many cards." Bottom in current hand order
+				# (move_card appends to the deck's end = bottom), then draw the
+				# same count — an empty hand is a legal no-op.
+				var hand_ids: Array[String] = []
+				for c in state.cards_in_zone(player_id + "_hand"):
+					hand_ids.append(c.instance_id)
+				for cid in hand_ids:
+					events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
+				events.append(GameEvent.hand_returned_to_deck(player_id, hand_ids.size()))
+				for _i in hand_ids.size():
+					events.append_array(_draw_one(state, player_id))
+			"ally_ferocity_this_turn":
+				# Re-check at run time (the board may have changed while an
+				# earlier mode resolved) — no legal ally left, the mode fizzles.
+				if get_quest_ferocity_targets(state, db).is_empty():
+					continue
+				state.pending_quest_ferocity_player = player_id
+				state.pending_quest_ferocity_source = quest_id
+				events.append(GameEvent.quest_ferocity_target_required(quest_id, player_id))
+				return events
+			"each_player_destroys_ally":
+				# "If an ally is in your party" — re-check the completer's
+				# condition at run time; without it the whole mode no-ops.
+				if state.cards_in_zone(player_id + "_ally_row").is_empty():
+					continue
+				# Every player with an ally sacrifices one of their own; the
+				# completer picks first, then the opponent.
+				state.pending_plague_destroy_queue.clear()
+				var opp := _other_player(state, player_id)
+				for pid in [player_id, opp]:
+					if not state.cards_in_zone(pid + "_ally_row").is_empty():
+						state.pending_plague_destroy_queue.append(pid)
+				state.pending_plague_destroy_player = state.pending_plague_destroy_queue[0]
+				state.pending_plague_destroy_source = quest_id
+				events.append(GameEvent.plague_destroy_required(
+						state.pending_plague_destroy_player, quest_id))
+				return events
+			"opponent_quest_face_down":
+				# "Target player" is auto-chosen as the opponent (see
+				# data/rules_deviations.md "Thwarting Kolkar Aggression"); the
+				# TARGET player picks which of their face-up quests flips.
+				var t_player := _other_player(state, player_id)
+				var candidates := _face_up_quests(state, t_player, db)
+				if candidates.is_empty():
+					continue   # nothing to flip — the mode fizzles
+				state.pending_quest_facedown_player = t_player
+				state.pending_quest_facedown_ids    = candidates
+				events.append(GameEvent.quest_facedown_required(t_player, candidates))
+				return events
+	return events
+
+
+# Entry point: Hidden Enemies — the completer picked the ally that gains
+# ferocity this turn. Buff-based grant so it expires with the end-of-turn
+# sweep (and on leaving play); read by _has_keyword ("grant_ferocity").
+static func choose_quest_ferocity_target(state: GameState, target_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_quest_ferocity_player == "":
+		return []
+	if target_id not in get_quest_ferocity_targets(state, db):
+		return []
+	var source_id := state.pending_quest_ferocity_source
+	state.pending_quest_ferocity_player = ""
+	state.pending_quest_ferocity_source = ""
+	var card := state.get_card(target_id)
+	card.active_buffs.append(
+		Buff.make("quest_ferocity", source_id, "grant_ferocity", 1, "turns", 1))
+	var events: Array[GameEvent] = [GameEvent.ferocity_granted(target_id, source_id)]
+	events.append_array(_run_quest_mode_queue(state, db))
+	return events
+
+
+# Entry point: A New Plague — the pending player picked the ally in their own
+# party to destroy. Advances to the next queued player, then the mode queue.
+static func choose_plague_destroy(state: GameState, ally_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_plague_destroy_player == "":
+		return []
+	var player_id := state.pending_plague_destroy_player
+	var card := state.get_card(ally_id)
+	if not card or card.zone_id != player_id + "_ally_row":
+		return []
+	var events: Array[GameEvent] = []
+	events.append_array(_destroy_card_trigger(
+			state, ally_id, state.pending_plague_destroy_source, db))
+	state.pending_plague_destroy_queue.pop_front()
+	# Next player with an ally still in party picks theirs (a chained death
+	# trigger may have emptied their board in the meantime — then skip).
+	while not state.pending_plague_destroy_queue.is_empty():
+		var next_pid: String = state.pending_plague_destroy_queue[0]
+		if state.cards_in_zone(next_pid + "_ally_row").is_empty():
+			state.pending_plague_destroy_queue.pop_front()
+			continue
+		state.pending_plague_destroy_player = next_pid
+		events.append(GameEvent.plague_destroy_required(
+				next_pid, state.pending_plague_destroy_source))
+		return events
+	state.pending_plague_destroy_player = ""
+	state.pending_plague_destroy_source = ""
+	events.append_array(_run_quest_mode_queue(state, db))
+	return events
+
+
+# Entry point: Thwarting Kolkar Aggression — the TARGET player picked which of
+# their face-up quests turns face down (no completion, no reward — the quest
+# simply becomes the same spent face-down resource a completed quest is).
+static func choose_quest_facedown(state: GameState, quest_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_quest_facedown_player == "":
+		return []
+	if quest_id not in state.pending_quest_facedown_ids:
+		return []
+	var player_id := state.pending_quest_facedown_player
+	state.pending_quest_facedown_player = ""
+	state.pending_quest_facedown_ids    = []
+	var card := state.get_card(quest_id)
+	card.face_down = true
+	var events: Array[GameEvent] = [
+		GameEvent.quest_turned_face_down(quest_id, player_id)]
+	events.append_array(_run_quest_mode_queue(state, db))
 	return events
 
 

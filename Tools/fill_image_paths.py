@@ -29,6 +29,10 @@ with open(MASTER_CSV, encoding="utf-8") as f:
 ALIASES = {
     "nerra_lifeboon": "nerra_lifeboom",
     "valthak_spiritdrinker": "valthak_spiritdinker",
+    "stronghold_gauntlets": "stronghold_guantlets",
+    "raul_fingers_maldren": "raul_finger_maldren",
+    "wristguards_of_the_true_flight": "wristguards_of_true_flight",
+    "operation_recombobulation": "opertation_recombobulation",
 }
 for correct, tts in ALIASES.items():
     if tts in master:

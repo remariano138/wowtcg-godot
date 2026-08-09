@@ -178,6 +178,34 @@ var pending_reveal_pick_private: bool = false
 var pending_ongoing_triggers: Array = []
 var pending_totem_target_player: String = ""  # controller who must pick a target; "" = none
 
+# ── Quest reward "Choose one … you may choose both" (Hidden Enemies / A New
+# Plague / Thwarting Kolkar Aggression / Crown of the Earth) ──────────────────
+# When a `qmode:` quest resolves, the completer must pick one reward mode — or
+# both, in an order of their choosing, when the `qchoice_both_race:RACE` hero
+# condition is met AND both modes are currently available. Direct-call flow
+# (NOT the chain, like the reveal pick): StackResolver.choose_quest_modes()
+# resolves the pick; pass_priority / can_submit hard-block while any of these
+# pendings is set. The chosen modes queue in quest_mode_queue and run one at a
+# time; a mode needing further input opens its own pending choice below and the
+# queue resumes once it resolves.
+var pending_quest_choice_player: String = ""   # completer who must pick; "" = none
+var pending_quest_choice_quest: String = ""    # quest instance id (UI)
+var pending_quest_choice_modes: Array = []     # [{mode: String, available: bool}] in printed order
+var pending_quest_choice_can_both: bool = false
+var quest_mode_queue: Array = []               # [{player, quest_id, mode}] — front = next to run
+# Hidden Enemies "Target ally has ferocity this turn": completer picks the ally.
+var pending_quest_ferocity_player: String = ""
+var pending_quest_ferocity_source: String = ""  # quest instance id (buff source / UI)
+# A New Plague "each player destroys an ally in his party": each player with an
+# ally picks their own sacrifice; completer first, drained front-first.
+var pending_plague_destroy_player: String = ""
+var pending_plague_destroy_queue: Array[String] = []
+var pending_plague_destroy_source: String = ""  # quest instance id (UI)
+# Thwarting Kolkar Aggression "target player turns one of his quests face down":
+# the TARGET player picks which of their face-up quests flips.
+var pending_quest_facedown_player: String = ""
+var pending_quest_facedown_ids: Array[String] = []  # that player's face-up quest ids
+
 # Death-triggered targeted effects (Boneshanks: "When [this] is destroyed,
 # destroy target ally."). When such a card dies, a trigger dict {card_id,
 # controller} is queued here and the front one opens as a mandatory choice:

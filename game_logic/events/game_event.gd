@@ -444,3 +444,56 @@ static func reveal_pick_opened(player_id: String, selectable_ids: Array,
 		"to_top":     to_top,
 		"private":    is_private,
 	})
+
+
+# ── Quest reward choice ("Choose one … you may choose both") ──────────────────
+# The completer of a qmode: quest must pick one reward mode — or both, in an
+# order of their choosing, when can_both. modes = [{mode, available}] in printed
+# order. Resolved via StackResolver.choose_quest_modes() (direct call).
+static func quest_choice_opened(player_id: String, quest_id: String,
+		modes: Array, can_both: bool) -> GameEvent:
+	return make("quest_choice_opened", {
+		"player": player_id, "quest_id": quest_id,
+		"modes": modes, "can_both": can_both,
+	})
+
+# Hidden Enemies: the completer must pick the ally that gains ferocity this turn.
+static func quest_ferocity_target_required(quest_id: String,
+		player_id: String) -> GameEvent:
+	return make("quest_ferocity_target_required", {
+		"quest_id": quest_id, "player": player_id,
+	})
+
+static func ferocity_granted(card_id: String, source_id: String) -> GameEvent:
+	return make("ferocity_granted", {
+		"card_id": card_id, "source_id": source_id,
+	})
+
+# A New Plague: player must destroy an ally in their own party.
+static func plague_destroy_required(player_id: String,
+		source_id: String) -> GameEvent:
+	return make("plague_destroy_required", {
+		"player": player_id, "source_id": source_id,
+	})
+
+# Thwarting Kolkar Aggression: the target player must turn one of their
+# face-up quests face down. quest_ids = that player's face-up quests.
+static func quest_facedown_required(player_id: String,
+		quest_ids: Array) -> GameEvent:
+	return make("quest_facedown_required", {
+		"player": player_id, "quest_ids": quest_ids,
+	})
+
+# A quest was turned face down by an effect (NOT completed — no reward).
+static func quest_turned_face_down(quest_id: String,
+		player_id: String) -> GameEvent:
+	return make("quest_turned_face_down", {
+		"quest_id": quest_id, "player": player_id,
+	})
+
+# Crown of the Earth: the completer put their whole hand on the bottom of
+# their deck (count cards), then draws that many.
+static func hand_returned_to_deck(player_id: String, count: int) -> GameEvent:
+	return make("hand_returned_to_deck", {
+		"player": player_id, "count": count,
+	})

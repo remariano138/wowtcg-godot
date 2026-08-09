@@ -25,8 +25,13 @@
     },
     {
       "card_def_id": "azeroth_345",
-      "count": 2,
+      "count": 1,
       "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "dark_portal_309",
+      "count": 1,
+      "_card_name": "Thwarting Kolkar Aggression"
     },
     {
       "card_def_id": "azeroth_351",

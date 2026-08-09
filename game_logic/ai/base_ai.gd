@@ -1053,6 +1053,15 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if not def or def.card_type != "Quest":
 					continue
 			var params := {"quest_id": card.instance_id}
+			# A New Plague-style destroy mode: only complete while the OPPONENT
+			# has an ally to lose too — otherwise the quest is pure self-harm
+			# (or a bare draw the AI can wait on).
+			if db:
+				var gate_def := db.get_def(card.card_def_id) as CardDef
+				if gate_def and "qmode:each_player_destroys_ally" in gate_def.effects:
+					var qc_opp := "p2" if player_id == "p1" else "p1"
+					if state.cards_in_zone(qc_opp + "_ally_row").is_empty():
+						continue
 			# Graveyard-target rewards: announce targets with the completion.
 			# Target choice is an overridable hook (see _choose_graveyard_targets).
 			if db:
@@ -1493,6 +1502,133 @@ func choose_death_target(state: GameState, db, player_id: String) -> String:
 	# Forced to hit our own board: give up the least valuable ally.
 	var ranked_own := sort_valuable_cards(state, db, own)
 	return ranked_own[ranked_own.size() - 1]
+
+
+# ── Quest reward choices ("Choose one … you may choose both") ────────────────
+# Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
+# Earth. Policy: ALWAYS take both modes when the race condition allows it
+# (free value — draw last so an earlier mode can't eat the fresh card).
+# Single pick: the special mode when it's currently useful, else the draw.
+func choose_quest_modes(state: GameState, db, player_id: String) -> Array:
+	var special := ""
+	var draw_mode := ""
+	for entry in state.pending_quest_choice_modes:
+		if not entry.get("available", false):
+			continue
+		var m: String = entry.get("mode", "")
+		if m.begins_with("draw"):
+			draw_mode = m
+		else:
+			special = m
+	if special == "":
+		return [draw_mode]
+	if draw_mode == "" :
+		return [special]
+	if state.pending_quest_choice_can_both:
+		return [special, draw_mode]   # both, special first, draw last
+	return [special] if _quest_mode_useful(state, db, player_id, special) \
+			else [draw_mode]
+
+
+# Is a non-draw reward mode worth taking over a plain draw right now?
+func _quest_mode_useful(state: GameState, db, player_id: String,
+		mode: String) -> bool:
+	match mode.split(":")[0]:
+		"ally_ferocity_this_turn":
+			# Only useful on one of OUR summoning-sick attackers.
+			return _best_ferocity_target(state, db, player_id, true) != ""
+		"each_player_destroys_ally":
+			# Availability already requires an ally of ours; useful only when the
+			# opponent loses one too (never plain self-harm — AI convention).
+			var opp := "p2" if player_id == "p1" else "p1"
+			return not state.cards_in_zone(opp + "_ally_row").is_empty()
+		"opponent_quest_face_down":
+			return true   # available implies an opposing quest to deny
+		"hand_to_deck_draw":
+			# Cycle a dead hand: 3+ cards, none currently affordable.
+			var hand := state.cards_in_zone(player_id + "_hand")
+			if hand.size() < 3:
+				return false
+			var avail := state.get_available_resources(player_id)
+			for card in hand:
+				var def: CardDef = db.get_def(card.card_def_id) if db else null
+				if def and def.cost >= 0 and def.cost <= avail:
+					return false
+			return true
+	return false
+
+
+# Hidden Enemies: pick the ally that gains ferocity this turn — our highest-ATK
+# summoning-sick ally, else (forced pick) our highest-value legal ally, else
+# whatever is legal.
+func choose_quest_ferocity_target(state: GameState, db,
+		player_id: String) -> String:
+	var best := _best_ferocity_target(state, db, player_id, true)
+	if best != "":
+		return best
+	var legal := StackResolver.get_quest_ferocity_targets(state, db)
+	if legal.is_empty():
+		return ""
+	var own: Array[String] = []
+	for tid in legal:
+		var card := state.get_card(tid)
+		if card and card.controller == player_id:
+			own.append(tid)
+	if not own.is_empty():
+		return sort_valuable_cards(state, db, own)[0]
+	return legal[0]
+
+
+# Our best summoning-sick ally to un-sick: highest ATK, must be a legal target
+# and not already ferocious. "" when none qualifies.
+func _best_ferocity_target(state: GameState, db, player_id: String,
+		_require_sick: bool) -> String:
+	var legal := StackResolver.get_quest_ferocity_targets(state, db)
+	var best := ""
+	var best_atk := 0
+	for tid in legal:
+		var card := state.get_card(tid)
+		if not card or card.controller != player_id:
+			continue
+		if not card.just_summoned:
+			continue
+		if StackResolver._has_keyword(card, "ferocity", db):
+			continue
+		var atk := state.get_atk(tid, db)
+		if atk > best_atk:
+			best_atk = atk
+			best = tid
+	return best
+
+
+# A New Plague: sacrifice our least valuable ally.
+func choose_plague_destroy(state: GameState, db, player_id: String) -> String:
+	var own: Array[String] = []
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		own.append(card.instance_id)
+	if own.is_empty():
+		return ""
+	var ranked := sort_valuable_cards(state, db, own)
+	return ranked[ranked.size() - 1]
+
+
+# Thwarting Kolkar Aggression (as the TARGET): flip our least valuable face-up
+# quest — lowest rarity first, then lowest reward resource cost, random tie.
+func choose_quest_facedown(state: GameState, db, _player_id: String) -> String:
+	var ids := state.pending_quest_facedown_ids
+	if ids.is_empty():
+		return ""
+	var pool := ids.duplicate()
+	pool.shuffle()   # random tiebreak
+	pool.sort_custom(func(a, b) -> bool:
+		var da: CardDef = db.get_def(state.get_card(a).card_def_id) if db else null
+		var db_: CardDef = db.get_def(state.get_card(b).card_def_id) if db else null
+		var ra: int = _RARITY_RANK.get(da.rarity.to_lower(), 1) if da else 1
+		var rb: int = _RARITY_RANK.get(db_.rarity.to_lower(), 1) if db_ else 1
+		if ra != rb:
+			return ra < rb
+		return (da.cost if da else 0) < (db_.cost if db_ else 0))
+	return pool[0]
 
 
 # Green Whelp Armor: after an attacking ally damaged our hero, decide whether to

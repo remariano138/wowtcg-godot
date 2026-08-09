@@ -289,6 +289,11 @@ func _ready() -> void:
 		_test_simultaneous_decking_is_a_draw,
 		_test_game_over_explanations,
 		_test_innervate_draws_three,
+		_test_hidden_enemies_choice,
+		_test_a_new_plague,
+		_test_kolkar_facedown,
+		_test_crown_of_the_earth,
+		_test_quest_choice_ai_hooks,
 	]
 
 	for t in tests:
@@ -15631,3 +15636,346 @@ func _test_innervate_draws_three() -> void:
 		if a.action_type == "play_instant" and a.params.get("card_id", "") == "inn4":
 			held = false
 	ok(held, "in-f: AI holds Innervate rather than drawing past max hand size")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Hidden Enemies: "Choose one: target ally has ferocity this turn;
+# or draw a card. If your hero is an Orc, you may choose both."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_hidden_enemies_choice() -> void:
+	_buf.append("\n-- Scenario: Hidden Enemies reward choice (Orc = both) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	(db._defs["p1_hero"] as CardDef).tags = "Orc Shaman"
+	db.quest("hidden_def", 3,
+		"qmode:ally_ferocity_this_turn|qmode:draw:1|qchoice_both_race:Orc")
+	db.ally("sick_def", 2, 2)
+	db.ally("filler_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var sick := _add_ally(state, "sick1", "sick_def", "p1")
+	sick.just_summoned = true
+	for i in 3:
+		var d := CardInstance.create("he_deck%d" % i, "filler_def", "p1", "p1_deck")
+		state.cards[d.instance_id] = d
+		state.zones["p1_deck"].card_ids.append(d.instance_id)
+
+	var q := CardInstance.create("hidden_inst", "hidden_def", "p1", "p1_resource_row")
+	state.cards["hidden_inst"] = q
+	state.zones["p1_resource_row"].card_ids.append("hidden_inst")
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "hidden_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.pending_quest_choice_player, "p1", "he-a: reward choice opened for the completer")
+	ok(state.pending_quest_choice_can_both, "he-b: Orc hero — may choose both")
+	ok(state.get_card("hidden_inst").face_down, "he-c: quest flipped face-down")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"he-d: pass_priority hard-blocked while the choice is pending")
+
+	# Illegal picks are rejected.
+	ok(StackResolver.choose_quest_modes(state, ["draw:1", "draw:1"], db).is_empty(),
+		"he-e: duplicate mode pick rejected")
+	ok(StackResolver.choose_quest_modes(state, ["nonsense"], db).is_empty(),
+		"he-f: unknown mode pick rejected")
+
+	# Both, ferocity first — the draw waits until the ferocity target is chosen.
+	var events := StackResolver.choose_quest_modes(state,
+		["ally_ferocity_this_turn", "draw:1"], db)
+	ok(not events.is_empty(), "he-g: legal both-pick accepted")
+	eq(state.pending_quest_ferocity_player, "p1", "he-h: ferocity target choice pending")
+	eq(state.zones["p1_hand"].card_ids.size(), 0, "he-i: draw queued, not yet resolved")
+
+	StackResolver.choose_quest_ferocity_target(state, "sick1", db)
+	ok(StackResolver._has_keyword(state.get_card("sick1"), "ferocity", db),
+		"he-j: chosen ally has ferocity (buff-granted)")
+	var fb: Buff = state.get_card("sick1").active_buffs[0]
+	ok(fb.duration_type == "turns" and fb.turns_remaining == 1,
+		"he-k: ferocity grant is a this-turn buff (end-of-turn sweep)")
+	eq(state.zones["p1_hand"].card_ids.size(), 1, "he-l: queued draw resolved after the pick")
+	ok(state.pending_quest_ferocity_player == "" and state.quest_mode_queue.is_empty(),
+		"he-m: choice flow fully drained")
+	ok("sick1" in StackResolver.get_legal_attackers(state, "p1", db),
+		"he-n: summoning-sick ally may now attack")
+
+	# Non-Orc hero: can_both is false and a two-mode pick is rejected.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	(db2._defs["p1_hero"] as CardDef).tags = "Human Warrior"
+	db2.quest("hidden_def", 3,
+		"qmode:ally_ferocity_this_turn|qmode:draw:1|qchoice_both_race:Orc")
+	db2.ally("sick_def", 2, 2)
+	var s2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 3)
+	_add_ally(s2, "sick2", "sick_def", "p1")
+	var q2 := CardInstance.create("hidden2", "hidden_def", "p1", "p1_resource_row")
+	s2.cards["hidden2"] = q2
+	s2.zones["p1_resource_row"].card_ids.append("hidden2")
+	StackResolver.submit_action(s2,
+		PendingAction.make("use_quest", "p1", {"quest_id": "hidden2"}), db2)
+	StackResolver.pass_priority(s2, db2)
+	StackResolver.pass_priority(s2, db2)
+	ok(not s2.pending_quest_choice_can_both, "he-o: non-Orc hero — choose one only")
+	ok(StackResolver.choose_quest_modes(s2,
+		["ally_ferocity_this_turn", "draw:1"], db2).is_empty(),
+		"he-p: two-mode pick rejected without the race condition")
+	ok(not StackResolver.choose_quest_modes(s2,
+		["ally_ferocity_this_turn"], db2).is_empty(),
+		"he-q: single-mode pick accepted")
+	eq(s2.pending_quest_ferocity_player, "p1", "he-r: ferocity pick pending")
+	StackResolver.choose_quest_ferocity_target(s2, "sick2", db2)
+	ok(StackResolver._has_keyword(s2.get_card("sick2"), "ferocity", db2),
+		"he-s: single-mode ferocity applied")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — A New Plague: "Choose one: If an ally is in your party, each player
+# destroys an ally in his party; or draw a card. Undead → both."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_a_new_plague() -> void:
+	_buf.append("\n-- Scenario: A New Plague (each player destroys an ally) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	(db._defs["p1_hero"] as CardDef).tags = "Undead Warlock"
+	db.quest("plague_def", 4,
+		"qmode:each_player_destroys_ally|qmode:draw:1|qchoice_both_race:Undead|require_turn_player")
+	db.ally("grunt_def", 2, 2, [], 2)
+	db.ally("filler_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_ally(state, "own1", "grunt_def", "p1")
+	_add_ally(state, "opp1", "grunt_def", "p2")
+	for i in 2:
+		var d := CardInstance.create("np_deck%d" % i, "filler_def", "p1", "p1_deck")
+		state.cards[d.instance_id] = d
+		state.zones["p1_deck"].card_ids.append(d.instance_id)
+	var q := CardInstance.create("plague_inst", "plague_def", "p1", "p1_resource_row")
+	state.cards["plague_inst"] = q
+	state.zones["p1_resource_row"].card_ids.append("plague_inst")
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "plague_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_quest_choice_can_both, "np-a: Undead hero — may choose both")
+
+	StackResolver.choose_quest_modes(state,
+		["each_player_destroys_ally", "draw:1"], db)
+	eq(state.pending_plague_destroy_player, "p1", "np-b: completer sacrifices first")
+	ok(StackResolver.choose_plague_destroy(state, "opp1", db).is_empty(),
+		"np-c: picking an ally outside your own party is rejected")
+	StackResolver.choose_plague_destroy(state, "own1", db)
+	eq(state.get_card("own1").zone_id, "p1_graveyard", "np-d: completer's ally destroyed")
+	eq(state.pending_plague_destroy_player, "p2", "np-e: opponent picks next")
+	StackResolver.choose_plague_destroy(state, "opp1", db)
+	eq(state.get_card("opp1").zone_id, "p2_graveyard", "np-f: opponent's ally destroyed")
+	eq(state.zones["p1_hand"].card_ids.size(), 1, "np-g: queued draw resolved last")
+	eq(state.pending_plague_destroy_player, "", "np-h: flow drained")
+
+	# Completer with no ally: the destroy mode is unavailable.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "opp2", "grunt_def", "p2")
+	ok(not StackResolver.quest_mode_available(s2, "p1", "each_player_destroys_ally", db),
+		"np-i: destroy mode unavailable without an ally in the completer's party")
+
+	# Opponent with no ally: only the completer sacrifices.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	_add_ally(s3, "own3", "grunt_def", "p1")
+	var q3 := CardInstance.create("plague3", "plague_def", "p1", "p1_resource_row")
+	s3.cards["plague3"] = q3
+	s3.zones["p1_resource_row"].card_ids.append("plague3")
+	StackResolver.submit_action(s3,
+		PendingAction.make("use_quest", "p1", {"quest_id": "plague3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.choose_quest_modes(s3, ["each_player_destroys_ally"], db)
+	eq(s3.pending_plague_destroy_player, "p1", "np-j: completer still sacrifices")
+	StackResolver.choose_plague_destroy(s3, "own3", db)
+	eq(s3.pending_plague_destroy_player, "", "np-k: opponent with no ally skipped")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Thwarting Kolkar Aggression: "Choose one: Target player turns one
+# of his quests face down; or draw a card. Troll → both."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_kolkar_facedown() -> void:
+	_buf.append("\n-- Scenario: Thwarting Kolkar Aggression (quest face down) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	(db._defs["p1_hero"] as CardDef).tags = "Troll Priest"
+	db.quest("kolkar_def", 3,
+		"qmode:opponent_quest_face_down|qmode:draw:1|qchoice_both_race:Troll|require_turn_player")
+	db.quest("opp_quest_def", 2, "draw:1")
+	db.ally("filler_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	for i in 2:
+		var d := CardInstance.create("ko_deck%d" % i, "filler_def", "p1", "p1_deck")
+		state.cards[d.instance_id] = d
+		state.zones["p1_deck"].card_ids.append(d.instance_id)
+	var oq := CardInstance.create("oppq1", "opp_quest_def", "p2", "p2_resource_row")
+	state.cards["oppq1"] = oq
+	state.zones["p2_resource_row"].card_ids.append("oppq1")
+	var oq_spent := CardInstance.create("oppq2", "opp_quest_def", "p2", "p2_resource_row")
+	oq_spent.face_down = true
+	state.cards["oppq2"] = oq_spent
+	state.zones["p2_resource_row"].card_ids.append("oppq2")
+	var q := CardInstance.create("kolkar_inst", "kolkar_def", "p1", "p1_resource_row")
+	state.cards["kolkar_inst"] = q
+	state.zones["p1_resource_row"].card_ids.append("kolkar_inst")
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "kolkar_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_quest_choice_can_both, "ko-a: Troll hero — may choose both")
+
+	StackResolver.choose_quest_modes(state,
+		["opponent_quest_face_down", "draw:1"], db)
+	eq(state.pending_quest_facedown_player, "p2", "ko-b: TARGET player picks the quest")
+	ok(not ("oppq2" in state.pending_quest_facedown_ids),
+		"ko-c: already face-down quest is not a candidate")
+	ok(StackResolver.choose_quest_facedown(state, "oppq2", db).is_empty(),
+		"ko-d: picking a non-candidate is rejected")
+	var p2_hand_before: int = state.zones["p2_hand"].card_ids.size()
+	StackResolver.choose_quest_facedown(state, "oppq1", db)
+	ok(state.get_card("oppq1").face_down, "ko-e: opponent's quest turned face down")
+	eq(state.zones["p2_hand"].card_ids.size(), p2_hand_before,
+		"ko-f: no reward applied to the flipped quest")
+	ok(not StackResolver.can_use_quest_no_target_check(state, "oppq1", "p2", db),
+		"ko-g: flipped quest can no longer be completed")
+	eq(state.zones["p1_hand"].card_ids.size(), 1, "ko-h: queued draw resolved")
+
+	# No opposing face-up quest: the mode is unavailable, so can_both is off.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	ok(not StackResolver.quest_mode_available(s2, "p1", "opponent_quest_face_down", db),
+		"ko-i: mode unavailable with no opposing face-up quest")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Crown of the Earth: "Choose one: Put your hand on the bottom of
+# your deck, then draw that many cards; or draw a card. Night Elf → both."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_crown_of_the_earth() -> void:
+	_buf.append("\n-- Scenario: Crown of the Earth (hand to deck, redraw) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	(db._defs["p1_hero"] as CardDef).tags = "Night Elf Druid"
+	db.quest("crown_def", 3,
+		"qmode:hand_to_deck_draw|qmode:draw:1|qchoice_both_race:Night Elf")
+	db.ally("filler_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_card_to_hand(state, "h1", "filler_def", "p1")
+	_add_card_to_hand(state, "h2", "filler_def", "p1")
+	for i in 5:
+		var d := CardInstance.create("cr_d%d" % i, "filler_def", "p1", "p1_deck")
+		state.cards[d.instance_id] = d
+		state.zones["p1_deck"].card_ids.append(d.instance_id)
+	var q := CardInstance.create("crown_inst", "crown_def", "p1", "p1_resource_row")
+	state.cards["crown_inst"] = q
+	state.zones["p1_resource_row"].card_ids.append("crown_inst")
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "crown_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_quest_choice_can_both, "cr-a: Night Elf hero — may choose both")
+
+	# Both, hand-to-deck first: bottom 2, draw 2, then draw 1 more.
+	StackResolver.choose_quest_modes(state, ["hand_to_deck_draw", "draw:1"], db)
+	var hand: Array = state.zones["p1_hand"].card_ids
+	eq(hand.size(), 3, "cr-b: drew 2 (hand count) + 1 (draw mode)")
+	ok("h1" not in hand and "h2" not in hand, "cr-c: old hand went to the deck")
+	eq(hand[0], "cr_d0", "cr-d: drew from the top of the deck")
+	var deck: Array = state.zones["p1_deck"].card_ids
+	eq(deck.size(), 4, "cr-e: deck 5 - 3 drawn + 2 bottomed")
+	ok(deck[deck.size() - 2] == "h1" and deck[deck.size() - 1] == "h2",
+		"cr-f: hand cards on the bottom in hand order")
+	ok(state.quest_mode_queue.is_empty() and not StackResolver._quest_choice_pending(state),
+		"cr-g: flow drained with no sub-choice")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Quest-choice AI hooks: pick both / draw fallback / least-valuable
+# facedown pick / A New Plague completion gate.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_quest_choice_ai_hooks() -> void:
+	_buf.append("\n-- Scenario: quest reward choice — AI hooks --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	(db._defs["p1_hero"] as CardDef).tags = "Undead Rogue"
+	db.quest("plague_def", 4,
+		"qmode:each_player_destroys_ally|qmode:draw:1|qchoice_both_race:Undead|require_turn_player")
+	db.quest("cheap_common_def", 1, "draw:1")
+	db.quest("pricey_rare_def", 3, "draw:1")
+	(db._defs["cheap_common_def"] as CardDef).rarity = "Common"
+	(db._defs["pricey_rare_def"] as CardDef).rarity = "Rare"
+	db.ally("grunt_def", 2, 2, [], 2)
+	var ai := BaseAI.new()
+
+	# choose_quest_modes: both when allowed, special first, draw last.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.pending_quest_choice_player = "p1"
+	state.pending_quest_choice_modes = [
+		{"mode": "each_player_destroys_ally", "available": true},
+		{"mode": "draw:1", "available": true},
+	]
+	state.pending_quest_choice_can_both = true
+	_add_ally(state, "own1", "grunt_def", "p1")
+	_add_ally(state, "opp1", "grunt_def", "p2")
+	eq(",".join(PackedStringArray(ai.choose_quest_modes(state, db, "p1"))),
+		"each_player_destroys_ally,draw:1", "ai-a: AI takes both, draw last")
+
+	# Single pick, destroy mode useless (opponent bare board) → draw.
+	state.pending_quest_choice_can_both = false
+	GameLogic.move_card(state, "opp1", "p2_graveyard")
+	eq(",".join(PackedStringArray(ai.choose_quest_modes(state, db, "p1"))),
+		"draw:1", "ai-b: single pick falls back to the draw when the special mode is useless")
+
+	# choose_quest_facedown: least valuable — lowest rarity, then lowest cost.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var qa := CardInstance.create("q_common", "cheap_common_def", "p1", "p1_resource_row")
+	s2.cards["q_common"] = qa
+	s2.zones["p1_resource_row"].card_ids.append("q_common")
+	var qb := CardInstance.create("q_rare", "pricey_rare_def", "p1", "p1_resource_row")
+	s2.cards["q_rare"] = qb
+	s2.zones["p1_resource_row"].card_ids.append("q_rare")
+	s2.pending_quest_facedown_player = "p1"
+	s2.pending_quest_facedown_ids = ["q_common", "q_rare"] as Array[String]
+	eq(ai.choose_quest_facedown(s2, db, "p1"), "q_common",
+		"ai-c: AI flips its least valuable quest (lowest rarity)")
+
+	# A New Plague completion gate: no opposing ally → the AI never proposes it.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	_add_ally(s3, "own3", "grunt_def", "p1")
+	var q3 := CardInstance.create("plague3", "plague_def", "p1", "p1_resource_row")
+	s3.cards["plague3"] = q3
+	s3.zones["p1_resource_row"].card_ids.append("plague3")
+	var proposes := func(s: GameState) -> bool:
+		for a in ai.get_reasonable_actions(s, db, "p1"):
+			if a.action_type == "use_quest" and a.params.get("quest_id", "") == "plague3":
+				return true
+		return false
+	ok(not proposes.call(s3), "ai-d: AI holds A New Plague while the opponent has no ally")
+	_add_ally(s3, "opp3", "grunt_def", "p2")
+	ok(proposes.call(s3), "ai-e: AI completes it once the opponent has an ally to lose")

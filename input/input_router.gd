@@ -43,6 +43,14 @@ signal unique_sacrifice_mode_started(candidate_ids: Array)
 signal unique_sacrifice_mode_ended()
 signal form_sacrifice_mode_started(candidate_ids: Array)
 signal form_sacrifice_mode_ended()
+# Quest reward choice sub-picks (Hidden Enemies / A New Plague / Thwarting
+# Kolkar Aggression). Emitted after a human resolves one so the scene can
+# resume driving the turn (further pendings re-open their own modes first).
+signal quest_flow_resolved()
+signal plague_destroy_mode_started(candidate_ids: Array)
+signal plague_destroy_mode_ended()
+signal quest_facedown_mode_started(candidate_ids: Array)
+signal quest_facedown_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
@@ -87,6 +95,13 @@ var _in_unique_sacrifice_mode: bool = false  # true while player must choose a U
 var _unique_sacrifice_candidates: Array[String] = []
 var _in_form_sacrifice_mode: bool = false  # true while player must choose a Form to destroy (414.3b)
 var _form_sacrifice_candidates: Array[String] = []
+# A New Plague: player must destroy an ally in their own party (mandatory, red).
+var _in_plague_destroy_mode: bool = false
+var _plague_destroy_candidates: Array[String] = []
+# Thwarting Kolkar Aggression: player must turn one of their face-up quests
+# face down (mandatory, red).
+var _in_quest_facedown_mode: bool = false
+var _quest_facedown_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 # Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
@@ -143,6 +158,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("ui_cancel"): # Escape
 		if _modal_pending_card != "":
 			cancel_modal_choice()
+		elif _targeting_action_type == "choose_quest_ferocity":
+			pass   # mandatory quest-reward pick — Esc must not strand the choice
 		elif _targeting_source != "":
 			cancel_targeting()
 		else:
@@ -186,6 +203,16 @@ func handle_card_click(instance_id: String) -> void:
 	# ── Form sacrifice mode: click destroys the chosen Form (shapeshift) ─────
 	if _in_form_sacrifice_mode:
 		_handle_form_sacrifice_click(instance_id)
+		return
+
+	# ── A New Plague: click destroys the chosen own ally ─────────────────────
+	if _in_plague_destroy_mode:
+		_handle_plague_destroy_click(instance_id)
+		return
+
+	# ── Kolkar: click turns the chosen own quest face down ───────────────────
+	if _in_quest_facedown_mode:
+		_handle_quest_facedown_click(instance_id)
 		return
 
 	# ── Discard mode: click discards the chosen hand card ─────────────────────
@@ -764,6 +791,66 @@ func start_death_target_targeting(card_id: String) -> void:
 	start_targeting(card_id, "choose_death_target", "", 0)
 
 
+# Convenience wrapper for Hidden Enemies' "target ally has ferocity this turn"
+# reward pick. Mandatory — Esc is absorbed while this targeting is active.
+func start_quest_ferocity_targeting(quest_id: String) -> void:
+	start_targeting(quest_id, "choose_quest_ferocity", "", 0)
+
+
+# A New Plague: mandatory "destroy an ally in your party" pick (red highlights,
+# like the pet sacrifice).
+func start_plague_destroy_mode(candidate_ids: Array) -> void:
+	_in_plague_destroy_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)
+	_plague_destroy_candidates.clear()
+	for cid in candidate_ids:
+		_plague_destroy_candidates.append(cid as String)
+	refresh_highlights()
+	plague_destroy_mode_started.emit(candidate_ids)
+
+
+func _handle_plague_destroy_click(instance_id: String) -> void:
+	if instance_id not in _plague_destroy_candidates:
+		return
+	var events := StackResolver.choose_plague_destroy(state, instance_id, db)
+	if events.is_empty():
+		return
+	_in_plague_destroy_mode = false
+	_highlight_color = Color(0.2, 1.0, 0.3)
+	_plague_destroy_candidates.clear()
+	plague_destroy_mode_ended.emit()
+	EventBus.emit_events(events)
+	refresh_highlights()
+	quest_flow_resolved.emit()
+
+
+# Thwarting Kolkar Aggression: mandatory "turn one of your quests face down"
+# pick (red highlights over the player's own face-up quests).
+func start_quest_facedown_mode(candidate_ids: Array) -> void:
+	_in_quest_facedown_mode = true
+	_highlight_color = Color(1.0, 0.25, 0.25)
+	_quest_facedown_candidates.clear()
+	for cid in candidate_ids:
+		_quest_facedown_candidates.append(cid as String)
+	refresh_highlights()
+	quest_facedown_mode_started.emit(candidate_ids)
+
+
+func _handle_quest_facedown_click(instance_id: String) -> void:
+	if instance_id not in _quest_facedown_candidates:
+		return
+	var events := StackResolver.choose_quest_facedown(state, instance_id, db)
+	if events.is_empty():
+		return
+	_in_quest_facedown_mode = false
+	_highlight_color = Color(0.2, 1.0, 0.3)
+	_quest_facedown_candidates.clear()
+	quest_facedown_mode_ended.emit()
+	EventBus.emit_events(events)
+	refresh_highlights()
+	quest_flow_resolved.emit()
+
+
 # Convenience wrapper for the attack-exhaust trigger (Chops / Voss Treebender):
 # "When [this] attacks, you may exhaust target hero or ally." Optional — Esc
 # cancels, which the scene resolves as a decline.
@@ -857,6 +944,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"choose_totem_target":       _handle_totem_targeting_click(instance_id)
 		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
+		"choose_quest_ferocity":     _handle_quest_ferocity_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
@@ -918,6 +1006,15 @@ func _handle_death_target_targeting_click(instance_id: String) -> void:
 		cancel_targeting()
 		EventBus.emit_events(events)
 		death_target_resolved.emit()
+
+
+func _handle_quest_ferocity_targeting_click(instance_id: String) -> void:
+	# Hidden Enemies reward pick. Mandatory, direct-call resolution (no chain).
+	if instance_id in StackResolver.get_quest_ferocity_targets(state, db):
+		var events := StackResolver.choose_quest_ferocity_target(state, instance_id, db)
+		cancel_targeting()
+		EventBus.emit_events(events)
+		quest_flow_resolved.emit()
 
 
 func _handle_attack_exhaust_targeting_click(instance_id: String) -> void:
@@ -1270,6 +1367,20 @@ func get_playable_card_ids() -> Array:
 			form_ids.append(cid)
 		return form_ids
 
+	# A New Plague: highlight the player's own allies (mandatory sacrifice).
+	if _in_plague_destroy_mode and state.pending_plague_destroy_player == local_player:
+		var plague_ids: Array = []
+		for cid: String in _plague_destroy_candidates:
+			plague_ids.append(cid)
+		return plague_ids
+
+	# Kolkar: highlight the player's own face-up quests (mandatory flip).
+	if _in_quest_facedown_mode and state.pending_quest_facedown_player == local_player:
+		var fd_ids: Array = []
+		for cid: String in _quest_facedown_candidates:
+			fd_ids.append(cid)
+		return fd_ids
+
 	# Control-discard mode (Infernal): all local hand cards are valid discard
 	# choices (declining goes through the pass button, not a card click).
 	if _in_control_discard_mode and state.pending_control_discard_player == local_player:
@@ -1303,6 +1414,8 @@ func get_playable_card_ids() -> Array:
 				return StackResolver.get_totem_targets(state, db)
 			"choose_death_target":
 				return StackResolver.get_death_target_targets(state, db)
+			"choose_quest_ferocity":
+				return StackResolver.get_quest_ferocity_targets(state, db)
 			"choose_attack_exhaust":
 				return StackResolver.get_attack_exhaust_targets(state, db)
 			"play_instant":

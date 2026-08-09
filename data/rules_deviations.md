@@ -608,3 +608,41 @@ Trapped's "target player". Enforcement site: the `draw` branch of
 `action.source_player` (shared with Arcane Shot's and Blink's draw riders).
 A future multiplayer build would add a `draw:N:target_player` variant rather
 than change this one.
+
+
+## Quest reward choices — unavailable modes can't be picked
+
+**Cards:** Hidden Enemies (`dark_portal_302`), A New Plague (`dark_portal_304`),
+Thwarting Kolkar Aggression (`dark_portal_309`), Crown of the Earth
+(`dark_portal_289`) — the "Choose one: …; or draw a card. If your hero is
+[Race], you may choose both" quests (`qmode:` recipes).
+
+**Deviation:** a mode whose requirement can't currently be met — no ally in
+play for Hidden Enemies' ferocity target, no ally in the completer's party for
+A New Plague, no opposing face-up quest for Kolkar — is UNAVAILABLE: it can't
+be chosen (greyed out for humans, filtered for the AI) rather than chosen and
+fizzled. With only one mode available, "you may choose both" is also off. A
+chosen mode is still re-checked when its turn in the queue comes (the board may
+have changed while the earlier mode resolved) and silently fizzles then.
+
+**Why:** picking an effect that visibly does nothing is a trap choice with no
+strategic content in the duel format; the printed outcome (fizzle) and the
+engine outcome (can't pick) are identical game states. Enforcement site:
+`StackResolver.quest_mode_available` / `_open_quest_choice` and the run-time
+re-checks in `_run_quest_mode_queue` (`game_logic/stack_resolver.gd`).
+
+
+## Thwarting Kolkar Aggression — "target player" is always the opponent
+
+**Card:** Thwarting Kolkar Aggression (`dark_portal_309`, Quest, pay 3).
+Printed reward: "Target player turns one of his quests face down."
+
+**Deviation:** the target player is auto-chosen as the opponent — no target
+announcement. The TARGET player (the opponent) still picks WHICH of their
+face-up quests flips, per the printed wording. Turning face down is the same
+spent state as a completed quest, but no reward is applied.
+
+**Why:** flipping your own quest for no reward is never a play anyone makes in
+a duel — the same degenerate-choice treatment as Hypnotic Blade / The Princess
+Trapped / Innervate. Enforcement site: the `opponent_quest_face_down` branch of
+`StackResolver._run_quest_mode_queue` in `game_logic/stack_resolver.gd`.

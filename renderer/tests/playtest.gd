@@ -234,6 +234,10 @@ var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
 var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
 var _form_return_nodes: Array[Node] = []
+# Quest reward choice ("Choose one … you may choose both" — Hidden Enemies etc.):
+# centered popup, two-step when Both is picked (first "one or both", then order).
+var _in_quest_choice_mode: bool = false
+var _quest_choice_nodes: Array[Node] = []
 
 # Armor prevention point (rule 717.2c) — inline "exhaust armor / take the
 # damage" choice at the moment a packet would hit a hero, mirrors the
@@ -379,6 +383,7 @@ func _build_scene() -> void:
 	_router.modal_choice_cancelled.connect(_on_modal_choice_cancelled)
 	_router.totem_target_resolved.connect(_on_totem_target_resolved)
 	_router.death_target_resolved.connect(_on_death_target_resolved)
+	_router.quest_flow_resolved.connect(_on_quest_flow_resolved)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
@@ -1091,6 +1096,11 @@ func _route_choice(decider: String, visibility: String = "private") -> String:
 	if _type_of(decider) != "human":
 		return "ai"
 	if decider == _local_player:
+		# A chained choice can hand the decision back to the seated player while
+		# a peek is still active (A New Plague: completer, then opponent) — the
+		# router must follow the decider.
+		if _in_choice_peek:
+			_exit_choice_peek_mode()
 		return "local"
 	_enter_choice_peek_mode(decider, visibility == "private")
 	return "peek"
@@ -1098,6 +1108,11 @@ func _route_choice(decider: String, visibility: String = "private") -> String:
 
 func _enter_choice_peek_mode(pid: String, hide_hand: bool) -> void:
 	if _in_choice_peek:
+		# Decider switched mid-flow (chained choices) — re-point the router.
+		if _choice_peek_player != pid:
+			_choice_peek_player = pid
+			_choice_peek_hides_hand = hide_hand
+			_router.setup(_state, _db, pid)
 		return
 	_in_choice_peek = true
 	_choice_peek_player = pid
@@ -2397,6 +2412,30 @@ func _on_game_event(event: GameEvent) -> void:
 			_refresh_ui()
 		"reveal_pick_opened":
 			_handle_reveal_pick(event.payload)
+		"quest_choice_opened":
+			_handle_quest_choice(event.payload)
+		"quest_ferocity_target_required":
+			_handle_quest_ferocity_target(event.payload)
+		"plague_destroy_required":
+			_handle_plague_destroy(event.payload)
+		"quest_facedown_required":
+			_handle_quest_facedown(event.payload)
+		"ferocity_granted":
+			var fg_card := _state.get_card(event.payload.get("card_id", ""))
+			var fg_def: CardDef = _db.get_def(fg_card.card_def_id) if fg_card else null
+			_set_status("🐺 %s has ferocity this turn" % (fg_def.card_name if fg_def else "An ally"))
+			_refresh_ui()
+		"quest_turned_face_down":
+			var fq_card := _state.get_card(event.payload.get("quest_id", ""))
+			var fq_def: CardDef = _db.get_def(fq_card.card_def_id) if fq_card else null
+			_set_status("🔻 %s's %s is turned face down (no reward)" % [
+				event.payload.get("player", "?"),
+				fq_def.card_name if fq_def else "quest"])
+			_refresh_ui()
+		"hand_returned_to_deck":
+			_set_status("🔄 %s puts their hand (%d cards) on the bottom of their deck"
+				% [event.payload.get("player", "?"), event.payload.get("count", 0)])
+			_refresh_ui()
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)
 		"totem_target_required":
@@ -3148,6 +3187,198 @@ func _on_death_target_resolved() -> void:
 	_schedule_next_turn()
 
 
+# ── Quest reward choice ("Choose one … you may choose both") ───────────────────
+# Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
+# Earth. The completer picks one reward mode — or both, in an order of their
+# choosing, when the hero-race condition is met. Two-step popup for humans:
+# first "one or both", then (if Both) which resolves first.
+
+func _quest_mode_label(mode: String) -> String:
+	match mode.split(":")[0]:
+		"draw":
+			var parts := mode.split(":")
+			var n := int(parts[1]) if parts.size() > 1 else 1
+			return "Draw a card" if n == 1 else "Draw %d cards" % n
+		"ally_ferocity_this_turn":
+			return "Target ally has ferocity this turn"
+		"each_player_destroys_ally":
+			return "Each player destroys an ally in his party"
+		"opponent_quest_face_down":
+			return "Opponent turns one of his quests face down"
+		"hand_to_deck_draw":
+			return "Put your hand on the bottom of your deck, draw that many"
+	return mode
+
+
+func _handle_quest_choice(payload: Dictionary) -> void:
+	var player: String   = payload.get("player", "")
+	var quest_id: String = payload.get("quest_id", "")
+	var modes: Array     = payload.get("modes", [])
+	var can_both: bool   = payload.get("can_both", false)
+	# Board-public choice — in hotseat only the input is re-pointed ("peek").
+	if _route_choice(player, "public") == "ai":
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		var chosen: Array = []
+		if ai_obj is BaseAI:
+			chosen = (ai_obj as BaseAI).choose_quest_modes(_state, _db, player)
+		else:
+			# Non-BaseAI fallback: first available mode.
+			for entry in modes:
+				if entry.get("available", false):
+					chosen = [entry.get("mode", "")]
+					break
+		var events := StackResolver.choose_quest_modes(_state, chosen, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_quest_choice_popup(quest_id, modes, can_both)
+
+
+func _show_quest_choice_popup(quest_id: String, modes: Array, can_both: bool) -> void:
+	_clear_quest_choice_nodes()
+	_in_quest_choice_mode = true
+	_ai_timer.stop()
+	var card := _state.get_card(quest_id)
+	var def: CardDef = _db.get_def(card.card_def_id) if card and _db else null
+	var qname := def.card_name if def else "Quest reward"
+	var avail: Array = []
+	for entry in modes:
+		if entry.get("available", false):
+			avail.append(entry.get("mode", ""))
+	var header := "%s — choose one%s:" % [qname, " (or both)" if can_both else ""]
+	var buttons: Array = []
+	for m in avail:
+		var captured_m: String = m
+		buttons.append({
+			"text": _quest_mode_label(captured_m),
+			"callback": func() -> void: _pick_quest_modes([captured_m]),
+		})
+	if can_both:
+		var pair := avail.duplicate()
+		buttons.append({
+			"text": "Both (choose order)",
+			"callback": func() -> void: _show_quest_order_popup(qname, pair),
+		})
+	_quest_choice_nodes.append(
+		_build_choice_popup(header, Color(0.95, 0.8, 0.3), buttons, true))
+
+
+# Second step after "Both": which mode resolves first (the other follows).
+func _show_quest_order_popup(qname: String, pair: Array) -> void:
+	_clear_quest_choice_nodes()
+	_in_quest_choice_mode = true
+	var buttons: Array = []
+	for i in pair.size():
+		var first: String = pair[i]
+		var second: String = pair[1 - i]
+		buttons.append({
+			"text": "%s — first" % _quest_mode_label(first),
+			"callback": func() -> void: _pick_quest_modes([first, second]),
+		})
+	_quest_choice_nodes.append(_build_choice_popup(
+		"%s — both: which resolves first?" % qname,
+		Color(0.95, 0.8, 0.3), buttons, true))
+
+
+func _pick_quest_modes(chosen: Array) -> void:
+	_clear_quest_choice_nodes()
+	_in_quest_choice_mode = false
+	var events := StackResolver.choose_quest_modes(_state, chosen, _db)
+	EventBus.emit_events(events)   # may open a sub-choice (its handler takes over)
+	_on_quest_flow_resolved()
+
+
+func _clear_quest_choice_nodes() -> void:
+	for node in _quest_choice_nodes:
+		if is_instance_valid(node):
+			node.queue_free()
+	if not _quest_choice_nodes.is_empty():
+		_set_board_block(false)
+	_quest_choice_nodes.clear()
+
+
+# Hidden Enemies: the completer picks the ally that gains ferocity this turn.
+func _handle_quest_ferocity_target(payload: Dictionary) -> void:
+	var player: String   = payload.get("player", "")
+	var quest_id: String = payload.get("quest_id", "")
+	if _route_choice(player, "public") == "ai":
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		var target_id := ""
+		if ai_obj is BaseAI:
+			target_id = (ai_obj as BaseAI).choose_quest_ferocity_target(_state, _db, player)
+		else:
+			var legal := StackResolver.get_quest_ferocity_targets(_state, _db)
+			target_id = legal[0] if not legal.is_empty() else ""
+		var events := StackResolver.choose_quest_ferocity_target(_state, target_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_quest_ferocity_targeting(quest_id)
+		_set_status("🐺 Select the ally that gains ferocity this turn")
+		_refresh_ui()
+
+
+# A New Plague: the pending player destroys an ally in their own party.
+func _handle_plague_destroy(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	if _route_choice(player, "public") == "ai":
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		var pick_id := ""
+		if ai_obj is BaseAI:
+			pick_id = (ai_obj as BaseAI).choose_plague_destroy(_state, _db, player)
+		else:
+			var own := _state.cards_in_zone(player + "_ally_row")
+			pick_id = own[0].instance_id if not own.is_empty() else ""
+		var events := StackResolver.choose_plague_destroy(_state, pick_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		var candidates: Array = []
+		for c in _state.cards_in_zone(player + "_ally_row"):
+			candidates.append(c.instance_id)
+		_router.start_plague_destroy_mode(candidates)
+		_set_status("☠ %s: choose an ally in your party to destroy" % player.to_upper())
+		_refresh_ui()
+
+
+# Kolkar: the TARGET player turns one of their face-up quests face down.
+func _handle_quest_facedown(payload: Dictionary) -> void:
+	var player: String  = payload.get("player", "")
+	var quest_ids: Array = payload.get("quest_ids", [])
+	if _route_choice(player, "public") == "ai":
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		var pick_id := ""
+		if ai_obj is BaseAI:
+			pick_id = (ai_obj as BaseAI).choose_quest_facedown(_state, _db, player)
+		else:
+			pick_id = quest_ids[0] if not quest_ids.is_empty() else ""
+		var events := StackResolver.choose_quest_facedown(_state, pick_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_quest_facedown_mode(quest_ids)
+		_set_status("🔻 %s: choose one of your quests to turn face down" % player.to_upper())
+		_refresh_ui()
+
+
+# A human resolved a quest-reward sub-pick (or the mode pick itself). Exit the
+# hotseat peek if the flow is over, then resume driving the turn — any further
+# pending sub-choice already restarted its own mode via its handler.
+func _on_quest_flow_resolved() -> void:
+	if not StackResolver._quest_choice_pending(_state):
+		if _in_choice_peek:
+			_exit_choice_peek_mode()
+		elif _hotseat and _router.local_player != _local_player:
+			_router.setup(_state, _db, _local_player)
+	_refresh_ui()
+	_drain_passes()
+	_schedule_next_turn()
+
+
 func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int) -> void:
 	var card := _state.get_card(source_id) as CardInstance
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
@@ -3187,6 +3418,11 @@ func _on_targeting_cancelled() -> void:
 		var trig: Dictionary = _state.pending_ongoing_triggers[0]
 		_router.start_totem_targeting(
 			trig.get("card_id", ""), trig.get("dmg_type", ""), int(trig.get("amount", 0)))
+		return
+	# Hidden Enemies' ferocity pick is mandatory once the mode was chosen — if a
+	# cancel somehow fired while it is pending, restart targeting.
+	if _state and _state.pending_quest_ferocity_player != "":
+		_router.start_quest_ferocity_targeting(_state.pending_quest_ferocity_source)
 		return
 	# A Boneshanks death trigger is mandatory ("destroy target ally") whenever a
 	# legal ally exists — the player can't bow out. Restart targeting if still pending.
@@ -4626,6 +4862,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Totem start-of-turn target choice before advancing
 	if _state.pending_death_target_player != "":
 		return  # wait for the Boneshanks death-trigger target choice before advancing
+	if StackResolver._quest_choice_pending(_state) or _in_quest_choice_mode:
+		return  # wait for the quest reward choice / its sub-picks before advancing
 	if _state.pending_ready_player != "":
 		return  # wait for the ready-on-attack choice (Windseer Tarus) before advancing
 	if _state.pending_strike_ready_player != "" or _in_strike_ready_mode:
@@ -4707,6 +4945,8 @@ func _drain_passes() -> void:
 				or _state.pending_reveal_pick_player != "" \
 				or _state.pending_totem_target_player != "" \
 				or _state.pending_death_target_player != "" \
+				or StackResolver._quest_choice_pending(_state) \
+				or _in_quest_choice_mode \
 				or _state.pending_whelp_bounce_player != "":
 			_wrap_up_active = false
 			break

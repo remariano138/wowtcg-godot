@@ -453,6 +453,12 @@ func _on_game_event(event: GameEvent) -> void:
 			if cn:
 				cn.show_card_back()
 			_set_status("Quest completed by %s — reward applied!" % event.payload.get("player", "?"))
+		"quest_turned_face_down":
+			# Kolkar: same spent face-down resource state as a completed quest,
+			# but no reward was applied.
+			var fd_cn := card_nodes.get(event.payload.get("quest_id", "")) as CardNode
+			if fd_cn:
+				fd_cn.show_card_back()
 		"hero_power_used":
 			var hero_id: String = event.payload.get("hero_id", "")
 			var hcn := card_nodes.get(hero_id) as CardNode

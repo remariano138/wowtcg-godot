@@ -4029,20 +4029,35 @@ func _build_choice_popup(header_text: String, header_color: Color, buttons: Arra
 	const BTN_GAP    := 12
 	const HEADER_H   := 30
 	const HEADER_GAP := 20
+	# Button sizing: width grows with the label up to MAX_BTN_W, then the label
+	# WRAPS onto extra lines instead of overflowing into the next button (long
+	# quest reward modes: "Put your hand on the bottom of your deck, …").
+	const MIN_BTN_W  := 150
+	const MAX_BTN_W  := 360
+	const BTN_CHAR_W := 10   # approx px per character at the button's font size
+	const BTN_LINE_H := 22
+	const BTN_TEXT_PAD := 36
 
 	# Per-button width from label length (clamped); total row width from those.
+	# The tallest wrapped label sets one shared row height, so the buttons stay
+	# aligned however many lines any one of them needs.
 	var btn_widths: Array[int] = []
 	var row_w := 0
+	var max_lines := 1
 	for b in buttons:
-		var w: int = clampi(str(b.get("text", "")).length() * 10 + 36, 150, 360)
+		var text_len: int = str(b.get("text", "")).length()
+		var w: int = clampi(text_len * BTN_CHAR_W + BTN_TEXT_PAD, MIN_BTN_W, MAX_BTN_W)
+		var chars_per_line: int = maxi(int(float(w - BTN_TEXT_PAD) / float(BTN_CHAR_W)), 1)
+		max_lines = maxi(max_lines, ceili(float(text_len) / float(chars_per_line)))
 		btn_widths.append(w)
 		row_w += w
 	row_w += max(buttons.size() - 1, 0) * BTN_GAP
+	var row_h: int = maxi(BTN_H, max_lines * BTN_LINE_H + 16)
 
 	var header_w: int = header_text.length() * 8 + 40
 	var content_w: int = max(row_w, header_w)
 	var panel_w: int = content_w + PAD * 2
-	var panel_h: int = PAD * 2 + HEADER_H + HEADER_GAP + BTN_H
+	var panel_h: int = PAD * 2 + HEADER_H + HEADER_GAP + row_h
 
 	var panel := Panel.new()
 	panel.size     = Vector2(panel_w, panel_h)
@@ -4064,9 +4079,18 @@ func _build_choice_popup(header_text: String, header_color: Color, buttons: Arra
 	var btn_y := PAD + HEADER_H + HEADER_GAP
 	for i in buttons.size():
 		var btn := Button.new()
-		btn.text     = str(buttons[i].get("text", ""))
+		btn.text = str(buttons[i].get("text", ""))
+		# Wrap rather than bleed over the neighbouring button. Order matters:
+		# a Control can never be sized below its combined MINIMUM size, and a
+		# Button's minimum includes its full single-line text width — so a long
+		# label silently ignored the width set here and painted over the next
+		# button. clip_text takes the text out of that minimum, and
+		# custom_minimum_size then pins the box we actually laid out.
+		btn.autowrap_mode      = TextServer.AUTOWRAP_WORD_SMART
+		btn.clip_text          = true
+		btn.custom_minimum_size = Vector2(btn_widths[i], row_h)
 		btn.position = Vector2(btn_x, btn_y)
-		btn.size     = Vector2(btn_widths[i], BTN_H)
+		btn.size     = Vector2(btn_widths[i], row_h)
 		btn.pressed.connect(buttons[i].get("callback") as Callable)
 		panel.add_child(btn)
 		btn_x += btn_widths[i] + BTN_GAP

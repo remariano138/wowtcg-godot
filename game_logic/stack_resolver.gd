@@ -2373,9 +2373,11 @@ static func get_ready_def_armor(state: GameState, player_id: String,
 # An offer dict for a packet about to hit `target_id`, or {} when the target
 # isn't an in-play hero / no damage / its controller has no ready DEF armor.
 static func _prevention_offer(state: GameState, db, target_id: String,
-		amount: int, source_id: String) -> Dictionary:
+		amount: int, source_id: String, unpreventable: bool = false) -> Dictionary:
 	if amount <= 0 or not state.is_in_play(target_id):
 		return {}
+	if unpreventable:
+		return {}   # Lionheart Helm / Annihilator: never offer a point that can't help
 	var card := state.get_card(target_id)
 	if not card:
 		return {}
@@ -2404,10 +2406,12 @@ static func _combat_prevention_offers(state: GameState, db) -> Array:
 	if _has_keyword(attacker, "long_range", db) \
 			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
-	var defender_offer := _prevention_offer(state, db, defender_id, atk_dmg, attacker_id)
+	var defender_offer := _prevention_offer(state, db, defender_id, atk_dmg, attacker_id,
+		GameLogic.is_damage_unpreventable(state, db, attacker_id, true))
 	if not defender_offer.is_empty():
 		offers.append(defender_offer)
-	var attacker_offer := _prevention_offer(state, db, attacker_id, def_dmg, defender_id)
+	var attacker_offer := _prevention_offer(state, db, attacker_id, def_dmg, defender_id,
+		GameLogic.is_damage_unpreventable(state, db, defender_id, true))
 	if not attacker_offer.is_empty():
 		offers.append(attacker_offer)
 	return offers
@@ -2509,7 +2513,8 @@ static func _open_or_apply_next_group(state: GameState, db) -> Array[GameEvent]:
 		var offers: Array = []
 		for p in group.get("packets", []):
 			var o := _prevention_offer(state, db,
-				p.get("target", ""), int(p.get("amount", 0)), p.get("source", ""))
+				p.get("target", ""), int(p.get("amount", 0)), p.get("source", ""),
+				GameLogic.is_damage_unpreventable(state, db, p.get("source", ""), false))
 			if not o.is_empty():
 				offers.append(o)
 		if offers.is_empty():
@@ -3836,6 +3841,11 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	if _has_keyword(attacker, "long_range", db) \
 			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
+	# Annihilator: "can't be prevented" is scoped to the weapon the hero STRUCK
+	# with this combat, so both sides must be read before the associations are
+	# cleared below (303.2a).
+	var atk_unpreventable := GameLogic.is_damage_unpreventable(state, db, attacker_id, true)
+	var def_unpreventable := GameLogic.is_damage_unpreventable(state, db, defender_id, true)
 	state.combat_attacker = ""
 	state.combat_defender = ""
 	state.combat_protector = ""
@@ -3853,9 +3863,13 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 
 	# Apply both damage packets first (deal_damage no longer auto-destroys),
 	# then check fatalities on both after — true simultaneity.
-	var atk_events := GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db)
+	# combat_attack marks the attacker→defender packet — Brother Rhone's shield
+	# only stops damage from ATTACKING allies, never a defender's retaliation.
+	var atk_events := GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db,
+		{"unpreventable": atk_unpreventable, "combat_attack": true})
 	events.append_array(atk_events)
-	var def_events := GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db)
+	var def_events := GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db,
+		{"unpreventable": def_unpreventable})
 	events.append_array(def_events)
 	_clear_damage_prevention(state)   # combat over — unspent block expires
 
@@ -4692,10 +4706,8 @@ static func choose_pet_sacrifice(state: GameState, card_id: String,
 
 
 static func _draw_one(state: GameState, player_id: String) -> Array[GameEvent]:
-	var deck := state.zones.get(player_id + "_deck") as Zone
-	if not deck or deck.card_ids.is_empty():
-		return [GameEvent.make("deck_empty", {"player": player_id})]
-	return GameLogic.move_card(state, deck.card_ids[0], player_id + "_hand")
+	# Decked rule (410.6b/102.1a) lives in the primitive — see GameLogic.draw_one.
+	return GameLogic.draw_one(state, player_id)
 
 
 # Exhaust N ready resources for a player (generic cost payment without a card reference).

@@ -547,7 +547,8 @@ func _on_game_event(event: GameEvent) -> void:
 		"deck_shuffled":
 			pass  # no visual needed; card_moved events handle the hand refill
 		"game_over":
-			_set_status("★ GAME OVER  —  %s wins!" % event.payload.get("winner", "?"))
+			_set_status("★ GAME OVER  —  %s"
+					% GameEvent.game_over_explanation(event.payload))
 
 
 # ── Animations ─────────────────────────────────────────────────────────────────

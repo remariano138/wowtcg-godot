@@ -2,31 +2,16 @@
   "deck_id": "alliance_moonshadow_test",
   "display_name": "Alliance_test (Moonshadow)",
   "hero_card_def_id": "azeroth_6",
-  "card_entries": [
-    {
-      "card_def_id": "azeroth_332",
-      "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
-    },
-    {
-      "card_def_id": "azeroth_291",
-      "count": 1,
-      "_card_name": "Green Whelp Armor"
-    },
-    {
-      "card_def_id": "dark_portal_260",
-      "count": 1,
-      "_card_name": "Pads of the Dread Wolf"
-    },
-    {
-      "card_def_id": "azeroth_360",
-      "count": 2,
-      "_card_name": "Your Fortune Awaits You"
-    },
+  "card_entries": [    
     {
       "card_def_id": "azeroth_342",
       "count": 1,
       "_card_name": "The Missing Diplomat"
+    },    
+    {
+      "card_def_id": "azeroth_360",
+      "count": 2,
+      "_card_name": "Your Fortune Awaits You"
     },
     {
       "card_def_id": "dark_portal_316",
@@ -49,6 +34,21 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
+      "card_def_id": "azeroth_332",
+      "count": 1,
+      "_card_name": "Rod of the Ogre Magi"
+    },
+    {
+      "card_def_id": "azeroth_291",
+      "count": 1,
+      "_card_name": "Green Whelp Armor"
+    },
+    {
+      "card_def_id": "dark_portal_260",
+      "count": 1,
+      "_card_name": "Pads of the Dread Wolf"
+    },
+    {
       "card_def_id": "azeroth_176",
       "count": 2,
       "_card_name": "Apprentice Teep"
@@ -59,9 +59,24 @@
       "_card_name": "Warden Tonarin"
     },
     {
-      "card_def_id": "azeroth_212",
-      "count": 4,
-      "_card_name": "Parvink"
+      "card_def_id": "dark_portal_157",
+      "count": 1,
+      "_card_name": "Brother Rhone"
+    },
+    {
+      "card_def_id": "azeroth_180",
+      "count": 1,
+      "_card_name": "Crazy Igvand"
+    },
+    {
+      "card_def_id": "dark_portal_156",
+      "count": 1,
+      "_card_name": "Bretander of the Claw"
+    },
+    {
+      "card_def_id": "azeroth_181",
+      "count": 1,
+      "_card_name": "Donna Calister"
     },
     {
       "card_def_id": "azeroth_187",

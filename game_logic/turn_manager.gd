@@ -481,8 +481,5 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 
 
 static func _draw_one(state: GameState, player_id: String) -> Array[GameEvent]:
-	var deck := state.zones.get(player_id + "_deck") as Zone
-	if not deck or deck.card_ids.is_empty():
-		return [GameEvent.make("deck_empty", {"player": player_id})]
-	var top_id: String = deck.card_ids[0]
-	return GameLogic.move_card(state, top_id, player_id + "_hand")
+	# Decked rule (410.6b/102.1a) lives in the primitive — see GameLogic.draw_one.
+	return GameLogic.draw_one(state, player_id)

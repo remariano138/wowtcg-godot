@@ -130,8 +130,60 @@ static func combat_concluded(attacker_id: String, defender_id: String,
 		"cancelled":       cancelled,
 	})
 
-static func game_over(winner: String, loser: String) -> GameEvent:
-	return make("game_over", {"winner": winner, "loser": loser, "reason": "hero_defeated"})
+# `reason` is the win condition, used by the UI to explain HOW the game ended:
+#   "hero_defeated" — the loser's hero was dealt fatal damage / destroyed (102.1a)
+#   "decked"        — the loser was required to draw from an empty deck (410.6b)
+# `losers` is always the full list; `draw` is true when every remaining player
+# lost simultaneously (102.1a), in which case `winner` is "".
+static func game_over(winner: String, loser: String,
+		reason: String = "hero_defeated") -> GameEvent:
+	return make("game_over", {
+		"winner": winner, "loser": loser, "losers": [loser],
+		"reason": reason, "draw": false,
+	})
+
+
+static func game_drawn(losers: Array[String], reason: String) -> GameEvent:
+	return make("game_over", {
+		"winner": "", "loser": "", "losers": losers,
+		"reason": reason, "draw": true,
+	})
+
+
+static func player_decked(player_id: String) -> GameEvent:
+	return make("player_decked", {"player": player_id})
+
+
+# One place that turns a game_over payload into a human sentence, shared by
+# every surface that shows the result (game-over dialog, status bar, game log).
+# `names` maps player_id -> display name; missing ids fall back to "P1"/"P2".
+# New win conditions add a `reason` branch here and nowhere else.
+static func game_over_explanation(payload: Dictionary, names: Dictionary = {}) -> String:
+	var name := func(pid: String) -> String:
+		return str(names.get(pid, "P1" if pid == "p1" else "P2"))
+	var reason: String = str(payload.get("reason", ""))
+	var winner: String = str(payload.get("winner", ""))
+	var losers: Array   = payload.get("losers", [])
+	if losers.is_empty() and str(payload.get("loser", "")) != "":
+		losers = [str(payload.get("loser", ""))]
+
+	var cause := func(pid: String) -> String:
+		match reason:
+			"hero_defeated":
+				return "%s's hero received fatal damage" % name.call(pid)
+			"decked":
+				return "%s was decked — required to draw from an empty deck" % name.call(pid)
+			_:
+				return "%s lost the game" % name.call(pid)
+
+	if bool(payload.get("draw", false)):
+		var parts := PackedStringArray()
+		for pid in losers:
+			parts.append(cause.call(str(pid)))
+		return "%s — the game is a draw." % " and ".join(parts)
+
+	var loser_id: String = str(losers[0]) if not losers.is_empty() else ""
+	return "%s. %s wins!" % [cause.call(loser_id), name.call(winner)]
 
 static func discard_choice_opened(player_id: String, count: int, reason: String = "card_effect") -> GameEvent:
 	return make("discard_choice_opened", {"player": player_id, "count": count, "reason": reason})

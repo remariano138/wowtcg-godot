@@ -166,8 +166,10 @@ static func move_card_silent(state: GameState, card_id: String, to_zone_id: Stri
 # what makes every new damage effect armor-preventable by construction. The
 # only sanctioned direct callers are the pipeline itself (_apply_packet_group)
 # and _do_combat_conclusion (combat runs its own prevention point first).
+# `opts` is the packet's prevention context — see `prevent` below. Callers that
+# don't care omit it entirely (the default is "ordinary preventable damage").
 static func deal_damage(state: GameState, source_id: String, target_id: String,
-		amount: int, db) -> Array[GameEvent]:
+		amount: int, db, opts: Dictionary = {}) -> Array[GameEvent]:
 	if amount <= 0:
 		return []
 
@@ -177,20 +179,14 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 
 	var events: Array[GameEvent] = []
 
-	# Rule 717.2c: exhausted armor prevents damage dealt to the controller's HERO.
-	# The prevention pool (PlayerState.damage_prevention) is built at the
-	# prevention point (StackResolver.choose_prevention) opened right before
-	# this packet; consume it before any damage is placed.
+	# Rule 717.2: every prevention effect in the game is applied here, in one
+	# place, before any damage is placed.
+	var pr := prevent(state, db, source_id, target_id, amount, opts)
+	events.append_array(pr.get("events", []) as Array)
+	amount = int(pr.get("amount", 0))
+	if amount <= 0:
+		return events
 	var target_ps := state.players.get(target.controller) as PlayerState
-	if target_ps and target_ps.hero_instance_id == target_id \
-			and target_ps.damage_prevention > 0:
-		var prevented: int = min(amount, target_ps.damage_prevention)
-		target_ps.damage_prevention -= prevented
-		amount -= prevented
-		events.append(GameEvent.damage_prevented(
-			target_id, prevented, target_ps.damage_prevention))
-		if amount <= 0:
-			return events
 
 	# Torek's Assault condition: track when a hero is damaged by an opposing ally.
 	if target_ps and target_ps.hero_instance_id == target_id:
@@ -221,6 +217,132 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		events.append_array(_add_berserk_counters(state, target.controller, db))
 
 	return events
+
+
+# ── prevent ───────────────────────────────────────────────────────────────────
+# The ONE place damage prevention is applied (rule 717.2). Takes the amount a
+# packet WOULD deal and returns what actually reaches the target, together with
+# the damage_prevented events for whatever was absorbed:
+#
+#     {"amount": int, "events": Array[GameEvent]}
+#
+# An UNPREVENTABLE packet (Lionheart Helm, Annihilator) is returned unchanged
+# with no events — and, importantly, consumes nothing: an armor pool built for
+# this packet survives unspent, and a shield like Brother Rhone still blocks the
+# next attacker. "Can't be prevented" removes the prevention, not the shield.
+#
+# `opts` (all optional):
+#   unpreventable — explicit override. When absent it is DERIVED from the source
+#                   (is_damage_unpreventable, non-combat), so a new damage effect
+#                   respects Lionheart Helm by construction. Combat passes it
+#                   explicitly because it must be read before the combat step's
+#                   weapon associations are cleared (303.2a).
+#   combat_attack — true only for the attacker→defender packet of a combat
+#                   conclusion; what Brother Rhone's shield keys off.
+static func prevent(state: GameState, db, source_id: String, target_id: String,
+		amount: int, opts: Dictionary = {}) -> Dictionary:
+	var events: Array[GameEvent] = []
+	if amount <= 0:
+		return {"amount": amount, "events": events}
+
+	var unpreventable: bool = bool(opts.get("unpreventable",
+		is_damage_unpreventable(state, db, source_id, false)))
+	if unpreventable:
+		return {"amount": amount, "events": events}
+
+	var target := state.get_card(target_id)
+	if not target:
+		return {"amount": amount, "events": events}
+
+	# (a) Character-side prevention shields (Brother Rhone). Automatic and free —
+	# no decision point and no cost, unlike armor. Rhone's clause is
+	# self-referential ("dealt to Brother Rhone"), so the flag is read off the
+	# TARGET's own def.
+	if bool(opts.get("combat_attack", false)) \
+			and blocks_all_combat_damage(state, db, source_id, target_id):
+		events.append(GameEvent.damage_prevented(target_id, amount, 0))
+		return {"amount": 0, "events": events}
+
+	# (b) Rule 717.2c: exhausted armor prevents damage dealt to the controller's
+	# HERO. The pool (PlayerState.damage_prevention) was built at the prevention
+	# point (StackResolver.choose_prevention) opened right before this packet.
+	var target_ps := state.players.get(target.controller) as PlayerState
+	if target_ps and target_ps.hero_instance_id == target_id \
+			and target_ps.damage_prevention > 0:
+		var absorbed: int = min(amount, target_ps.damage_prevention)
+		target_ps.damage_prevention -= absorbed
+		amount -= absorbed
+		events.append(GameEvent.damage_prevented(
+			target_id, absorbed, target_ps.damage_prevention))
+
+	return {"amount": amount, "events": events}
+
+
+# True when a character-side shield would prevent ALL of the combat damage
+# `source_id` deals to `target_id` as its attacker (Brother Rhone). Pure — no
+# state is touched — so the AI can probe it when picking a protector
+# (BaseAI.blocks_for_free); `prevent` above is the enforcement site. A new
+# shield card added here is answered by both at once.
+static func blocks_all_combat_damage(state: GameState, db, source_id: String,
+		target_id: String) -> bool:
+	# Rhone's clause is self-referential ("dealt to Brother Rhone"), so the flag
+	# is read off the TARGET's own def, and only ATTACKING allies are stopped.
+	return _has_effect_flag(state, db, target_id,
+			"prevent_combat_damage_from_attacking_allies") \
+		and _is_ally_card(state, source_id)
+
+
+# "Damage dealt by your hero can't be prevented" (Lionheart Helm) and its
+# combat-and-weapon-scoped cousin (Annihilator). Both are read live off the
+# SOURCE's controller's hero_row — the source must BE that player's hero.
+#
+# `is_combat` gates the weapon form: Annihilator only makes combat damage dealt
+# WITH IT unpreventable, so the hero must have struck with that very weapon this
+# combat (303.2b associations, GameState.combat_struck_weapons).
+static func is_damage_unpreventable(state: GameState, db, source_id: String,
+		is_combat: bool) -> bool:
+	if not db or source_id == "":
+		return false
+	var source := state.get_card(source_id)
+	if not source:
+		return false
+	var ps := state.players.get(source.controller) as PlayerState
+	if not ps or ps.hero_instance_id != source_id:
+		return false   # only "your hero" — ally/totem/equipment damage is unaffected
+	var struck: Array = state.combat_struck_weapons.get(source_id, [])
+	for card in state.cards_in_zone(source.controller + "_hero_row"):
+		var def: CardDef = db.get_def(card.card_def_id)
+		if not def or def.effects == "":
+			continue
+		var flags := def.effects.split("|")
+		if "hero_damage_unpreventable" in flags:
+			return true
+		if is_combat and "combat_damage_unpreventable" in flags \
+				and card.instance_id in struck:
+			return true
+	return false
+
+
+# True when the card's def carries `flag` as a standalone effects segment.
+static func _has_effect_flag(state: GameState, db, card_id: String,
+		flag: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def: CardDef = db.get_def(card.card_def_id)
+	if not def or def.effects == "":
+		return false
+	return flag in def.effects.split("|")
+
+
+static func _is_ally_card(state: GameState, card_id: String) -> bool:
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	return zone != null and zone.zone_type == "ally_row"
 
 
 # Fires the `berserk_counter_on_hero_damage` flag on every in-play card the
@@ -350,6 +472,42 @@ static func destroy_card(state: GameState, card_id: String,
 	return events
 
 
+# ── draw_one / mark_decked ────────────────────────────────────────────────────
+# THE single "a player is required to draw a card" primitive. Every draw in the
+# engine goes through here so the decked rule can't be forgotten at a new site.
+#
+# Rule 410.6b: a player required to draw from an empty deck becomes DECKED, and
+# 102.1a makes him lose the game immediately. Emptying the deck is NOT itself a
+# loss — only the next required draw is. Effects that merely LOOK at the deck
+# (reveal_pick) are not draws and must not call this.
+static func draw_one(state: GameState, player_id: String) -> Array[GameEvent]:
+	var deck := state.zones.get(player_id + "_deck") as Zone
+	if not deck or deck.card_ids.is_empty():
+		var events: Array[GameEvent] = [
+			GameEvent.make("deck_empty", {"player": player_id})]
+		events.append_array(mark_decked(state, player_id))
+		return events
+	return move_card(state, deck.card_ids[0], player_id + "_hand")
+
+
+# Mark a player decked and end the game (102.1a). If every player in the game is
+# decked at that moment, it's a draw — otherwise the other player wins.
+static func mark_decked(state: GameState, player_id: String) -> Array[GameEvent]:
+	if player_id in state.decked_players:
+		return []
+	state.decked_players.append(player_id)
+	var events: Array[GameEvent] = [GameEvent.player_decked(player_id)]
+	var alive: Array[String] = []
+	for pid in state.players:
+		if not (pid in state.decked_players):
+			alive.append(pid)
+	if alive.is_empty():
+		events.append(GameEvent.game_drawn(state.decked_players.duplicate(), "decked"))
+	else:
+		events.append(GameEvent.game_over(alive[0], player_id, "decked"))
+	return events
+
+
 # ── shuffle_hand_into_deck_and_draw ───────────────────────────────────────────
 # Moonshadow-style effect: put all hand cards back into the deck face-down,
 # shuffle, then draw the same number.  Net hand size stays the same unless the
@@ -365,12 +523,9 @@ static func shuffle_hand_into_deck_and_draw(state: GameState,
 	# Shuffle the deck in-place.
 	state.zones[player_id + "_deck"].card_ids.shuffle()
 	events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
-	# Draw the same number of cards.
+	# Draw the same number of cards (a required draw — 410.6b applies).
 	for _i in range(draw_count):
-		var deck := state.zones.get(player_id + "_deck") as Zone
-		if not deck or deck.card_ids.is_empty():
-			break
-		events.append_array(move_card(state, deck.card_ids[0], player_id + "_hand"))
+		events.append_array(draw_one(state, player_id))
 	return events
 
 

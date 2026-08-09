@@ -1177,6 +1177,15 @@ func _decide_resource_placement(state: GameState, db, player_id: String) -> Pend
 # The hero (Draconian Deflector grant) is only used when no ally can step in —
 # its HP pool would otherwise always win the highest-HP pick and it would
 # chump-block every attack with face damage.
+# A protector that takes NO damage from this attacker (Brother Rhone vs an
+# attacking ally). Blocking with it costs nothing at all, so it beats any pick
+# made on stats — the only thing worth more is a block that also KILLS the
+# attacker (safe_lethal), which removes a card instead of just one attack.
+static func blocks_for_free(state: GameState, db, protector_id: String,
+		attacker_id: String) -> bool:
+	return GameLogic.blocks_all_combat_damage(state, db, attacker_id, protector_id)
+
+
 func choose_protector(state: GameState, db, player_id: String) -> String:
 	var protectors := StackResolver.get_legal_protectors(
 		state, state.combat_attacker, state.combat_defender, db)
@@ -1185,6 +1194,9 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 	var ps := state.players.get(player_id) as PlayerState
 	if ps and ps.hero_instance_id in protectors and protectors.size() > 1:
 		protectors.erase(ps.hero_instance_id)
+	for p in protectors:
+		if blocks_for_free(state, db, p, state.combat_attacker):
+			return p
 	var best_id := protectors[0]
 	var best_hp := state.get_current_hp(best_id, db)
 	for i in range(1, protectors.size()):

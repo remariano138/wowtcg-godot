@@ -189,6 +189,12 @@ var pending_totem_target_player: String = ""  # controller who must pick a targe
 var pending_death_triggers: Array = []
 var pending_death_target_player: String = ""  # controller who must pick a target ally; "" = none
 
+# Players who have been required to draw a card from an empty deck (rule
+# 410.6b). A decked player immediately loses the game (102.1a); if every
+# remaining player becomes decked simultaneously, the game is a draw.
+# Set by GameLogic.draw_one / mark_decked, never cleared during a game.
+var decked_players: Array[String] = []
+
 # ── Mulligan state (cleared once both players have committed) ──────────────────
 # player_id -> true once the player has made their mulligan decision.
 var mulligan_decided: Dictionary = {}

@@ -2134,9 +2134,14 @@ func _log_event(event: GameEvent) -> void:
 			var tgt: String = _log_card(event.payload.get("target_id", ""))
 			var amt: int    = event.payload.get("amount", 0)
 			_log_entry("[color=#9cf]%s blocks %d dmg[/color]" % [tgt, amt])
+		"player_decked":
+			var dp: String = _log_player(event.payload.get("player", ""))
+			_log_entry("[color=#f66]%s is decked — drew from an empty deck[/color]" % dp)
 		"game_over":
-			var winner: String = _log_player(event.payload.get("winner", ""))
-			_log_entry("\n[color=#d4af37][b]═══ %s WINS ═══[/b][/color]" % winner)
+			var head: String = "DRAW" if bool(event.payload.get("draw", false)) \
+					else "%s WINS" % _log_player(event.payload.get("winner", ""))
+			_log_entry("\n[color=#d4af37][b]═══ %s ═══[/b][/color]\n%s"
+					% [head, GameEvent.game_over_explanation(event.payload)])
 
 
 # ── AI ─────────────────────────────────────────────────────────────────────────
@@ -4521,10 +4526,16 @@ func _handle_game_over(payload: Dictionary) -> void:
 		return   # already handled — game_over can fire twice if both heroes die simultaneously
 	_game_over = true
 	_ai_timer.stop()
-	var winner: String = payload.get("winner", "?")
+	var is_draw: bool  = bool(payload.get("draw", false))
+	var winner: String = str(payload.get("winner", ""))
+	# Headline = who won; the line under it is the win condition explanation
+	# (GameEvent.game_over_explanation — one place for every reason).
+	var headline: String = "☯  DRAW" if is_draw \
+			else "★  %s  wins!" % _log_player(winner)
 	var dialog := ConfirmationDialog.new()
 	dialog.title            = "Game Over"
-	dialog.dialog_text      = "★  %s  wins!\n\n%s" % [winner.to_upper(), _stats_summary()]
+	dialog.dialog_text      = "%s\n\n%s\n\n%s" % [
+		headline, GameEvent.game_over_explanation(payload), _stats_summary()]
 	dialog.get_ok_button().text     = "Rematch"
 	dialog.get_cancel_button().text = "Leave Game"
 	dialog.confirmed.connect(_on_rematch)

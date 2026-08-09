@@ -45,6 +45,10 @@ func _ready() -> void:
 		_test_ai_armor_block_heuristic,
 		_test_prevention_noncombat_sources,
 		_test_prevention_reduces_discard_per_damage,
+		_test_lionheart_helm_unpreventable,
+		_test_annihilator_unpreventable,
+		_test_brother_rhone_shield,
+		_test_ai_prefers_free_block,
 		_test_grimdron_ally_power,
 		_test_tim_ally_power,
 		_test_sarmoth_taunt_forces_attacker,
@@ -274,6 +278,10 @@ func _ready() -> void:
 		_test_tokens_not_deckable,
 		_test_toogas_quest,
 		_test_tooga_killed_before_trigger,
+		_test_decked_loses_the_game,
+		_test_empty_deck_alone_is_not_a_loss,
+		_test_simultaneous_decking_is_a_draw,
+		_test_game_over_explanations,
 	]
 
 	for t in tests:
@@ -1053,11 +1061,48 @@ func _drive(state: GameState, db, p1_ai: ScriptedAI, p2_ai: ScriptedAI) -> Array
 	return all_events
 
 
-func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int) -> Array[GameEvent]:
+# Top up a player's deck with vanilla 0-cost 1/1 filler so draw steps have
+# something to draw (see the decked rule, 410.6b).
+func _stock_filler_deck(state: GameState, db, pid: String, n: int) -> void:
+	if db is MockDB:
+		var no_kw: Array[String] = []
+		db.ally("deck_filler_def", 1, 1, no_kw, 0)
+	var deck := state.zones.get(pid + "_deck") as Zone
+	if not deck:
+		return
+	while deck.card_ids.size() < n:
+		var inst_id := "%s_filler_%d" % [pid, deck.card_ids.size()]
+		state.cards[inst_id] = CardInstance.create(
+			inst_id, "deck_filler_def", pid, pid + "_deck")
+		deck.card_ids.append(inst_id)
+
+
+# `stock_decks` false leaves the decks empty — only for scenarios whose
+# assertions count cards in hand/graveyard and would be skewed by drawn filler.
+# Those scenarios must not run long enough to reach a draw step (410.6b).
+# Cards in a zone excluding the filler _drive_turns stocks decks with.
+func _non_filler_in(state: GameState, zone_id: String) -> Array[CardInstance]:
+	var result: Array[CardInstance] = []
+	for c in state.cards_in_zone(zone_id):
+		if c.card_def_id != "deck_filler_def":
+			result.append(c)
+	return result
+
+
+func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int,
+		stock_decks: bool = true) -> Array[GameEvent]:
 	var all_events: Array[GameEvent] = []
 	var protect_pending := false
 	var protect_player  := ""
 	var game_over       := false
+
+	# Scenario states start with empty decks; since 410.6b a required draw from
+	# an empty deck decks the player and ends the game, which would truncate
+	# every multi-turn scenario at the first draw step. Stock both decks with
+	# enough filler to survive the drive.
+	if stock_decks:
+		_stock_filler_deck(state, db, "p1", max_turns + 2)
+		_stock_filler_deck(state, db, "p2", max_turns + 2)
 
 	for _step in range(max_turns * 20):
 		if game_over:
@@ -1478,7 +1523,7 @@ func _test_hand_size_wrap_up_discard() -> void:
 		state.zones["p1_hand"].card_ids.append(inst_id)
 	state.players["p1"].resource_placed_this_turn = true
 
-	_drive_turns(state, db, ScriptedAI.new(), ScriptedAI.new(), 2)
+	_drive_turns(state, db, ScriptedAI.new(), ScriptedAI.new(), 2, false)
 
 	eq(state.cards_in_zone("p1_hand").size(),      7, "sc4: P1 hand reduced to 7")
 	eq(state.cards_in_zone("p1_graveyard").size(), 2, "sc4: 2 excess cards in graveyard")
@@ -1620,7 +1665,7 @@ func _test_parvink_enter_play() -> void:
 
 	ok(state.get_card("parvink_inst").zone_id == "p1_ally_row", "sc7-a: Parvink in p1_ally_row")
 	ok(state.get_card("deck1").zone_id == "p1_hand",            "sc7-b: deck card drawn into hand")
-	eq(state.cards_in_zone("p1_hand").size(), 1,                "sc7-c: hand has exactly 1 card")
+	eq(_non_filler_in(state, "p1_hand").size(), 1,              "sc7-c: hand has exactly 1 non-filler card")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2676,6 +2721,286 @@ func _test_prevention_reduces_discard_per_damage() -> void:
 #   sc10-f  use_ally_power not available again (Grimdron now exhausted)
 # ══════════════════════════════════════════════════════════════════════════════
 
+func _test_lionheart_helm_unpreventable() -> void:
+	_buf.append("\n-- Lionheart Helm: damage dealt by your hero can't be prevented --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("helm_def", 4, "equipment:head:2|hero_damage_unpreventable", "Plate")
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+	db.ally("minion_def", 2, 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var pads := CardInstance.create("pads_inst", "pads_def", "p2", "p2_hero_row")
+	state.cards["pads_inst"] = pads
+	state.zones["p2_hero_row"].card_ids.append("pads_inst")
+	_add_ally(state, "minion_inst", "minion_def", "p1")
+
+	# lh-a: control — WITHOUT the helm, p1's hero damage is ordinary preventable
+	# damage, so p2's ready pads open the prevention point.
+	StackResolver.defer_packets(state, db,
+		[{"source": "p1_hero", "target": "p2_hero", "amount": 3}])
+	eq(state.pending_prevention_player, "p2", "lh-a: no helm → prevention point opens")
+	StackResolver.choose_prevention(state, "pads_inst", db)
+	eq(state.get_card("p2_hero").damage_taken, 2, "lh-a2: pads prevented 1 of 3")
+
+	# Now p1 equips the helm.
+	var helm := CardInstance.create("helm_inst", "helm_def", "p1", "p1_hero_row")
+	state.cards["helm_inst"] = helm
+	state.zones["p1_hero_row"].card_ids.append("helm_inst")
+	state.get_card("pads_inst").is_exhausted = false   # ready armor again
+
+	# lh-b: the point never opens — an offer that can't help is not offered.
+	StackResolver.defer_packets(state, db,
+		[{"source": "p1_hero", "target": "p2_hero", "amount": 3}])
+	eq(state.pending_prevention_player, "", "lh-b: helm → no prevention point at all")
+	eq(state.get_card("p2_hero").damage_taken, 5, "lh-b2: all 3 landed unprevented")
+	ok(not state.get_card("pads_inst").is_exhausted,
+		"lh-b3: p2's armor untouched — unpreventable consumes no shield")
+
+	# lh-c: scoped to "your HERO" — p1's ally damage is still preventable.
+	StackResolver.defer_packets(state, db,
+		[{"source": "minion_inst", "target": "p2_hero", "amount": 2}])
+	eq(state.pending_prevention_player, "p2", "lh-c: ally source still opens the point")
+	StackResolver.choose_prevention(state, "", db)
+
+	# lh-d: the clause is about damage DEALT BY your hero, not damage taken —
+	# incoming damage is preventable as usual. (The helm is itself DEF 2 armor,
+	# so it opens the point for its own controller and can block with it.)
+	StackResolver.defer_packets(state, db,
+		[{"source": "p2_hero", "target": "p1_hero", "amount": 2}])
+	eq(state.pending_prevention_player, "p1", "lh-d: incoming damage still opens p1's point")
+	StackResolver.choose_prevention(state, "", db)   # decline
+	eq(state.get_card("p1_hero").damage_taken, 2, "lh-d2: helm doesn't shield its own hero")
+
+
+func _test_annihilator_unpreventable() -> void:
+	_buf.append("\n-- Annihilator: only combat damage dealt WITH IT is unpreventable --")
+
+	# Case 1: hero strikes with Annihilator → the defender gets no prevention point.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("anni_def", 2, 3, 2, "Melee", "melee_weapon", "combat_damage_unpreventable")
+	db.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 3)
+	var anni := CardInstance.create("anni", "anni_def", "p1", "p1_hero_row")
+	s1.cards["anni"] = anni
+	s1.zones["p1_hero_row"].card_ids.append("anni")
+	var pads := CardInstance.create("pads_inst", "pads_def", "p2", "p2_hero_row")
+	s1.cards["pads_inst"] = pads
+	s1.zones["p2_hero_row"].card_ids.append("pads_inst")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # combat starts → strike point
+	StackResolver.choose_strike(s1, "anni", db)
+	eq(s1.get_atk("p1_hero", db), 3, "an-a: struck weapon gives the hero 3 ATK")
+	for _i in range(4):
+		StackResolver.pass_priority(s1, db)   # attack + defend windows close
+	eq(s1.pending_prevention_player, "", "an-b: no prevention point — damage can't be prevented")
+	eq(s1.get_card("p2_hero").damage_taken, 3, "an-b2: full 3 landed")
+	ok(not s1.get_card("pads_inst").is_exhausted, "an-b3: p2's pads never spent")
+
+	# Case 2: same board, but the hero strikes with a DIFFERENT weapon. The
+	# Annihilator is in play yet wasn't struck, so its clause doesn't apply.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.weapon("anni_def", 2, 3, 2, "Melee", "melee_weapon", "combat_damage_unpreventable")
+	db2.weapon("krol_def", 3, 3, 1, "Melee", "sword")
+	db2.equipment("pads_def", 1, PADS_EFFECTS, "Leather")
+
+	var s2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 3)
+	for pair in [["anni2", "anni_def"], ["krol2", "krol_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_hero_row")
+		s2.cards[pair[0]] = c
+		s2.zones["p1_hero_row"].card_ids.append(pair[0])
+	var pads2 := CardInstance.create("pads2", "pads_def", "p2", "p2_hero_row")
+	s2.cards["pads2"] = pads2
+	s2.zones["p2_hero_row"].card_ids.append("pads2")
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db2)
+	StackResolver.pass_priority(s2, db2)
+	StackResolver.pass_priority(s2, db2)
+	StackResolver.choose_strike(s2, "krol2", db2)
+	for _i in range(4):
+		StackResolver.pass_priority(s2, db2)
+	eq(s2.pending_prevention_player, "p2", "an-c: struck the other weapon → point opens")
+	StackResolver.choose_prevention(s2, "pads2", db2)
+	eq(s2.get_card("p2_hero").damage_taken, 2, "an-c2: 1 of 3 prevented normally")
+
+	# Case 3: the clause is combat-only — a hero ability packet stays preventable
+	# even while the Annihilator is in play (contrast with Lionheart Helm).
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var anni3 := CardInstance.create("anni3", "anni_def", "p1", "p1_hero_row")
+	s3.cards["anni3"] = anni3
+	s3.zones["p1_hero_row"].card_ids.append("anni3")
+	var pads3 := CardInstance.create("pads3", "pads_def", "p2", "p2_hero_row")
+	s3.cards["pads3"] = pads3
+	s3.zones["p2_hero_row"].card_ids.append("pads3")
+	StackResolver.defer_packets(s3, db,
+		[{"source": "p1_hero", "target": "p2_hero", "amount": 3}])
+	eq(s3.pending_prevention_player, "p2", "an-d: non-combat hero damage still preventable")
+
+
+func _test_brother_rhone_shield() -> void:
+	_buf.append("\n-- Brother Rhone: prevents combat damage from attacking allies --")
+	const RHONE_FX := "prevent_combat_damage_from_attacking_allies"
+
+	# Case 1: an attacking ally's combat damage is fully prevented.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db.ally("smasher_def", 3, 3)
+
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.turn_player     = "p2"
+	s1.priority_player = "p2"
+	_add_ally(s1, "rhone", "rhone_def", "p1")
+	_add_ally(s1, "smasher", "smasher_def", "p2")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "smasher", "defender_id": "rhone"}), db)
+	var prevented := 0
+	for _i in range(6):
+		for ev in StackResolver.pass_priority(s1, db):
+			if ev.event_type == "damage_prevented" \
+					and ev.payload.get("target_id", "") == "rhone":
+				prevented += int(ev.payload.get("amount", 0))
+	eq(prevented, 3, "br-a: all 3 combat damage prevented")
+	eq(s1.get_card("rhone").damage_taken, 0, "br-a2: Rhone took nothing")
+	ok(s1.is_in_play("rhone"), "br-a3: the 0/1 survives a 3-ATK attacker")
+	eq(s1.get_card("smasher").damage_taken, 0,
+		"br-a4: Rhone's own 0 ATK retaliation is unaffected")
+
+	# Case 2: an attacking HERO is not an ally — its combat damage lands.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db2.weapon("krol_def", 3, 3, 1)
+
+	var s2 := _base_state(db2, "p1_hero", "p2_hero")
+	s2.turn_player     = "p2"
+	s2.priority_player = "p2"
+	_add_resources(s2, "p2", 2)
+	_add_ally(s2, "rhone2", "rhone_def", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	s2.cards["krol"] = krol
+	s2.zones["p2_hero_row"].card_ids.append("krol")
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "p2_hero", "defender_id": "rhone2"}), db2)
+	StackResolver.pass_priority(s2, db2)
+	StackResolver.pass_priority(s2, db2)   # combat starts → strike point
+	StackResolver.choose_strike(s2, "krol", db2)
+	for _i in range(4):
+		StackResolver.pass_priority(s2, db2)
+	ok(not s2.is_in_play("rhone2"), "br-b: hero's combat damage killed Rhone")
+
+	# Case 3: combat-only — a non-combat packet from an opposing ally lands.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s3, "rhone3", "rhone_def", "p1")
+	_add_ally(s3, "smasher3", "smasher_def", "p2")
+	StackResolver.defer_packets(s3, db,
+		[{"source": "smasher3", "target": "rhone3", "amount": 1}])
+	ok(not s3.is_in_play("rhone3"), "br-c: ally ABILITY damage is not prevented")
+
+
+func _test_ai_prefers_free_block() -> void:
+	_buf.append("\n-- AI: Brother Rhone is the priority protector vs attacking allies --")
+	const RHONE_FX := "prevent_combat_damage_from_attacking_allies"
+	var ai := GenericAI.new()
+	var base := BaseAI.new()
+
+	# Case 1: a lethal attack on a valuable ally. Ordinary fodder would have to
+	# die to save it; Rhone blocks for free, so he is chosen instead.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db.ally("fodder_def", 1, 1, ["protector"], 1)
+	db.ally("prize_def", 4, 2, [], 5)
+	db.ally("smasher_def", 4, 4, [], 4)
+
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.turn_player     = "p2"
+	s1.priority_player = "p2"
+	_add_ally(s1, "rhone", "rhone_def", "p1")
+	_add_ally(s1, "fodder", "fodder_def", "p1")
+	_add_ally(s1, "prize", "prize_def", "p1")
+	_add_ally(s1, "smasher", "smasher_def", "p2")
+	s1.combat_attacker = "smasher"
+	s1.combat_defender = "prize"
+	eq(ai.choose_protector(s1, db, "p1"), "rhone",
+		"fb-a: GenericAI blocks with the untouchable protector, not the fodder")
+	eq(base.choose_protector(s1, db, "p1"), "rhone",
+		"fb-a2: BaseAI picks it too (over the higher-HP fodder)")
+
+	# Case 2: the free block is taken even when nothing would die — it soaks the
+	# chip damage at no cost.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player     = "p2"
+	s2.priority_player = "p2"
+	_add_ally(s2, "rhone", "rhone_def", "p1")
+	_add_ally(s2, "tank", "prize_def", "p1")
+	_add_ally(s2, "smasher", "smasher_def", "p2")
+	s2.combat_attacker = "smasher"
+	s2.combat_defender = "p1_hero"
+	eq(ai.choose_protector(s2, db, "p1"), "rhone",
+		"fb-b: free block interposed in front of the hero")
+
+	# Case 3: a block that KILLS the attacker and survives still outranks the
+	# free block — it removes a card instead of stopping one attack.
+	var db3 := MockDB.new()
+	db3.hero("p1_hero", 30)
+	db3.hero("p2_hero", 30)
+	db3.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db3.ally("killer_def", 5, 5, ["protector"], 4)
+	db3.ally("prize_def", 4, 2, [], 5)
+	db3.ally("smasher_def", 4, 4, [], 4)
+	var s3 := _base_state(db3, "p1_hero", "p2_hero")
+	s3.turn_player     = "p2"
+	s3.priority_player = "p2"
+	_add_ally(s3, "rhone", "rhone_def", "p1")
+	_add_ally(s3, "killer", "killer_def", "p1")
+	_add_ally(s3, "prize", "prize_def", "p1")
+	_add_ally(s3, "smasher", "smasher_def", "p2")
+	s3.combat_attacker = "smasher"
+	s3.combat_defender = "prize"
+	eq(ai.choose_protector(s3, db3, "p1"), "killer",
+		"fb-c: safe_lethal block still wins over the free block")
+
+	# Case 4: scoped to ALLY attackers — vs an attacking hero Rhone is ordinary
+	# (and dies), so he must not be volunteered as a free block.
+	var db4 := MockDB.new()
+	db4.hero("p1_hero", 30)
+	db4.hero("p2_hero", 30)
+	db4.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db4.ally("fodder_def", 1, 1, ["protector"], 1)
+	db4.weapon("krol_def", 3, 3, 1)
+	var s4 := _base_state(db4, "p1_hero", "p2_hero")
+	s4.turn_player     = "p2"
+	s4.priority_player = "p2"
+	_add_resources(s4, "p2", 2)
+	_add_ally(s4, "rhone", "rhone_def", "p1")
+	_add_ally(s4, "fodder", "fodder_def", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	s4.cards["krol"] = krol
+	s4.zones["p2_hero_row"].card_ids.append("krol")
+	s4.combat_attacker = "p2_hero"
+	s4.combat_defender = "p1_hero"
+	ok(not BaseAI.blocks_for_free(s4, db4, "rhone", "p2_hero"),
+		"fb-d: an attacking HERO is not blocked for free")
+
+
 func _test_grimdron_ally_power() -> void:
 	_buf.append("\n-- Scenario 10: Grimdron ally power deals 1 fire damage --")
 	var db := MockDB.new()
@@ -3265,7 +3590,7 @@ func _test_liba_wobblebonk_enter_play() -> void:
 
 	ok(state.get_card("liba_inst").zone_id == "p1_ally_row", "sc19-a: Liba Wobblebonk in p1_ally_row")
 	ok(state.get_card("deck1").zone_id == "p1_hand",          "sc19-b: deck card drawn into hand")
-	eq(state.cards_in_zone("p1_hand").size(), 1,              "sc19-c: hand has exactly 1 card")
+	eq(_non_filler_in(state, "p1_hand").size(), 1,            "sc19-c: hand has exactly 1 non-filler card")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14645,3 +14970,111 @@ func _tokens_in(state: GameState, zone_id: String) -> Array[CardInstance]:
 		if c.is_token:
 			result.append(c)
 	return result
+
+
+# ── Decked (rules 410.6b / 102.1a) ────────────────────────────────────────────
+# Emptying your deck is NOT a loss. Being REQUIRED TO DRAW from an empty deck
+# makes you decked, and you immediately lose. Both players decked at once = draw.
+
+func _test_decked_loses_the_game() -> void:
+	_buf.append("\n-- Decked: drawing from an empty deck loses the game --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	var events := GameLogic.draw_one(state, "p1")
+	var saw_decked := false
+	var saw_over   := false
+	for e in events:
+		if e.event_type == "player_decked":
+			saw_decked = true
+			eq(str(e.payload.get("player", "")), "p1", "deck-a2: p1 is the decked player")
+		elif e.event_type == "game_over":
+			saw_over = true
+			eq(str(e.payload.get("reason", "")), "decked", "deck-a4: reason is 'decked'")
+			eq(str(e.payload.get("winner", "")), "p2",    "deck-a5: the opponent wins")
+			eq(str(e.payload.get("loser", "")),  "p1",    "deck-a6: the decked player loses")
+			ok(not bool(e.payload.get("draw", false)),    "deck-a7: not a draw")
+	ok(saw_decked, "deck-a1: player_decked is emitted")
+	ok(saw_over,   "deck-a3: game_over follows immediately")
+	ok("p1" in state.decked_players, "deck-a8: state records the decked player")
+
+	# Decking is one-shot: a second required draw doesn't re-fire game_over.
+	var again := GameLogic.draw_one(state, "p1")
+	var over_again := false
+	for e in again:
+		if e.event_type == "game_over":
+			over_again = true
+	ok(not over_again, "deck-a9: a second empty draw doesn't re-emit game_over")
+
+
+func _test_empty_deck_alone_is_not_a_loss() -> void:
+	_buf.append("\n-- An empty deck by itself is not a loss --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("filler_def", 1, 1, [], 1)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	var last := CardInstance.create("last_card", "filler_def", "p1", "p1_deck")
+	state.cards["last_card"] = last
+	state.zones["p1_deck"].card_ids.append("last_card")
+
+	# Drawing the LAST card empties the deck — legal, no loss.
+	var events := GameLogic.draw_one(state, "p1")
+	for e in events:
+		ok(e.event_type != "game_over", "deck-b1: emptying the deck doesn't end the game")
+	eq(state.cards_in_zone("p1_deck").size(), 0, "deck-b2: deck is now empty")
+	ok(state.decked_players.is_empty(),          "deck-b3: nobody is decked yet")
+
+	# The NEXT required draw is the loss.
+	var over := false
+	for e in GameLogic.draw_one(state, "p1"):
+		if e.event_type == "game_over":
+			over = true
+	ok(over, "deck-b4: the next required draw decks the player")
+
+
+func _test_simultaneous_decking_is_a_draw() -> void:
+	_buf.append("\n-- Both players decked simultaneously = draw --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+
+	GameLogic.draw_one(state, "p1")
+	var events := GameLogic.draw_one(state, "p2")
+	var saw_draw := false
+	for e in events:
+		if e.event_type == "game_over":
+			saw_draw = bool(e.payload.get("draw", false))
+			eq(str(e.payload.get("winner", "")), "", "deck-c2: a draw has no winner")
+			eq(int((e.payload.get("losers", []) as Array).size()), 2,
+					"deck-c3: both players are losers")
+	ok(saw_draw, "deck-c1: the game is a draw when everyone is decked")
+
+
+func _test_game_over_explanations() -> void:
+	_buf.append("\n-- Game-over explanations cover every win condition --")
+	var fatal := GameEvent.game_over("p1", "p2").payload
+	eq(GameEvent.game_over_explanation(fatal),
+			"P2's hero received fatal damage. P1 wins!",
+			"deck-d1: hero_defeated explanation")
+
+	var decked := GameEvent.game_over("p1", "p2", "decked").payload
+	eq(GameEvent.game_over_explanation(decked),
+			"P2 was decked — required to draw from an empty deck. P1 wins!",
+			"deck-d2: decked explanation")
+
+	var drawn: Array[String] = ["p1", "p2"]
+	var tie := GameEvent.game_drawn(drawn, "decked").payload
+	eq(GameEvent.game_over_explanation(tie),
+			"P1 was decked — required to draw from an empty deck and "
+			+ "P2 was decked — required to draw from an empty deck"
+			+ " — the game is a draw.",
+			"deck-d3: draw explanation names both causes")
+
+	eq(GameEvent.game_over_explanation(fatal, {"p1": "Ta'zo", "p2": "Grennan"}),
+			"Grennan's hero received fatal damage. Ta'zo wins!",
+			"deck-d4: display names are used when supplied")

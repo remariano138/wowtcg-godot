@@ -1493,7 +1493,9 @@ func get_context_actions(instance_id: String) -> Array:
 			if def.card_type == "Quest":
 				var needs_gy := not StackResolver.get_graveyard_search_requirement(def).is_empty()
 				var a := PendingAction.make("use_quest", local_player,
-					{"quest_id": instance_id, "_needs_gy_targets": needs_gy})
+					{"quest_id": instance_id, "_needs_gy_targets": needs_gy,
+					"_needs_ally_exhaust":
+						StackResolver.get_quest_ally_exhaust_requirement(def) > 0})
 				return [{"label": "Complete Quest — %s" % def.card_name,
 					"action": a, "enabled": StackResolver.can_use_quest_no_target_check(
 						state, instance_id, local_player, db)},
@@ -1689,6 +1691,13 @@ func handle_context_action(action: PendingAction) -> void:
 		"use_quest":
 			if action.params.get("_needs_gy_targets", false):
 				start_graveyard_selection(action.params.get("quest_id", ""))
+				return
+			# "Exhaust N allies" completion cost (The Love Potion): the context-menu
+			# entry opens the ally picker, same as a left-click. Nothing is paid
+			# until the popup confirms, so cancelling is still free — but a human
+			# expects "Complete Quest" to take them to the choice, not to fail.
+			if action.params.get("_needs_ally_exhaust", false):
+				start_ally_exhaust_selection(action.params.get("quest_id", ""))
 				return
 		"use_ally_power":
 			if action.params.get("_needs_gy_target", false):

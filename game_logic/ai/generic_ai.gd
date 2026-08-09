@@ -287,6 +287,18 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 	var defender_dies := a_atk >= d_hp
 	var attacker_dies_to_defender := d_atk >= a_hp
 
+	# Protectors this attacker simply can't hurt (Brother Rhone vs an attacking
+	# ally). Interposing one costs literally nothing — it can't die and nothing
+	# else is spent — so it is ALWAYS an eligible candidate, whatever the
+	# defender would have suffered, and the ranking below puts it ahead of every
+	# stat-based pick. Known trade-off (accepted): a cheap attacker can bait the
+	# free block away from a bigger threat. The bait costs the attacker its own
+	# attack too, so the exchange is roughly even.
+	var free_blocks: Array[String] = []
+	for p in pool:
+		if BaseAI.blocks_for_free(state, db, p, attacker):
+			free_blocks.append(p)
+
 	var candidates: Array[String] = []
 	if not defender_dies:
 		if attacker_dies_to_defender:
@@ -296,6 +308,7 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 		for p in pool:
 			if BaseAI.combat_trade_value(state, db, p, attacker, false) == "safe_lethal":
 				candidates.append(p)
+		candidates.append_array(free_blocks)   # or to soak the chip damage for free
 	else:
 		var ps := state.players.get(player_id) as PlayerState
 		if ps != null and defender == ps.hero_instance_id:
@@ -315,15 +328,24 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 				for p in pool:
 					if BaseAI._card_value_key(state, db, p) < d_val:
 						candidates.append(p)
+			candidates.append_array(free_blocks)
 
-	# Use the least valuable eligible protector.
+	# Rank: a block that kills the attacker and survives (safe_lethal) removes a
+	# card and so still outranks a free block, which only stops one attack; both
+	# beat spending fodder. Within a rank, the least valuable protector wins.
 	var best := ""
-	var best_val: Array = []
+	var best_key: Array = []
 	for p in candidates:
-		var pval := BaseAI._card_value_key(state, db, p)
-		if best == "" or pval < best_val:
+		var rank := 2
+		if BaseAI.combat_trade_value(state, db, p, attacker, false) == "safe_lethal":
+			rank = 0
+		elif p in free_blocks:
+			rank = 1
+		var pkey: Array = [rank]
+		pkey.append_array(BaseAI._card_value_key(state, db, p))
+		if best == "" or pkey < best_key:
 			best = p
-			best_val = pval
+			best_key = pkey
 
 	# Hero-protect gate (Draconian Deflector): only when no ally stepped in,
 	# and never into burst range (keep the hero above the all-out threshold

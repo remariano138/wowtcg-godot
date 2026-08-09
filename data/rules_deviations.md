@@ -29,13 +29,13 @@ reward can never affect anything if completed off-turn. Letting it be
 manually checking/dismissing it every priority window instead of Turbo
 autoskip handling their pass, and (2) the AI had to needlessly evaluate a
 quest completion action every non-turn priority window with the
-`use_quest` branch of `BaseAI.get_legal_actions` never doing anything
+`use_quest` branch of `BaseAI.get_reasonable_actions` never doing anything
 useful with it.
 
 **Effect of the deviation:** Turbo autoskip can safely skip past this
 quest's completion window whenever it's not the controller's turn; the AI
 no longer offers/considers it off-turn either (it's simply not a legal
-action, so `get_legal_actions` never returns it — no special-casing needed
+action, so `get_reasonable_actions` never returns it — no special-casing needed
 in `base_ai.gd`).
 
 **How to apply this pattern to future cards:** if a quest reward is
@@ -153,7 +153,7 @@ the next queued trigger, so triggers drain one window at a time.
    501.1a firing order (turn player first) is preserved.
 
 2. **AI doesn't respond in the window.** Per the AI convention, the non-turn AI
-   passes every priority window (`get_all_legal_actions` returns nothing for the
+   passes every priority window (`get_reasonable_actions` returns nothing for the
    non-turn player), so an AI opponent won't heal/save an ally its opponent's
    totem targets. A HUMAN opponent gets the full window. Extending the window AI
    to defensive instant plays is the same open item noted for combat windows.

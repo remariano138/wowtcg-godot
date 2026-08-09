@@ -49,6 +49,8 @@ func _ready() -> void:
 		_test_annihilator_unpreventable,
 		_test_brother_rhone_shield,
 		_test_ai_prefers_free_block,
+		_test_ai_skips_pointless_attack_into_shield,
+		_test_ai_holds_free_block_vs_bait,
 		_test_grimdron_ally_power,
 		_test_tim_ally_power,
 		_test_sarmoth_taunt_forces_attacker,
@@ -747,7 +749,7 @@ func _test_aimed_shot_retract_and_ai() -> void:
 	# AI: enumerates the play with X announced — exactly the bear's HP (4)
 	# vs the ally, everything payable (4) vs the hero.
 	var ai := BaseAI.new()
-	var actions: Array = ai.get_legal_actions(st, db, "p1")
+	var actions: Array = ai.get_reasonable_actions(st, db, "p1")
 	var ally_x := -1
 	var hero_x := -1
 	for a in actions:
@@ -1562,7 +1564,7 @@ func _test_tazo_hero_power() -> void:
 	state.players["p2"].resource_placed_this_turn = true
 
 	var helper := BaseAI.new()
-	var legal := helper.get_legal_actions(state, db, "p2")
+	var legal := helper.get_reasonable_actions(state, db, "p2")
 	var power_action: PendingAction = null
 	for a in legal:
 		if a.action_type == "activate_power" and a.params.get("target_id") == "p1_ally":
@@ -1587,7 +1589,7 @@ func _test_tazo_hero_power() -> void:
 	var p2_ps := state.players.get("p2") as PlayerState
 	ok(p2_ps != null and p2_ps.has_used_hero_power, "sc5-d: has_used_hero_power is true")
 
-	var legal2 := helper.get_legal_actions(state, db, "p2")
+	var legal2 := helper.get_reasonable_actions(state, db, "p2")
 	var found_second := false
 	for a in legal2:
 		if a.action_type == "activate_power":
@@ -1864,7 +1866,7 @@ func _test_lightning_bolt() -> void:
 	astate.zones["p1_ally_row"].card_ids.append("own_ally_inst")
 
 	var base_ai := BaseAI.new()
-	var actions: Array[PendingAction] = base_ai.get_legal_actions(astate, db, "p1")
+	var actions: Array[PendingAction] = base_ai.get_reasonable_actions(astate, db, "p1")
 	var p1_hero_id_a := (astate.players.get("p1") as PlayerState).hero_instance_id
 	var self_targeted := false
 	for act in actions:
@@ -2255,7 +2257,7 @@ func _test_ai_plays_equipment() -> void:
 	s1.cards["robe_inst"] = robe
 	s1.zones["p1_hand"].card_ids.append("robe_inst")
 	var has_play := false
-	for a in ai.get_legal_actions(s1, db, "p1"):
+	for a in ai.get_reasonable_actions(s1, db, "p1"):
 		if a.action_type == "play_equipment" and a.params.get("card_id") == "robe_inst":
 			has_play = true
 	ok(has_play, "ai-eq-a: AI offers play_equipment for a robe in hand")
@@ -2271,7 +2273,7 @@ func _test_ai_plays_equipment() -> void:
 	s2.cards["deck2"] = deck2
 	s2.zones["p1_deck"].card_ids.append("deck2")
 	var has_power := false
-	for a in ai.get_legal_actions(s2, db, "p1"):
+	for a in ai.get_reasonable_actions(s2, db, "p1"):
 		if a.action_type == "use_ally_power" and a.params.get("card_id") == "robe2":
 			has_power = true
 	ok(has_power, "ai-eq-b: AI offers the robe draw power from the hero row")
@@ -2283,7 +2285,7 @@ func _test_ai_plays_equipment() -> void:
 		s2.cards[hid] = c
 		s2.zones["p1_hand"].card_ids.append(hid)
 	var still_power := false
-	for a in ai.get_legal_actions(s2, db, "p1"):
+	for a in ai.get_reasonable_actions(s2, db, "p1"):
 		if a.action_type == "use_ally_power" and a.params.get("card_id") == "robe2":
 			still_power = true
 	ok(not still_power, "ai-eq-c: AI skips the draw power when hand is full")
@@ -2999,6 +3001,133 @@ func _test_ai_prefers_free_block() -> void:
 	s4.combat_defender = "p1_hero"
 	ok(not BaseAI.blocks_for_free(s4, db4, "rhone", "p2_hero"),
 		"fb-d: an attacking HERO is not blocked for free")
+
+
+func _test_ai_skips_pointless_attack_into_shield() -> void:
+	_buf.append("\n-- AI: never proposes an ally attack that can't damage the defender --")
+	const RHONE_FX := "prevent_combat_damage_from_attacking_allies"
+	var ai := BaseAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db.ally("smasher_def", 4, 4, [], 4)
+	db.weapon("krol_def", 3, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.phase = "action"
+	_add_resources(state, "p1", 2)
+	_add_ally(state, "smasher", "smasher_def", "p1")
+	_add_ally(state, "rhone", "rhone_def", "p2")
+	state.get_card("smasher").just_summoned = false
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+
+	var ally_at_rhone := false
+	var ally_at_hero  := false
+	var hero_at_rhone := false
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.action_type != "propose_combat":
+			continue
+		var atk: String = a.params.get("attacker_id", "")
+		var dfd: String = a.params.get("defender_id", "")
+		if atk == "smasher" and dfd == "rhone":
+			ally_at_rhone = true
+		if atk == "smasher" and dfd == "p2_hero":
+			ally_at_hero = true
+		if atk == "p1_hero" and dfd == "rhone":
+			hero_at_rhone = true
+	ok(not ally_at_rhone, "ps-a: ally attack into the shield is never proposed")
+	ok(ally_at_hero, "ps-b: the same ally may still attack the hero (baits the block)")
+	ok(hero_at_rhone, "ps-c: the HERO attacking it is still offered — shield is ally-only")
+
+
+func _test_ai_holds_free_block_vs_bait() -> void:
+	_buf.append("\n-- AI: holds the free block for a strictly bigger ready ally --")
+	const RHONE_FX := "prevent_combat_damage_from_attacking_allies"
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db.ally("bait_def", 1, 1, [], 1)
+	db.ally("big_def", 5, 5, [], 5)
+	db.ally("chump_def", 2, 1, [], 2)
+
+	# hb-a: the 1/1 baits while a ready 5/5 waits → decline, take the 1.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.turn_player     = "p2"
+	s1.priority_player = "p2"
+	_add_ally(s1, "rhone", "rhone_def", "p1")
+	_add_ally(s1, "bait", "bait_def", "p2")
+	_add_ally(s1, "big", "big_def", "p2")
+	for id in ["bait", "big"]:
+		s1.get_card(id).just_summoned = false
+	s1.combat_attacker = "bait"
+	s1.combat_defender = "p1_hero"
+	eq(ai.choose_protector(s1, db, "p1"), "",
+		"hb-a: free block held back from the cheap bait")
+
+	# hb-b: now the 5/5 swings (the bait exhausted attacking) → block it.
+	s1.get_card("bait").is_exhausted = true
+	s1.combat_attacker = "big"
+	eq(ai.choose_protector(s1, db, "p1"), "rhone",
+		"hb-b: the block is spent on the real threat")
+
+	# hb-c: the bigger ready attacker is their HERO, which the shield can't stop
+	# for free anyway → no reason to hold; block the bait now.
+	var db3 := MockDB.new()
+	db3.hero("p1_hero", 30)
+	db3.hero("p2_hero", 30)
+	db3.ally("rhone_def", 0, 1, ["protector"], 2, RHONE_FX)
+	db3.ally("bait_def", 1, 1, [], 1)
+	db3.weapon("krol_def", 3, 3, 1)
+	var s3 := _base_state(db3, "p1_hero", "p2_hero")
+	s3.turn_player     = "p2"
+	s3.priority_player = "p2"
+	_add_resources(s3, "p2", 2)
+	_add_ally(s3, "rhone", "rhone_def", "p1")
+	_add_ally(s3, "bait", "bait_def", "p2")
+	s3.get_card("bait").just_summoned = false
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	s3.cards["krol"] = krol
+	s3.zones["p2_hero_row"].card_ids.append("krol")
+	s3.combat_attacker = "bait"
+	s3.combat_defender = "p1_hero"
+	eq(ai.choose_protector(s3, db3, "p1"), "rhone",
+		"hb-c: a hero attacker isn't free-blockable, so nothing is worth holding for")
+
+	# hb-d: the "bait" would KILL one of our allies → unrecoverable, block now
+	# even though a bigger attacker is ready.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	s4.turn_player     = "p2"
+	s4.priority_player = "p2"
+	_add_ally(s4, "rhone", "rhone_def", "p1")
+	_add_ally(s4, "chump", "chump_def", "p1")
+	_add_ally(s4, "bait", "bait_def", "p2")
+	_add_ally(s4, "big", "big_def", "p2")
+	for id in ["bait", "big"]:
+		s4.get_card(id).just_summoned = false
+	s4.combat_attacker = "bait"
+	s4.combat_defender = "chump"
+	eq(ai.choose_protector(s4, db, "p1"), "rhone",
+		"hb-d: a bait that kills a card is answered immediately")
+
+	# hb-e: same bait, but our hero is low — face damage is no longer recoverable.
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	s5.turn_player     = "p2"
+	s5.priority_player = "p2"
+	_add_ally(s5, "rhone", "rhone_def", "p1")
+	_add_ally(s5, "bait", "bait_def", "p2")
+	_add_ally(s5, "big", "big_def", "p2")
+	for id in ["bait", "big"]:
+		s5.get_card(id).just_summoned = false
+	s5.get_card("p1_hero").damage_taken = 25   # 5 HP left
+	s5.combat_attacker = "bait"
+	s5.combat_defender = "p1_hero"
+	eq(ai.choose_protector(s5, db, "p1"), "rhone",
+		"hb-e: below the hero floor every hit is blocked")
 
 
 func _test_grimdron_ally_power() -> void:
@@ -4432,7 +4561,7 @@ func _test_ancestral_spirit_ai_picks_best() -> void:
 		st.zones["p1_graveyard"].card_ids.append(pair[0])
 
 	var ai := BaseAI.new()
-	var actions: Array = ai.get_legal_actions(st, db, "p1")
+	var actions: Array = ai.get_reasonable_actions(st, db, "p1")
 	var chosen := ""
 	for a in actions:
 		if a.action_type == "play_ability" and a.params.get("card_id", "") == "ancestral":
@@ -5603,14 +5732,14 @@ func _test_ai_holds_instant_protector() -> void:
 	db.ally("big_def", 4, 6, [], 5)
 	db.ally("board_prot_def", 3, 4, (["protector"] as Array[String]), 3)
 
-	# a) own action window: get_legal_actions never blind-plays a held card.
+	# a) own action window: get_reasonable_actions never blind-plays a held card.
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	_add_hand_card(state, "tristan", "azeroth_221", "p1")
 	_add_resources(state, "p1", 4)
 	state.players["p1"].resource_placed_this_turn = true
 	var ai := GenericAI.new()
 	var blind := false
-	for a in ai.get_legal_actions(state, db, "p1"):
+	for a in ai.get_reasonable_actions(state, db, "p1"):
 		if a.params.get("card_id", "") == "tristan":
 			blind = true
 	ok(not blind, "sc37-a: Tristan is held — never blind-played on own window")
@@ -5683,7 +5812,7 @@ func _test_ai_holds_instant_protector() -> void:
 #   sc34-e  defend window: 5 HP attacker vs 4 ATK defender + 2 dmg → play
 #   sc34-f  defend window: attacker already dies to defender alone → hold
 #   sc34-g  defend window: attacker out of reach (7 HP vs 4+2) → hold
-#   sc34-h  outside combat: get_legal_actions never blind-plays it
+#   sc34-h  outside combat: get_reasonable_actions never blind-plays it
 #   sc34-i/j/k  integration: BaseAI defender kills the attacker during the
 #               attack window — attacker dead, zero combat damage, QS in grave
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5777,10 +5906,10 @@ func _test_combat_instant_ambush() -> void:
 	st3.cards["qs_hold"] = qs3
 	st3.zones["p1_hand"].card_ids.append("qs_hold")
 	var blind := false
-	for a in ai.get_legal_actions(st3, db, "p1"):
+	for a in ai.get_reasonable_actions(st3, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "qs_hold":
 			blind = true
-	ok(not blind, "sc34-h: get_legal_actions never blind-plays a held combat instant")
+	ok(not blind, "sc34-h: get_reasonable_actions never blind-plays a held combat instant")
 
 	# ── Integration: p1 attacks, BaseAI p2 ambushes during the attack window ──
 	var st4 := _base_state(db, "p1_hero", "p2_hero")
@@ -6640,7 +6769,7 @@ func _test_arcane_shot() -> void:
 # not a rules concept): held in hand, only played to ambush an attacker.
 #
 # Assertions:
-#   sc40-a  get_legal_actions never blind-plays it outside combat
+#   sc40-a  get_reasonable_actions never blind-plays it outside combat
 #   sc40-b  attack window — 1 HP / cost-matching attacker → play targeting it
 #   sc40-c  attack window — attacker survives 1 dmg → hold
 #   sc40-d  integration: attacker killed by Arcane Shot during the attack window
@@ -6665,10 +6794,10 @@ func _test_arcane_shot_combat_instant_tag() -> void:
 	st3.cards["shot_hold"] = shot_hold
 	st3.zones["p1_hand"].card_ids.append("shot_hold")
 	var blind := false
-	for a in ai.get_legal_actions(st3, db, "p1"):
+	for a in ai.get_reasonable_actions(st3, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "shot_hold":
 			blind = true
-	ok(not blind, "sc40-a: get_legal_actions never blind-plays a held combat instant")
+	ok(not blind, "sc40-a: get_reasonable_actions never blind-plays a held combat instant")
 
 	# ── Attack-window ambush matrix ──
 	var st := _base_state(db, "p1_hero", "p2_hero")
@@ -6724,7 +6853,7 @@ func _test_arcane_shot_combat_instant_tag() -> void:
 #   sc40b-a  submission WITHOUT a target is rejected
 #   sc40b-b  2 fire damage dealt to the announced target, sourced from the hero
 #   sc40b-c  Fire Blast itself ends up in the graveyard
-#   sc40b-d  get_legal_actions never blind-plays it outside combat
+#   sc40b-d  get_reasonable_actions never blind-plays it outside combat
 #   sc40b-e  attack window — 2 HP / cost-matching attacker → play targeting it
 #   sc40b-f  attack window — attacker survives 2 dmg → hold
 #   sc40b-g  integration: attacker killed by Fire Blast during the attack window
@@ -6780,10 +6909,10 @@ func _test_fire_blast() -> void:
 	st3.cards["blast_hold"] = blast_hold
 	st3.zones["p1_hand"].card_ids.append("blast_hold")
 	var blind := false
-	for a in BaseAI.new().get_legal_actions(st3, db, "p1"):
+	for a in BaseAI.new().get_reasonable_actions(st3, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "blast_hold":
 			blind = true
-	ok(not blind, "sc40b-d: get_legal_actions never blind-plays a held combat instant")
+	ok(not blind, "sc40b-d: get_reasonable_actions never blind-plays a held combat instant")
 
 	# ── Attack-window ambush matrix ──
 	var db2 := MockDB.new()
@@ -6848,7 +6977,7 @@ func _test_fire_blast() -> void:
 #   sc40c-a  Frostbolt: submission without a target is rejected
 #   sc40c-b  Frostbolt: 3 frost damage to the announced target, sourced from hero
 #   sc40c-c  Frostbolt: the card itself ends up in the graveyard
-#   sc40c-d  Frostbolt: get_legal_actions never blind-plays it outside combat
+#   sc40c-d  Frostbolt: get_reasonable_actions never blind-plays it outside combat
 #   sc40c-e  Frostbolt: attack window — 3 HP attacker dies → play targeting it
 #   sc40c-f  Frostbolt: attack window — 5 HP attacker survives → hold
 #   sc40c-g  Frost Shock: 2 frost damage to the announced target, sourced from hero
@@ -6902,10 +7031,10 @@ func _test_frost_instants() -> void:
 	st3.cards["fb_hold"] = fb_hold
 	st3.zones["p1_hand"].card_ids.append("fb_hold")
 	var blind := false
-	for a in BaseAI.new().get_legal_actions(st3, db, "p1"):
+	for a in BaseAI.new().get_reasonable_actions(st3, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "fb_hold":
 			blind = true
-	ok(not blind, "sc40c-d: get_legal_actions never blind-plays a held combat instant")
+	ok(not blind, "sc40c-d: get_reasonable_actions never blind-plays a held combat instant")
 
 	# ── Attack-window ambush matrix (Frostbolt) ──
 	var db2 := MockDB.new()
@@ -7138,7 +7267,7 @@ func _test_steal_essence() -> void:
 	_add_resources(st5, "p1", 2)
 	_add_hand_card(st5, "se5", "azeroth_134", "p1")
 	var blind := false
-	for a in ai.get_legal_actions(st5, db, "p1"):
+	for a in ai.get_reasonable_actions(st5, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "se5":
 			blind = true
 	ok(not blind, "sc40f-k: AI never blind-plays Steal Essence on its own window")
@@ -8436,7 +8565,7 @@ func _test_hierophant_caydiem_power() -> void:
 	# power would then almost never fire in a real AI game.
 	_add_resources(state, "p1", 3)
 	var ai := BaseAI.new()
-	var legal := ai.get_legal_actions(state, db, "p1")
+	var legal := ai.get_reasonable_actions(state, db, "p1")
 	var proposed_caydiem := false
 	for a in legal:
 		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "caydiem_inst":
@@ -9361,7 +9490,7 @@ func _test_ai_shock_and_soothe() -> void:
 	state.players["p1"].resource_placed_this_turn = true
 
 	# Nothing of ours is damaged and 3 doesn't kill the 6 HP ally: hold.
-	var held: Array = ai.get_legal_actions(state, db, "p1")
+	var held: Array = ai.get_reasonable_actions(state, db, "p1")
 	var found_hold := false
 	for a in held:
 		if (a as PendingAction).params.get("card_id", "") == "ss":
@@ -9370,7 +9499,7 @@ func _test_ai_shock_and_soothe() -> void:
 
 	# Damage our ally: now the heal half has a home and the AI casts.
 	mine.damage_taken = 4
-	var acts: Array = ai.get_legal_actions(state, db, "p1")
+	var acts: Array = ai.get_reasonable_actions(state, db, "p1")
 	var cast: PendingAction = null
 	for a in acts:
 		if (a as PendingAction).params.get("card_id", "") == "ss":
@@ -10319,7 +10448,7 @@ func _test_galahandra_power_freezes_proposal() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 # AI uses Galahandra's power to cancel a dangerous incoming attack while the
 # proposal is on the chain, and holds it against a chip attack. Her 0 ATK means
-# get_all_legal_actions never proposes an attack with her, and the AI never
+# get_reasonable_actions never proposes an attack with her, and the AI never
 # blind-plays her power on its own turn — only in response to combat.
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -10366,7 +10495,7 @@ func _test_ai_galahandra_freeze_save() -> void:
 	var gala2 := _add_ally(state2, "gala2", "azeroth_184", "p2")
 	gala2.just_summoned = false
 	state2.players["p2"].resource_placed_this_turn = true
-	var legal := ai.get_legal_actions(state2, db, "p2")
+	var legal := ai.get_reasonable_actions(state2, db, "p2")
 	var proposed_gala := false
 	for a in legal:
 		if a.action_type == "propose_combat" and a.params.get("attacker_id") == "gala2":
@@ -12687,7 +12816,7 @@ func _test_ai_kavai_doomed_cash_in() -> void:
 	var robe4 := CardInstance.create("robe4", "robe_def", "p2", "p2_hero_row")
 	state4.cards["robe4"] = robe4
 	state4.zones["p2_hero_row"].card_ids.append("robe4")
-	for a in ai.get_legal_actions(state4, db, "p1"):
+	for a in ai.get_reasonable_actions(state4, db, "p1"):
 		ok(not (a.action_type == "use_ally_power" \
 				and a.params.get("card_id", "") == "kavai4"),
 			"kd-e: proactive power use never generated")
@@ -13119,7 +13248,7 @@ func _test_ai_attach_target_choice() -> void:
 	_add_resources(state, "p1", 2)
 	state.players["p1"].resource_placed_this_turn = true
 	var mark_targets: Array = []
-	for a in ai.get_legal_actions(state, db, "p1"):
+	for a in ai.get_reasonable_actions(state, db, "p1"):
 		if a.params.get("card_id", "") == "mark":
 			mark_targets.append(a.params.get("target_id", ""))
 	eq(mark_targets.size(), 1, "aa-a: exactly one Mark action generated")
@@ -13133,7 +13262,7 @@ func _test_ai_attach_target_choice() -> void:
 	_add_resources(state2, "p1", 2)
 	state2.players["p1"].resource_placed_this_turn = true
 	var roots_targets: Array = []
-	for a in ai.get_legal_actions(state2, db, "p1"):
+	for a in ai.get_reasonable_actions(state2, db, "p1"):
 		if a.params.get("card_id", "") == "roots":
 			roots_targets.append(a.params.get("target_id", ""))
 	eq(roots_targets.size(), 1, "aa-c: exactly one Roots action generated")
@@ -13145,7 +13274,7 @@ func _test_ai_attach_target_choice() -> void:
 	_add_resources(state3, "p1", 2)
 	state3.players["p1"].resource_placed_this_turn = true
 	var any_roots := false
-	for a in ai.get_legal_actions(state3, db, "p1"):
+	for a in ai.get_reasonable_actions(state3, db, "p1"):
 		if a.params.get("card_id", "") == "roots":
 			any_roots = true
 	ok(not any_roots, "aa-e: Roots not wasted on a lone cheap ally")
@@ -13224,7 +13353,7 @@ func _test_natural_selection() -> void:
 
 	# ── AI: get_modal_actions exposes BOTH modes; play policy keeps damage only ──
 	var ai := BaseAI.new()
-	# An untagged modal twin exercises the get_legal_actions modal hook directly
+	# An untagged modal twin exercises the get_reasonable_actions modal hook directly
 	# (azeroth_27 itself is held as a combat instant and never blind-played).
 	db.instant("modal_twin", 3,
 		"mode:deal_damage_to_target:3:nature|mode:heal_target:3")
@@ -13246,7 +13375,7 @@ func _test_natural_selection() -> void:
 	eq(heal_target, "p1_hero", "ns-j: heal-mode option targets the AI's own damaged hero")
 
 	var played_modes: Dictionary = {}
-	for a in ai.get_legal_actions(st4, db, "p1"):
+	for a in ai.get_reasonable_actions(st4, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "twin":
 			played_modes[int((a as PendingAction).params.get("mode", -1))] = true
 	ok(played_modes.has(0) and not played_modes.has(1),
@@ -13257,7 +13386,7 @@ func _test_natural_selection() -> void:
 	_add_resources(st5, "p1", 3)
 	_add_hand_card(st5, "ns5", "azeroth_27", "p1")
 	var blind := false
-	for a in ai.get_legal_actions(st5, db, "p1"):
+	for a in ai.get_reasonable_actions(st5, db, "p1"):
 		if (a as PendingAction).params.get("card_id", "") == "ns5":
 			blind = true
 	ok(not blind, "ns-l: AI never blind-plays Natural Selection on its own window")
@@ -13836,9 +13965,9 @@ func _test_ai_bear_form_flash_in() -> void:
 	StackResolver.pass_priority(state, db)   # combat starts, attack window
 	StackResolver.pass_priority(state, db)   # p1 passes on the window → p2 priority
 
-	# get_legal_actions never blind-plays the held card.
+	# get_reasonable_actions never blind-plays the held card.
 	var blind := false
-	for a in ai.get_legal_actions(state, db, "p2"):
+	for a in ai.get_reasonable_actions(state, db, "p2"):
 		if a.params.get("card_id", "") == "bear":
 			blind = true
 	ok(not blind, "aibf-a: Bear Form is held (never blind-played)")
@@ -13921,7 +14050,7 @@ func _test_ai_hero_attack_lethal_gate() -> void:
 
 	var vs_hero := false
 	var vs_wall := false
-	for a in ai.get_legal_actions(state, db, "p1"):
+	for a in ai.get_reasonable_actions(state, db, "p1"):
 		if a.action_type == "propose_combat" and a.params.get("attacker_id") == "p1_hero":
 			if a.params.get("defender_id") == "p2_hero":
 				vs_hero = true
@@ -13933,7 +14062,7 @@ func _test_ai_hero_attack_lethal_gate() -> void:
 	# Damage the wall to 1 HP → the hero swing is now lethal → offered.
 	wall.damage_taken = 1
 	var vs_wall2 := false
-	for a in ai.get_legal_actions(state, db, "p1"):
+	for a in ai.get_reasonable_actions(state, db, "p1"):
 		if a.action_type == "propose_combat" \
 				and a.params.get("attacker_id") == "p1_hero" \
 				and a.params.get("defender_id") == "wall":
@@ -14080,7 +14209,7 @@ func _test_ai_flame_shock_targets_hero_only() -> void:
 	state.players["p1"].resource_placed_this_turn = true
 	var ai := BaseAI.new()
 	var fs_targets: Array = []
-	for a in ai.get_legal_actions(state, db, "p1"):
+	for a in ai.get_reasonable_actions(state, db, "p1"):
 		if a.params.get("card_id", "") == "fs":
 			fs_targets.append(a.params.get("target_id", ""))
 	eq(fs_targets.size(), 1, "aifs-a: exactly one Flame Shock action generated")
@@ -14233,7 +14362,7 @@ func _test_ai_fireball_targets_hero_only() -> void:
 	state.players["p1"].resource_placed_this_turn = true
 
 	var fb_targets: Array = []
-	for a in ai.get_legal_actions(state, db, "p1"):
+	for a in ai.get_reasonable_actions(state, db, "p1"):
 		if a.params.get("card_id", "") == "fb":
 			fb_targets.append(a.params.get("target_id", ""))
 	eq(fb_targets.size(), 1, "aif-a: exactly one Fireball action generated")
@@ -14388,7 +14517,7 @@ func _test_ai_mana_agate_and_arcane_intellect() -> void:
 	for i in range(6):
 		_add_card_to_hand(state, "h_%d" % i, "bear_def", "p1")   # hand: 6, max: 7
 	var fires := func() -> bool:
-		for a in ai.get_legal_actions(state, db, "p1"):
+		for a in ai.get_reasonable_actions(state, db, "p1"):
 			if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "agate":
 				return true
 		return false
@@ -14402,7 +14531,7 @@ func _test_ai_mana_agate_and_arcane_intellect() -> void:
 	_add_resources(state2, "p1", 2)
 	state2.players["p1"].resource_placed_this_turn = true
 	var ai_targets: Array = []
-	for a in ai.get_legal_actions(state2, db, "p1"):
+	for a in ai.get_reasonable_actions(state2, db, "p1"):
 		if a.params.get("card_id", "") == "intellect":
 			ai_targets.append(a.params.get("target_id", ""))
 	eq(ai_targets.size(), 1, "aima-c: exactly one Intellect action")

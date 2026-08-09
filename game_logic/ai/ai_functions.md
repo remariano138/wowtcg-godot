@@ -170,7 +170,7 @@ resolves it and calls again, so a turn plays out step by step. Order:
    bomb for a chump. Picks the most valuable target, gives up the least
    valuable attacker. Enemy allies only (hero handled below).
 6. `_develop_action` — best board-improving non-combat play: reuses
-   `get_legal_actions` (which already gates powers/removal/draw/resource) minus
+   `get_reasonable_actions` (which already gates powers/removal/draw/resource) minus
    every `propose_combat`, ranked by `_DEVELOP_RANK` then card value.
 7. `_hero_chip_action` — poke the enemy hero with leftover ready attackers
    (ATK > 0 only). Holds **Protectors** back to defend unless the enemy hero is
@@ -212,7 +212,7 @@ playtest.gd all commit to `ranked[0]`.
 
 **Held cards / ambush system.** `COMBAT_INSTANT_TAGS` is a dict keyed by
 `card_def_id` tagging cards the AI must **hold in hand** instead of
-blind-playing on its own action window (`get_legal_actions` skips them).
+blind-playing on its own action window (`get_reasonable_actions` skips them).
 Current tags:
 
 - `"combat_instant_dmg"` — instant dealing targeted damage
@@ -291,7 +291,7 @@ Related Form behaviors:
 - **Cat Form** (`dark_portal_19`) is untagged — GenericAI plays it in its
   develop step; the hero then shows up in `get_legal_attackers` (the engine
   gate probes `get_atk(hero, db, true)`).
-- **Hero-attack policy** (`get_legal_actions`): a HERO attack on an enemy
+- **Hero-attack policy** (`get_reasonable_actions`): a HERO attack on an enemy
   **ally** is offered only when the forecast ATK kills it — a hero swinging
   into an ally it can't kill soaks retaliation for nothing. Attacks on the
   enemy hero are always offered.

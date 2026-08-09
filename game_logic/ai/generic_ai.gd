@@ -178,7 +178,7 @@ func _trade_action(state: GameState, db, player_id: String) -> PendingAction:
 	return best
 
 
-# Step 4 — the best board-improving non-combat play. Reuses BaseAI.get_legal_actions
+# Step 4 — the best board-improving non-combat play. Reuses BaseAI.get_reasonable_actions
 # (which already gates powers to good targets, removal via _destroy_is_worth_it,
 # draw-into-full-hand, and smart resource placement), drops every combat proposal,
 # and picks by _DEVELOP_RANK then card value. GenericAI has no random fallback, so
@@ -186,7 +186,7 @@ func _trade_action(state: GameState, db, player_id: String) -> PendingAction:
 func _develop_action(state: GameState, db, player_id: String) -> PendingAction:
 	var best: PendingAction = null
 	var best_key: Array = []
-	for act in get_legal_actions(state, db, player_id):
+	for act in get_reasonable_actions(state, db, player_id):
 		if act.action_type == "propose_combat":
 			continue
 		var rank: int = _DEVELOP_RANK.get(act.action_type, 10)
@@ -289,15 +289,16 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 
 	# Protectors this attacker simply can't hurt (Brother Rhone vs an attacking
 	# ally). Interposing one costs literally nothing — it can't die and nothing
-	# else is spent — so it is ALWAYS an eligible candidate, whatever the
-	# defender would have suffered, and the ranking below puts it ahead of every
-	# stat-based pick. Known trade-off (accepted): a cheap attacker can bait the
-	# free block away from a bigger threat. The bait costs the attacker its own
-	# attack too, so the exchange is roughly even.
+	# else is spent — so it is an eligible candidate whatever the defender would
+	# have suffered, and the ranking below puts it ahead of every stat-based
+	# pick. Protecting DOES exhaust it though (602.2), so the block is once per
+	# turn: free_block_worth_spending holds it back when this attack is a cheap
+	# bait and a strictly bigger ready ally is still waiting.
 	var free_blocks: Array[String] = []
-	for p in pool:
-		if BaseAI.blocks_for_free(state, db, p, attacker):
-			free_blocks.append(p)
+	if BaseAI.free_block_worth_spending(state, db, player_id, attacker, defender):
+		for p in pool:
+			if BaseAI.blocks_for_free(state, db, p, attacker):
+				free_blocks.append(p)
 
 	var candidates: Array[String] = []
 	if not defender_dies:

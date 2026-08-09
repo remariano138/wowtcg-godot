@@ -4,11 +4,11 @@ extends RefCounted
 # Abstract base for all AI players.
 #
 # Subclasses must override decide_action().
-# get_legal_actions() is a shared utility all subclasses can call.
+# get_reasonable_actions() is a shared utility all subclasses can call.
 
 
 # ── Combat instants (held cards) ───────────────────────────────────────────────
-# Cards tagged here are HELD in hand — get_legal_actions never blind-plays them
+# Cards tagged here are HELD in hand — get_reasonable_actions never blind-plays them
 # on the AI's own action window. They only come out through
 # combat_instant_action() during combat attack/defend windows. Keyed by
 # card_def_id. Tags:
@@ -958,8 +958,16 @@ func wants_mulligan(state: GameState, db, player_id: String) -> bool:
 
 # ── Shared utilities ───────────────────────────────────────────────────────────
 
-# Returns every legal action the player can submit right now (hand plays + combat).
-func get_legal_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
+# The actions the AI is WILLING TO CONSIDER right now (hand plays + combat).
+#
+# NOT a legality check — that is the engine's job (StackResolver.can_submit),
+# and this deliberately returns a subset of what is legal. Cards and attacks are
+# dropped here when there is no upside to weigh at all, so the scoring layers
+# never see them: held combat instants, pet-wasting ally plays, draws into a
+# full hand, a hero swinging at an ally it can't kill, an ally attacking into a
+# shield that prevents all of its damage. Anything with a real trade-off belongs
+# in the AI's ranking steps, not in this filter.
+func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
 	var result: Array[PendingAction] = []
 
 	# Hand card plays.
@@ -1065,6 +1073,19 @@ func get_legal_actions(state: GameState, db, player_id: String) -> Array[Pending
 				# nothing (attacks on the enemy hero always qualify).
 				if atk_id == own_hero_id and StackResolver._is_ally(state, def_id) \
 						and fatk < state.get_current_hp(def_id, db):
+					continue
+				# An ALLY naming a defender that prevents all of its combat
+				# damage (Brother Rhone) achieves nothing whatsoever: no damage,
+				# no kill, and the defender doesn't even exhaust — only
+				# PROTECTING exhausts (602.2). Nothing to weigh, so it's cut
+				# here rather than scored. Note this is source-dependent: our
+				# HERO attacking Rhone is a fine play (he's 0/1 and the shield
+				# only stops attacking allies), and stays offered.
+				# Accepted corner: an attacker with an on-attack trigger
+				# (Chops, Voss) loses a zero-risk platform for firing it —
+				# but attacking the HERO and using that trigger to exhaust the
+				# protector before the protect point dominates it anyway.
+				if GameLogic.blocks_all_combat_damage(state, db, atk_id, def_id):
 					continue
 				result.append(PendingAction.make("propose_combat", player_id,
 					{"attacker_id": atk_id, "defender_id": def_id}))
@@ -1186,6 +1207,52 @@ static func blocks_for_free(state: GameState, db, protector_id: String,
 	return GameLogic.blocks_all_combat_damage(state, db, attacker_id, protector_id)
 
 
+# Hero HP at or below which we stop treating face damage as recoverable.
+# Mirrors GenericAI.HERO_ALL_OUT_HP (kept here so BaseAI has no dependency on
+# its own subclass).
+const FREE_BLOCK_HERO_FLOOR := 10
+
+
+# Should a free block be SPENT on this attack, or held for a bigger one?
+# Protecting exhausts the protector (602.2), so the free block is once per turn
+# and a cheap attacker can bait it away from a real threat. Decline only when
+# the attack is genuinely a cheap bait:
+#   (a) the opponent has another READY ALLY attacker — it must be an ally, since
+#       a hero attacker couldn't be blocked for free either (the shield only
+#       stops attacking allies, so the protector would simply die); and
+#   (b) its forecast ATK is STRICTLY greater than this attacker's — on a tie,
+#       certain value now beats equal uncertain value later; and
+#   (c) this attack is recoverable — it kills nothing of ours and leaves our
+#       hero above the floor. A dead ally is permanent, an unblocked hit is not,
+#       so a "bait" that actually kills something is answered immediately.
+# Residual risk (unavoidable without modelling intent): if they never swing the
+# bigger ally, we ate the small hit and the block went unused. (b) and (c) bound
+# that loss to something small, non-lethal and card-free. Allies arriving later
+# (instant-speed or Ferocity) are outside this read for the same reason.
+static func free_block_worth_spending(state: GameState, db, player_id: String,
+		attacker_id: String, defender_id: String) -> bool:
+	var a_atk := forecast_atk(state, db, attacker_id, true)
+
+	# (c) — anything unrecoverable is blocked right now.
+	var ps := state.players.get(player_id) as PlayerState
+	var hero_id: String = ps.hero_instance_id if ps else ""
+	if defender_id == hero_id:
+		if state.get_current_hp(hero_id, db) - a_atk <= FREE_BLOCK_HERO_FLOOR:
+			return true
+	elif a_atk >= state.get_current_hp(defender_id, db):
+		return true   # the defender would die — save the card now
+
+	# (a) + (b) — hold the block only for a strictly bigger ready ALLY attacker.
+	# The current attacker exhausted when combat started, so it can't appear here.
+	var opp := "p2" if player_id == "p1" else "p1"
+	for aid in StackResolver.get_legal_attackers(state, opp, db):
+		if aid == attacker_id or not StackResolver._is_ally(state, aid):
+			continue
+		if forecast_atk(state, db, aid, true) > a_atk:
+			return false
+	return true
+
+
 func choose_protector(state: GameState, db, player_id: String) -> String:
 	var protectors := StackResolver.get_legal_protectors(
 		state, state.combat_attacker, state.combat_defender, db)
@@ -1195,7 +1262,9 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 	if ps and ps.hero_instance_id in protectors and protectors.size() > 1:
 		protectors.erase(ps.hero_instance_id)
 	for p in protectors:
-		if blocks_for_free(state, db, p, state.combat_attacker):
+		if blocks_for_free(state, db, p, state.combat_attacker) \
+				and free_block_worth_spending(state, db, player_id,
+					state.combat_attacker, state.combat_defender):
 			return p
 	var best_id := protectors[0]
 	var best_hp := state.get_current_hp(best_id, db)

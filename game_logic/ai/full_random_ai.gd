@@ -67,7 +67,7 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var shift := bear_form_action(state, db, player_id)
 	if shift != null:
 		return shift
-	var legal := get_legal_actions(state, db, player_id)
+	var legal := get_reasonable_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false
 		return null

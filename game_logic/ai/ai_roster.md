@@ -13,7 +13,7 @@ Abstract base class. Not used directly in game — subclass and override
 
 Provides two shared utilities available to all subclasses:
 
-- **`get_legal_actions(state, db, player_id)`** — returns every `PendingAction`
+- **`get_reasonable_actions(state, db, player_id)`** — returns every `PendingAction`
   the player can legally submit right now (hand plays + combat proposals).
   Filters out 0-ATK attackers (exhausting a character for zero damage is never
   correct; advanced subclasses may override this for tactical edge cases).

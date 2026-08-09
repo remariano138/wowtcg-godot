@@ -857,8 +857,9 @@ func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
 	return target_id if lethal else ""
 
 
-# Kavai the Wanderer (destroy_ability_or_equipment + sacrifice_self): her power
-# destroys HERSELF as a cost, so it is never fired proactively —
+# Kavai the Wanderer (destroy_ability_or_equipment + sacrifice_self) and Moira
+# Darkheart (destroy_equipment + sacrifice_self): the power
+# destroys the SOURCE as a cost, so it is never fired proactively —
 # _get_ally_power_actions doesn't generate it. Instead, when she is DOOMED —
 # targeted by a lethal opposing removal/damage link on the chain, or about to
 # die when the open combat window concludes — cash her in on the opponent's
@@ -874,15 +875,21 @@ func doomed_sacrifice_action(state: GameState, db, player_id: String) -> Pending
 		if not def:
 			continue
 		var ap := StackResolver._ally_activated_power(def)
-		if ap.get("effect", "") != "destroy_ability_or_equipment" \
-				or ap.get("extra_cost", "") != "sacrifice_self":
+		# Kavai destroys an ability OR equipment; Moira Darkheart only armor or
+		# weapon (the equipment pool). Same doomed cash-in, narrower target list.
+		var sac_kinds: Array = []
+		match ap.get("effect", "") as String:
+			"destroy_ability_or_equipment": sac_kinds = ["ability", "equipment"]
+			"destroy_equipment":            sac_kinds = ["equipment"]
+			"destroy_ability":              sac_kinds = ["ability"]
+		if sac_kinds.is_empty() or ap.get("extra_cost", "") != "sacrifice_self":
 			continue
 		if not _is_doomed(state, db, card.instance_id, threatened):
 			continue
-		# Meaningful target only: the opponent's most expensive ability/equipment.
+		# Meaningful target only: the opponent's most expensive candidate.
 		var best := ""
 		var best_cost := -1
-		for kind in ["ability", "equipment"]:
+		for kind in sac_kinds:
 			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
 				var t := state.get_card(cid)
 				if not t or t.controller != opp:
@@ -1020,6 +1027,15 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
 				continue
+			# Pure-draw spell (Innervate): don't draw past max hand size — the
+			# excess would just be discarded at wrap-up (503.2a). Same gate as
+			# the `draw` activated power in _get_ally_power_actions, minus one
+			# because playing the spell itself frees a slot in hand.
+			var pure_draw := _pure_draw_amount(def) if def else 0
+			if pure_draw > 0:
+				var dr_max_hand := state.get_max_hand_size(player_id, db)
+				if state.cards_in_zone(player_id + "_hand").size() - 1 > dr_max_hand - pure_draw:
+					continue
 		var action := PendingAction.make(action_type, player_id,
 				{"card_id": card.instance_id})
 		if StackResolver.can_submit(state, action, db):
@@ -1102,6 +1118,21 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 		result.append(res_action)
 
 	return result
+
+
+# Total cards drawn by a spell whose ONLY effect is drawing (Innervate).
+# Returns 0 when the card does anything else — Arcane Shot's damage is worth
+# playing with a full hand, its draw rider isn't the reason to hold it.
+static func _pure_draw_amount(def: CardDef) -> int:
+	if def.effects.strip_edges() == "":
+		return 0
+	var total := 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() != "draw":
+			return 0
+		total += int(parts[1]) if parts.size() > 1 else 1
+	return total
 
 
 # Returns the best resource placement action for this player, or null if none is appropriate.

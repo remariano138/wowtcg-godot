@@ -2853,11 +2853,13 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 			return true
 		var d_tid: String = action.params.get("target_id", "")
 		return d_tid in d_cands and _is_legal_target(state, d_tid, db)
-	# Lafiel: "Destroy target ability." Same shape one kind narrower — the
-	# no-target probe still requires an in-play ability to exist. No Purge-style
-	# friendly-attachment exclusion: her printed text has no such clause.
-	if targets_kind == "ability":
-		var a_cands := get_destroy_kind_candidates(state, db, "ability")
+	# Lafiel ("Destroy target ability") / Moira Darkheart ("Destroy target armor
+	# or weapon" — exactly the equipment pool, since every Equipment card is one
+	# or the other). Same shape one kind narrower; the no-target probe still
+	# requires an in-play candidate of that kind. No Purge-style friendly-
+	# attachment exclusion on `ability` — neither printed text has that clause.
+	if targets_kind in ["ability", "equipment"]:
+		var a_cands := get_destroy_kind_candidates(state, db, targets_kind)
 		if a_cands.is_empty():
 			return false
 		if skip_target:
@@ -3078,6 +3080,16 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			if _is_legal_target(state, da_id, db) \
 					and _is_in_play_ability(state, da_id, db):
 				events.append_array(_destroy_card_trigger(state, da_id, card_id, db))
+		"destroy_equipment":
+			# Moira Darkheart: "1, Destroy Moira Darkheart -> Destroy target
+			# armor or weapon." Re-check at resolution (706 / glossary 4217) —
+			# fizzles if the equipment left play or became Untargetable after
+			# the announce. Her own sacrifice cost is paid above, so a Moira
+			# killed in response no-ops the cost and the destroy still resolves.
+			var de_id: String = action.params.get("target_id", "")
+			if _is_legal_target(state, de_id, db) \
+					and _is_in_play_equipment(state, de_id, db):
+				events.append_array(_destroy_card_trigger(state, de_id, card_id, db))
 		"exhaust_target":
 			# Galahandra, Keeper of the Silent Grove: "1, [Activate] -> Exhaust
 			# target ally." Re-check at resolution (706): fizzles if the ally

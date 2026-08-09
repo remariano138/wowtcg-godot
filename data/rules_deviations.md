@@ -587,3 +587,24 @@ Every blocker (`can_submit` / `pass_priority`) still keys off the owner field;
 only input routing and AI pick-quality key off the chooser. Enforcement site:
 the `reveal_pick` branch of `_apply_quest_reward` in
 `game_logic/stack_resolver.gd` (4th recipe field `opponent`).
+
+
+## Innervate — "target player" is always the controller
+
+**Card:** Innervate (`azeroth_23`, 4, Instant Ability — Restoration, Druid).
+Printed text: "Target player draws three cards." Recipe `draw:3`.
+
+**Deviation:** "target player" is a real target in the printed rules — in a
+multiplayer game you pick which player draws, and you may legally pick an
+opponent. Here the effect always resolves as "the controller draws three
+cards": no target is announced, no target picker opens, and there is no fizzle
+path.
+
+**Why:** the card is a self-serving draw spell in every duel line of play —
+handing three cards to the sole opponent is never a play anyone makes — so the
+choice is degenerate, the same treatment as Hypnotic Blade's and The Princess
+Trapped's "target player". Enforcement site: the `draw` branch of
+`_resolve_play_instant` in `game_logic/stack_resolver.gd`, which draws for
+`action.source_player` (shared with Arcane Shot's and Blink's draw riders).
+A future multiplayer build would add a `draw:N:target_player` variant rather
+than change this one.

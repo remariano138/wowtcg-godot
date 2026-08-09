@@ -232,6 +232,8 @@ func _ready() -> void:
 		_test_ai_kavai_doomed_cash_in,
 		_test_lafiel_destroys_ability,
 		_test_lafiel_fizzles_and_ai,
+		_test_moira_destroys_equipment,
+		_test_moira_killed_in_response_and_ai,
 		_test_stat_tracker_counts,
 		_test_green_whelp_armor_bounces_attacker,
 		_test_green_whelp_armor_decline_and_gates,
@@ -286,6 +288,7 @@ func _ready() -> void:
 		_test_empty_deck_alone_is_not_a_loss,
 		_test_simultaneous_decking_is_a_draw,
 		_test_game_over_explanations,
+		_test_innervate_draws_three,
 	]
 
 	for t in tests:
@@ -15361,3 +15364,270 @@ func _test_lafiel_fizzles_and_ai() -> void:
 	eq(acts.size(), 1, "lf-s: AI generates exactly one Lafiel activation")
 	eq(acts[0].params.get("target_id", ""), "big",
 		"lf-t: AI destroys the most expensive opposing ability")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Moira Darkheart (azeroth_209): "1, Destroy Moira Darkheart -> Destroy target
+# armor or weapon." Kavai's sacrifice_self shape with the pool narrowed the
+# other way from Lafiel — "armor or weapon" IS the equipment pool (every
+# Equipment card is one or the other). No [Activate] tap symbol, so she is
+# usable while exhausted / just summoned, and the sacrifice is paid at
+# resolution: killed in response, the destroy still resolves.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const MOIRA_RECIPE := "activated_power:1:destroy_equipment:0::equipment:sacrifice_self"
+
+func _test_moira_destroys_equipment() -> void:
+	_buf.append("\n-- Moira Darkheart: sacrifice self -> destroy target armor or weapon --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("moira_def", 3, 4, [], 4, MOIRA_RECIPE)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.weapon("krol_def", 3, 3, 1)
+	db.totem("totem_def", 1, "ongoing|totem:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var moira := _add_ally(state, "moira", "moira_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 2)
+
+	# mo-a: nothing to destroy -> illegal, even the highlight probe.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "_skip_target_check": true}), db),
+		"mo-a: power illegal with no equipment in play")
+
+	# p2's armor, weapon, ongoing ability, totem, and an attachment on its bear.
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p2_hero_row"].card_ids.append("krol")
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var totem := CardInstance.create("totem", "totem_def", "p2", "p2_ally_row")
+	state.cards["totem"] = totem
+	state.zones["p2_ally_row"].card_ids.append("totem")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "robe"}), db),
+		"mo-b: armor is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "krol"}), db),
+		"mo-c: a weapon is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "ongo"}), db),
+		"mo-d: an ongoing ability is NOT a legal target (unlike Kavai)")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "totem"}), db),
+		"mo-e: a totem is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "mark"}), db),
+		"mo-f: an attachment is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "bear"}), db),
+		"mo-g: an ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "p2_hero"}), db),
+		"mo-h: a hero is NOT a legal target")
+
+	# mo-i: no [Activate] tap symbol - usable with summoning sickness AND exhausted.
+	moira.just_summoned = true
+	moira.is_exhausted = true
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "moira", "target_id": "krol"}), db),
+		"mo-i: usable while just summoned and exhausted (no tap symbol)")
+
+	# Resolve on the weapon: Moira sacrificed (cost), weapon destroyed (effect).
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "moira", "target_id": "krol"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(moira.zone_id, "p1_graveyard", "mo-j: Moira sacrificed to the graveyard")
+	eq(krol.zone_id,  "p2_graveyard", "mo-k: target weapon destroyed")
+	eq(robe.zone_id,  "p2_hero_row",  "mo-l: the other equipment is untouched")
+	eq(state.get_available_resources("p1"), 1, "mo-m: 1 resource paid")
+
+
+func _test_moira_killed_in_response_and_ai() -> void:
+	_buf.append("\n-- Moira Darkheart: killed in response; AI doomed cash-in --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("moira_def", 3, 4, [], 4, MOIRA_RECIPE)
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.ability("ongo_def", 5, "ongoing")
+	db.instant("vanq_def", 3, "destroy_target:ally")
+
+	# Killed in response: the sacrifice cost no-ops, the destroy still resolves
+	# (costs are paid at announcement in the printed rules).
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var moira := _add_ally(state, "moira", "moira_def", "p1")
+	_add_resources(state, "p1", 1)
+	_add_resources(state, "p2", 3)
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	_add_card_to_hand(state, "vanq", "vanq_def", "p2")
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "moira", "target_id": "robe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "vanq", "target_id": "moira"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Vanquish resolves - Moira dies
+	eq(moira.zone_id, "p1_graveyard", "mo-n: Moira destroyed by the response")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # the power resolves
+	eq(robe.zone_id, "p2_graveyard", "mo-o: the announced destroy still resolves")
+
+	# AI: never proactive, cashed in only when doomed - and only onto equipment
+	# (an expensive opposing ability is NOT a target for her).
+	var ai := BaseAI.new()
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var moira2 := _add_ally(s2, "moira2", "moira_def", "p2")
+	moira2.just_summoned = false
+	_add_resources(s2, "p1", 3)
+	_add_resources(s2, "p2", 1)
+	var big := CardInstance.create("big", "ongo_def", "p1", "p1_hero_row")
+	s2.cards["big"] = big
+	s2.zones["p1_hero_row"].card_ids.append("big")
+	_add_card_to_hand(s2, "vanq2", "vanq_def", "p1")
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq2", "target_id": "moira2"}), db)
+	StackResolver.pass_priority(s2, db)      # p1 passes - priority to p2
+	ok(ai.decide_action(s2, db, "p2") == null,
+		"mo-p: doomed Moira holds - an opposing ability is not a legal target")
+
+	# Same board with opposing equipment: now she cashes in.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var moira3 := _add_ally(s3, "moira3", "moira_def", "p2")
+	moira3.just_summoned = false
+	_add_resources(s3, "p1", 3)
+	_add_resources(s3, "p2", 1)
+	var robe3 := CardInstance.create("robe3", "robe_def", "p1", "p1_hero_row")
+	s3.cards["robe3"] = robe3
+	s3.zones["p1_hero_row"].card_ids.append("robe3")
+	_add_card_to_hand(s3, "vanq3", "vanq_def", "p1")
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq3", "target_id": "moira3"}), db)
+	StackResolver.pass_priority(s3, db)
+	var act := ai.decide_action(s3, db, "p2")
+	ok(act != null and act.action_type == "use_ally_power" \
+			and act.params.get("card_id", "") == "moira3" \
+			and act.params.get("target_id", "") == "robe3",
+		"mo-q: chain-threatened Moira cashes in on the opposing equipment")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Innervate (azeroth_23): "Target player draws three cards."
+# In a duel we implement this as "the controller draws three cards" — see
+# data/rules_deviations.md "Innervate". Pure-draw instant, no target announced,
+# instant speed (playable in a combat window / on the opponent's turn).
+#
+# Assertions:
+#   in-a  legal with no target and resolves: 3 cards move deck → hand
+#   in-b  the spell itself goes to the graveyard
+#   in-c  drawing off an empty deck is a required draw → decked (410.6b)
+#   in-d  instant speed: legal during an opposing combat's attack window
+#   in-e  AI plays it when the hand has room
+#   in-f  AI holds it rather than drawing past max hand size (503.2a)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_innervate_draws_three() -> void:
+	_buf.append("\n-- Scenario: Innervate — controller draws three cards --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("azeroth_23", 4, "draw:3")
+	db.ally("filler_def", 1, 1, [], 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "inn", "azeroth_23", "p1")
+	for i in range(4):
+		var top := CardInstance.create("deck_%d" % i, "filler_def", "p1", "p1_deck")
+		state.cards[top.instance_id] = top
+		state.zones["p1_deck"].card_ids.append(top.instance_id)
+
+	var act := PendingAction.make("play_instant", "p1", {"card_id": "inn"})
+	ok(StackResolver.can_submit(state, act, db),
+		"in-a1: legal with no target announced")
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.cards_in_zone("p1_hand").size(), 3, "in-a2: three cards drawn into hand")
+	eq(state.zones["p1_deck"].card_ids.size(), 1, "in-a3: three cards left the deck")
+	eq(state.get_card("inn").zone_id, "p1_graveyard", "in-b: Innervate is in the graveyard")
+
+	# ── Required draw from an empty deck loses the game (410.6b) ──
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_card_to_hand(s2, "inn2", "azeroth_23", "p1")
+	var only := CardInstance.create("only", "filler_def", "p1", "p1_deck")
+	s2.cards["only"] = only
+	s2.zones["p1_deck"].card_ids.append("only")
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "inn2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	ok("p1" in s2.decked_players, "in-c: drawing past an empty deck decks the controller")
+
+	# ── Instant speed: playable in an opposing combat's attack window ──
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p2", 4)
+	_add_card_to_hand(s3, "inn3", "azeroth_23", "p2")
+	for i in range(3):
+		var c3 := CardInstance.create("d3_%d" % i, "filler_def", "p2", "p2_deck")
+		s3.cards[c3.instance_id] = c3
+		s3.zones["p2_deck"].card_ids.append(c3.instance_id)
+	s3.players["p1"].resource_placed_this_turn = true
+	s3.players["p2"].resource_placed_this_turn = true
+	var atk := _add_ally(s3, "atk", "filler_def", "p1")
+	atk.just_summoned = false
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": s3.players["p2"].hero_instance_id}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # combat starts, attack window opens
+	ok(s3.combat_attack_window, "in-d1: attack window is open")
+	StackResolver.pass_priority(s3, db)   # turn player passes → priority to p2
+	ok(StackResolver.can_submit(s3, PendingAction.make("play_instant", "p2",
+		{"card_id": "inn3"}), db),
+		"in-d2: the non-turn player may cast Innervate in the attack window")
+
+	# ── AI: plays it with room in hand, holds it when the hand is full ──
+	var ai := BaseAI.new()
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s4, "p1", 4)
+	_add_card_to_hand(s4, "inn4", "azeroth_23", "p1")
+	for i in range(5):
+		var c4 := CardInstance.create("d4_%d" % i, "filler_def", "p1", "p1_deck")
+		s4.cards[c4.instance_id] = c4
+		s4.zones["p1_deck"].card_ids.append(c4.instance_id)
+	var played := false
+	for a in ai.get_reasonable_actions(s4, db, "p1"):
+		if a.action_type == "play_instant" and a.params.get("card_id", "") == "inn4":
+			played = true
+	ok(played, "in-e: AI plays Innervate with room in hand")
+
+	# max_hand_size 7: Innervate + 5 others = 6 in hand; playing it leaves 5,
+	# +3 drawn = 8 > 7, so the third card would be discarded at wrap-up.
+	for i in range(5):
+		_add_card_to_hand(s4, "junk_%d" % i, "filler_def", "p1")
+	var held := true
+	for a in ai.get_reasonable_actions(s4, db, "p1"):
+		if a.action_type == "play_instant" and a.params.get("card_id", "") == "inn4":
+			held = false
+	ok(held, "in-f: AI holds Innervate rather than drawing past max hand size")

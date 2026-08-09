@@ -44,9 +44,9 @@
       "_card_name": "Lafiel"
     },
     {
-      "card_def_id": "dark_portal_260",
+      "card_def_id": "azeroth_23",
       "count": 1,
-      "_card_name": "Pads of the Dread Wolf"
+      "_card_name": "Innervate"
     },
     {
       "card_def_id": "azeroth_176",
@@ -140,8 +140,13 @@
     },
     {
       "card_def_id": "dark_portal_173",
-      "count": 2,
+      "count": 1,
       "_card_name": "Kavai the Wanderer"
+    },
+    {
+      "card_def_id": "azeroth_209",
+      "count": 1,
+      "_card_name": "Moira Darkheart"
     },
     {
       "card_def_id": "azeroth_27",

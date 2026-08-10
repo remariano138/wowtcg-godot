@@ -2214,6 +2214,24 @@ static func _resolve_play_instant(state: GameState,
 						for ws_ally in state.cards_in_zone(ws_opp + "_ally_row"):
 							events.append_array(GameLogic.exhaust_card(
 								state, ws_ally.instance_id))
+					"rapid_fire_ready_on_strike":
+						# Rapid Fire: "Whenever you strike with a Ranged weapon this
+						# turn, you may pay (1). If you do, ready that weapon and your
+						# hero." A player-wide, this-turn grant (not an attachment like
+						# Windfury Weapon), so it is tracked on PlayerState and cleared
+						# at the start of every turn. Deliberately NOT once per turn —
+						# "whenever" is the whole point of the card, so the strike-ready
+						# point skips Windfury's once-per-turn gate on this path.
+						# Forward-looking only: strikes already made this turn are past.
+						var rf_cost := int(parts[1]) if parts.size() > 1 else 0
+						var rf_ps := state.players.get(action.source_player) as PlayerState
+						if rf_ps:
+							# Cheapest grant wins if somehow granted twice.
+							if rf_ps.rapid_fire_ready_cost < 0 \
+									or rf_cost < rf_ps.rapid_fire_ready_cost:
+								rf_ps.rapid_fire_ready_cost = rf_cost
+							events.append(GameEvent.rapid_fire_gained(
+								action.source_player, rf_cost))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
@@ -2567,13 +2585,21 @@ static func choose_strike(state: GameState, weapon_id: String,
 	return events
 
 
-# Opens a ready-on-strike point (Windfury Weapon) for the striking player if the
-# just-struck weapon carries a `ready_on_strike:COST` attachment, this is its
-# first strike this turn, and the controller can afford COST. Marks the
-# once-per-turn trigger as fired (whether or not they pay). Returns [] when
-# nothing to offer, so choose_strike falls through to opening the combat window.
-# Resolved immediately (not on the chain) — see data/rules_deviations.md
-# "Windfury Weapon".
+# Opens a ready-on-strike point for the striking player. Two independent sources
+# grant the same offer:
+#   • Windfury Weapon — a `ready_on_strike:COST` ATTACHMENT on the struck weapon,
+#     "for the first time each turn": gated by the weapon's
+#     `windfury_struck_this_turn` counter, marked fired whether or not they pay.
+#   • Rapid Fire — a this-turn grant on the striking PLAYER covering every Ranged
+#     weapon (PlayerState.rapid_fire_ready_cost), "whenever": deliberately NOT
+#     gated, so repeat strikes each get the offer. That is the card's entire
+#     purpose, so it must not consume or check Windfury's counter.
+# The two stay independent: a Windfury-attached Ranged weapon under Rapid Fire
+# gets Windfury's (free of the gate) first offer and a Rapid Fire offer on every
+# later strike. The cheaper cost is offered when both apply to the same strike.
+# Only offered when the controller can afford it. Returns [] when nothing to
+# offer, so choose_strike falls through to opening the combat window. Resolved
+# immediately (not on the chain) — see data/rules_deviations.md "Windfury Weapon".
 static func _open_strike_ready_point(state: GameState, weapon_id: String,
 		side: String, db) -> Array[GameEvent]:
 	if not db:
@@ -2595,12 +2621,22 @@ static func _open_strike_ready_point(state: GameState, weapon_id: String,
 				var c := int(p[1]) if p.size() > 1 else 0
 				if cost < 0 or c < cost:
 					cost = c
+	if cost >= 0:
+		# "for the first time each turn" — the ATTACHMENT offer is once per turn
+		# per weapon. Fired whether or not they pay.
+		if int(weapon.counters.get("windfury_struck_this_turn", 0)) > 0:
+			cost = -1
+		else:
+			weapon.counters["windfury_struck_this_turn"] = 1
+	# Rapid Fire: any Ranged weapon this player strikes with, ungated.
+	var rf_ps := state.players.get(weapon.controller) as PlayerState
+	if rf_ps and rf_ps.rapid_fire_ready_cost >= 0:
+		var wdef := db.get_def(weapon.card_def_id) as CardDef
+		if wdef and wdef.dmg_type.to_lower() == "ranged":
+			if cost < 0 or rf_ps.rapid_fire_ready_cost < cost:
+				cost = rf_ps.rapid_fire_ready_cost
 	if cost < 0:
 		return []
-	# "for the first time each turn" — only offer once per turn per weapon.
-	if int(weapon.counters.get("windfury_struck_this_turn", 0)) > 0:
-		return []
-	weapon.counters["windfury_struck_this_turn"] = 1
 	if state.get_available_resources(weapon.controller) < cost:
 		return []
 	state.pending_strike_ready_player    = weapon.controller

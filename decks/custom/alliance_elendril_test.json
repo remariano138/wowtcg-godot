@@ -90,8 +90,13 @@
     },
     {
       "card_def_id": "azeroth_311",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ancient Bone Bow"
+    },
+    {
+      "card_def_id": "dark_portal_271",
+      "count": 1,
+      "_card_name": "Blackcrow"
     },
     {
       "card_def_id": "azeroth_331",
@@ -135,7 +140,7 @@
     },
     {
       "card_def_id": "azeroth_222",
-      "count": 4,
+      "count": 3,
       "_card_name": "Warden Tonarin"
     },
     {
@@ -154,9 +159,9 @@
       "_card_name": "Jeleane Nightbreeze"
     },
     {
-      "card_def_id": "azeroth_41",
-      "count": 1,
-      "_card_name": "Multi-Shot"
+      "card_def_id": "azeroth_43",
+      "count": 2,
+      "_card_name": "Rapid Fire"
     }
   ],
   "recommended_ai_id": "ai_generic",

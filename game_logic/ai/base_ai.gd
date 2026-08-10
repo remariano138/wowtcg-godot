@@ -1100,6 +1100,15 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if gx_act:
 					result.append(gx_act)
 				continue
+			if def and StackResolver._has_effect_flag_prefix(def, "rapid_fire_ready_on_strike"):
+				# Rapid Fire grants nothing on its own — its whole value is chaining
+				# ranged strikes, so only play it when we can actually pay for at
+				# least TWO strikes with a ready Ranged weapon this turn:
+				#   play cost + 2 x strike cost + the ready payment.
+				# Anything less and the card is wasted.
+				if not _rapid_fire_worth_playing(state, db, player_id,
+						card.instance_id, def):
+					continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
@@ -1219,6 +1228,46 @@ static func _pure_draw_amount(def: CardDef) -> int:
 			return 0
 		total += int(parts[1]) if parts.size() > 1 else 1
 	return total
+
+
+# Rapid Fire policy: the card does nothing by itself, so playing it without the
+# resources to cash it in is a wasted card. Require a READY Ranged weapon in play
+# and enough resources this turn to strike with it at least TWICE:
+#
+#     play cost + 2 x strike cost + the grant's ready payment
+#
+# (the second strike is only reachable by paying the ready payment after the
+# first). The cheapest ready Ranged weapon sets the bar — a player may hold more
+# than one. Strike cost is read through StackResolver.get_strike_cost so
+# discounts and opposing strike taxes (Margaret Fowl) count.
+func _rapid_fire_worth_playing(state: GameState, db, player_id: String,
+		card_id: String, def: CardDef) -> bool:
+	if not db:
+		return false
+	var ready_cost := -1
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "rapid_fire_ready_on_strike":
+			ready_cost = int(parts[1]) if parts.size() > 1 else 0
+	if ready_cost < 0:
+		return false
+	var strike_cost := -1
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.is_exhausted:
+			continue
+		var wdef := db.get_def(card.card_def_id) as CardDef
+		if not wdef or wdef.dmg_type.to_lower() != "ranged":
+			continue
+		if StackResolver._weapon_info(wdef).is_empty():
+			continue
+		var c := StackResolver.get_strike_cost(state, player_id, wdef, db)
+		if c >= 0 and (strike_cost < 0 or c < strike_cost):
+			strike_cost = c
+	if strike_cost < 0:
+		return false   # no ready Ranged weapon equipped
+	var play_cost := state.get_play_cost(card_id, db)
+	return state.get_available_resources(player_id) \
+		>= play_cost + 2 * strike_cost + ready_cost
 
 
 # Returns the best resource placement action for this player, or null if none is appropriate.

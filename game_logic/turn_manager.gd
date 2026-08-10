@@ -115,6 +115,8 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			p.melee_strike_discount = 0
 			# Elendril's "+3 ATK to Ranged weapons this turn" likewise expires.
 			p.ranged_weapon_atk_bonus = 0
+			# Rapid Fire's "whenever you strike ... this turn" grant likewise.
+			p.rapid_fire_ready_cost = -1
 
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):

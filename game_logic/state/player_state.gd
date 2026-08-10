@@ -39,6 +39,14 @@ var damage_prevention: int = 0
 # start of every turn (so it lasts exactly the turn it was gained in).
 var melee_strike_discount: int = 0
 
+# Rapid Fire: "Whenever you strike with a Ranged weapon this turn, you may pay
+# (1). If you do, ready that weapon and your hero." The COST to pay, or -1 when
+# not active (cost 0 is a legal grant). Unlike Windfury Weapon's attachment this
+# is a player-wide grant covering EVERY Ranged weapon, and it is deliberately
+# NOT once per turn ("whenever") — the whole point is repeat strikes. Cleared at
+# the start of every turn, so it lasts exactly the turn it was gained in.
+var rapid_fire_ready_cost: int = -1
+
 # Elendril's flip power: "Your Ranged weapons have +3 ATK this turn." Applied
 # to this player's Ranged weapons in GameState.get_atk; cleared at the start of
 # every turn (so it lasts exactly the turn it was gained in).

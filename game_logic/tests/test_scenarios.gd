@@ -233,6 +233,8 @@ func _ready() -> void:
 		_test_windfury_totem_party_ready,
 		_test_windfury_totem_with_windseer_single_ready,
 		_test_windfury_weapon_attach_and_ready_on_strike,
+		_test_rapid_fire_repeat_ranged_strikes,
+		_test_ai_rapid_fire_only_when_two_strikes_affordable,
 		_test_kena_shadowbrand_power,
 		_test_kena_shadowbrand_self_lethal,
 		_test_bizzik_sparkcog_sacrifice_draw,
@@ -12549,6 +12551,115 @@ func _test_windfury_weapon_attach_and_ready_on_strike() -> void:
 	StackResolver.choose_strike(state, "krol", db)
 	eq(state.pending_strike_ready_player, "", "ww-o: no second windfury ready (once per turn)")
 	ok(state.combat_attack_window, "ww-p: window opens directly after the second strike")
+
+
+func _test_rapid_fire_repeat_ranged_strikes() -> void:
+	_buf.append("\n-- Rapid Fire: ungated ready-on-strike for Ranged weapons --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("bow_def", 3, 2, 1, "Ranged", "ranged_weapon")
+	db.weapon("krol_def", 3, 3, 1)   # Melee — Rapid Fire must not cover it
+	db.ability("azeroth_43", 2, "rapid_fire_ready_on_strike:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 12)
+	var bow := CardInstance.create("bow", "bow_def", "p1", "p1_hero_row")
+	state.cards["bow"] = bow
+	state.zones["p1_hero_row"].card_ids.append("bow")
+	_add_card_to_hand(state, "rf", "azeroth_43", "p1")
+
+	# No grant yet: striking with the bow opens no ready point.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.choose_strike(state, "bow", db)
+	eq(state.pending_strike_ready_player, "", "rf-a: no ready point before Rapid Fire")
+	while not state.combat_attacker.is_empty():
+		StackResolver.pass_priority(state, db)
+	# Hero and bow are spent; put them back so the grant can be tested cleanly.
+	GameLogic.ready_card(state, "bow")
+	GameLogic.ready_card(state, "p1_hero")
+
+	var cast := PendingAction.make("play_ability", "p1", {"card_id": "rf"})
+	ok(StackResolver.can_submit(state, cast, db), "rf-b: Rapid Fire needs no target")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+	eq((state.players["p1"] as PlayerState).rapid_fire_ready_cost, 1,
+		"rf-c: this-turn grant recorded on the player")
+
+	# Two Ranged strikes in the same turn — BOTH get the offer ("whenever").
+	for i in 2:
+		StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+			{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+		StackResolver.pass_priority(state, db)
+		StackResolver.pass_priority(state, db)
+		StackResolver.choose_strike(state, "bow", db)
+		eq(state.pending_strike_ready_player, "p1",
+			"rf-d%d: ready point opens on strike %d (no once-per-turn gate)" % [i, i + 1])
+		var res_before := state.get_available_resources("p1")
+		StackResolver.choose_ready_on_strike(state, true, db)
+		ok(not state.get_card("bow").is_exhausted, "rf-e%d: bow readied" % i)
+		ok(not state.get_card("p1_hero").is_exhausted, "rf-f%d: hero readied" % i)
+		eq(state.get_available_resources("p1"), res_before - 1, "rf-g%d: 1 paid" % i)
+		while not state.combat_attacker.is_empty():
+			StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 2 + 2 + 2,
+		"rf-h: three ranged attacks landed (2 ATK each)")
+
+	# A MELEE weapon is not covered by the grant.
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.choose_strike(state, "krol", db)
+	eq(state.pending_strike_ready_player, "", "rf-i: Melee weapon gets no Rapid Fire offer")
+	while not state.combat_attacker.is_empty():
+		StackResolver.pass_priority(state, db)
+
+	# "This turn" — the grant expires at the start of the next turn.
+	TurnManager.advance_phase(state, db)   # action -> end
+	TurnManager.advance_phase(state, db)   # -> next turn's ready step
+	eq((state.players["p1"] as PlayerState).rapid_fire_ready_cost, -1,
+		"rf-j: grant cleared on a later turn")
+
+
+func _test_ai_rapid_fire_only_when_two_strikes_affordable() -> void:
+	_buf.append("\n-- Rapid Fire: AI plays it only when it can strike twice --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("bow_def", 3, 2, 2, "Ranged", "ranged_weapon")   # strike cost 2
+	db.weapon("krol_def", 3, 3, 1)                             # Melee
+	db.ability("azeroth_43", 2, "rapid_fire_ready_on_strike:1")
+	var ai := BaseAI.new()
+
+	# Threshold = play 2 + 2 x strike 2 + ready 1 = 7.
+	var plays := func(resources: int, weapon_def: String, exhaust: bool) -> bool:
+		var st := _base_state(db, "p1_hero", "p2_hero")
+		_add_resources(st, "p1", resources)
+		if weapon_def != "":
+			var w := CardInstance.create("w", weapon_def, "p1", "p1_hero_row")
+			w.is_exhausted = exhaust
+			st.cards["w"] = w
+			st.zones["p1_hero_row"].card_ids.append("w")
+		_add_card_to_hand(st, "rf", "azeroth_43", "p1")
+		for a in ai.get_reasonable_actions(st, db, "p1"):
+			if a.params.get("card_id", "") == "rf":
+				return true
+		return false
+
+	ok(not plays.call(6, "bow_def", false), "rfai-a: 6 resources is one short — held")
+	ok(plays.call(7, "bow_def", false), "rfai-b: 7 resources funds two strikes — played")
+	ok(plays.call(12, "bow_def", false), "rfai-c: plenty of resources — played")
+	ok(not plays.call(12, "bow_def", true), "rfai-d: weapon exhausted — held")
+	ok(not plays.call(12, "krol_def", false), "rfai-e: only a Melee weapon — held")
+	ok(not plays.call(12, "", false), "rfai-f: no weapon equipped — held")
 
 
 # ── Kena Shadowbrand: [Activate], put 1 damage on self → draw ──────────────────

@@ -374,6 +374,12 @@ static func strike_discount_gained(player_id: String, amount: int) -> GameEvent:
 static func ranged_weapon_bonus_gained(player_id: String, amount: int) -> GameEvent:
 	return make("ranged_weapon_bonus_gained", {"player": player_id, "amount": amount})
 
+# Rapid Fire's this-turn grant landed: every Ranged weapon this player strikes
+# with for the rest of the turn opens a pay-`cost` ready point (no once-per-turn
+# gate — see PlayerState.rapid_fire_ready_cost).
+static func rapid_fire_gained(player_id: String, cost: int) -> GameEvent:
+	return make("rapid_fire_gained", {"player": player_id, "cost": cost})
+
 static func enter_play_target_required(card_id: String, dmg_type: String, amount: int) -> GameEvent:
 	return make("enter_play_target_required", {
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,

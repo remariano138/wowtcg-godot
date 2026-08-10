@@ -19,9 +19,9 @@
       "_card_name": "The Missing Diplomat"
     },
     {
-      "card_def_id": "azeroth_340",
+      "card_def_id": "dark_portal_289",
       "count": 3,
-      "_card_name": "The Defias Brotherhood"
+      "_card_name": "Crown of the Earth"
     },
     {
       "card_def_id": "azeroth_352",
@@ -44,9 +44,9 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_36",
+      "card_def_id": "dark_portal_34",
       "count": 3,
-      "_card_name": "Bloodclaw"
+      "_card_name": "Hootie"
     },
     {
       "card_def_id": "azeroth_38",
@@ -100,7 +100,7 @@
     },
     {
       "card_def_id": "azeroth_210",
-      "count": 1,
+      "count": 2,
       "_card_name": "Nerra Lifeboon"
     },
     {
@@ -137,11 +137,6 @@
       "card_def_id": "azeroth_176",
       "count": 2,
       "_card_name": "Apprentice Teep"
-    },
-    {
-      "card_def_id": "azeroth_192",
-      "count": 1,
-      "_card_name": "Kor Cindervein"
     },
     {
       "card_def_id": "azeroth_41",

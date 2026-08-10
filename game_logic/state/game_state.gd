@@ -470,6 +470,40 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 						var owner_ps := players.get(inst.controller) as PlayerState
 						if owner_ps and owner_ps.hero_instance_id == inst.instance_id:
 							bonus += int(p[1]) if p.size() > 1 else 1
+	bonus += _opposing_atk_aura(inst, inst_is_ally, db)
+	return bonus
+
+
+# ATK modifier this card receives from OTHER players' static "opposing" auras
+# (`opposing_characters_atk_mod:N` — Hootie: "Opposing heroes and allies have
+# -1 ATK"). Controller-relative, so unlike Lust for Battle's board-wide
+# _ally_keyword_aura this scans every player EXCEPT this card's controller.
+#
+# "Heroes and allies" is characters only: weapons live in the hero row and have
+# printed ATK of their own (rule 303), so the gate below keeps the aura off
+# them — otherwise Hootie would silently weaken every opposing weapon too.
+# Stacks per copy; the caller's max(atk, 0) floor keeps ATK non-negative while
+# leaving the raw value intact. Evaluated live, never cached.
+func _opposing_atk_aura(inst: CardInstance, inst_is_ally: bool, db) -> int:
+	if not db:
+		return 0
+	var ps := players.get(inst.controller) as PlayerState
+	var is_hero := ps != null and ps.hero_instance_id == inst.instance_id
+	if not inst_is_ally and not is_hero:
+		return 0
+	var bonus := 0
+	for pid in players:
+		if pid == inst.controller:
+			continue
+		for zone_suffix in ["_hero_row", "_ally_row"]:
+			for source in cards_in_zone(pid + zone_suffix):
+				var src_def: CardDef = db.get_def(source.card_def_id)
+				if not src_def or src_def.effects == "":
+					continue
+				for seg in src_def.effects.split("|"):
+					var p := seg.strip_edges().split(":")
+					if p[0].strip_edges() == "opposing_characters_atk_mod" and p.size() > 1:
+						bonus += int(p[1])
 	return bonus
 
 func get_max_hp(instance_id: String, db) -> int:

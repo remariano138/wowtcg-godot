@@ -161,6 +161,7 @@ func _ready() -> void:
 		_test_ai_sneak_elusive_save,
 		_test_lust_for_battle_all_allies_ferocity,
 		_test_from_the_shadows_all_allies_elusive,
+		_test_hootie_opposing_atk_aura,
 		_test_brigg_destroys_damaged_ally,
 		_test_ai_brigg_combat_math,
 		_test_war_stomp_mass_exhaust,
@@ -17148,6 +17149,71 @@ func _test_lust_for_battle_all_allies_ferocity() -> void:
 		"lfb-j: ferocity lifts when the aura leaves play")
 	ok("mine" not in StackResolver.get_legal_attackers(state, "p1", db),
 		"lfb-k: the ally is summoning-sick again")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hootie (dark_portal_34): "Opposing heroes and allies have -1 ATK."
+# Controller-relative static aura living on an ALLY (not an ongoing ability),
+# read live in GameState._aura_atk_mods. Characters only — an opposing weapon
+# sits in the hero row with printed ATK of its own and must not be weakened.
+func _test_hootie_opposing_atk_aura() -> void:
+	_buf.append("\n-- Hootie: opposing heroes and allies have -1 ATK --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 2)
+	db.ally("runt_def", 1, 1, [], 1)
+	db.weapon("krol_def", 3, 3, 1)
+	db.pet("dark_portal_34", 2, 2, [], 2, "opposing_characters_atk_mod:-1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
+	var runt := _add_ally(state, "runt", "runt_def", "p1")
+	_add_ally(state, "theirs", "grunt_def", "p2")
+
+	# A weapon in OUR hero row: printed ATK 3, must stay 3 under the aura.
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+
+	# Heroes print 0 ATK, so buff ours to give the hero half something to bite on.
+	state.get_card("p1_hero").active_buffs.append(
+		Buff.make("hero_atk", "src", "atk", 3, "permanent", 0))
+
+	eq(state.get_atk("grunt", db), 3, "hoot-a: our ally is 3 ATK before the aura")
+	eq(state.get_atk("p1_hero", db), 3, "hoot-b: our hero is 3 ATK before the aura")
+
+	var hootie := _add_ally(state, "hootie", "dark_portal_34", "p2")
+
+	eq(state.get_atk("grunt", db), 2, "hoot-c: opposing ally loses 1 ATK")
+	eq(state.get_atk("p1_hero", db), 2, "hoot-d: opposing hero loses 1 ATK too")
+	eq(state.get_atk("theirs", db), 3,
+		"hoot-e: the controller's OWN ally is untouched (opposing only)")
+	eq(state.get_atk("hootie", db), 2, "hoot-f: Hootie doesn't debuff himself")
+	eq(state.get_atk("krol", db), 3,
+		"hoot-g: an opposing WEAPON keeps its ATK — the aura hits characters only")
+
+	# ATK floors at 0 (a character can't have negative ATK), but the raw value is
+	# preserved: a second Hootie takes the 1-ATK runt to -1 → shown as 0, and a
+	# later +2 buff counts from the true total (1 - 2 + 2 = 1), not from the floor.
+	eq(state.get_atk("runt", db), 0, "hoot-h: a 1-ATK ally floors at 0, not -1")
+	_add_ally(state, "hootie2", "dark_portal_34", "p2")
+	eq(state.get_atk("grunt", db), 1, "hoot-i: a second copy stacks (-2 total)")
+	eq(state.get_atk("runt", db), 0, "hoot-j: still floored at 0, never negative")
+	state.get_card("runt").active_buffs.append(
+		Buff.make("pump", "src", "atk", 2, "permanent", 0))
+	eq(state.get_atk("runt", db), 1,
+		"hoot-k: a later +2 counts from the raw value (1-2+2), not from the floor")
+
+	# The debuff lifts the moment the source leaves play — it's a live scan.
+	GameLogic.move_card(state, "hootie", "p2_graveyard")
+	eq(state.get_atk("grunt", db), 2, "hoot-l: killing one copy restores 1 ATK")
+	GameLogic.move_card(state, "hootie2", "p2_graveyard")
+	eq(state.get_atk("grunt", db), 3, "hoot-m: aura fully lifts when both leave play")
+	eq(state.get_atk("p1_hero", db), 3, "hoot-n: our hero is back to full ATK")
+	# Sanity: the aura had nothing to do with the ally itself, so a card that
+	# arrives after the source is gone is unaffected as well.
+	eq(hootie.zone_id, "p2_graveyard", "hoot-o: Hootie really left play")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

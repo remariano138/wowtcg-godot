@@ -151,7 +151,10 @@ var _gy_dialog:        Panel
 var _gy_dimmer:        ColorRect
 var _gy_title:         Label
 var _gy_scroll:        ScrollContainer
-var _gy_card_grid:     GridContainer
+var _gy_body:          VBoxContainer   # holds one (optionally labelled) grid per section
+var _gy_confirm_nodes: Array = []      # the "are you sure?" popup, when the search asks for one
+var _gy_confirm_heal:  int = 0         # heal per card removed (Cannibalize) — 0 = don't mention healing
+var _gy_ask_confirm:   bool = false    # true = Confirm raises an "are you sure?" popup first
 var _gy_confirm_btn:   Button
 var _gy_cancel_btn:    Button
 var _gy_selected:      Array = []       # instance_ids currently picked
@@ -3564,11 +3567,13 @@ func _build_graveyard_dialog() -> void:
 	_gy_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vbox.add_child(_gy_scroll)
 
-	_gy_card_grid = GridContainer.new()
-	_gy_card_grid.add_theme_constant_override("h_separation", 14)
-	_gy_card_grid.add_theme_constant_override("v_separation", 14)
-	_gy_card_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_gy_scroll.add_child(_gy_card_grid)
+	# Sections stack vertically: a search that spans BOTH graveyards (owner:both)
+	# renders one labelled grid per graveyard so the player can tell whose cards
+	# they are picking; every other search renders a single unlabelled grid.
+	_gy_body = VBoxContainer.new()
+	_gy_body.add_theme_constant_override("separation", 10)
+	_gy_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_gy_scroll.add_child(_gy_body)
 
 	var btn_row := HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -3598,17 +3603,49 @@ func _on_graveyard_select_requested(quest_id: String, candidate_ids: Array,
 	# Title reflects where the candidates come from: "your deck", "your
 	# graveyard", or "any graveyard" (owner:both, e.g. Ophelia Barrows).
 	var source := "your graveyard"
+	var both := false
+	var gy_req := StackResolver.get_graveyard_search_requirement(quest_def) if quest_def else {}
 	if quest_def:
-		var gy_req := StackResolver.get_graveyard_search_requirement(quest_def)
 		if gy_req.get("source", "graveyard") == "deck":
 			source = "your deck"
 		elif gy_req.get("owner", "own") == "both":
 			source = "any graveyard"
+			both = true
 		elif gy_req.get("owner", "own") == "opponent":
 			source = "the opponent's graveyard"
+	# "Any number" (max_count above the candidate pool) reads better as a range
+	# the player can't miscount than as a literal "0 – 99".
+	var any_number := min_count == 0 and max_count >= candidate_ids.size()
+	if any_number:
+		count_str = "any number of"
+	# A search spanning BOTH graveyards is split into a labelled section per
+	# graveyard — a flat grid gives the player no way to tell whose card is
+	# whose, which matters when exiling from the opponent's pile is the point.
+	var sections: Array = []
+	if both:
+		var mine: Array = []
+		var theirs: Array = []
+		var opp := "p2" if _local_player == "p1" else "p1"
+		for cid in candidate_ids:
+			var c := _state.get_card(cid as String)
+			if c and c.zone_id == opp + "_graveyard":
+				theirs.append(cid)
+			else:
+				mine.append(cid)
+		sections = [
+			{"label": "Your graveyard", "ids": mine},
+			{"label": "Opponent's graveyard", "ids": theirs},
+		]
+	# Cannibalize's "heals 2 damage for each card removed" rider drives the
+	# confirmation wording; 0 means the confirm just names the removal.
+	_gy_confirm_heal = StackResolver.rfg_heal_per_card(quest_def) if quest_def else 0
+	# Both-graveyard searches remove/relocate cards the player can't get back —
+	# they confirm before the action is submitted (see _on_gy_confirm_pressed).
+	_gy_ask_confirm = both
+	var noun := "cards" if any_number else "card(s)"
 	_open_gy_dialog(candidate_ids, false,
-			"%s — choose %s card(s) from %s" % [quest_name, count_str, source],
-			min_count, max_count)
+			"%s — choose %s %s from %s" % [quest_name, count_str, noun, source],
+			min_count, max_count, true, sections)
 
 
 func _on_graveyard_examine_requested(graveyard_player: String, card_ids: Array) -> void:
@@ -3638,7 +3675,8 @@ const GY_MAX_COLS := 9
 const GY_MAX_DIALOG_H := 920
 
 func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
-		min_count: int, max_count: int, modal: bool = true) -> void:
+		min_count: int, max_count: int, modal: bool = true,
+		sections: Array = []) -> void:
 	_gy_selected.clear()
 	_gy_view_only = view_only
 	_gy_peek_active = not modal
@@ -3646,13 +3684,45 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 	_gy_max = max_count
 	_gy_title.text = title
 
-	for child in _gy_card_grid.get_children():
+	for child in _gy_body.get_children():
 		child.queue_free()
+	# One unlabelled section by default; `sections` ([{label, ids}]) splits the
+	# pool per graveyard for owner:both searches. An EMPTY section is still
+	# rendered with its label ("— empty —") so "no ally cards over there" is
+	# information the player can see rather than infer from a missing heading.
+	var groups: Array = sections
+	if groups.is_empty():
+		groups = [{"label": "", "ids": card_ids}]
 	var count: int = max(card_ids.size(), 1)
 	var cols: int = clamp(count, 1, GY_MAX_COLS)
-	_gy_card_grid.columns = cols
-	for cid in card_ids:
-		_gy_card_grid.add_child(_make_gy_card_button(cid as String))
+	var card_rows := 0
+	var head_lines := 0
+	for g in groups:
+		var ids: Array = g.get("ids", [])
+		var label: String = str(g.get("label", ""))
+		if label != "":
+			var head := Label.new()
+			head.text = label
+			head.add_theme_font_size_override("font_size", 15)
+			head.add_theme_color_override("font_color", Color(0.75, 0.8, 0.95))
+			_gy_body.add_child(head)
+			head_lines += 1
+		if ids.is_empty():
+			var empty := Label.new()
+			empty.text = "— empty —"
+			empty.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
+			_gy_body.add_child(empty)
+			head_lines += 1
+			continue
+		var grid := GridContainer.new()
+		grid.add_theme_constant_override("h_separation", 14)
+		grid.add_theme_constant_override("v_separation", 14)
+		grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.columns = cols
+		for cid in ids:
+			grid.add_child(_make_gy_card_button(cid as String))
+		_gy_body.add_child(grid)
+		card_rows += ceili(float(ids.size()) / cols)
 
 	_gy_confirm_btn.visible = not view_only and modal
 	_gy_confirm_btn.text = "Confirm (C)"
@@ -3662,10 +3732,10 @@ func _open_gy_dialog(card_ids: Array, view_only: bool, title: String,
 	# lets clicks/hover pass through to the cards underneath.
 	_gy_dialog.mouse_filter = Control.MOUSE_FILTER_STOP if modal else Control.MOUSE_FILTER_IGNORE
 
-	# Size to content: width from columns, height from rows (capped → scrolls).
-	var rows: int = ceili(float(count) / cols)
+	# Size to content: width from columns, height from the card rows plus the
+	# section headings/empty markers (capped → scrolls).
 	var content_w: int = cols * int(GY_CARD_SIZE.x + 14) + 60
-	var content_h: int = rows * int(GY_CARD_SIZE.y + 14) + 140
+	var content_h: int = card_rows * int(GY_CARD_SIZE.y + 14) + head_lines * 34 + 140
 	_gy_dialog.size = Vector2(max(content_w, 480), min(content_h, GY_MAX_DIALOG_H))
 	_gy_dialog.position = (Vector2(1920, 1080) - _gy_dialog.size) * 0.5
 	_gy_dimmer.visible = modal
@@ -3745,12 +3815,51 @@ func _on_gy_confirm_pressed() -> void:
 		_refresh_ui()
 		_schedule_next_turn()
 		return
+	# Both-graveyard searches (Cannibalize, Ophelia Barrows) exile cards for
+	# good, so the pick is re-stated once before it is submitted. Cancelling
+	# leaves the browser open with the selection intact — nothing has been sent
+	# to the engine yet, so backing out costs nothing.
+	if _gy_ask_confirm and _gy_confirm_nodes.is_empty():
+		_show_gy_confirm_popup()
+		return
+	_dismiss_gy_confirm_popup()
 	_close_gy_dialog()
 	_router.confirm_graveyard_selection(_gy_selected.duplicate())
 	_refresh_ui()
 
 
+# "Remove 3 ally cards and heal 6 damage?" — the last stop before the selection
+# is announced. Sits above the browser (which stays open behind it) so Cancel
+# returns the player to their picks rather than to the board.
+func _show_gy_confirm_popup() -> void:
+	var n := _gy_selected.size()
+	var noun := "ally card" if n == 1 else "ally cards"
+	var text := "Remove %d %s from the game" % [n, noun]
+	if _gy_confirm_heal > 0:
+		text += " and heal %d damage" % (_gy_confirm_heal * n)
+	text += "?"
+	var popup := _build_choice_popup(text, Color(0.85, 0.85, 0.95), [
+		{"text": "Confirm", "callback": Callable(self, "_on_gy_confirm_pressed")},
+		{"text": "Cancel",  "callback": Callable(self, "_dismiss_gy_confirm_popup")},
+	])
+	# The browser's dimmer/panel sit at z 19/20 — the popup must clear both.
+	popup.z_index = 25
+	_gy_confirm_nodes.append(popup)
+
+
+func _dismiss_gy_confirm_popup() -> void:
+	for n in _gy_confirm_nodes:
+		if is_instance_valid(n):
+			(n as Node).queue_free()
+	_gy_confirm_nodes.clear()
+
+
 func _on_gy_cancel_pressed() -> void:
+	# The "are you sure?" popup is the innermost layer: Esc/Cancel dismisses it
+	# and returns to the selection instead of abandoning the whole search.
+	if not _gy_confirm_nodes.is_empty():
+		_dismiss_gy_confirm_popup()
+		return
 	if _gy_reveal_mode:
 		return  # mandatory reveal-pick — no cancel
 	var was_view_only := _gy_view_only
@@ -3761,6 +3870,9 @@ func _on_gy_cancel_pressed() -> void:
 
 
 func _close_gy_dialog() -> void:
+	_dismiss_gy_confirm_popup()
+	_gy_ask_confirm = false
+	_gy_confirm_heal = 0
 	_gy_reveal_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false

@@ -300,7 +300,7 @@ func handle_card_click(instance_id: String) -> void:
 		return
 	# Ancestral Spirit: the target is an ally card in your graveyard — open the
 	# graveyard browser instead of board targeting.
-	if action_type == "play_ability" and _ability_reanimates_from_graveyard(instance_id):
+	if action_type == "play_ability" and _ability_uses_graveyard_browser(instance_id):
 		start_ability_graveyard_selection(instance_id)
 		return
 	if action_type == "play_ability" and _ability_needs_target(instance_id):
@@ -475,9 +475,10 @@ func start_ally_graveyard_selection(card_id: String) -> void:
 			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
 
 
-# Ancestral Spirit: a hand Ability whose target is an ally card in the caster's
-# graveyard. Opens the same browser as the ally/quest graveyard searches; the
-# confirm submits play_ability with the chosen card as target_id.
+# A hand Ability whose target(s) live in a graveyard rather than on the board:
+# Ancestral Spirit (reanimate one ally, `target_id`) or Cannibalize (exile any
+# number of ally cards from BOTH graveyards, `target_ids`). Opens the same
+# browser as the ally/quest graveyard searches; the confirm submits play_ability.
 func start_ability_graveyard_selection(card_id: String) -> void:
 	var card := state.get_card(card_id)
 	if not card or not db:
@@ -488,6 +489,9 @@ func start_ability_graveyard_selection(card_id: String) -> void:
 		return
 	var candidates := StackResolver.get_graveyard_search_candidates(
 			state, local_player, req, db)
+	# Cannibalize removes "any number" (min 0), so an empty pool is NOT a reason
+	# to refuse: the browser still opens so the player can see there is nothing
+	# to exile and either back out or confirm an empty selection.
 	if candidates.size() < int(req.get("min_count", 1)):
 		return
 	_gy_select_ability_id = card_id
@@ -495,18 +499,24 @@ func start_ability_graveyard_selection(card_id: String) -> void:
 			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
 
 
-# Detect a reanimate-from-graveyard hand Ability (delegates to the resolver's
-# def-level check via the card def).
-func _ability_reanimates_from_graveyard(card_id: String) -> bool:
+# Detect a hand Ability whose targets are graveyard CARDS — reanimate
+# (Ancestral Spirit, dest "play") or exile (Cannibalize, dest "rfg"). Both open
+# the graveyard browser instead of board targeting.
+func _ability_uses_graveyard_browser(card_id: String) -> bool:
+	return _ability_graveyard_dest(card_id) != ""
+
+
+func _ability_graveyard_dest(card_id: String) -> String:
 	if not db:
-		return false
+		return ""
 	var card := state.get_card(card_id)
 	if not card:
-		return false
+		return ""
 	var def := db.get_def(card.card_def_id) as CardDef
 	if not def:
-		return false
-	return StackResolver.get_graveyard_search_requirement(def).get("dest", "") == "play"
+		return ""
+	var dest: String = StackResolver.get_graveyard_search_requirement(def).get("dest", "")
+	return dest if dest in ["play", "rfg"] else ""
 
 
 # UI confirmed a selection: submit the quest completion (or hero power) with
@@ -541,9 +551,15 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 	if _gy_select_ability_id != "":
 		var ability_id := _gy_select_ability_id
 		_gy_select_ability_id = ""
-		var rz_target: String = selected_ids[0] if not selected_ids.is_empty() else ""
-		var rz_action := PendingAction.make("play_ability", local_player,
-				{"card_id": ability_id, "target_id": rz_target})
+		# Exile abilities (Cannibalize) announce EVERY chosen card as
+		# `target_ids`; reanimate abilities (Ancestral Spirit) announce the
+		# single chosen card as `target_id`.
+		var rz_params := {"card_id": ability_id}
+		if _ability_graveyard_dest(ability_id) == "rfg":
+			rz_params["target_ids"] = selected_ids.duplicate()
+		else:
+			rz_params["target_id"] = selected_ids[0] if not selected_ids.is_empty() else ""
+		var rz_action := PendingAction.make("play_ability", local_player, rz_params)
 		var rz_events := StackResolver.submit_action(state, rz_action, db)
 		if rz_events.is_empty():
 			refresh_highlights()
@@ -1778,7 +1794,7 @@ func handle_context_action(action: PendingAction) -> void:
 		"play_ability":
 			var pa_cid: String = action.params.get("card_id", "")
 			# Ancestral Spirit: graveyard-ally target → open the browser.
-			if _ability_reanimates_from_graveyard(pa_cid):
+			if _ability_uses_graveyard_browser(pa_cid):
 				start_ability_graveyard_selection(pa_cid)
 				return
 			if _ability_needs_target(pa_cid):

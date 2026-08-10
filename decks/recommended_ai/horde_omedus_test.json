@@ -130,8 +130,13 @@
     },
     {
       "card_def_id": "azeroth_228",
-      "count": 4,
+      "count": 3,
       "_card_name": "Benethor Draigo"
+    },
+    {
+      "card_def_id": "dark_portal_136",
+      "count": 1,
+      "_card_name": "Cannibalize"
     },
     {
       "card_def_id": "azeroth_258",

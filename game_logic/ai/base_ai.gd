@@ -1094,6 +1094,12 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if rz_act:
 					result.append(rz_act)
 				continue
+			if def and StackResolver.get_graveyard_search_requirement(def).get("dest", "") == "rfg":
+				# Cannibalize: exile ally cards out of the graveyards for the heal.
+				var gx_act := _graveyard_exile_action(state, db, player_id, card.instance_id, action_type)
+				if gx_act:
+					result.append(gx_act)
+				continue
 			if def and StackResolver._instant_needs_target(def):
 				# Targeted spell: one action per valid target.
 				result.append_array(_targeted_instant_actions(state, db, player_id, card.instance_id, action_type))
@@ -3161,6 +3167,59 @@ func _reanimate_action(state: GameState, db, player_id: String,
 		return null
 	var action := PendingAction.make(action_type, player_id,
 			{"card_id": card_id, "target_id": best})
+	if StackResolver.can_submit(state, action, db):
+		return action
+	return null
+
+
+# Cannibalize: "Remove any number of ally cards in graveyards from the game.
+# Your hero heals 2 damage from itself for each card removed." Held until the
+# heal is worth a card and two resources — the AI never casts it as a pure
+# denial spell — and then it exiles EVERY ally card in the opponent's graveyard
+# (free recursion denial: Ophelia / Finkle / Ancestral Spirit all lose fuel),
+# topping up from its OWN graveyard only while the heal is still doing work.
+func _graveyard_exile_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	var hero_id: String = ps.hero_instance_id if ps else ""
+	if hero_id == "":
+		return null
+	var hero := state.get_card(hero_id)
+	var damage: int = hero.damage_taken if hero else 0
+	var per_card := StackResolver.rfg_heal_per_card(def)
+	# No damage to heal ⇒ the card would only deny the opponent's graveyard,
+	# which isn't worth a card in hand. Wait until it heals at least one card's
+	# worth (a heal that overshoots on the LAST card is fine — that one still
+	# healed something).
+	if per_card <= 0 or damage < per_card:
+		return null
+	var req := StackResolver.get_graveyard_search_requirement(def)
+	var cands := StackResolver.get_graveyard_search_candidates(state, player_id, req, db)
+	if cands.is_empty():
+		return null
+	var opp := "p2" if player_id == "p1" else "p1"
+	var picks: Array = []
+	var healed := 0
+	for cid in cands:
+		var c := state.get_card(cid)
+		if c and c.zone_id == opp + "_graveyard":
+			picks.append(cid)
+			healed += per_card
+	for cid in cands:
+		if healed >= damage:
+			break
+		if cid in picks:
+			continue
+		picks.append(cid)
+		healed += per_card
+	if picks.is_empty():
+		return null
+	var action := PendingAction.make(action_type, player_id,
+			{"card_id": card_id, "target_ids": picks})
 	if StackResolver.can_submit(state, action, db):
 		return action
 	return null

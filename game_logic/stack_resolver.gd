@@ -544,6 +544,28 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 			if action.params.get("_skip_target_check", false):
 				return true
 			return action.params.get("target_id", "") in rz_cands
+		# Graveyard-exile ability (Cannibalize): "Remove any number of ally
+		# cards in graveyards from the game." ANY NUMBER includes zero, so
+		# unlike the reanimate branch an empty candidate pool does NOT make the
+		# card unplayable — it just removes nothing and heals nothing. The
+		# chosen cards ride the play as `target_ids` (multi-select) and are
+		# validated against the current candidate pool.
+		if def and _ability_removes_from_graveyard(def):
+			if action.params.get("_skip_target_check", false):
+				return true
+			var rr_req := get_graveyard_search_requirement(def)
+			var rr_cands := get_graveyard_search_candidates(
+					state, action.source_player, rr_req, db)
+			var rr_picks: Array = action.params.get("target_ids", [])
+			if rr_picks.size() < int(rr_req.get("min_count", 0)) \
+					or rr_picks.size() > int(rr_req.get("max_count", 0)):
+				return false
+			var rr_seen := {}
+			for rr_id in rr_picks:
+				if rr_seen.has(rr_id) or not (rr_id in rr_cands):
+					return false
+				rr_seen[rr_id] = true
+			return true
 		if def and _has_effect_flag_prefix(def, "chain_lightning"):
 			if not _can_play_chain_lightning(state, action, db): return false
 		elif def and is_atk_swing_def(def):
@@ -732,6 +754,31 @@ static func _ability_reanimates_from_graveyard(def: CardDef) -> bool:
 		return false
 	var req := get_graveyard_search_requirement(def)
 	return req.get("dest", "") == "play"
+
+
+# Cannibalize: a hand Ability that exiles cards OUT of graveyards (a
+# `graveyard_to_rfg` requirement segment). The same segment also appears on
+# activated powers (Ophelia Barrows) and quest rewards, neither of which routes
+# through the ability play path — but an `activated_power` segment is checked
+# for explicitly so a future ally with both can't be mistaken for a hand spell.
+static func _ability_removes_from_graveyard(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	if _has_effect_flag_prefix(def, "activated_power"):
+		return false
+	return get_graveyard_search_requirement(def).get("dest", "") == "rfg"
+
+
+# Cannibalize: "…heals 2 damage from itself for each card removed."
+# 0 when the card has no such rider.
+static func rfg_heal_per_card(def: CardDef) -> int:
+	if not def or def.effects == "":
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() >= 2 and parts[0].strip_edges() == "rfg_heal_per_card":
+			return int(parts[1])
+	return 0
 
 
 static func _instant_needs_target(def: CardDef) -> bool:
@@ -2124,6 +2171,34 @@ static func _resolve_play_instant(state: GameState,
 											"card_id": target_id,
 											"damage": rz_card.damage_taken,
 										}))
+					"graveyard_to_rfg":
+						# Cannibalize: "Remove any number of ally cards in
+						# graveyards from the game. Your hero heals 2 damage from
+						# itself for each card removed." The cards were announced
+						# with the play as `target_ids`; each is re-checked here
+						# (706-style) and skipped if it already left its graveyard,
+						# so the heal scales with what was ACTUALLY removed — the
+						# "for each card removed" rider, not the announced count.
+						var gr_removed := 0
+						for gr_id in action.params.get("target_ids", []):
+							var gr_card := state.get_card(gr_id)
+							if not gr_card:
+								continue
+							var gr_zone := state.zones.get(gr_card.zone_id) as Zone
+							if not gr_zone or gr_zone.zone_type != "graveyard":
+								continue
+							events.append_array(GameLogic.move_card(
+									state, gr_id, gr_card.owner + "_rfg"))
+							events.append(GameEvent.card_removed_from_game(
+									gr_id, action.source_player))
+							gr_removed += 1
+						var gr_heal := rfg_heal_per_card(def)
+						if gr_removed > 0 and gr_heal > 0:
+							var gr_ps := state.players.get(action.source_player) as PlayerState
+							var gr_hero: String = gr_ps.hero_instance_id if gr_ps else ""
+							if gr_hero != "":
+								events.append_array(GameLogic.heal(state, gr_hero,
+										gr_heal * gr_removed, db, card_id))
 					"deal_damage_aoe_opponent":
 						# "Your hero deals N <type> damage to each opposing hero and
 						# ally." (Flamestrike) — no target needed, hits every

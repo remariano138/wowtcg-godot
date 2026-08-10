@@ -167,6 +167,9 @@ func _ready() -> void:
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
 		_test_cost_banded_destroy,
+		_test_cannibalize,
+		_test_cannibalize_empty_and_fizzle,
+		_test_ai_cannibalize,
 		_test_gouge_exhaust_and_ready_lock,
 		_test_berserking,
 		_test_cat_form_hero_attack,
@@ -16646,3 +16649,154 @@ func _run_combat(state: GameState, db, attacker_player: String,
 		attacker_player, {"attacker_id": attacker_id, "defender_id": defender_id}), db)
 	for i in range(6):
 		StackResolver.pass_priority(state, db)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cannibalize (dark_portal_136, 2, Ability — Horde, Undead Hero Required):
+#   "Remove any number of ally cards in graveyards from the game. Your hero
+#    heals 2 damage from itself for each card removed."
+#   requires_hero_race:Undead|graveyard_to_rfg:Ally:0:99:both|rfg_heal_per_card:2
+# Multi-target announce (`target_ids`) spanning BOTH graveyards; "any number"
+# includes zero, and the heal scales with what was ACTUALLY removed.
+# ══════════════════════════════════════════════════════════════════════════════
+const CANNIBALIZE_FX := "requires_hero_race:Undead" \
+		+ "|graveyard_to_rfg:Ally:0:99:both|rfg_heal_per_card:2"
+
+func _test_cannibalize() -> void:
+	_buf.append("\n-- Cannibalize: exile any number of graveyard allies, heal 2 each --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 1, 4, [], 2)
+	db.instant("bolt_def", 2, "")
+	db.ability("cann_def", 2, CANNIBALIZE_FX)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	st.get_card("p1_hero").damage_taken = 9
+	_add_card_to_hand(st, "cann", "cann_def", "p1")
+	# Two ally cards in our graveyard, one in the opponent's, plus an Ability
+	# card that must never be a candidate.
+	for spec in [["own_a", "bear_def", "p1"], ["own_b", "bear_def", "p1"],
+			["opp_a", "bear_def", "p2"], ["opp_bolt", "bolt_def", "p2"]]:
+		var c := CardInstance.create(spec[0], spec[1], spec[2], spec[2] + "_graveyard")
+		st.cards[spec[0]] = c
+		st.zones[spec[2] + "_graveyard"].card_ids.append(spec[0])
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("cann_def"))
+	var cands := StackResolver.get_graveyard_search_candidates(st, "p1", req, db)
+	eq(cands.size(), 3, "can-a: 3 ally cards across both graveyards are candidates")
+	ok(not ("opp_bolt" in cands), "can-a2: an Ability card is not a candidate")
+
+	# An ally card that isn't in a graveyard can't be announced.
+	var ally_in_play := _add_ally(st, "live", "bear_def", "p1")
+	ally_in_play.just_summoned = false
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "cann", "target_ids": ["live"]}), db),
+		"can-b: an in-play ally is not a graveyard candidate")
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "cann", "target_ids": ["own_a", "own_a"]}), db),
+		"can-b2: the same card can't be announced twice")
+
+	# Exile 3 across both graveyards → hero heals 2 x 3.
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "cann", "target_ids": ["own_a", "own_b", "opp_a"]}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok("own_a" in st.zones["p1_rfg"].card_ids, "can-c: own graveyard card exiled")
+	ok("own_b" in st.zones["p1_rfg"].card_ids, "can-c2: second own card exiled")
+	# Rule 415.7a: a card goes to its OWNER's RFG zone, not the caster's.
+	ok("opp_a" in st.zones["p2_rfg"].card_ids, "can-c3: opponent's card exiled to THEIR rfg")
+	eq(st.get_card("p1_hero").damage_taken, 3, "can-c4: healed 2 per card (9 - 6)")
+	eq(st.get_available_resources("p1"), 4, "can-c5: paid 2")
+	ok("cann" in st.zones["p1_graveyard"].card_ids, "can-c6: the spell went to the graveyard")
+
+
+func _test_cannibalize_empty_and_fizzle() -> void:
+	_buf.append("\n-- Cannibalize: zero targets and per-card fizzle --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 1, 4, [], 2)
+	db.ability("cann_def", 2, CANNIBALIZE_FX)
+
+	# "Any number" includes zero: playable with both graveyards empty, and the
+	# highlight probe must NOT go dark (unlike a reanimate spell, which needs a
+	# target to exist).
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 4)
+	st.get_card("p1_hero").damage_taken = 5
+	_add_card_to_hand(st, "cann", "cann_def", "p1")
+	ok(StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "cann", "_skip_target_check": true}), db),
+		"can-d: playable with nothing to exile (probe)")
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "cann", "target_ids": []}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("p1_hero").damage_taken, 5, "can-d2: removed nothing — healed nothing")
+
+	# Per-card fizzle: a card that leaves its graveyard while the spell is on
+	# the chain is skipped, and the heal shrinks with it ("for each card
+	# REMOVED", not for each announced).
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 4)
+	st2.get_card("p1_hero").damage_taken = 8
+	_add_card_to_hand(st2, "cann2", "cann_def", "p1")
+	for spec in [["g1", "p1"], ["g2", "p1"]]:
+		var c := CardInstance.create(spec[0], "bear_def", spec[1], spec[1] + "_graveyard")
+		st2.cards[spec[0]] = c
+		st2.zones[spec[1] + "_graveyard"].card_ids.append(spec[0])
+	StackResolver.submit_action(st2, PendingAction.make("play_ability", "p1",
+		{"card_id": "cann2", "target_ids": ["g1", "g2"]}), db)
+	GameLogic.move_card(st2, "g2", "p1_hand")   # reanimated/recovered in response
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	ok("g1" in st2.zones["p1_rfg"].card_ids, "can-e: still-present card exiled")
+	ok("g2" in st2.zones["p1_hand"].card_ids, "can-e2: departed card untouched")
+	eq(st2.get_card("p1_hero").damage_taken, 6, "can-e3: healed 2 for ONE card, not two")
+
+
+func _test_ai_cannibalize() -> void:
+	_buf.append("\n-- AI: Cannibalize held until damaged, exiles opponent first --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 1, 4, [], 2)
+	db.ability("cann_def", 2, CANNIBALIZE_FX)
+	var ai := BaseAI.new()
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 4)
+	_add_card_to_hand(st, "cann", "cann_def", "p1")
+	for spec in [["own_a", "p1"], ["own_b", "p1"], ["opp_a", "p2"]]:
+		var c := CardInstance.create(spec[0], "bear_def", spec[1], spec[1] + "_graveyard")
+		st.cards[spec[0]] = c
+		st.zones[spec[1] + "_graveyard"].card_ids.append(spec[0])
+
+	# Undamaged hero: the heal does nothing, so the card is held (denial alone
+	# is not worth a card).
+	var held := true
+	for a in ai.get_reasonable_actions(st, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "cann":
+			held = false
+	ok(held, "can-f: undamaged hero — Cannibalize not played")
+
+	# Damaged for 2: exiles the opponent's card (free denial) and tops up from
+	# its own graveyard only while the heal is still doing work.
+	st.get_card("p1_hero").damage_taken = 2
+	var picks: Array = []
+	for a in ai.get_reasonable_actions(st, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "cann":
+			picks = (a as PendingAction).params.get("target_ids", [])
+	eq(picks.size(), 1, "can-g: exiles exactly what the heal needs")
+	eq(str(picks[0] if not picks.is_empty() else ""), "opp_a",
+		"can-g2: the opponent's graveyard is emptied first")
+
+	# Damaged for 6: takes everything (opponent's card plus both of its own).
+	st.get_card("p1_hero").damage_taken = 6
+	var picks2: Array = []
+	for a in ai.get_reasonable_actions(st, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "cann":
+			picks2 = (a as PendingAction).params.get("target_ids", [])
+	eq(picks2.size(), 3, "can-h: heavy damage — exiles every ally card available")

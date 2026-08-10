@@ -325,6 +325,8 @@ func _ready() -> void:
 		_test_kolkar_facedown,
 		_test_crown_of_the_earth,
 		_test_quest_choice_ai_hooks,
+		_test_ilandre_moonspear_power,
+		_test_ilandre_empty_hand_and_ai_gate,
 	]
 
 	for t in tests:
@@ -17997,3 +17999,117 @@ func _test_ai_cannibalize() -> void:
 		if (a as PendingAction).params.get("card_id", "") == "cann":
 			picks2 = (a as PendingAction).params.get("target_ids", [])
 	eq(picks2.size(), 3, "can-h: heavy damage — exiles every ally card available")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Ilandre Moonspear: "[Activate] → Put your hand on the bottom of
+# your deck, then draw that many cards." Crown of the Earth's reward effect on
+# an ally activated power, plus the AI's dead-hand gate.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const ILANDRE_EFFECTS := "requires_hero_race:Night Elf|activated_power:0:hand_to_deck_draw:0"
+
+func _test_ilandre_moonspear_power() -> void:
+	_buf.append("\n-- Scenario: Ilandre Moonspear (hand to bottom, redraw) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ilandre_def", 2, 4, ["elusive"], 4, ILANDRE_EFFECTS)
+	db.ally("filler_def", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var ilandre := CardInstance.create("ilandre", "ilandre_def", "p1", "p1_ally_row")
+	state.cards["ilandre"] = ilandre
+	state.zones["p1_ally_row"].card_ids.append("ilandre")
+	_add_card_to_hand(state, "h1", "filler_def", "p1")
+	_add_card_to_hand(state, "h2", "filler_def", "p1")
+	for i in 5:
+		var d := CardInstance.create("il_d%d" % i, "filler_def", "p1", "p1_deck")
+		state.cards[d.instance_id] = d
+		state.zones["p1_deck"].card_ids.append(d.instance_id)
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "ilandre"})
+
+	# il-a: summoning sickness gates the [Activate] symbol.
+	ilandre.just_summoned = true
+	ok(not StackResolver.can_submit(state, use, db),
+		"il-a: power blocked while summoning sick")
+	ilandre.just_summoned = false
+
+	ok(StackResolver.can_submit(state, use, db), "il-b: power usable for free (no resource cost)")
+	StackResolver.submit_action(state, use, db)
+	# il-c: the [Activate] cost is paid at announcement.
+	ok(state.get_card("ilandre").is_exhausted, "il-c: Ilandre exhausts at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	var hand: Array = state.zones["p1_hand"].card_ids
+	eq(hand.size(), 2, "il-d: drew as many cards as were put back")
+	ok("h1" not in hand and "h2" not in hand, "il-e: old hand left the hand")
+	eq(hand[0], "il_d0", "il-f: drew from the top of the deck")
+	var deck: Array = state.zones["p1_deck"].card_ids
+	eq(deck.size(), 5, "il-g: deck 5 - 2 drawn + 2 bottomed")
+	ok(deck[deck.size() - 2] == "h1" and deck[deck.size() - 1] == "h2",
+		"il-h: hand cards on the bottom in hand order")
+
+	# il-i: not reusable until she readies.
+	ok(not StackResolver.can_submit(state, use, db),
+		"il-i: power not reusable while exhausted")
+
+
+func _test_ilandre_empty_hand_and_ai_gate() -> void:
+	_buf.append("\n-- Scenario: Ilandre — empty-hand no-op + AI dead-hand gate --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("ilandre_def", 2, 4, ["elusive"], 4, ILANDRE_EFFECTS)
+	db.ally("cheap_def", 1, 1, [], 1)
+	db.ally("pricey_def", 1, 1, [], 9)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var ilandre := CardInstance.create("ilandre", "ilandre_def", "p1", "p1_ally_row")
+	state.cards["ilandre"] = ilandre
+	state.zones["p1_ally_row"].card_ids.append("ilandre")
+	for i in 5:
+		var d := CardInstance.create("il2_d%d" % i, "cheap_def", "p1", "p1_deck")
+		state.cards[d.instance_id] = d
+		state.zones["p1_deck"].card_ids.append(d.instance_id)
+
+	# ilb-a: with an empty hand the power is still legal and simply does nothing.
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "ilandre"})
+	ok(StackResolver.can_submit(state, use, db), "ilb-a: legal with an empty hand")
+	StackResolver.submit_action(state, use, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.zones["p1_hand"].card_ids.size(), 0, "ilb-b: empty hand — no cards drawn")
+	eq(state.zones["p1_deck"].card_ids.size(), 5, "ilb-c: deck untouched")
+
+	# AI gate: only fire on a dead hand (>2 cards, none affordable).
+	var ai := BaseAI.new()
+	state.get_card("ilandre").is_exhausted = false
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# ilb-d: two unaffordable cards is not enough to justify the swap.
+	_add_card_to_hand(state, "p1", "pricey_def", "p1")
+	_add_card_to_hand(state, "p2c", "pricey_def", "p1")
+	ok(not _has_power_action(ai, state, db, "ilandre"),
+		"ilb-d: 2-card hand — AI holds the power")
+
+	# ilb-e: three unaffordable cards — dead hand, cycle it.
+	_add_card_to_hand(state, "p3c", "pricey_def", "p1")
+	ok(_has_power_action(ai, state, db, "ilandre"),
+		"ilb-e: 3 unaffordable cards — AI cycles the hand")
+
+	# ilb-f: one affordable card means the hand still has a play in it.
+	_add_card_to_hand(state, "p4c", "cheap_def", "p1")
+	ok(not _has_power_action(ai, state, db, "ilandre"),
+		"ilb-f: an affordable card in hand — AI holds the power")
+
+
+func _has_power_action(ai: BaseAI, state: GameState, db, card_id: String) -> bool:
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		var pa := a as PendingAction
+		if pa.action_type == "use_ally_power" and pa.params.get("card_id", "") == card_id:
+			return true
+	return false

@@ -1671,17 +1671,24 @@ func _quest_mode_useful(state: GameState, db, player_id: String,
 		"opponent_quest_face_down":
 			return true   # available implies an opposing quest to deny
 		"hand_to_deck_draw":
-			# Cycle a dead hand: 3+ cards, none currently affordable.
-			var hand := state.cards_in_zone(player_id + "_hand")
-			if hand.size() < 3:
-				return false
-			var avail := state.get_available_resources(player_id)
-			for card in hand:
-				var def: CardDef = db.get_def(card.card_def_id) if db else null
-				if def and def.cost >= 0 and def.cost <= avail:
-					return false
-			return true
+			return _hand_is_dead(state, db, player_id)
 	return false
+
+
+# Shared "is this hand worth cycling?" test behind every hand_to_deck_draw
+# effect (Crown of the Earth's reward mode, Ilandre Moonspear's power): more
+# than two cards in hand and none of them currently affordable. Below three
+# cards the swap trades away more than it is likely to fix.
+func _hand_is_dead(state: GameState, db, player_id: String) -> bool:
+	var hand := state.cards_in_zone(player_id + "_hand")
+	if hand.size() < 3:
+		return false
+	var avail := state.get_available_resources(player_id)
+	for card in hand:
+		var def: CardDef = db.get_def(card.card_def_id) if db else null
+		if def and def.cost >= 0 and def.cost <= avail:
+			return false
+	return true
 
 
 # Hidden Enemies: pick the ally that gains ferocity this turn — our highest-ATK
@@ -1821,6 +1828,11 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				var self_dmg := int(extra_cost_str.split(":")[1]) if extra_cost_str.split(":").size() > 1 else 1
 				if state.get_current_hp(card.instance_id, db) <= self_dmg:
 					continue
+		# Ilandre Moonspear: only cycle a hand that is actually dead — the swap
+		# costs every card we hold, so it must be trading nothing for something.
+		if ap.get("effect", "") == "hand_to_deck_draw" \
+				and not _hand_is_dead(state, db, player_id):
+			continue
 		if ap.get("effect", "") == "buff_atk_target_attacking":
 			# Ryn Dreamstrider: friendly +ATK buff — never target the enemy.
 			# Pick our own highest-ATK ready attacker (ally or hero).

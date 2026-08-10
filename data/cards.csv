@@ -527,7 +527,7 @@ dark_portal,164,"Gertha, The Old Crone",3,Ally,Alliance,Warlock,,Gnome Warlock,1
 dark_portal,165,Goldenmoon,,,,,,,,,,,,,,,,assets\cards\goldenmoon.png,
 dark_portal,166,Gustaf Trueshot,,,,,,,,,,,,,,,,assets\cards\gustaf_trueshot.png,
 dark_portal,167,High Priestess Tyrande Whisperwind,,,,,,,,,,,,,,,,assets\cards\high_priestess_tyrande_whisperwind.png,
-dark_portal,168,Ilandre Moonspear,,,,,,,,,,,,,,,,assets\cards\ilandre_moonspear.png,
+dark_portal,168,Ilandre Moonspear,4,Ally,Alliance,Druid,,Night Elf Druid,2,Nature,4,Uncommon,Elusive,"Night Elf Hero Required. Elusive. [Activate] -> Put your hand on the bottom of your deck, then draw that many cards.",verified,implemented,requires_hero_race:Night Elf|activated_power:0:hand_to_deck_draw:0,assets\cards\ilandre_moonspear.png,
 dark_portal,169,Ivus the Forest Lord,,,,,,,,,,,,,,,,assets\cards\ivus_the_forest_lord.png,
 dark_portal,170,Jeleane Nightbreeze,2,Ally,Alliance,Hunter,,Night Elf Hunter,3,Ranged,2,Rare,Untargetable,Untargetable,verified,implemented,,assets\cards\jeleane_nightbreeze.png,
 dark_portal,171,Kal'ai the Uplifting,,,,,,,,,,,,,,,,assets\cards\kalai_the_uplifting.png,

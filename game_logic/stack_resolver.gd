@@ -3429,6 +3429,12 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var n: int = int(ap.get("amount", 1))
 			for _i in n:
 				events.append_array(_draw_one(state, card.controller))
+		"hand_to_deck_draw":
+			# Ilandre Moonspear: "[Activate] → Put your hand on the bottom of
+			# your deck, then draw that many cards." Same effect as Crown of the
+			# Earth's reward mode; the count is taken from the hand at
+			# resolution, so a hand emptied in response makes it a no-op.
+			events.append_array(_hand_to_deck_draw(state, card.controller))
 		"discard_opponent":
 			# Hypnotic Blade: "Target player discards a card." The target is
 			# auto-chosen as the opponent (discarding yourself is never useful in
@@ -5296,6 +5302,25 @@ static func choose_quest_modes(state: GameState, chosen: Array,
 	return _run_quest_mode_queue(state, db)
 
 
+# "Put your hand on the bottom of your deck, then draw that many cards."
+# Shared by Crown of the Earth's quest reward mode and Ilandre Moonspear's
+# [Activate] power. Bottom in current hand order (move_card appends to the
+# deck's end = bottom), then draw the same count — the draws happen AFTER the
+# hand is gone, so an empty hand is a legal no-op and a short deck can deck the
+# player (410.6b, via _draw_one).
+static func _hand_to_deck_draw(state: GameState, player_id: String) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var hand_ids: Array[String] = []
+	for c in state.cards_in_zone(player_id + "_hand"):
+		hand_ids.append(c.instance_id)
+	for cid in hand_ids:
+		events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
+	events.append(GameEvent.hand_returned_to_deck(player_id, hand_ids.size()))
+	for _i in hand_ids.size():
+		events.append_array(_draw_one(state, player_id))
+	return events
+
+
 # Run queued reward modes front-first until the queue is empty or a mode opens
 # a sub-choice (the choose_* resolver for that sub-choice re-enters here).
 static func _run_quest_mode_queue(state: GameState, db) -> Array[GameEvent]:
@@ -5312,18 +5337,7 @@ static func _run_quest_mode_queue(state: GameState, db) -> Array[GameEvent]:
 				for _i in n:
 					events.append_array(_draw_one(state, player_id))
 			"hand_to_deck_draw":
-				# Crown of the Earth: "Put your hand on the bottom of your deck,
-				# then draw that many cards." Bottom in current hand order
-				# (move_card appends to the deck's end = bottom), then draw the
-				# same count — an empty hand is a legal no-op.
-				var hand_ids: Array[String] = []
-				for c in state.cards_in_zone(player_id + "_hand"):
-					hand_ids.append(c.instance_id)
-				for cid in hand_ids:
-					events.append_array(GameLogic.move_card(state, cid, player_id + "_deck"))
-				events.append(GameEvent.hand_returned_to_deck(player_id, hand_ids.size()))
-				for _i in hand_ids.size():
-					events.append_array(_draw_one(state, player_id))
+				events.append_array(_hand_to_deck_draw(state, player_id))
 			"ally_ferocity_this_turn":
 				# Re-check at run time (the board may have changed while an
 				# earlier mode resolved) — no legal ally left, the mode fizzles.

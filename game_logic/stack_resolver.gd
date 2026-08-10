@@ -483,6 +483,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 				if _destroy_requires_exhausted(def) \
 						and not state.get_card(target_id).is_exhausted:
 					return false
+				# Trophy Kill / Prey on the Weak: printed-cost band.
+				if not _destroy_cost_band_ok(state, def, target_id, db):
+					return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id):
 					return false
@@ -565,6 +568,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 						return false
 					# Coup de Grâce: target ally must be exhausted.
 					if _destroy_requires_exhausted(def) and not t_card.is_exhausted:
+						return false
+					# Trophy Kill / Prey on the Weak: printed-cost band.
+					if not _destroy_cost_band_ok(state, def, target_id, db):
 						return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id): return false
@@ -685,6 +691,10 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 						continue
 					# Coup de Grâce: only exhausted allies qualify.
 					if need_exhausted and not state.get_card(cid).is_exhausted:
+						continue
+					# Trophy Kill / Prey on the Weak go dark when no ally in play
+					# falls inside the printed-cost band.
+					if not _destroy_cost_band_ok(state, def, cid, db):
 						continue
 					return true
 		return false
@@ -872,6 +882,58 @@ static func _is_exhausted_ally(state: GameState, target_id: String, db) -> bool:
 	return card != null and card.is_exhausted \
 			and _is_ally(state, target_id) \
 			and _is_legal_target(state, target_id, db)
+
+
+# ── Cost-banded destroy (Trophy Kill / Prey on the Weak) ──────────────────────
+# `target_cost_min:N` / `target_cost_max:N` are RIDERS on an existing
+# `destroy_target:ally` segment, not a new target kind — the target is an
+# ordinary ally in every other respect, so all the ally-only machinery
+# (targeting, friendly-only, the router's can_submit-filtered target list)
+# applies unchanged:
+#   Trophy Kill      (dark_portal_40, 3): destroy_target:ally|target_cost_min:4
+#   Prey on the Weak (dark_portal_85, 2): destroy_target:ally|target_cost_max:4
+# Both bands are INCLUSIVE ("4 or more" / "4 or less"), so a cost-4 ally is a
+# legal target for either card. Enforced at submission, in the highlight probe
+# (the card goes dark when no ally is in the band) and re-checked at resolution
+# (706 / glossary 4217 — a target that left play fizzles the destroy).
+static func destroy_cost_band(def: CardDef) -> Dictionary:
+	var band := {}
+	if not def or def.effects == "":
+		return band
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() > 1 and parts[0] in ["target_cost_min", "target_cost_max"]:
+			band[parts[0].substr(12)] = int(parts[1])
+	return band
+
+
+# The cost a cost band is measured against is the target's PRINTED cost (the
+# number in the card's corner), not `get_play_cost` — an in-play ally was paid
+# for long ago, and cost-modifying effects apply to cards being PLAYED. For a
+# hypothetical "1+X" ally the fixed part is the printed number.
+static func printed_cost(def: CardDef) -> int:
+	if not def:
+		return 0
+	if def.cost_x:
+		return def.cost_base
+	return max(def.cost, 0)
+
+
+static func _destroy_cost_band_ok(state: GameState, def: CardDef,
+		target_id: String, db) -> bool:
+	var band := destroy_cost_band(def)
+	if band.is_empty():
+		return true
+	var card := state.get_card(target_id)
+	if not card or db == null:
+		return false
+	var t_def := db.get_def(card.card_def_id) as CardDef
+	var cost := printed_cost(t_def)
+	if band.has("min") and cost < int(band["min"]):
+		return false
+	if band.has("max") and cost > int(band["max"]):
+		return false
+	return true
 
 
 # Fall Back (`return_to_hand:friendly_ally`), Into the Fray
@@ -1784,6 +1846,12 @@ static func _resolve_play_instant(state: GameState,
 											target_id, action.source_player, db)
 								"equipment":
 									dt_ok = _is_in_play_equipment(state, target_id, db)
+						# Trophy Kill / Prey on the Weak: the printed-cost band is
+						# re-checked at resolution too — a target that left play and
+						# came back, or one swapped out from under the announce,
+						# fizzles the destroy (706 / glossary 4217).
+						if dt_ok and not _destroy_cost_band_ok(state, def, target_id, db):
+							dt_ok = false
 						if dt_ok:
 							events.append_array(
 								_destroy_card_trigger(state, target_id, card_id, db))

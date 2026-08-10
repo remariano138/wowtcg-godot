@@ -166,6 +166,7 @@ func _ready() -> void:
 		_test_war_stomp_mass_exhaust,
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
+		_test_cost_banded_destroy,
 		_test_gouge_exhaust_and_ready_lock,
 		_test_berserking,
 		_test_cat_form_hero_attack,
@@ -9276,6 +9277,130 @@ func _test_coup_de_grace_destroys_exhausted_ally() -> void:
 	var acts := ai._targeted_instant_actions(state3, db, "p1", "cdg3", "play_ability")
 	ok(acts.size() == 1 and acts[0].params.get("target_id") == "prize",
 		"cdg-h: AI destroys the higher-value exhausted enemy ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Trophy Kill (dark_portal_40, 3, Instant Ability — Marksmanship):
+#   "Destroy target ally with cost 4 or more."   destroy_target:ally|target_cost_min:4
+# Prey on the Weak (dark_portal_85, 2, Instant Ability — Assassination):
+#   "Destroy target ally with cost 4 or less."   destroy_target:ally|target_cost_max:4
+# Mirror cards banded on the target's PRINTED cost; both bands are inclusive, so
+# a cost-4 ally is a legal target for either.
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_cost_banded_destroy() -> void:
+	_buf.append("\n-- Trophy Kill / Prey on the Weak: printed-cost banded destroy --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("cheap_def", 1, 1, [], 2)    # cost 2
+	db.ally("mid_def",   3, 3, [], 4)    # cost 4 — legal for BOTH cards
+	db.ally("big_def",   6, 6, [], 6)    # cost 6
+	db.instant("dark_portal_40", 3, "destroy_target:ally|target_cost_min:4")
+	db.instant("dark_portal_85", 2, "destroy_target:ally|target_cost_max:4")
+
+	var tk_def := db.get_def("dark_portal_40") as CardDef
+	var pw_def := db.get_def("dark_portal_85") as CardDef
+
+	# ── Band enforcement at submission ────────────────────────────────────────
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "tk", "dark_portal_40", "p1")
+	_add_card_to_hand(state, "pw", "dark_portal_85", "p1")
+	for entry in [["cheap", "cheap_def"], ["mid", "mid_def"], ["big", "big_def"]]:
+		var a := _add_ally(state, entry[0], entry[1], "p2")
+		a.just_summoned = false
+
+	var function_expect := [
+		# card, target, trophy-kill-legal, prey-legal
+		["cheap", false, true],
+		["mid",   true,  true],
+		["big",   true,  false],
+	]
+	for row in function_expect:
+		var tid: String = row[0]
+		var tk_act := PendingAction.make("play_instant", "p1",
+			{"card_id": "tk", "target_id": tid})
+		var pw_act := PendingAction.make("play_instant", "p1",
+			{"card_id": "pw", "target_id": tid})
+		ok(StackResolver.can_submit(state, tk_act, db) == row[1],
+			"band-a: Trophy Kill vs %s (cost band >=4) → %s" % [tid, row[1]])
+		ok(StackResolver.can_submit(state, pw_act, db) == row[2],
+			"band-b: Prey on the Weak vs %s (cost band <=4) → %s" % [tid, row[2]])
+
+	# band-c: heroes are never legal (destroy_target:ally excludes them).
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "tk", "target_id": "p2_hero"}), db),
+		"band-c: enemy hero is NOT a legal target")
+
+	# band-d: both cards are highlightable while an in-band ally exists.
+	ok(StackResolver._targeted_play_has_legal_target(state, tk_def, db, "p1"),
+		"band-d: Trophy Kill highlightable (cost-4+ ally in play)")
+	ok(StackResolver._targeted_play_has_legal_target(state, pw_def, db, "p1"),
+		"band-e: Prey on the Weak highlightable (cost-4- ally in play)")
+
+	# band-f: resolution actually destroys an in-band target.
+	var kill := PendingAction.make("play_instant", "p1",
+		{"card_id": "tk", "target_id": "big"})
+	StackResolver.submit_action(state, kill, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.is_in_play("big"),
+		"band-f: Trophy Kill destroys the cost-6 ally")
+
+	# ── Highlight probe goes dark when nothing is in band ─────────────────────
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	s2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s2, "tk2", "dark_portal_40", "p1")
+	_add_card_to_hand(s2, "pw2", "dark_portal_85", "p1")
+	var only_cheap := _add_ally(s2, "only_cheap", "cheap_def", "p2")
+	only_cheap.just_summoned = false
+	ok(not StackResolver._targeted_play_has_legal_target(s2, tk_def, db, "p1"),
+		"band-g: Trophy Kill goes dark — no ally costs 4 or more")
+	ok(StackResolver._targeted_play_has_legal_target(s2, pw_def, db, "p1"),
+		"band-h: Prey on the Weak still live vs the cost-2 ally")
+
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 5)
+	s3.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s3, "pw3", "dark_portal_85", "p1")
+	var only_big := _add_ally(s3, "only_big", "big_def", "p2")
+	only_big.just_summoned = false
+	ok(not StackResolver._targeted_play_has_legal_target(s3, pw_def, db, "p1"),
+		"band-i: Prey on the Weak goes dark — no ally costs 4 or less")
+
+	# ── 706 recheck: a target that leaves play fizzles the destroy ────────────
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s4, "p1", 5)
+	s4.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s4, "tk4", "dark_portal_40", "p1")
+	var gone := _add_ally(s4, "gone", "big_def", "p2")
+	gone.just_summoned = false
+	StackResolver.submit_action(s4, PendingAction.make("play_instant", "p1",
+		{"card_id": "tk4", "target_id": "gone"}), db)
+	GameLogic.move_card(s4, "gone", "p2_graveyard")   # answered in response
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)
+	ok(not s4.is_in_play("gone"), "band-j: fizzled destroy leaves no trace (target already gone)")
+
+	# ── AI: targets an OPPOSING ally inside the band, never one outside ───────
+	var ai := GenericAI.new()
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s5, "p1", 5)
+	_add_card_to_hand(s5, "tk5", "dark_portal_40", "p1")
+	var ai_cheap := _add_ally(s5, "ai_cheap", "cheap_def", "p2")
+	var ai_big   := _add_ally(s5, "ai_big",   "big_def",   "p2")
+	ai_cheap.just_summoned = false
+	ai_big.just_summoned   = false
+	var acts_tk := ai._targeted_instant_actions(s5, db, "p1", "tk5", "play_instant")
+	var tk_targets: Array = []
+	for a in acts_tk:
+		tk_targets.append(a.params.get("target_id"))
+	ok(not tk_targets.has("ai_cheap"),
+		"band-k: AI never announces Trophy Kill on the out-of-band cost-2 ally")
+	ok(tk_targets.has("ai_big"),
+		"band-l: AI announces Trophy Kill on the in-band cost-6 ally")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

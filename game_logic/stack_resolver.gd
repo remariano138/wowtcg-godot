@@ -1076,6 +1076,20 @@ static func destroy_target_kind(def: CardDef) -> String:
 	return ""
 
 
+# ── Shred Soul (dark_portal_114) — `rfg_instead` ──────────────────────────────
+# "Remove target ally from the game." A RIDER on a `destroy_target:ally`
+# segment, not a target kind of its own: the announce, the 706 re-check, the
+# highlight probe, the router's target list and the AI's threat/worth math are
+# all exactly Vanquish's, so the whole path is inherited and only the final
+# removal differs. What differs is the DESTINATION — the ally goes to its
+# owner's RFG zone (415.7a) instead of the graveyard, and it is NOT destroyed:
+# no `card_destroyed`, so `on_destroyed` triggers (Boneshanks) never fire and
+# "when an ally is destroyed" watchers see nothing, and no graveyard card is
+# left for recursion (Ophelia, Augustus, Cannibalize) to find.
+static func _destroy_removes_from_game(def: CardDef) -> bool:
+	return def != null and _has_effect_flag(def, "rfg_instead")
+
+
 # An in-play ability CARD (rule 300.1): an ongoing ability in a hero row, a
 # Totem in an ally row, or an attachment in the "attached" zone. A face-down
 # resource is a resource, not an ability — resource_row never qualifies.
@@ -1980,8 +1994,17 @@ static func _resolve_play_instant(state: GameState,
 						if dt_ok and not _destroy_cost_band_ok(state, def, target_id, db):
 							dt_ok = false
 						if dt_ok:
-							events.append_array(
-								_destroy_card_trigger(state, target_id, card_id, db))
+							# Shred Soul (`rfg_instead`): remove from the game
+							# instead of destroying — see _destroy_removes_from_game.
+							if _destroy_removes_from_game(def):
+								var rfg_card := state.get_card(target_id)
+								events.append_array(GameLogic.move_card(
+										state, target_id, rfg_card.owner + "_rfg"))
+								events.append(GameEvent.card_removed_from_game(
+										target_id, rfg_card.owner))
+							else:
+								events.append_array(
+									_destroy_card_trigger(state, target_id, card_id, db))
 					"atk_swing":
 						# Ravenous Bite: "Target ally has +3 ATK this turn.
 						# Target ally has -3 ATK this turn." The two announced

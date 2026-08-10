@@ -15,6 +15,11 @@ const H := 105.0
 
 const CARD_BACK_PATH := "res://assets/card_backs/wowTCGdefaultback.jpg"
 
+# ATK badge colours — green when the card's ATK is above its printed value,
+# red when it's below (Hootie's -1 aura and friends). See update_atk.
+const BADGE_BUFF_COLOR   := Color(0.15, 0.75, 0.2)
+const BADGE_DEBUFF_COLOR := Color(0.8, 0.18, 0.18)
+
 var instance_id: String = ""
 var _bg: ColorRect
 var _tex_rect: TextureRect   # shown when a real image is loaded
@@ -133,7 +138,7 @@ static func create(inst_id: String, card_name: String,
 	const BADGE_D := 22.0
 	var atk_bg := Panel.new()
 	var atk_style := StyleBoxFlat.new()
-	atk_style.bg_color = Color(0.15, 0.75, 0.2)
+	atk_style.bg_color = BADGE_BUFF_COLOR
 	atk_style.set_corner_radius_all(int(BADGE_D * 0.5))
 	atk_bg.add_theme_stylebox_override("panel", atk_style)
 	atk_bg.size     = Vector2(BADGE_D, BADGE_D)
@@ -332,19 +337,41 @@ func update_counter(count: int) -> void:
 		_counter_badge_lbl.text = str(count)
 
 
-func update_atk(current_atk: int, printed_atk: int, atk_if_attacking: int = -1) -> void:
+func update_atk(current_atk: int, printed_atk: int, atk_if_attacking: int = -1,
+		raw_atk: int = 0) -> void:
 	if not _atk_badge_bg or not _atk_badge_lbl:
 		return
 	if atk_if_attacking < 0:
 		atk_if_attacking = current_atk
 	var buffed := current_atk != printed_atk
 	var attack_only := not buffed and atk_if_attacking != printed_atk
-	_atk_badge_bg.visible  = buffed or attack_only
-	_atk_badge_lbl.visible = buffed or attack_only
+	# Something is subtracting ATK, but the 0 floor swallowed it (a 0-ATK hero
+	# under Hootie's -1 aura). The value the card fights with is unchanged, so
+	# show it explicitly rather than leaving the player with a blank card and no
+	# sign the aura is live. See GameState.get_atk_raw.
+	var suppressed := not buffed and raw_atk < 0
+	var show_it := buffed or attack_only or suppressed
+	_atk_badge_bg.visible  = show_it
+	_atk_badge_lbl.visible = show_it
+	if not show_it:
+		return
+	# The badge colour says which DIRECTION the ATK moved, since the same badge
+	# now carries debuffs (Hootie's aura) as well as buffs. A modifier that ends
+	# up net-neutral (a -1 aura cancelling a +1 buff) shows nothing at all —
+	# there is no number worth reading. The floored case is a debuff regardless:
+	# the value only matches the printed one because ATK can't go below 0.
+	var shown := current_atk
 	if buffed:
 		_atk_badge_lbl.text = str(current_atk)
 	elif attack_only:
+		shown = atk_if_attacking
 		_atk_badge_lbl.text = "%d*" % atk_if_attacking
+	else:
+		_atk_badge_lbl.text = str(current_atk)
+	var debuffed := suppressed or shown < printed_atk
+	var style := _atk_badge_bg.get_theme_stylebox("panel") as StyleBoxFlat
+	if style:
+		style.bg_color = BADGE_DEBUFF_COLOR if debuffed else BADGE_BUFF_COLOR
 
 
 # Show/hide the HP-buff badge, mirroring update_atk but for max health

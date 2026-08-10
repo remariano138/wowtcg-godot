@@ -304,7 +304,7 @@ func get_attachments(host_instance_id: String) -> Array[CardInstance]:
 # Passing db as a parameter keeps GameState free of Godot node dependencies
 # and allows headless unit testing with a mock database.
 
-func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
+func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floor: bool = true) -> int:
 	var inst := get_card(instance_id)
 	if not inst:
 		return 0
@@ -389,7 +389,10 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 	# ATK floors at 0 — a character can't have negative ATK. Only the clamp is
 	# applied here; the raw negative buff (Ravenous Bite's -3) stays on the card,
 	# so a later +ATK effect counts from the true value, not from 0.
-	return max(atk, 0)
+	# `clamp_floor = false` returns that raw total instead — DISPLAY ONLY (the UI
+	# uses it to tell "0 ATK" apart from "0 ATK because an aura is subtracting");
+	# never let an unclamped value reach a rules decision.
+	return max(atk, 0) if clamp_floor else atk
 
 
 # Preview helper: what would this card's ATK be if it were the combat attacker
@@ -401,6 +404,15 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false) -> int:
 # real game state and must not influence rules decisions.
 func get_atk_if_attacking(instance_id: String, db) -> int:
 	return get_atk(instance_id, db, true)
+
+
+# Display helper: the UNCLAMPED ATK total (see the clamp note in get_atk). A
+# negative result means something is subtracting ATK from a character whose
+# printed ATK is too low to show it — a 0-ATK hero under Hootie's aura reads 0
+# either way, so without this the UI has no way to know the aura is doing
+# anything. Never use for rules decisions.
+func get_atk_raw(instance_id: String, db, assume_attacking: bool = false) -> int:
+	return get_atk(instance_id, db, assume_attacking, false)
 
 
 # ATK this player's hero would gain from berserk counters sitting on their

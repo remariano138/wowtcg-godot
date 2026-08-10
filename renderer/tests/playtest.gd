@@ -2486,7 +2486,8 @@ func _refresh_atk_badges() -> void:
 				if not def:
 					continue
 				cn.update_atk(_state.get_atk(card.instance_id, _db), def.printed_atk,
-						_state.get_atk_if_attacking(card.instance_id, _db))
+						_state.get_atk_if_attacking(card.instance_id, _db),
+						_state.get_atk_raw(card.instance_id, _db))
 				cn.update_hp(_state.get_max_hp(card.instance_id, _db), def.printed_health)
 				# Berserk counters (Berserking) — same badge treatment as a
 				# buffed ATK value, in the ATK badge's corner (the card has

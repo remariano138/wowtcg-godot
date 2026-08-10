@@ -168,6 +168,7 @@ func _ready() -> void:
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
 		_test_cost_banded_destroy,
+		_test_shred_soul_removes_ally_from_game,
 		_test_cannibalize,
 		_test_cannibalize_empty_and_fizzle,
 		_test_ai_cannibalize,
@@ -9308,6 +9309,76 @@ func _test_coup_de_grace_destroys_exhausted_ally() -> void:
 # Mirror cards banded on the target's PRINTED cost; both bands are inclusive, so
 # a cost-4 ally is a legal target for either.
 # ══════════════════════════════════════════════════════════════════════════════
+func _test_shred_soul_removes_ally_from_game() -> void:
+	_buf.append("\n-- Shred Soul: remove target ally from the game --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("plain_def", 2, 2, [], 3)
+	# Boneshanks-style death trigger: it must NOT fire on an RFG removal.
+	db.ally("bones_def", 3, 2, [], 3, "on_destroyed:destroy_target:ally")
+	db.ability("dark_portal_114", 3, "destroy_target:ally|rfg_instead")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "shred", "dark_portal_114", "p1")
+	var bones := _add_ally(state, "bones", "bones_def", "p2")
+	bones.just_summoned = false
+	var mine := _add_ally(state, "mine", "plain_def", "p1")
+	mine.just_summoned = false
+
+	# shred-a: heroes are never legal (destroy_target:ally excludes them).
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "shred", "target_id": "p2_hero"}), db),
+		"shred-a: enemy hero is NOT a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "shred", "target_id": "bones"}), db)
+	StackResolver.pass_priority(state, db)
+	var evs := StackResolver.pass_priority(state, db)
+
+	# shred-b: the ally left play — to its OWNER's RFG zone, not a graveyard.
+	ok(not state.is_in_play("bones"), "shred-b: target left play")
+	eq(state.get_card("bones").zone_id, "p2_rfg",
+		"shred-b2: target is in its owner's RFG zone")
+	ok("bones" not in state.zones["p2_graveyard"].card_ids,
+		"shred-b3: target did NOT reach a graveyard (no recursion fodder)")
+
+	# shred-c: it was REMOVED, not destroyed — no card_destroyed event, and the
+	# on_destroyed death trigger never opened a target choice.
+	var rfg_evs := 0
+	var destroyed_evs := 0
+	for ev in evs:
+		if ev.event_type == "card_removed_from_game":
+			rfg_evs += 1
+		elif ev.event_type == "card_destroyed":
+			destroyed_evs += 1
+	eq(rfg_evs, 1, "shred-c: card_removed_from_game emitted")
+	eq(destroyed_evs, 0, "shred-c2: no card_destroyed event")
+	eq(state.pending_death_target_player, "",
+		"shred-c3: on_destroyed death trigger did NOT fire")
+	ok(state.is_in_play("mine"),
+		"shred-c4: our own ally survived (Boneshanks never got a target)")
+
+	# shred-d: the spell itself resolved to the graveyard as normal.
+	ok("shred" in state.zones["p1_graveyard"].card_ids,
+		"shred-d: Shred Soul resolved to its owner's graveyard")
+
+	# shred-e: highlight probe goes dark with no ally in play.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	s2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s2, "shred2", "dark_portal_114", "p1")
+	var shred_def := db.get_def("dark_portal_114") as CardDef
+	ok(not StackResolver._targeted_play_has_legal_target(s2, shred_def, db, "p1"),
+		"shred-e: goes dark with no ally in play")
+	var v := _add_ally(s2, "victim", "plain_def", "p2")
+	v.just_summoned = false
+	ok(StackResolver._targeted_play_has_legal_target(s2, shred_def, db, "p1"),
+		"shred-e2: live once an ally is in play")
+
+
 func _test_cost_banded_destroy() -> void:
 	_buf.append("\n-- Trophy Kill / Prey on the Weak: printed-cost banded destroy --")
 	var db := MockDB.new()
@@ -17486,12 +17557,14 @@ func _test_hootie_opposing_atk_aura() -> void:
 	db.hero("p2_hero", 30)
 	db.ally("grunt_def", 3, 3, [], 2)
 	db.ally("runt_def", 1, 1, [], 1)
+	db.ally("mouse_def", 0, 1, [], 1)
 	db.weapon("krol_def", 3, 3, 1)
 	db.pet("dark_portal_34", 2, 2, [], 2, "opposing_characters_atk_mod:-1")
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
 	var runt := _add_ally(state, "runt", "runt_def", "p1")
+	_add_ally(state, "runt2", "mouse_def", "p1")
 	_add_ally(state, "theirs", "grunt_def", "p2")
 
 	# A weapon in OUR hero row: printed ATK 3, must stay 3 under the aura.
@@ -17527,6 +17600,13 @@ func _test_hootie_opposing_atk_aura() -> void:
 		Buff.make("pump", "src", "atk", 2, "permanent", 0))
 	eq(state.get_atk("runt", db), 1,
 		"hoot-k: a later +2 counts from the raw value (1-2+2), not from the floor")
+
+	# get_atk_raw (display only): a character whose printed ATK is too low to
+	# show the debuff reads 0 either way, so the UI needs the unclamped total to
+	# know the aura is doing anything at all. Two Hooties are out here.
+	eq(state.get_atk_raw("runt2", db), -2,
+		"hoot-k2: raw ATK of a 0-ATK character exposes the suppressed aura")
+	eq(state.get_atk("runt2", db), 0, "hoot-k3: the clamped value is still 0")
 
 	# The debuff lifts the moment the source leaves play — it's a live scan.
 	GameLogic.move_card(state, "hootie", "p2_graveyard")

@@ -9,8 +9,23 @@
       "_card_name": "Your Fortune Awaits You"
     },
     {
-      "card_def_id": "azeroth_352",
+      "card_def_id": "azeroth_348",
+      "count": 2,
+      "_card_name": "Big Game Hunter"
+    },
+    {
+      "card_def_id": "azeroth_342",
       "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "azeroth_340",
+      "count": 3,
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 2,
       "_card_name": "In Dreams"
     },
     {
@@ -99,19 +114,14 @@
       "_card_name": "Latro Abiectus"
     },
     {
-      "card_def_id": "azeroth_212",
+      "card_def_id": "dark_portal_196",
       "count": 4,
-      "_card_name": "Parvink"
+      "_card_name": "Warden Ravella"
     },
     {
       "card_def_id": "azeroth_222",
       "count": 4,
       "_card_name": "Warden Tonarin"
-    },
-    {
-      "card_def_id": "azeroth_340",
-      "count": 4,
-      "_card_name": "The Defias Brotherhood"
     },
     {
       "card_def_id": "azeroth_214",
@@ -129,13 +139,8 @@
       "_card_name": "Apprentice Teep"
     },
     {
-      "card_def_id": "azeroth_342",
-      "count": 1,
-      "_card_name": "The Missing Diplomat"
-    },
-    {
       "card_def_id": "azeroth_192",
-      "count": 2,
+      "count": 1,
       "_card_name": "Kor Cindervein"
     },
     {
@@ -144,19 +149,9 @@
       "_card_name": "Multi-Shot"
     },
     {
-      "card_def_id": "azeroth_348",
-      "count": 2,
-      "_card_name": "Big Game Hunter"
-    },
-    {
       "card_def_id": "azeroth_180",
       "count": 2,
       "_card_name": "Crazy Igvand"
-    },
-    {
-      "card_def_id": "azeroth_219",
-      "count": 1,
-      "_card_name": "Tracker Gallen"
     }
   ],
   "recommended_ai_id": "ai_generic",

@@ -555,7 +555,7 @@ dark_portal,192,Tim,3,Ally,Alliance,Mage,,Human Mage,1,Arcane,1,Common,Elusive,A
 dark_portal,193,Valanos,,,,,,,,,,,,,,,,assets\cards\valanos.png,
 dark_portal,194,Vestia Abiectus,,,,,,,,,,,,,,,,assets\cards\vestia_abiectus.png,
 dark_portal,195,Vindicator Enkallus,4,Ally,Alliance,Shaman,,Draenei Shaman,3,Nature,4,Common,Protector,,verified,implemented,,assets\cards\vindicator_enkallus.png,
-dark_portal,196,Warden Ravella,,,,,,,,,,,,,,,,assets\cards\warden_ravella.png,
+dark_portal,196,Warden Ravella,3,Ally,Alliance,Warrior,,Night Elf Warrior,2,Melee,3,Common,"Protector, Untargetable",,verified,implemented,,assets\cards\warden_ravella.png,
 dark_portal,197,Wisp,,,,,,,,,,,,,,,,assets\cards\wisp.png,
 dark_portal,198,Araelun,,,,,,,,,,,,,,,,assets\cards\araelun.png,
 dark_portal,199,Bhenn Checks-the-Sky,,,,,,,,,,,,,,,,assets\cards\bhenn_checks_the_sky.png,

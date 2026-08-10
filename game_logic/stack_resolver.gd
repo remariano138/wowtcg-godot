@@ -1649,14 +1649,35 @@ static func is_ongoing_def(def: CardDef) -> bool:
 # `hero_atk_while_attacking:1`) is a separate live-read segment.
 
 # `form:N` → N; -1 when the def carries no Form tag.
-static func form_slot_count(def: CardDef) -> int:
+# Type-line slot tags with tag-count uniqueness (rule 414.3b): Form (N) on the
+# Druid forms, Aspect (N) on the Hunter aspects. Each tag is its OWN slot — a
+# player may control one Form and one Aspect at the same time — so every check
+# below is keyed on the tag, never on "is it a slot card at all".
+const SLOT_TAGS := ["form", "aspect"]
+
+
+# The entering card's slot tag ("form"/"aspect") and capacity, or {} when the
+# card carries no slot tag at all.
+static func slot_tag_spec(def: CardDef) -> Dictionary:
 	if not def:
-		return -1
+		return {}
 	for seg in def.effects.split("|"):
 		var p := seg.strip_edges().split(":")
-		if p[0] == "form":
-			return int(p[1]) if p.size() > 1 else 1
-	return -1
+		if p[0] in SLOT_TAGS:
+			return {"tag": p[0], "count": int(p[1]) if p.size() > 1 else 1}
+	return {}
+
+
+# Capacity for a specific slot tag, or -1 when the def doesn't carry that tag.
+static func slot_count_for(def: CardDef, tag: String) -> int:
+	var spec := slot_tag_spec(def)
+	if spec.is_empty() or spec["tag"] != tag:
+		return -1
+	return int(spec["count"])
+
+
+static func form_slot_count(def: CardDef) -> int:
+	return slot_count_for(def, "form")
 
 
 static func is_form_def(def: CardDef) -> bool:
@@ -6579,13 +6600,17 @@ static func choose_unique_sacrifice(state: GameState, card_id: String,
 	return events
 
 
-# ── Form (1) tag-count uniqueness (rule 414.3b) ───────────────────────────────
-# A player may control at most one card with the Form (1) tag (`form:1`) in
-# play. When a second Form enters, the controller must destroy Forms until one
-# remains — normally keeping the new one (playing Cat Form while in Bear Form is
-# how you shapeshift). Mirrors the Pet/Unique immediate-choice flow: resolved
-# via choose_form_sacrifice() (direct call), can_submit hard-blocks while
-# pending. Destroyed Forms fire their on_destroyed pay-return trigger normally.
+# ── Slot-tag uniqueness: Form (N) / Aspect (N) (rule 414.3b) ──────────────────
+# A player may control at most N cards carrying a given type-line slot tag —
+# Form (1) on the Druid forms, Aspect (1) on the Hunter aspects. The tags are
+# INDEPENDENT slots (one Form and one Aspect may coexist), so the count below
+# only ever looks at cards sharing the entering card's own tag.
+# When a second card of that tag enters, the controller must destroy them until
+# N remain — normally keeping the new one (playing Cat Form while in Bear Form
+# is how you shapeshift). Mirrors the Pet/Unique immediate-choice flow: resolved
+# via choose_form_sacrifice() (direct call, tag-agnostic — the candidate id list
+# fully describes the choice), can_submit hard-blocks while pending. Destroyed
+# cards fire their on_destroyed pay-return trigger normally.
 
 static func _check_form_uniqueness(state: GameState, card_id: String, db) -> Array[GameEvent]:
 	if not db:
@@ -6594,13 +6619,15 @@ static func _check_form_uniqueness(state: GameState, card_id: String, db) -> Arr
 	if not card:
 		return []
 	var def := db.get_def(card.card_def_id) as CardDef
-	var capacity := form_slot_count(def)
-	if capacity < 0:
+	var spec := slot_tag_spec(def)
+	if spec.is_empty():
 		return []
-	# Forms are ongoing abilities living in the hero row (305.2c).
+	var tag: String = spec["tag"]
+	var capacity: int = int(spec["count"])
+	# Forms/Aspects are ongoing abilities living in the hero row (305.2c).
 	var form_ids: Array[String] = []
 	for c in state.cards_in_zone(card.controller + "_hero_row"):
-		if is_form_def(db.get_def(c.card_def_id) as CardDef):
+		if slot_count_for(db.get_def(c.card_def_id) as CardDef, tag) >= 0:
 			form_ids.append(c.instance_id)
 	if form_ids.size() <= capacity:
 		return []
@@ -6625,7 +6652,9 @@ static func choose_form_sacrifice(state: GameState, card_id: String,
 	var events: Array[GameEvent] = []
 	events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
 	state.pending_form_sacrifice_ids.erase(card_id)
-	# Re-check: still a violation while more than one Form remains in play.
+	# Re-check: still a violation while more than one of them remains in play.
+	# Both shipped slot tags are capacity 1 (Form (1), Aspect (1)); a capacity-2
+	# tag would need the capacity carried on the pending state.
 	var surviving: Array[String] = []
 	for cid in state.pending_form_sacrifice_ids:
 		if state.is_in_play(cid):

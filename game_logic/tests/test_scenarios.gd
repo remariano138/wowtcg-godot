@@ -288,6 +288,9 @@ func _ready() -> void:
 		_test_ai_shadow_word_pain_targets_hero_only,
 		_test_shadowform_shadow_bonus,
 		_test_shadowform_holy_break,
+		_test_aspect_of_the_hawk,
+		_test_aspect_slot_independent_of_form,
+		_test_ai_develops_ongoing_abilities_first,
 		_test_ai_mana_agate_and_arcane_intellect,
 		_test_stealth_blocks_protectors,
 		_test_ghank_enter_play_destroy,
@@ -14873,6 +14876,154 @@ func _test_shadowform_shadow_bonus() -> void:
 	eq(StackResolver._typed_damage_bonus_amount(state, db,
 		{"source": "p1_hero", "amount": 2, "dmg_type": "shadow"}), 2,
 		"sf-g: bonus gone once Shadowform leaves play")
+
+
+const HAWK_FX := "ongoing|aspect:1|hero_damage_bonus_by_type:ranged:1"
+
+
+# GenericAI develop step: ongoing abilities (persistent multipliers) are played
+# before allies; attachments are deliberately NOT promoted.
+func _test_ai_develops_ongoing_abilities_first() -> void:
+	_buf.append("\n-- GenericAI: ongoing abilities lead the develop step --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 3, 3, [], 3)
+	db.ability("azeroth_34", 3, HAWK_FX)          # ongoing aura (own hero row)
+	(db._defs["azeroth_34"] as CardDef).tags = "Beast Mastery"
+	db.ability("roots_def", 2, "ongoing|attach:ally|attached_cannot_ready")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "chump", "bear_def", "p2")   # a legal attach target exists
+	_add_card_to_hand(state, "hawk", "azeroth_34", "p1")
+	_add_card_to_hand(state, "ally", "bear_def", "p1")
+	_add_resources(state, "p1", 20)
+	state.players["p1"].resource_placed_this_turn = true
+
+	var ai := GenericAI.new()
+
+	# do-a: the aura outranks the ally even though the ally is board presence.
+	var act := ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "play_ability"
+			and act.params.get("card_id") == "hawk",
+		"do-a: ongoing aura played before the ally")
+
+	# do-b: with the aura gone from hand, the ally is the develop play — an
+	# attachment in hand does NOT jump ahead of it.
+	state.zones["p1_hand"].card_ids.erase("hawk")
+	state.cards.erase("hawk")
+	_add_card_to_hand(state, "roots", "roots_def", "p1")
+	act = ai.decide_action(state, db, "p1")
+	ok(act != null and act.action_type == "play_ally"
+			and act.params.get("card_id") == "ally",
+		"do-b: attachment is not promoted above the ally")
+
+
+# Aspect of the Hawk (azeroth_34): Shadowform's typed bonus on `ranged`, plus
+# the Aspect (1) slot tag — a separate slot from Form (1).
+func _test_aspect_of_the_hawk() -> void:
+	_buf.append("\n-- Aspect of the Hawk: hero ranged damage +1 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("imp_def", 1, 2, [], 1)
+	db.ability("azeroth_34", 3, HAWK_FX)
+	(db._defs["azeroth_34"] as CardDef).tags = "Beast Mastery"
+	db.instant("shot_def", 2, "deal_damage_to_target:2:ranged")
+	db.instant("frost_def", 2, "deal_damage_to_target:3:frost")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "imp", "imp_def", "p1")
+	_add_card_to_hand(state, "hawk", "azeroth_34", "p1")
+	_add_card_to_hand(state, "shot", "shot_def", "p1")
+	_add_card_to_hand(state, "frost", "frost_def", "p1")
+	_add_resources(state, "p1", 25)
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hawk"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("hawk").zone_id, "p1_hero_row", "ah-a: Aspect is in play (ongoing)")
+
+	# 2 ranged → 3.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "shot", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 3, "ah-b: 2 ranged became 3")
+
+	# Another damage type is untouched (3 → 3).
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "frost", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 6, "ah-c: frost damage NOT boosted")
+
+	# "Your HERO" — an ally-sourced ranged packet doesn't qualify, and the
+	# opponent's hero doesn't benefit from our Aspect.
+	eq(StackResolver._typed_damage_bonus_amount(state, db,
+		{"source": "imp", "amount": 2, "dmg_type": "ranged"}), 2,
+		"ah-d: ally-sourced ranged not boosted")
+	eq(StackResolver._typed_damage_bonus_amount(state, db,
+		{"source": "p2_hero", "amount": 2, "dmg_type": "ranged"}), 2,
+		"ah-e: opposing hero's ranged not boosted")
+
+	# Live — lifts the moment the Aspect leaves play.
+	GameLogic.destroy_card(state, "hawk", "")
+	eq(StackResolver._typed_damage_bonus_amount(state, db,
+		{"source": "p1_hero", "amount": 2, "dmg_type": "ranged"}), 2,
+		"ah-f: bonus gone once the Aspect leaves play")
+
+
+# Aspect (1) is its own slot: it doesn't collide with Form (1), a second Aspect
+# does collide, and a Feral form-break never touches it.
+func _test_aspect_slot_independent_of_form() -> void:
+	_buf.append("\n-- Aspect (1) / Form (1) are independent slots --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	_mock_form(db, "azeroth_18", 1, BEAR_FORM_FX)   # Bear Form, break on non-Feral
+	db.ability("azeroth_34", 3, HAWK_FX)
+	(db._defs["azeroth_34"] as CardDef).tags = "Beast Mastery"
+	db.ability("hawk2_def", 3, HAWK_FX)
+	(db._defs["hawk2_def"] as CardDef).tags = "Beast Mastery"
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state, "bear", "azeroth_18", "p1")
+	_add_card_to_hand(state, "hawk", "azeroth_34", "p1")
+	_add_card_to_hand(state, "hawk2", "hawk2_def", "p1")
+	_add_resources(state, "p1", 25)
+
+	# as-a: an Aspect entering while a Form is in play is NOT a slot violation…
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hawk"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_form_sacrifice_player, "",
+		"as-a: Aspect + Form is not a slot violation")
+
+	# …but Aspect of the Hawk is a non-Feral ability, so playing it breaks the
+	# Bear Form by its own printed break condition (a different mechanism).
+	ok(not state.is_in_play("bear"), "as-b: Bear Form broken by the non-Feral ability")
+	if state.pending_form_return_player != "":
+		StackResolver.choose_form_return(state, false, db)   # decline the pay-2 return
+	eq(state.get_card("hawk").zone_id, "p1_hero_row", "as-c: the Aspect survived the break")
+
+	# as-d: a SECOND Aspect is a slot violation and opens the sacrifice choice.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hawk2"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_form_sacrifice_player, "p1", "as-d: second Aspect violates Aspect (1)")
+	ok("hawk" in state.pending_form_sacrifice_ids
+			and "hawk2" in state.pending_form_sacrifice_ids,
+		"as-d2: both Aspects are candidates")
+
+	# Keeping the new one (the normal choice) clears the pending point.
+	StackResolver.choose_form_sacrifice(state, "hawk", db)
+	eq(state.pending_form_sacrifice_player, "", "as-e: choice resolved")
+	ok(state.is_in_play("hawk2") and not state.is_in_play("hawk"),
+		"as-e2: the new Aspect stayed, the old one was destroyed")
 
 
 func _test_shadowform_holy_break() -> void:

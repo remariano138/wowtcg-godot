@@ -32,12 +32,35 @@ const HERO_ALL_OUT_HP := 10
 # main tuning surface for non-combat play; see _develop_action.
 const _DEVELOP_RANK := {
 	"place_resource":  100,   # ramp first — more resources unlock more plays
+	"play_ongoing":     70,   # persistent effects — see _develop_rank_for
 	"play_ally":        60,   # develop board presence
 	"use_ally_power":   40,
 	"use_hero_power":   40,
 	"play_equipment":   30,
 	"use_quest":        20,
 }
+
+
+# Rank for one develop action. Ongoing abilities that settle into our OWN hero
+# row (auras, forms/aspects) or ally row (totems) are ranked above allies: they
+# are persistent multipliers that make everything played after them stronger, so
+# landing one before the plays it enhances is strictly better than the reverse,
+# and they keep paying every subsequent turn.
+#
+# Attachments are deliberately EXCLUDED and keep the default rank. Despite being
+# ongoing they are situational, single-target plays aimed at a specific character
+# (Fireball, Entangling Roots, Shadow Word: Pain) — they buff or answer one card
+# rather than raising the floor of every later play, and rushing them out picks a
+# target before the board tells us which target matters.
+func _develop_rank_for(act: PendingAction, state: GameState, db) -> int:
+	if db and act.action_type in ["play_ability", "play_instant"]:
+		var card := state.get_card(act.params.get("card_id", ""))
+		if card:
+			var def := db.get_def(card.card_def_id) as CardDef
+			if def and StackResolver.is_ongoing_def(def) \
+					and not StackResolver.is_attachment_def(def):
+				return int(_DEVELOP_RANK["play_ongoing"])
+	return int(_DEVELOP_RANK.get(act.action_type, 10))
 
 
 # Fully deterministic pipeline — GenericAI has NO random fallback. Each call the
@@ -193,7 +216,7 @@ func _develop_action(state: GameState, db, player_id: String) -> PendingAction:
 	for act in get_reasonable_actions(state, db, player_id):
 		if act.action_type == "propose_combat":
 			continue
-		var rank: int = _DEVELOP_RANK.get(act.action_type, 10)
+		var rank: int = _develop_rank_for(act, state, db)
 		# Within a rank, prefer the more valuable card involved (bigger ally,
 		# pricier removal target, …).
 		var cid: String = act.params.get("card_id",

@@ -44,6 +44,11 @@
       "_card_name": "Sunken Treasure"
     },
     {
+      "card_def_id": "azeroth_284",
+      "count": 2,
+      "_card_name": "Devilsaur Leggings"
+    },
+    {
       "card_def_id": "dark_portal_34",
       "count": 3,
       "_card_name": "Hootie"
@@ -99,19 +104,14 @@
       "_card_name": "Master of the Hunt"
     },
     {
-      "card_def_id": "azeroth_179",
+      "card_def_id": "azeroth_34",
       "count": 1,
-      "_card_name": "Braxiss the Sleeper"
+      "_card_name": "Aspect of the Hawk"
     },
     {
       "card_def_id": "azeroth_210",
       "count": 2,
       "_card_name": "Nerra Lifeboon"
-    },
-    {
-      "card_def_id": "azeroth_183",
-      "count": 2,
-      "_card_name": "Freya Lightsworn"
     },
     {
       "card_def_id": "azeroth_197",

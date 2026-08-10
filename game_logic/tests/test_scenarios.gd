@@ -282,6 +282,10 @@ func _ready() -> void:
 		_test_mana_agate_power,
 		_test_mana_agate_killed_in_response,
 		_test_arcane_intellect_attach_and_hand_size,
+		_test_shadow_word_pain_attach,
+		_test_ai_shadow_word_pain_targets_hero_only,
+		_test_shadowform_shadow_bonus,
+		_test_shadowform_holy_break,
 		_test_ai_mana_agate_and_arcane_intellect,
 		_test_stealth_blocks_protectors,
 		_test_ghank_enter_play_destroy,
@@ -293,6 +297,10 @@ func _ready() -> void:
 		_test_hur_shieldsmasher_no_armor_no_prompt,
 		_test_zygore_bladebreaker_destroys_weapon,
 		_test_zygore_bladebreaker_destroys_armor,
+		_test_sister_rot_destroys_ability,
+		_test_sister_rot_decline_and_fizzle,
+		_test_karkas_bounces_ally,
+		_test_karkas_self_bounce_decline_and_fizzle,
 		_test_mya_creates_token,
 		_test_token_destroyed_ceases_to_exist,
 		_test_token_bounce_ceases_to_exist,
@@ -14645,6 +14653,223 @@ func _test_arcane_intellect_attach_and_hand_size() -> void:
 	eq(state.get_max_hand_size("p1", db), 7, "aint-h: limit back to 7 after destroy")
 
 
+const SWP_FX := "ongoing|attach:hero_or_ally|attach_discard_controller:1|attached_damage_turn_start:1:shadow"
+const SHADOWFORM_FX := "ongoing|form:1|hero_damage_bonus_by_type:shadow:1|form_break_on:Holy"
+
+
+func _test_shadow_word_pain_attach() -> void:
+	_buf.append("\n-- Shadow Word: Pain: attach, host's controller discards, 1 shadow each turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 6, [], 3)
+	db.instant("azeroth_87", 3, SWP_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var tank := _add_ally(state, "tank", "tank_def", "p2")
+	_add_card_to_hand(state, "swp", "azeroth_87", "p1")
+	_add_card_to_hand(state, "swp2", "azeroth_87", "p1")
+	_add_card_to_hand(state, "p2card", "tank_def", "p2")
+	_add_resources(state, "p1", 6)
+
+	# attach:hero_or_ally — both are legal targets.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "swp", "target_id": "p2_hero"}), db),
+		"swp-a: SW:P can target a hero")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "swp", "target_id": "tank"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_card("swp").zone_id, "attached", "swp-b: SW:P is attached")
+	eq(state.get_card("swp").attached_to, "tank", "swp-c: host is the ally")
+	eq(tank.damage_taken, 0, "swp-d: no damage on attach — the burn is turn-start only")
+	# The discard follows the HOST's controller, not the caster.
+	eq(state.pending_discard_player, "p2", "swp-e: the host's controller discards")
+	eq(state.pending_discard_count, 1, "swp-f: exactly one card")
+	StackResolver.choose_discard(state, "p2card", db)
+	eq(state.get_card("p2card").zone_id, "p2_graveyard", "swp-g: the card was discarded")
+
+	# Start of the CONTROLLER's (caster's) turn: 1 shadow to the attached character.
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(tank.damage_taken, 1, "swp-h: turn-start burn dealt 1 shadow")
+
+	# Attaching to our OWN character makes US discard (the rider follows the host).
+	_add_card_to_hand(state, "p1card", "tank_def", "p1")
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "swp2", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_discard_player, "p1", "swp-i: self-attach makes the caster discard")
+	StackResolver.choose_discard(state, "p1card", db)
+	eq(state.pending_discard_player, "", "swp-i2: discard resolved")
+
+	# Host leaving play destroys the attachment (400.5).
+	GameLogic.destroy_card(state, "tank", "")
+	eq(state.get_card("swp").zone_id, "p1_graveyard", "swp-j: SW:P died with its host")
+
+	# The discard rider is a no-op against an empty hand (nothing to give up).
+	var swp3 := _add_card_to_hand(state, "swp3", "azeroth_87", "p1")
+	for c in state.cards_in_zone("p2_hand"):
+		GameLogic.move_card(state, c.instance_id, "p2_graveyard")
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": swp3.instance_id, "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_discard_player, "", "swp-k: no discard opened against an empty hand")
+
+
+func _test_ai_shadow_word_pain_targets_hero_only() -> void:
+	_buf.append("\n-- AI Shadow Word: Pain: only the opposing hero is ever targeted --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 6, [], 3)
+	db.instant("azeroth_87", 3, SWP_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "tank", "tank_def", "p2")
+	_add_ally(state, "mine", "tank_def", "p1")
+	_add_card_to_hand(state, "swp", "azeroth_87", "p1")
+	_add_resources(state, "p1", 3)
+
+	state.players["p1"].resource_placed_this_turn = true
+	var ai := BaseAI.new()
+	var swp_targets: Array = []
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "swp":
+			swp_targets.append(a.params.get("target_id", ""))
+	eq(swp_targets.size(), 1, "aiswp-a: exactly one SW:P action generated")
+	ok("p2_hero" in swp_targets, "aiswp-b: aimed at the opposing hero, never our own side")
+
+
+func _test_shadowform_shadow_bonus() -> void:
+	_buf.append("\n-- Shadowform: hero shadow damage +1 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("imp_def", 1, 2, [], 1)
+	db.ability("azeroth_88", 3, SHADOWFORM_FX)
+	(db._defs["azeroth_88"] as CardDef).tags = "Shadow Talent"
+	db.equipment("azeroth_282", 4, "equipment:back:0|hero_ability_damage_bonus:1", "Cloth")
+	db.instant("swp_def", 2, "deal_damage_to_target:2:shadow")
+	db.instant("frost_def", 2, "deal_damage_to_target:3:frost")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "imp", "imp_def", "p1")
+	_add_card_to_hand(state, "sf", "azeroth_88", "p1")
+	_add_card_to_hand(state, "shadow1", "swp_def", "p1")
+	_add_card_to_hand(state, "shadow2", "swp_def", "p1")
+	_add_card_to_hand(state, "frost", "frost_def", "p1")
+	_add_card_to_hand(state, "cloak", "azeroth_282", "p1")
+	_add_resources(state, "p1", 25)
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "sf"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("sf").zone_id, "p1_hero_row", "sf-a: Shadowform is in play (ongoing)")
+
+	# 2 shadow → 3.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "shadow1", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 3, "sf-b: 2 shadow became 3")
+
+	# Frost is untouched (3 → 3).
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "frost", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 6, "sf-c: frost damage NOT boosted")
+
+	# "Your HERO" — an ally-sourced shadow packet doesn't qualify, nor does the
+	# opponent's hero benefit from our Shadowform.
+	eq(StackResolver._typed_damage_bonus_amount(state, db,
+		{"source": "imp", "amount": 2, "dmg_type": "shadow"}), 2,
+		"sf-d: ally-sourced shadow not boosted")
+	eq(StackResolver._typed_damage_bonus_amount(state, db,
+		{"source": "p2_hero", "amount": 2, "dmg_type": "shadow"}), 2,
+		"sf-e: opposing hero's shadow not boosted")
+
+	# Stacks additively with Chromatic Cloak (+1 ability, +1 shadow): 2 → 4.
+	StackResolver.submit_action(state, PendingAction.make("play_equipment", "p1",
+		{"card_id": "cloak"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "shadow2", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 10, "sf-f: cloak +1 and Shadowform +1 (2→4)")
+
+	# The bonus is live — it lifts the moment Shadowform leaves play.
+	GameLogic.destroy_card(state, "sf", "")
+	eq(StackResolver._typed_damage_bonus_amount(state, db,
+		{"source": "p1_hero", "amount": 2, "dmg_type": "shadow"}), 2,
+		"sf-g: bonus gone once Shadowform leaves play")
+
+
+func _test_shadowform_holy_break() -> void:
+	_buf.append("\n-- Shadowform: destroyed by a Holy ability only (not Shadow, not a strike) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_88", 3, SHADOWFORM_FX)
+	(db._defs["azeroth_88"] as CardDef).tags = "Shadow Talent"
+	_mock_form(db, "shadow_inst", 1, "deal_damage_to_target:1:shadow", "Shadow")
+	_mock_form(db, "holy_inst",   1, "deal_damage_to_target:1:holy",   "Holy")
+	db.weapon("krol_def", 3, 3, 1, "Melee", "melee_weapon")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_form_in_play(state, "sf", "azeroth_88", "p1")
+	_add_card_to_hand(state, "shadow", "shadow_inst", "p1")
+	_add_card_to_hand(state, "holy", "holy_inst", "p1")
+	_add_resources(state, "p1", 8)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	# A SHADOW ability leaves it alone — the condition is inverted vs the Feral
+	# forms, which break on anything NOT matching their tag.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "shadow", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("sf").zone_id, "p1_hero_row",
+		"sfb-a: a Shadow ability leaves Shadowform in play")
+
+	# A weapon strike doesn't break it either — the printed text names only
+	# ability plays (unlike Bear/Cat Form).
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → strike point
+	eq(state.pending_strike_player, "p1", "sfb-b: strike point opened")
+	StackResolver.choose_strike(state, krol.instance_id, db)
+	eq(state.get_card("sf").zone_id, "p1_hero_row",
+		"sfb-c: a weapon strike does NOT break Shadowform")
+	# Play the combat out so the board is clean.
+	for _i in range(6):
+		StackResolver.pass_priority(state, db)
+
+	# A HOLY ability destroys it.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "holy", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("sf").zone_id, "p1_graveyard",
+		"sfb-d: a Holy ability destroys Shadowform")
+	# No pay-return clause on Shadowform — no choice point opens.
+	eq(state.pending_form_return_player, "",
+		"sfb-e: Shadowform has no pay-2 return clause")
+
+
 func _test_ai_mana_agate_and_arcane_intellect() -> void:
 	_buf.append("\n-- AI: Agate hand-room gate; Intellect on own hero --")
 	var db := MockDB.new()
@@ -15015,6 +15240,258 @@ func _test_zygore_bladebreaker_destroys_armor() -> void:
 	StackResolver.pass_priority(state, db)
 	StackResolver.pass_priority(state, db)
 	eq(state.get_card("robe").zone_id, "p2_graveyard", "zyga-c: armor destroyed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sister Rot (dark_portal_233): "When Sister Rot enters play, you may destroy
+# target ability." Hur/Zygore's optional enter-play destroy on Burn Away's pool
+# — ongoing abilities, totems, attachments, either party. Equipment is NOT a
+# legal target; with no ability in play the trigger silently doesn't fire.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sister_rot_destroys_ability() -> void:
+	_buf.append("\n-- Sister Rot: may destroy a target ability on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rot_def", 5, 2, [], 5, "on_enter:destroy_ability")
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+	db.totem("totem_def", 1, "ongoing|totem:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_card_to_hand(state, "rot", "rot_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var totem := CardInstance.create("totem", "totem_def", "p2", "p2_ally_row")
+	state.cards["totem"] = totem
+	state.zones["p2_ally_row"].card_ids.append("totem")
+	# The caster's OWN attachment — a legal target too (no friendly exclusion).
+	var mark := CardInstance.create("mark", "mark_def", "p1", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "rot"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"sr-a: enter-play choice pending after Sister Rot resolves")
+	ok(state.pending_enter_play_effect.get("optional", false),
+		"sr-b: the trigger is optional (\"you may\")")
+
+	var legal := StackResolver.get_enter_play_ability_targets(state, db)
+	ok("ongo" in legal,  "sr-c: an ongoing ability is a legal target")
+	ok("totem" in legal, "sr-d: a totem (ability ally) is a legal target")
+	ok("mark" in legal,  "sr-e: an attachment is a legal target (own side included)")
+	ok(not ("robe" in legal), "sr-f: equipment is NOT a legal target")
+	ok(not ("bear" in legal), "sr-g: a regular ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "rot", "target_id": "robe"}), db),
+		"sr-h: can_submit rejects an equipment target")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "rot", "target_id": "ongo"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(ongo.zone_id, "p2_graveyard", "sr-i: the ability is destroyed")
+	eq(state.get_card("rot").zone_id, "p1_ally_row", "sr-j: Sister Rot in play")
+	ok(state.pending_enter_play_effect.is_empty(), "sr-k: pending effect cleared")
+
+
+func _test_sister_rot_decline_and_fizzle() -> void:
+	_buf.append("\n-- Sister Rot: no ability → no prompt; decline; 706 fizzle --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rot_def", 5, 2, [], 5, "on_enter:destroy_ability")
+	db.ability("ongo_def", 2, "ongoing")
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	# No ability in play (only equipment) → the trigger silently doesn't fire.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_card_to_hand(state, "rot", "rot_def", "p1")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "rot"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"srd-a: no pending choice when no ability is in play")
+	eq(state.get_card("robe").zone_id, "p2_hero_row", "srd-b: equipment untouched")
+
+	# Decline with a legal target available (Esc in the UI).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	_add_card_to_hand(s2, "rot2", "rot_def", "p1")
+	var ongo2 := CardInstance.create("ongo2", "ongo_def", "p2", "p2_hero_row")
+	s2.cards["ongo2"] = ongo2
+	s2.zones["p2_hero_row"].card_ids.append("ongo2")
+	StackResolver.submit_action(s2, PendingAction.make("play_ally", "p1",
+		{"card_id": "rot2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	ok(not s2.pending_enter_play_effect.is_empty(), "srd-c: choice pending")
+	StackResolver.decline_enter_play_effect(s2)
+	ok(s2.pending_enter_play_effect.is_empty(), "srd-d: declining clears the choice")
+	eq(ongo2.zone_id, "p2_hero_row", "srd-e: the ability survives a decline")
+
+	# Announced target leaves play before resolution → 706 fizzle.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 5)
+	_add_card_to_hand(s3, "rot3", "rot_def", "p1")
+	var ongo3 := CardInstance.create("ongo3", "ongo_def", "p2", "p2_hero_row")
+	s3.cards["ongo3"] = ongo3
+	s3.zones["p2_hero_row"].card_ids.append("ongo3")
+	StackResolver.submit_action(s3, PendingAction.make("play_ally", "p1",
+		{"card_id": "rot3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.submit_action(s3, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "rot3", "target_id": "ongo3"}), db)
+	ok(s3.pending_enter_play_effect.is_empty(),
+		"srd-f: marker cleared at announcement — the response window is real")
+	GameLogic.destroy_card(s3, "ongo3")
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(s3.get_card("rot3").zone_id, "p1_ally_row", "srd-g: Sister Rot stays in play on a fizzle")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Karkas Deathhowl (azeroth_247): "When Karkas Deathhowl enters play, you may
+# put target ally into its owner's hand." Sister Rot's optional enter-play shape
+# with Withdraw's bounce: any in-play ally either party, the SOURCE included
+# (she is in play when her own trigger fires and the text says "target ally").
+# Bouncing resets damage/exhaust/buffs (400.6a) and destroys attachments (400.5).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_karkas_bounces_ally() -> void:
+	_buf.append("\n-- Karkas Deathhowl: may bounce a target ally on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("karkas_def", 2, 3, [], 4, "on_enter:return_to_hand_ally")
+	db.ally("bear_def", 2, 3, [], 2)
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "karkas", "karkas_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	bear.damage_taken = 1
+	bear.is_exhausted = true
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "karkas"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"kk-a: enter-play choice pending after Karkas resolves")
+	ok(state.pending_enter_play_effect.get("optional", false),
+		"kk-b: the trigger is optional (\"you may\")")
+
+	var legal := StackResolver.get_death_target_targets(state, db)
+	ok("bear" in legal,   "kk-c: an opposing ally is a legal target")
+	ok("karkas" in legal, "kk-d: Karkas herself is a legal target (printed \"target ally\")")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "karkas", "target_id": "robe"}), db),
+		"kk-e: equipment is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "karkas", "target_id": "p2_hero"}), db),
+		"kk-f: a hero is NOT a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "karkas", "target_id": "bear"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(bear.zone_id, "p2_hand", "kk-g: the ally is in its OWNER's hand")
+	eq(bear.damage_taken, 0,    "kk-h: damage reset on leaving play (400.6a)")
+	ok(not bear.is_exhausted,   "kk-i: exhaustion reset on leaving play")
+	eq(mark.zone_id, "p2_graveyard", "kk-j: its attachment destroyed (400.5)")
+	ok(state.pending_enter_play_effect.is_empty(), "kk-k: pending effect cleared")
+
+
+func _test_karkas_self_bounce_decline_and_fizzle() -> void:
+	_buf.append("\n-- Karkas Deathhowl: self-bounce; no ally → no prompt; decline; fizzle --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("karkas_def", 2, 3, [], 4, "on_enter:return_to_hand_ally")
+	db.ally("bear_def", 2, 3, [], 2)
+
+	# She is the only ally in play → the choice still opens, aimed at herself.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "karkas", "karkas_def", "p1")
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "karkas"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"kkd-a: choice opens with only Karkas in play")
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "karkas", "target_id": "karkas"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("karkas").zone_id, "p1_hand", "kkd-b: Karkas bounces herself to hand")
+
+	# Note the consequence of allowing the self-target: the pool is never empty
+	# (she is always in it), so unlike Sister Rot the choice always opens — the
+	# decline is the only way out when there is nothing worth bouncing.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_card_to_hand(s2, "karkas2", "karkas_def", "p1")
+	var bear2 := _add_ally(s2, "bear2", "bear_def", "p2")
+	StackResolver.submit_action(s2, PendingAction.make("play_ally", "p1",
+		{"card_id": "karkas2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	ok(not s2.pending_enter_play_effect.is_empty(), "kkd-c: choice pending")
+	StackResolver.decline_enter_play_effect(s2)
+	ok(s2.pending_enter_play_effect.is_empty(), "kkd-d: declining clears the choice")
+	eq(bear2.zone_id, "p2_ally_row", "kkd-e: the ally stays in play on a decline")
+	eq(s2.get_card("karkas2").zone_id, "p1_ally_row", "kkd-f: Karkas stays in play")
+
+	# Announced target leaves play before resolution → 706 fizzle.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	_add_card_to_hand(s3, "karkas3", "karkas_def", "p1")
+	var bear3 := _add_ally(s3, "bear3", "bear_def", "p2")
+	StackResolver.submit_action(s3, PendingAction.make("play_ally", "p1",
+		{"card_id": "karkas3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.submit_action(s3, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "karkas3", "target_id": "bear3"}), db)
+	ok(s3.pending_enter_play_effect.is_empty(),
+		"kkd-g: marker cleared at announcement — the response window is real")
+	GameLogic.destroy_card(s3, "bear3")
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(bear3.zone_id, "p2_graveyard", "kkd-h: the destroyed ally stays dead (bounce fizzled)")
+	eq(s3.get_card("karkas3").zone_id, "p1_ally_row", "kkd-i: Karkas stays in play on a fizzle")
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

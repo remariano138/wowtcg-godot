@@ -2066,6 +2066,17 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 				{"source_card_id": source_card_id, "target_id": card.instance_id})
 			if StackResolver.can_submit(state, act, db):
 				result.append(card.instance_id)
+	# Sister Rot: target in-play ability cards (ongoing abilities, totems,
+	# attachments). Totems already came through the ally-row loop above, so
+	# skip anything already collected.
+	if db:
+		for ab_id in StackResolver.get_destroy_kind_candidates(state, db, "ability"):
+			if ab_id in result:
+				continue
+			var act := PendingAction.make("choose_enter_play_target", local_player,
+				{"source_card_id": source_card_id, "target_id": ab_id})
+			if StackResolver.can_submit(state, act, db):
+				result.append(ab_id)
 	return result
 
 

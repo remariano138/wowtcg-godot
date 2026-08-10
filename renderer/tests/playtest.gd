@@ -2408,10 +2408,20 @@ func _on_game_event(event: GameEvent) -> void:
 		"form_broken":
 			var fb_card := _state.get_card(event.payload.get("card_id", ""))
 			var fb_def: CardDef = _db.get_def(fb_card.card_def_id) if fb_card else null
+			# Reason is engine-generated: "weapon_strike", "non_<tag>_ability"
+			# (the Feral forms) or "<tag>_ability" (Shadowform's inverted
+			# break). Derive the wording instead of hardcoding one condition.
+			var fb_reason := str(event.payload.get("reason", ""))
+			var fb_why := "weapon strike"
+			if fb_reason != "weapon_strike":
+				fb_why = fb_reason.trim_suffix("_ability")
+				if fb_why.begins_with("non_"):
+					fb_why = "non-" + fb_why.trim_prefix("non_").capitalize()
+				else:
+					fb_why = fb_why.capitalize()
+				fb_why += " ability"
 			_set_status("💢 %s's %s is destroyed (%s)" % [event.payload.get("player", "?"),
-				fb_def.card_name if fb_def else "Form",
-				"weapon strike" if event.payload.get("reason", "") == "weapon_strike"
-					else "non-Feral ability"])
+				fb_def.card_name if fb_def else "Form", fb_why])
 			_refresh_ui()
 		"reveal_pick_opened":
 			_handle_reveal_pick(event.payload)
@@ -3022,13 +3032,50 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 	# trigger. AI only destroys OPPOSING equipment (declines otherwise);
 	# humans may Esc to decline.
 	var enter_eff: String = _state.pending_enter_play_effect.get("effect", "")
-	if enter_eff == "destroy_armor" or enter_eff == "destroy_armor_or_weapon":
+	# Karkas Deathhowl's optional bounce ("you may put target ally into its
+	# owner's hand") — AI only bounces OPPOSING allies (declines otherwise; the
+	# printed text lets a human bounce their own, Karkas included), preferring
+	# the most expensive one. Humans may Esc to decline.
+	if enter_eff == "return_to_hand_ally":
+		if ctrl_type != "human":
+			var opp3 := "p2" if ctrl == "p1" else "p1"
+			var best_id3 := ""
+			var best_cost3 := -1
+			for tid in StackResolver.get_death_target_targets(_state, _db):
+				var t3 := _state.get_card(tid)
+				if not t3 or t3.controller != opp3:
+					continue
+				var tdef3 := _db.get_def(t3.card_def_id) as CardDef
+				var tcost3: int = tdef3.cost if tdef3 else 0
+				if tcost3 > best_cost3:
+					best_cost3 = tcost3
+					best_id3 = tid
+			if best_id3 == "":
+				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+			else:
+				var dact3 := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": best_id3})
+				EventBus.emit_events(StackResolver.submit_action(_state, dact3, _db))
+				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
+			_refresh_ui()
+			_schedule_next_turn()
+		else:
+			_router.start_enter_play_targeting(card_id, dmg_type, amount)
+			_refresh_ui()
+		return
+	# Sister Rot rides the same branch with the ability pool instead.
+	if enter_eff == "destroy_armor" or enter_eff == "destroy_armor_or_weapon" \
+			or enter_eff == "destroy_ability":
 		if ctrl_type != "human":
 			var opp2 := "p2" if ctrl == "p1" else "p1"
 			var best_id2 := ""
 			var best_cost2 := -1
 			var include_weapons := enter_eff == "destroy_armor_or_weapon"
-			for tid in StackResolver.get_enter_play_equipment_targets(_state, _db, include_weapons):
+			var cands2: Array[String] = \
+				StackResolver.get_enter_play_ability_targets(_state, _db) \
+				if enter_eff == "destroy_ability" \
+				else StackResolver.get_enter_play_equipment_targets(_state, _db, include_weapons)
+			for tid in cands2:
 				var t2 := _state.get_card(tid)
 				if not t2 or t2.controller != opp2:
 					continue

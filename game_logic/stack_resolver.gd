@@ -1511,6 +1511,36 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							}
 							events.append(GameEvent.enter_play_target_required(
 								card_id, "destroy", 0))
+					"destroy_ability":
+						# Sister Rot: "When [this] enters play, you may destroy
+						# target ability." Optional; Burn Away's pool (ongoing
+						# abilities, totems, attachments — either party).
+						if not get_enter_play_ability_targets(state, db).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "destroy_ability",
+								"dmg_type": "destroy",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "destroy", 0))
+					"return_to_hand_ally":
+						# Karkas Deathhowl: "When [this] enters play, you may put
+						# target ally into its owner's hand." Optional; any in-play
+						# ally either party — the SOURCE included, since she is in
+						# play by the time her own trigger fires and the printed
+						# text says simply "target ally".
+						if not get_death_target_targets(state, db).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "return_to_hand_ally",
+								"dmg_type": "bounce",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "bounce", 0))
 
 	# Watcher Mal'wi: "When an opposing ally enters play, [this] deals N ranged
 	# damage to it." Any in-play card an OPPONENT of the entering ally controls
@@ -1610,9 +1640,11 @@ static func is_ongoing_def(def: CardDef) -> bool:
 # N in-play cards with the tag; violations mirror the Pet/Unique sacrifice flow.
 # Druid Feral Forms also carry `form_break:TAG` — "Destroy this card when you
 # strike with a weapon or play a non-TAG ability." (Bear/Cat form: TAG = Feral;
-# a future Moonkin Form would use form_break:Balance. Shadowform's inverted
-# "when you play a Holy ability" condition would need a new form_break_on:TAG
-# segment — not implemented yet.) Travel Form would carry `form:1` alone.
+# a future Moonkin Form would use form_break:Balance.) Shadowform's INVERTED
+# condition — "when you play a Holy ability" — is `form_break_on:Holy`: it
+# breaks on a MATCHING tag instead of a non-matching one, and only on ability
+# plays (its printed text doesn't mention weapon strikes). Travel Form would
+# carry `form:1` alone.
 # The form's own contribution (Bear form's `hero_has_protector`, Cat form's
 # `hero_atk_while_attacking:1`) is a separate live-read segment.
 
@@ -1638,6 +1670,20 @@ static func form_break_tag(def: CardDef) -> String:
 	for seg in def.effects.split("|"):
 		var p := seg.strip_edges().split(":")
 		if p[0] == "form_break" and p.size() > 1:
+			return p[1].strip_edges()
+	return ""
+
+
+# `form_break_on:TAG` → TAG; "" when the def has no inverted break condition.
+# The mirror of form_break_tag: Bear/Cat Form break on a NON-matching ability,
+# Shadowform breaks on a MATCHING one ("when you play a Holy ability"). A def
+# carries at most one of the two; form_break_on wins where both appear.
+static func form_break_on_tag(def: CardDef) -> String:
+	if not def:
+		return ""
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0] == "form_break_on" and p.size() > 1:
 			return p[1].strip_edges()
 	return ""
 
@@ -1834,6 +1880,19 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 			var draw_n := int(dp[1]) if dp.size() > 1 else 1
 			for _i in draw_n:
 				events.append_array(_draw_one(state, host.controller))
+		if dp[0] == "attach_discard_controller":
+			# Shadow Word: Pain: "Attach to target hero or ally, and its
+			# controller discards a card." Like attach_draw the discard follows
+			# the HOST's controller, not the caster — attaching to your own
+			# character makes YOU discard. Reuses the Mias pending-discard
+			# machinery; no-op on an empty hand.
+			var disc_n := int(dp[1]) if dp.size() > 1 else 1
+			var disc_who: String = host.controller
+			if disc_n > 0 and not state.cards_in_zone(disc_who + "_hand").is_empty():
+				state.pending_discard_player = disc_who
+				state.pending_discard_count  = disc_n
+				events.append(GameEvent.discard_choice_opened(
+					disc_who, disc_n, "card_effect"))
 		if dp[0] == "attach_deal_damage":
 			var dmg_amt := int(dp[1]) if dp.size() > 1 else 0
 			var att_hero := state.get_hero(card.controller)
@@ -2631,12 +2690,14 @@ static func defer_packets(state: GameState, db, packets: Array,
 		after: String = "", recursive_destroy: bool = true) -> Array[GameEvent]:
 	# World in Flames / Chromatic Cloak (717-style replacements): applied as the
 	# packets enter the pipeline, so prevention offers and per-damage riders
-	# (discard_per, drain heal) all see the modified amount. Cloak's +1 applies
+	# (discard_per, drain heal) all see the modified amount. The flat bonuses
+	# (Cloak's ability +1, Shadowform's shadow +1) apply
 	# BEFORE the doubling — with both in play the controller would pick that
 	# order anyway ((X+1)*2 > X*2+1); see data/rules_deviations.md
 	# "Replacement-effect order".
 	for p in packets:
 		p["amount"] = _ability_bonus_amount(state, db, p)
+		p["amount"] = _typed_damage_bonus_amount(state, db, p)
 		p["amount"] = _fire_doubled_amount(state, db, p)
 	state.pending_prevention_deferred.append({
 		"packets": packets, "after": after,
@@ -2674,6 +2735,35 @@ static func _fire_doubled_amount(state: GameState, db, p: Dictionary) -> int:
 		for seg in def.effects.split("|"):
 			if seg.strip_edges() == "hero_fire_damage_doubled":
 				amount *= 2
+	return amount
+
+
+# Shadowform (azeroth_88): "Ongoing: If your hero would deal shadow damage, it
+# deals that amount of damage plus 1 instead." The damage-TYPE analogue of
+# Chromatic Cloak's `from_ability` bonus, keyed on the per-packet "dmg_type"
+# field the same way World in Flames' doubling is — so it covers every source
+# the hero can be (abilities, hero powers, attachment burns), but not combat
+# damage (its own conclusion path, and no shadow-typed combat source exists).
+# Live scan of the source hero's controller's in-play cards; +N per copy.
+static func _typed_damage_bonus_amount(state: GameState, db, p: Dictionary) -> int:
+	var amount := int(p.get("amount", 0))
+	var dmg_type := str(p.get("dmg_type", "")).to_lower()
+	if amount <= 0 or db == null or dmg_type == "":
+		return amount
+	var source_id := str(p.get("source", ""))
+	if not _is_hero(state, source_id):
+		return amount
+	var controller: String = state.get_card(source_id).controller
+	for card in state.cards_in_play(controller):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.effects == "":
+			continue
+		for seg in def.effects.split("|"):
+			var parts := seg.strip_edges().split(":")
+			if parts[0].strip_edges() != "hero_damage_bonus_by_type":
+				continue
+			if parts.size() > 1 and parts[1].to_lower().strip_edges() == dmg_type:
+				amount += int(parts[2]) if parts.size() > 2 else 1
 	return amount
 
 
@@ -5844,6 +5934,13 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_armor_or_weapon" \
 			and target_id not in get_enter_play_equipment_targets(state, db, true):
 		return false
+	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_ability" \
+			and target_id not in get_enter_play_ability_targets(state, db):
+		return false
+	# Karkas Deathhowl: any in-play ally, the source herself included.
+	if String(state.pending_enter_play_effect.get("effect", "")) == "return_to_hand_ally" \
+			and target_id not in get_death_target_targets(state, db):
+		return false
 	return true
 
 
@@ -5876,6 +5973,17 @@ static func get_enter_play_equipment_targets(state: GameState, db,
 			if not _weapon_info(def).is_empty():
 				continue
 		result.append(eq_id)
+	return result
+
+
+# Legal targets for Sister Rot's enter-play trigger: in-play ability cards
+# (either party) — Burn Away's pool (ongoing abilities in a hero row, totems in
+# an ally row, attachments), subject to the standard targeting restrictions.
+static func get_enter_play_ability_targets(state: GameState, db) -> Array[String]:
+	var result: Array[String] = []
+	for ab_id in get_destroy_kind_candidates(state, db, "ability"):
+		if _is_legal_target(state, ab_id, db):
+			result.append(ab_id)
 	return result
 
 
@@ -5928,6 +6036,20 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			# Zygore Bladebreaker — 706 re-check: fizzle unless still legal equipment.
 			if target_id in get_enter_play_equipment_targets(state, db, true):
 				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
+		"destroy_ability":
+			# Sister Rot — 706 re-check: fizzle unless still a legal in-play ability.
+			if target_id in get_enter_play_ability_targets(state, db):
+				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
+		"return_to_hand_ally":
+			# Karkas Deathhowl — 706 re-check: fizzle unless the target is still a
+			# legal in-play ally. move_card resets damage/exhaust/buffs (400.6a),
+			# destroys its attachments (400.5) and fizzles a combat proposal it was
+			# part of (601.3); a token ceases to exist instead of reaching a hand.
+			if target_id in get_death_target_targets(state, db):
+				var rth := state.get_card(target_id)
+				events.append_array(GameLogic.move_card(
+					state, target_id, rth.owner + "_hand"))
+				events.append(GameEvent.card_returned_to_hand(target_id, source_id))
 	return events
 
 
@@ -6506,6 +6628,18 @@ static func _check_form_break_ability(state: GameState, player_id: String,
 	var events: Array[GameEvent] = []
 	for c in state.cards_in_zone(player_id + "_hero_row"):
 		var f_def := db.get_def(c.card_def_id) as CardDef
+		# Shadowform's INVERTED condition (`form_break_on:TAG`): destroyed when
+		# you play an ability that DOES carry the tag ("when you play a Holy
+		# ability"), rather than one that doesn't. Its printed text names only
+		# ability plays, so unlike the Feral forms it survives weapon strikes —
+		# _check_form_break_strike deliberately ignores it.
+		var on_tag := form_break_on_tag(f_def)
+		if on_tag != "":
+			if on_tag in played_def.tags:
+				events.append(GameEvent.form_broken(c.instance_id, player_id,
+						"%s_ability" % on_tag.to_lower()))
+				events.append_array(_destroy_card_trigger(state, c.instance_id, c.instance_id, db))
+			continue
 		var tag := form_break_tag(f_def)
 		if tag == "" or tag in played_def.tags:
 			continue   # not a breakable Form / the played ability matches (Feral)

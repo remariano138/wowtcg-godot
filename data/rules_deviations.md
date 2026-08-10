@@ -501,18 +501,25 @@ be destroyed. Accepted for v1.
 Enforcement sites: `_check_form_break_ability` / `_check_form_break_strike` in
 `game_logic/stack_resolver.gd`.
 
-## Replacement-effect order — Chromatic Cloak before World in Flames
+## Replacement-effect order — flat bonuses before World in Flames
 
-**Cards:** Chromatic Cloak (`azeroth_282`), World in Flames (`azeroth_61`)
+**Cards:** Chromatic Cloak (`azeroth_282`), Shadowform (`azeroth_88`),
+World in Flames (`azeroth_61`)
 **Enforcement site:** `StackResolver.defer_packets` (the packet-entry modifier loop)
 
 Printed rule: when multiple replacement effects would modify the same damage
 event, the affected player chooses the order they apply. The engine instead
-applies a FIXED order: Chromatic Cloak's "+1 if your hero would deal damage
-with an ability" first, then World in Flames' fire doubling. Both effects only
-ever benefit the same player (both read "your hero"), and (X+1)*2 > X*2+1,
+applies a FIXED order: the flat bonuses first — Chromatic Cloak's "+1 if your
+hero would deal damage with an ability", then Shadowform's "+1 if your hero
+would deal shadow damage" — and World in Flames' fire doubling last. All three
+only ever benefit the same player (all read "your hero"), and (X+1)*2 > X*2+1,
 so the fixed order is exactly the order that player would always choose —
 no meaningful choice is lost.
+
+Cloak and Shadowform are both additive, so their relative order never matters.
+Shadowform and World in Flames can never meet on the same packet at all (a
+packet carries one `dmg_type`, so it is shadow or fire, never both); their
+relative order is a convention for a hypothetical future dual-type card.
 
 Also note: "with an ability" is tracked by a `from_ability` packet tag set at
 ability-resolution packet sites (instants/abilities, ongoing-ability on-play

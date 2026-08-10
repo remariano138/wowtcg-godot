@@ -4,9 +4,9 @@
   "hero_card_def_id": "azeroth_12",
   "card_entries": [
     {
-      "card_def_id": "azeroth_298",
+      "card_def_id": "azeroth_282",
       "count": 1,
-      "_card_name": "Mooncloth Robe"
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_327",
@@ -50,7 +50,7 @@
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
@@ -65,12 +65,17 @@
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 4,
+      "count": 3,
       "_card_name": "Taz'dingo"
     },
     {
+      "card_def_id": "azeroth_247",
+      "count": 1,
+      "_card_name": "Karkas Deathhowl"
+    },
+    {
       "card_def_id": "azeroth_82",
-      "count": 2,
+      "count": 3,
       "_card_name": "Mind Spike"
     },
     {
@@ -105,8 +110,13 @@
     },
     {
       "card_def_id": "azeroth_236",
-      "count": 4,
+      "count": 2,
       "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "dark_portal_233",
+      "count": 2,
+      "_card_name": "Sister Rot"
     },
     {
       "card_def_id": "azeroth_253",
@@ -114,9 +124,9 @@
       "_card_name": "Ophelia Barrows"
     },
     {
-      "card_def_id": "azeroth_235",
+      "card_def_id": "azeroth_87",
       "count": 1,
-      "_card_name": "Elder Moorf"
+      "_card_name": "Shadow Word: Pain"
     },
     {
       "card_def_id": "azeroth_344",
@@ -125,8 +135,13 @@
     },    
     {
       "card_def_id": "azeroth_264",
-      "count": 2,
+      "count": 1,
       "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "azeroth_88",
+      "count": 1,
+      "_card_name": "Shadowform"
     },
     {
       "card_def_id": "dark_portal_201",

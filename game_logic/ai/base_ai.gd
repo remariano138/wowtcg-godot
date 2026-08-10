@@ -3406,9 +3406,12 @@ func _modal_mode_playable(mode_effect: String) -> bool:
 func _attach_actions(state: GameState, db, player_id: String,
 		card_id: String, action_type: String, def: CardDef) -> Array[PendingAction]:
 	var result: Array[PendingAction] = []
-	# Damage attachment (Fireball): AI policy — only ever aimed at the opposing
-	# HERO (guaranteed value, no fizzle risk). Any printed target stays legal
-	# for human players; this is a targeting heuristic, not a rule.
+	# Damage attachment (Fireball's burst, Shadow Word: Pain's turn-start burn):
+	# AI policy — only ever aimed at the opposing HERO (guaranteed value, no
+	# fizzle risk, and a hero host can't be killed to shed the attachment). Any
+	# printed target stays legal for human players; a targeting heuristic, not
+	# a rule. The rider on SW:P (its controller discards) follows the host, so
+	# aiming at the opponent is what makes that half hurt them rather than us.
 	# Hero-only attachment (Arcane Intellect: `attach:hero`): always our OWN
 	# hero — the ongoing benefit (max hand size) follows the attached hero's
 	# controller, so an enemy hero would gift it away.
@@ -3439,7 +3442,8 @@ func _attach_actions(state: GameState, db, player_id: String,
 			if StackResolver.can_submit(state, h_act, db):
 				result.append(h_act)
 		return result
-	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage"):
+	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage") \
+			or StackResolver._has_effect_flag_prefix(def, "attached_damage_turn_start"):
 		var f_opp := "p2" if player_id == "p1" else "p1"
 		var f_hero := state.get_hero(f_opp)
 		if f_hero:

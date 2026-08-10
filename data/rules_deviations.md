@@ -192,6 +192,21 @@ play, deal N to it" trigger uses the data-driven
 `stack_resolver.gd`. If a future trigger must be respondable, the chain-based
 rework noted under Infernal applies here.
 
+**Same deviation, same site — Stone Guard Rashun (`dark_portal_234`),** "When an
+opposing ally enters play, exhaust it" (`exhaust_opposing_ally_on_enter`): also
+resolved inline with no chain link or priority window, in the same watcher loop.
+
+**Totems and tokens both trigger these watchers — this is NOT a deviation, it's
+rule 305.3a:** "Totems are ability allies and count as both in all zones", so an
+entering opposing Totem is an entering opposing ally. Because a Totem resolves
+via `_resolve_play_ongoing_ability` straight into the ally_row and never passes
+through `_bring_ally_into_play`, the watcher scan lives in its own function,
+`StackResolver.fire_opposing_ally_enter_watchers`, called from **both** entry
+paths. A new "opposing ally enters play" trigger must be added to that function
+rather than inline in either caller, or it will silently miss Totems. Tokens
+(Mya's Mechanical Dragonling, Tooga) need no special handling —
+`_put_token_into_play` brings them in through `_bring_ally_into_play`.
+
 ---
 
 ## Windseer Tarus (`azeroth_271`)

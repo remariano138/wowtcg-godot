@@ -227,6 +227,10 @@ func _ready() -> void:
 		_test_healing_stream_totem_heals_party,
 		_test_watcher_malwi_pings_entering_opposing_ally,
 		_test_watcher_malwi_ignores_own_allies,
+		_test_watcher_malwi_pings_entering_totem,
+		_test_stone_guard_rashun_exhausts_entering_opposing_ally,
+		_test_stone_guard_rashun_ignores_own_allies,
+		_test_stone_guard_rashun_totems_and_tokens,
 		_test_wazzuli_party_heal,
 		_test_stylean_enter_play_party_heal,
 		_test_windseer_ready_on_attack,
@@ -12310,6 +12314,152 @@ func _test_watcher_malwi_ignores_own_allies() -> void:
 
 	ok(state.is_in_play("wisp"), "wm-e: a friendly ally entering is NOT pinged")
 	eq(state.get_card("wisp").damage_taken, 0, "wm-f: friendly ally took no damage")
+
+
+func _test_watcher_malwi_pings_entering_totem() -> void:
+	_buf.append("\n-- Watcher Mal'wi: pings an entering opposing TOTEM (305.3a) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("malwi_def", 3, 3, [], 4, "damage_opposing_ally_on_enter:1:ranged")
+	# Searing Totem is 0/1 — the ping kills it outright.
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 5)
+	var malwi := _add_ally(state, "malwi", "malwi_def", "p1")
+	malwi.just_summoned = false
+	_add_hand_card(state, "searing", "searing_def", "p2")
+
+	StackResolver.submit_action(state,
+		PendingAction.make("play_ability", "p2", {"card_id": "searing"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# 305.3a: "Totems are ability allies and count as both in all zones" — an
+	# entering opposing Totem is an entering opposing ally.
+	ok(not state.is_in_play("searing"),
+		"wm-g: the 0/1 Totem was pinged as it entered and died")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stone Guard Rashun — when an opposing ally enters play, exhaust it
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_stone_guard_rashun_exhausts_entering_opposing_ally() -> void:
+	_buf.append("\n-- Stone Guard Rashun: exhausts opposing allies as they enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rashun_def", 5, 5, [], 5, "exhaust_opposing_ally_on_enter")
+	db.ally("grunt_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# Rashun belongs to p1; p2 is the active player playing allies into him.
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 5)
+	var rashun := _add_ally(state, "rashun", "rashun_def", "p1")
+	rashun.just_summoned = false
+	_add_hand_card(state, "grunt", "grunt_def", "p2")
+
+	# Resolve the play directly — exhaustion is observed as the ally ENTERS play;
+	# driving whole turns would ready it again at the next ready step.
+	var play := PendingAction.make("play_ally", "p2", {"card_id": "grunt"})
+	ok(StackResolver.can_submit(state, play, db), "sgr-a0: play_ally is legal")
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(state.is_in_play("grunt"), "sgr-a: the opposing ally is still in play (not destroyed)")
+	ok(state.get_card("grunt").is_exhausted, "sgr-b: it entered play exhausted")
+	ok(not state.get_card("rashun").is_exhausted, "sgr-c: Rashun himself is untouched")
+
+
+func _test_stone_guard_rashun_ignores_own_allies() -> void:
+	_buf.append("\n-- Stone Guard Rashun: does not exhaust his controller's own allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rashun_def", 5, 5, [], 5, "exhaust_opposing_ally_on_enter")
+	db.ally("grunt_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	var rashun := _add_ally(state, "rashun", "rashun_def", "p1")
+	rashun.just_summoned = false
+	_add_hand_card(state, "grunt", "grunt_def", "p1")
+
+	var p1_ai := ScriptedAI.new()
+	p1_ai.queue_action(PendingAction.make("play_ally", "p1", {"card_id": "grunt"}))
+	_drive_turns(state, db, p1_ai, ScriptedAI.new(), 1)
+
+	ok(state.is_in_play("grunt"), "sgr-d: friendly ally entered play")
+	ok(not state.get_card("grunt").is_exhausted,
+		"sgr-e: a friendly ally entering is NOT exhausted")
+
+
+func _test_stone_guard_rashun_totems_and_tokens() -> void:
+	_buf.append("\n-- Stone Guard Rashun: catches opposing totems (305.3a) and tokens --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rashun_def", 5, 5, [], 5, "exhaust_opposing_ally_on_enter")
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	db.ally("mya_def", 2, 2, [], 3, "on_enter:create_token:dragonling_token")
+	db.token("dragonling_token", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p2", 8)
+	var rashun := _add_ally(state, "rashun", "rashun_def", "p1")
+	rashun.just_summoned = false
+	_add_hand_card(state, "searing", "searing_def", "p2")
+	_add_hand_card(state, "mya", "mya_def", "p2")
+
+	# Resolve both plays directly — see the note in the test above.
+	StackResolver.submit_action(state,
+		PendingAction.make("play_ability", "p2", {"card_id": "searing"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state,
+		PendingAction.make("play_ally", "p2", {"card_id": "mya"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# 305.3a: a Totem is an ability ally, so an entering opposing Totem triggers
+	# the watcher like any other ally.
+	eq(state.get_card("searing").zone_id, "p2_ally_row", "sgr-f: totem entered the ally_row")
+	ok(state.get_card("searing").is_exhausted, "sgr-g: an opposing TOTEM is exhausted (305.3a)")
+	# Tokens do come through _bring_ally_into_play, so they are caught.
+	ok(state.get_card("mya").is_exhausted, "sgr-h: Mya herself was exhausted on entry")
+	var tokens := _tokens_in(state, "p2_ally_row")
+	eq(tokens.size(), 1, "sgr-i: the Dragonling token was created")
+	if tokens.is_empty():
+		return
+	ok((tokens[0] as CardInstance).is_exhausted,
+		"sgr-j: an opposing TOKEN entering play is exhausted too")
+
+	# Rashun taxes TEMPO, not board presence: everything he exhausted on entry
+	# readies normally at its controller's next ready step. Nothing about the
+	# exhaust persists — it is not a Gouge-style ready lock.
+	var token_id: String = (tokens[0] as CardInstance).instance_id
+	TurnManager.advance_phase(state, db)   # action → end
+	TurnManager.advance_phase(state, db)   # end → p1's turn (ready)
+	TurnManager.advance_phase(state, db)   # p1 ready → draw
+	TurnManager.advance_phase(state, db)   # p1 draw → action
+	TurnManager.advance_phase(state, db)   # p1 action → end
+	TurnManager.advance_phase(state, db)   # end → p2's turn (ready step runs)
+	eq(state.turn_player, "p2", "sgr-k: back on the totem controller's turn")
+	ok(not state.get_card("searing").is_exhausted,
+		"sgr-l: the exhausted TOTEM readies at its controller's ready step")
+	ok(not state.get_card("mya").is_exhausted,
+		"sgr-m: the exhausted ally readies too")
+	ok(not state.get_card(token_id).is_exhausted,
+		"sgr-n: the exhausted token readies too")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

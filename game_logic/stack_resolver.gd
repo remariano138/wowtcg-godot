@@ -1416,6 +1416,63 @@ static func _put_token_into_play(state: GameState, controller: String,
 	return events
 
 
+# "When an opposing ally enters play, …" watchers. Any in-play card an OPPONENT
+# of the entering ally controls with one of these flags reacts here:
+#
+#   damage_opposing_ally_on_enter:AMOUNT:DMG_TYPE — Watcher Mal'wi (ping it)
+#   exhaust_opposing_ally_on_enter                — Stone Guard Rashun
+#
+# Resolved immediately, not via the chain — see data/rules_deviations.md
+# "Watcher Mal'wi".
+#
+# Rule 305.3a: "Totems are ability allies and count as both in all zones" — so a
+# Totem entering play IS an ally entering play and must trigger these. A Totem
+# does NOT come through _bring_ally_into_play (it resolves via
+# _resolve_play_ongoing_ability straight into the ally_row), which is why this
+# lives in its own function called from BOTH entry paths. Tokens need no special
+# handling — _put_token_into_play brings them in through _bring_ally_into_play
+# like any other ally.
+static func fire_opposing_ally_enter_watchers(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var card := state.get_card(card_id)
+	if not card or not db:
+		return events
+
+	for other_pid in state.players:
+		if other_pid == card.controller:
+			continue
+		for watcher in state.cards_in_play(other_pid):
+			var wdef := db.get_def(watcher.card_def_id) as CardDef
+			if not wdef or wdef.effects == "":
+				continue
+			for seg in wdef.effects.split("|"):
+				var wp := seg.strip_edges().split(":")
+				match wp[0].strip_edges():
+					"damage_opposing_ally_on_enter":
+						if not state.is_in_play(card_id):
+							break   # entering ally already destroyed by an earlier watcher
+						# wp[2] is the damage type (ranged) — flavor only; deal_damage
+						# doesn't track a combat/effect damage type. Packet pipeline
+						# (the target is always an ally, so no prevention point opens,
+						# but the invariant holds: effects never deal directly).
+						var amt := int(wp[1]) if wp.size() > 1 else 1
+						events.append_array(defer_packets(state, db, [{
+							"source": watcher.instance_id, "target": card_id,
+							"amount": amt,
+						}]))
+					"exhaust_opposing_ally_on_enter":
+						# Stone Guard Rashun: "When an opposing ally enters play,
+						# exhaust it." Mandatory, no cost, no choice, no target —
+						# fires inline. exhaust_card no-ops if an earlier watcher
+						# already killed the entering ally or exhausted it, so
+						# stacked copies are harmless.
+						if not state.is_in_play(card_id):
+							break
+						events.append_array(GameLogic.exhaust_card(state, card_id))
+	return events
+
+
 # Move an ally into its controller's ally_row and fire its enter-play effects.
 # Shared by normal play (_resolve_play_ally) and effects that put an ally into
 # play from elsewhere (e.g. Finkle Einhorn's graveyard reward) — the on_enter
@@ -1556,34 +1613,7 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							events.append(GameEvent.enter_play_target_required(
 								card_id, "bounce", 0))
 
-	# Watcher Mal'wi: "When an opposing ally enters play, [this] deals N ranged
-	# damage to it." Any in-play card an OPPONENT of the entering ally controls
-	# with the `damage_opposing_ally_on_enter:AMOUNT:DMG_TYPE` flag reacts here.
-	# Resolved immediately (like the on_enter effects above), not via the chain —
-	# see data/rules_deviations.md "Watcher Mal'wi".
-	if db:
-		for other_pid in state.players:
-			if other_pid == card.controller:
-				continue
-			for watcher in state.cards_in_play(other_pid):
-				var wdef := db.get_def(watcher.card_def_id) as CardDef
-				if not wdef or wdef.effects == "":
-					continue
-				for seg in wdef.effects.split("|"):
-					var wp := seg.strip_edges().split(":")
-					if wp[0].strip_edges() != "damage_opposing_ally_on_enter":
-						continue
-					if not state.is_in_play(card_id):
-						break   # entering ally already destroyed by an earlier watcher
-					# wp[2] is the damage type (ranged) — flavor only; deal_damage
-					# doesn't track a combat/effect damage type. Packet pipeline
-					# (the target is always an ally, so no prevention point opens,
-					# but the invariant holds: effects never deal directly).
-					var amt := int(wp[1]) if wp.size() > 1 else 1
-					events.append_array(defer_packets(state, db, [{
-						"source": watcher.instance_id, "target": card_id,
-						"amount": amt,
-					}]))
+	events.append_array(fire_opposing_ally_enter_watchers(state, card_id, db))
 
 	# Check pet uniqueness (414.3b) — must happen after the card is in play.
 	events.append_array(_check_pet_uniqueness(state, card_id, db))
@@ -1772,6 +1802,10 @@ static func _resolve_play_ongoing_ability(state: GameState,
 	if def and is_totem_def(def):
 		events.append_array(GameLogic.move_card(state, card_id, card.controller + "_ally_row"))
 		card.just_summoned = true
+		# 305.3a — a Totem is an ability ally, so an opposing Totem entering play
+		# triggers "when an opposing ally enters play" watchers (Watcher Mal'wi,
+		# Stone Guard Rashun) exactly as an ordinary ally does.
+		events.append_array(fire_opposing_ally_enter_watchers(state, card_id, db))
 		return events
 	# On-play effect segments resolved in printed order BEFORE the ongoing part
 	# settles into play (Bash: "Exhaust target hero or ally." / Claw: "Your hero

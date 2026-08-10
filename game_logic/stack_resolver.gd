@@ -2404,8 +2404,11 @@ static func _weapon_info(def: CardDef) -> Dictionary:
 	return {}
 
 
-# Effective strike cost for player_id (applies the pending melee discount).
-static func get_strike_cost(state: GameState, player_id: String, def: CardDef) -> int:
+# Effective strike cost for player_id (applies the pending melee discount and
+# any live strike-cost auras). `db` is optional so the aura is skipped rather
+# than crashing on the few probe call sites that have no database handy.
+static func get_strike_cost(state: GameState, player_id: String, def: CardDef,
+		db = null) -> int:
 	var info := _weapon_info(def)
 	if info.is_empty():
 		return -1
@@ -2413,7 +2416,33 @@ static func get_strike_cost(state: GameState, player_id: String, def: CardDef) -
 	var ps := state.players.get(player_id) as PlayerState
 	if ps and ps.melee_strike_discount > 0 and def.dmg_type.to_lower() == "melee":
 		cost = max(0, cost - ps.melee_strike_discount)
-	return cost
+	cost += _strike_cost_aura(state, player_id, db)
+	return max(0, cost)
+
+
+# Margaret Fowl (dark_portal_179): "You pay 1 less to strike with weapons.
+# Opponents pay 1 more to strike with weapons." (`strike_cost_mod:SELF:OPPOSING`)
+# Read LIVE off every in-play card of both players — never cached, so it covers
+# weapons equipped after the aura and lifts the instant the source leaves play.
+# Unlike Gorebelly's melee discount this applies to ANY weapon (the card says
+# "weapons") and is not consumed by striking. Stacks per copy.
+static func _strike_cost_aura(state: GameState, player_id: String, db) -> int:
+	if not db:
+		return 0
+	var total := 0
+	for pid in state.players.keys():
+		var is_self: bool = (pid == player_id)
+		for zone_suffix in ["_ally_row", "_hero_row"]:
+			for card in state.cards_in_zone(pid + zone_suffix):
+				var cdef := db.get_def(card.card_def_id) as CardDef
+				if not cdef:
+					continue
+				for segment in cdef.effects.split("|"):
+					var parts := segment.split(":")
+					if parts[0] != "strike_cost_mod" or parts.size() < 3:
+						continue
+					total += int(parts[1]) if is_self else int(parts[2])
+	return total
 
 
 # Weapons player_id could strike with right now for the given wielder:
@@ -2436,7 +2465,7 @@ static func get_strikeable_weapons(state: GameState, player_id: String,
 		if card.is_exhausted:
 			continue
 		var def := db.get_def(card.card_def_id) as CardDef
-		var cost := get_strike_cost(state, player_id, def)
+		var cost := get_strike_cost(state, player_id, def, db)
 		if cost >= 0 and cost <= available:
 			result.append(card.instance_id)
 	return result
@@ -2480,7 +2509,7 @@ static func choose_strike(state: GameState, weapon_id: String,
 			and state.is_in_play(wielder_id) and db:
 		var weapon := state.get_card(weapon_id)
 		var def := db.get_def(weapon.card_def_id) as CardDef
-		var cost := get_strike_cost(state, player_id, def)
+		var cost := get_strike_cost(state, player_id, def, db)
 		if cost >= 0 and cost <= state.get_available_resources(player_id) \
 				and not weapon.is_exhausted:
 			var ps := state.players.get(player_id) as PlayerState

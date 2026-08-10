@@ -510,7 +510,7 @@ func _cheapest_ranged_strike_cost(state: GameState, db, player_id: String) -> in
 			continue
 		if StackResolver._weapon_info(def).is_empty():
 			continue
-		var cost := StackResolver.get_strike_cost(state, player_id, def)
+		var cost := StackResolver.get_strike_cost(state, player_id, def, db)
 		if cost >= 0 and (best < 0 or cost < best):
 			best = cost
 	return best

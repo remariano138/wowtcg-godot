@@ -4393,7 +4393,7 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 		if card and _db:
 			var def: CardDef = _db.get_def(card.card_def_id)
 			if def:
-				var cost := StackResolver.get_strike_cost(_state, _state.pending_strike_player, def)
+				var cost := StackResolver.get_strike_cost(_state, _state.pending_strike_player, def, _db)
 				btn_label = "%s  (+%d ATK, %d)" % [def.card_name, _state.get_atk(cid, _db), cost]
 		var captured_id: String = cid
 		buttons.append({

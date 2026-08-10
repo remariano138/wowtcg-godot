@@ -4,11 +4,6 @@
   "hero_card_def_id": "azeroth_3",
   "card_entries": [
     {
-      "card_def_id": "azeroth_360",
-      "count": 1,
-      "_card_name": "Your Fortune Awaits You"
-    },
-    {
       "card_def_id": "azeroth_348",
       "count": 2,
       "_card_name": "Big Game Hunter"
@@ -40,8 +35,13 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 1,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_358",
+      "count": 1,
+      "_card_name": "Sunken Treasure"
     },
     {
       "card_def_id": "dark_portal_34",
@@ -55,12 +55,12 @@
     },
     {
       "card_def_id": "azeroth_45",
-      "count": 1,
+      "count": 2,
       "_card_name": "Rayder"
     },
     {
       "card_def_id": "azeroth_42",
-      "count": 3,
+      "count": 1,
       "_card_name": "Old Bones"
     },
     {
@@ -74,8 +74,13 @@
       "_card_name": "Quick Strike"
     },
     {
+      "card_def_id": "azeroth_32",
+      "count": 1,
+      "_card_name": "Aimed Shot"
+    },
+    {
       "card_def_id": "dark_portal_40",
-      "count": 2,
+      "count": 3,
       "_card_name": "Trophy Kill"
     },
     {
@@ -110,8 +115,18 @@
     },
     {
       "card_def_id": "azeroth_197",
-      "count": 4,
+      "count": 2,
       "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_187",
+      "count": 1,
+      "_card_name": "Hannah the Unstoppable"
+    },
+    {
+      "card_def_id": "dark_portal_179",
+      "count": 1,
+      "_card_name": "Margaret Fowl"
     },
     {
       "card_def_id": "dark_portal_196",
@@ -134,19 +149,14 @@
       "_card_name": "Tristan Rapidstrike"
     },
     {
-      "card_def_id": "azeroth_176",
-      "count": 2,
-      "_card_name": "Apprentice Teep"
+      "card_def_id": "dark_portal_170",
+      "count": 4,
+      "_card_name": "Jeleane Nightbreeze"
     },
     {
       "card_def_id": "azeroth_41",
       "count": 1,
       "_card_name": "Multi-Shot"
-    },
-    {
-      "card_def_id": "azeroth_180",
-      "count": 2,
-      "_card_name": "Crazy Igvand"
     }
   ],
   "recommended_ai_id": "ai_generic",

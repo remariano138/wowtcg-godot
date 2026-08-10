@@ -200,6 +200,7 @@ func _ready() -> void:
 		_test_ai_galahandra_freeze_save,
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
+		_test_margaret_fowl_strike_cost_aura,
 		_test_devilsaur_leggings,
 		_test_iceblade_hacker,
 		_test_bone_bow_grants_long_range,
@@ -11100,6 +11101,66 @@ func _test_ai_elendril_flip_for_lethal() -> void:
 		"ae-c: already lethal -> AI attacks directly, no flip")
 
 
+# Margaret Fowl (dark_portal_179): "You pay 1 less to strike with weapons.
+# Opponents pay 1 more to strike with weapons." Live aura on get_strike_cost.
+func _test_margaret_fowl_strike_cost_aura() -> void:
+	_buf.append("\n-- Margaret Fowl: strike-cost aura --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("axe_def", 5, 4, 3)                    # strike cost 3, Melee
+	db.weapon("bow_def", 5, 2, 3, "Ranged", "ranged_weapon")
+	db.weapon("free_def", 1, 1, 0)                   # strike cost 0
+	db.ally("margaret_def", 5, 3, [], 4, "strike_cost_mod:-1:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var axe := db.get_def("axe_def")
+
+	# mf-a: no aura in play -> printed strike cost for both players.
+	eq(StackResolver.get_strike_cost(state, "p1", axe, db), 3, "mf-a: p1 pays 3")
+	eq(StackResolver.get_strike_cost(state, "p2", axe, db), 3, "mf-a2: p2 pays 3")
+
+	# mf-b: Margaret in p1's ally row -> p1 pays 1 less, p2 pays 1 more.
+	var m1 := CardInstance.create("m1", "margaret_def", "p1", "p1_ally_row")
+	state.cards["m1"] = m1
+	state.zones["p1_ally_row"].card_ids.append("m1")
+	eq(StackResolver.get_strike_cost(state, "p1", axe, db), 2, "mf-b: controller pays 2")
+	eq(StackResolver.get_strike_cost(state, "p2", axe, db), 4, "mf-b2: opponent pays 4")
+
+	# mf-c: the card says "weapons" — Ranged weapons are affected too (unlike
+	# Gorebelly's Melee-only discount).
+	eq(StackResolver.get_strike_cost(state, "p1", db.get_def("bow_def"), db), 2,
+		"mf-c: ranged weapon also discounted")
+
+	# mf-d: floors at 0, never negative.
+	eq(StackResolver.get_strike_cost(state, "p1", db.get_def("free_def"), db), 0,
+		"mf-d: strike cost floors at 0")
+
+	# mf-e: stacks per copy.
+	var m2 := CardInstance.create("m2", "margaret_def", "p1", "p1_ally_row")
+	state.cards["m2"] = m2
+	state.zones["p1_ally_row"].card_ids.append("m2")
+	eq(StackResolver.get_strike_cost(state, "p1", axe, db), 1, "mf-e: two copies -> 1")
+	eq(StackResolver.get_strike_cost(state, "p2", axe, db), 5, "mf-e2: opponent -> 5")
+
+	# mf-f: the tax gates who may strike at all — p2 with 3 resources can't
+	# afford a 5-cost strike, so their 0-ATK hero isn't a legal attacker.
+	_add_resources(state, "p2", 3)
+	var opp_axe := CardInstance.create("opp_axe", "axe_def", "p2", "p2_hero_row")
+	state.cards["opp_axe"] = opp_axe
+	state.zones["p2_hero_row"].card_ids.append("opp_axe")
+	ok(StackResolver.get_strikeable_weapons(state, "p2", "p2_hero", db).is_empty(),
+		"mf-f: taxed strike is unaffordable")
+	ok("p2_hero" not in StackResolver.get_legal_attackers(state, "p2", db),
+		"mf-f2: 0-ATK hero not a legal attacker while taxed out")
+
+	# mf-g: the aura lifts the moment the source leaves play.
+	GameLogic.destroy_card(state, "m1")
+	GameLogic.destroy_card(state, "m2")
+	eq(StackResolver.get_strike_cost(state, "p1", axe, db), 3, "mf-g: aura gone -> 3")
+	eq(StackResolver.get_strike_cost(state, "p2", axe, db), 3, "mf-g2: opponent -> 3")
+
+
 # Declining, affordability gates, and the melee strike discount (Gorebelly).
 func _test_strike_gates_and_gorebelly_discount() -> void:
 	_buf.append("\n-- Weapon gates + Gorebelly's melee strike discount --")
@@ -11129,7 +11190,7 @@ func _test_strike_gates_and_gorebelly_discount() -> void:
 	StackResolver.pass_priority(state, db)   # flip resolves
 	eq(state.players["p1"].melee_strike_discount, 3, "sg-b2: discount stored")
 	eq(state.get_available_resources("p1"), 1, "sg-b3: flip cost 1 paid")
-	eq(StackResolver.get_strike_cost(state, "p1", db.get_def("bigaxe_def")), 0,
+	eq(StackResolver.get_strike_cost(state, "p1", db.get_def("bigaxe_def"), db), 0,
 		"sg-b4: discounted strike cost is 0")
 	ok("gorebelly_def" in StackResolver.get_legal_attackers(state, "p1", db),
 		"sg-b5: hero is a legal attacker with the discount")

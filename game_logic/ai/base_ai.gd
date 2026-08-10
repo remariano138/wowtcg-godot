@@ -1849,12 +1849,16 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_kill})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
-		elif ap.get("effect", "") == "destroy_ability":
+		elif ap.get("effect", "") == "destroy_ability" \
+				and ap.get("extra_cost", "") != "sacrifice_self":
 			# Lafiel: "2, [Activate] -> Destroy target ability." Opposing in-play
 			# abilities only (never our own ongoing/attachments), highest-cost
 			# first — same value bar as Burn Away's AI branch, except the power
 			# is repeatable across turns, so a cheap target is still fine once
 			# there is nothing better: the only cost is 2 and her tap.
+			# A sacrifice_self version (Confessor Mildred) is excluded above: it costs
+			# the ally itself, so it goes through doomed_sacrifice_action instead and
+			# is only cashed in when she is dying anyway.
 			var opp_ab := "p2" if player_id == "p1" else "p1"
 			var best_ab := ""
 			var best_ab_cost := -1

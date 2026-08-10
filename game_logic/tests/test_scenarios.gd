@@ -246,6 +246,9 @@ func _ready() -> void:
 		_test_lafiel_fizzles_and_ai,
 		_test_moira_destroys_equipment,
 		_test_moira_killed_in_response_and_ai,
+		_test_dispel_magic_instant_destroy_ability,
+		_test_mildred_sacrifice_destroys_ability,
+		_test_mildred_killed_in_response_and_ai,
 		_test_stat_tracker_counts,
 		_test_green_whelp_armor_bounces_attacker,
 		_test_green_whelp_armor_decline_and_gates,
@@ -15669,6 +15672,254 @@ func _test_moira_killed_in_response_and_ai() -> void:
 			and act.params.get("card_id", "") == "moira3" \
 			and act.params.get("target_id", "") == "robe3",
 		"mo-q: chain-threatened Moira cashes in on the opposing equipment")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dispel Magic (azeroth_77): "Destroy target ability." Burn Away's pool at
+# INSTANT speed for 1 — no Purge-style friendly-attachment exclusion, so the
+# caster's own abilities stay legal targets.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_dispel_magic_instant_destroy_ability() -> void:
+	_buf.append("\n-- Dispel Magic: instant-speed destroy target ability --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.totem("totem_def", 1, "ongoing|totem:fire")
+	db.instant("azeroth_77", 1, "destroy_target:ability")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 4)
+
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var totem := CardInstance.create("totem", "totem_def", "p2", "p2_ally_row")
+	state.cards["totem"] = totem
+	state.zones["p2_ally_row"].card_ids.append("totem")
+	# p1's OWN ongoing ability — a legal target (no Purge clause).
+	var own := CardInstance.create("own", "ongo_def", "p1", "p1_hero_row")
+	state.cards["own"] = own
+	state.zones["p1_hero_row"].card_ids.append("own")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	_add_card_to_hand(state, "dm1", "azeroth_77", "p1")
+	_add_card_to_hand(state, "dm2", "azeroth_77", "p1")
+
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "ongo"}), db),
+		"dm-a: an ongoing ability is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "totem"}), db),
+		"dm-b: a totem (ability ally) is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "mark"}), db),
+		"dm-c: an attachment is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "own"}), db),
+		"dm-d: the caster's own ability is a legal target (no Purge clause)")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "robe"}), db),
+		"dm-e: equipment is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "bear"}), db),
+		"dm-f: a regular ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm1", "target_id": "p2_hero"}), db),
+		"dm-g: a hero is NOT a legal target")
+
+	# Resolve on the attachment: it dies, its host survives and loses the buff.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "dm1", "target_id": "mark"}), db)
+	eq(state.get_available_resources("p1"), 3, "dm-h: 1 resource paid")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(mark.zone_id, "p2_graveyard", "dm-i: attachment destroyed")
+	eq(bear.zone_id, "p2_ally_row",  "dm-j: host ally survives")
+	eq(state.get_atk("bear", db), 2, "dm-k: host ATK back to printed value")
+	eq(state.get_card("dm1").zone_id, "p1_graveyard", "dm-l: Dispel Magic in graveyard")
+
+	# Instant speed: legal during an opposing combat's attack window, where
+	# Burn Away (a plain Ability) would be illegal.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "atk", "bear_def", "p2")
+	_add_resources(s2, "p1", 2)
+	var ongo2 := CardInstance.create("ongo2", "ongo_def", "p2", "p2_hero_row")
+	s2.cards["ongo2"] = ongo2
+	s2.zones["p2_hero_row"].card_ids.append("ongo2")
+	_add_card_to_hand(s2, "dm3", "azeroth_77", "p1")
+	s2.turn_player = "p2"
+	s2.priority_player = "p2"
+	s2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "atk", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)   # combat starts, attack window opens
+	ok(s2.combat_attack_window, "dm-m: attack window open")
+	StackResolver.pass_priority(s2, db)   # turn player passes → priority to p1
+	ok(StackResolver.can_submit(s2, PendingAction.make("play_instant", "p1",
+			{"card_id": "dm3", "target_id": "ongo2"}), db),
+		"dm-n: playable during an opposing combat window (instant speed)")
+
+	# Fizzles at the 706 / 4217 re-check when the target leaves play first.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 2)
+	var ongo3 := CardInstance.create("ongo3", "ongo_def", "p2", "p2_hero_row")
+	s3.cards["ongo3"] = ongo3
+	s3.zones["p2_hero_row"].card_ids.append("ongo3")
+	_add_card_to_hand(s3, "dm4", "azeroth_77", "p1")
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p1",
+		{"card_id": "dm4", "target_id": "ongo3"}), db)
+	GameLogic.destroy_card(s3, "ongo3")
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(s3.get_available_resources("p1"), 1, "dm-o: cost stays paid on a fizzle")
+	eq(s3.get_card("dm4").zone_id, "p1_graveyard", "dm-p: the spell still goes to the graveyard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Confessor Mildred (azeroth_232): "2, Destroy Confessor Mildred -> Destroy
+# target ability." Lafiel's destroy pool on Kavai's sacrifice_self cost: no
+# [Activate] tap symbol, so she is usable while exhausted / just summoned, and
+# the sacrifice is paid at resolution — killed in response, the destroy still
+# resolves. The AI never fires her proactively (unlike Lafiel, the power costs
+# the ally): she is only cashed in when doomed.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const MILDRED_RECIPE := "activated_power:2:destroy_ability:0::ability:sacrifice_self"
+
+func _test_mildred_sacrifice_destroys_ability() -> void:
+	_buf.append("\n-- Confessor Mildred: sacrifice self -> destroy target ability --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mildred_def", 2, 2, [], 2, MILDRED_RECIPE)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mildred := _add_ally(state, "mildred", "mildred_def", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 4)
+
+	# md-a: nothing in play to destroy → illegal, even the highlight probe.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "mildred", "_skip_target_check": true}), db),
+		"md-a: power illegal with no ability in play")
+
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "mildred", "target_id": "mark"}), db),
+		"md-b: an attachment is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "mildred", "target_id": "robe"}), db),
+		"md-c: equipment is NOT a legal target (unlike Kavai)")
+
+	# No [Activate] tap symbol: summoning sickness and exhaustion don't block.
+	mildred.just_summoned = true
+	mildred.is_exhausted = true
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "mildred", "target_id": "mark"}), db),
+		"md-d: usable while summoning-sick and exhausted (no [Activate])")
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "mildred", "target_id": "mark"}), db)
+	eq(state.get_available_resources("p1"), 2, "md-e: 2 resources paid at announcement")
+	eq(mildred.zone_id, "p1_ally_row", "md-f: sacrifice not paid until resolution")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(mark.zone_id, "p2_graveyard",    "md-g: attachment destroyed")
+	eq(bear.zone_id, "p2_ally_row",     "md-h: host ally survives")
+	eq(mildred.zone_id, "p1_graveyard", "md-i: Mildred sacrificed to the graveyard")
+
+
+func _test_mildred_killed_in_response_and_ai() -> void:
+	_buf.append("\n-- Confessor Mildred: killed in response; AI doomed cash-in --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mildred_def", 2, 2, [], 2, MILDRED_RECIPE)
+	db.ability("ongo_def", 5, "ongoing")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.instant("vanq_def", 3, "destroy_target:ally")
+
+	# Killed in response: the sacrifice cost no-ops, the destroy still resolves.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mildred := _add_ally(state, "mildred", "mildred_def", "p1")
+	_add_resources(state, "p1", 2)
+	_add_resources(state, "p2", 3)
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	_add_card_to_hand(state, "vanq", "vanq_def", "p2")
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "mildred", "target_id": "ongo"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "vanq", "target_id": "mildred"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Vanquish resolves — Mildred dies
+	eq(mildred.zone_id, "p1_graveyard", "md-j: Mildred destroyed by the response")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # the power resolves
+	eq(ongo.zone_id, "p2_graveyard", "md-k: the announced destroy still resolves")
+
+	# AI: never proactive (unlike Lafiel — the power costs the ally itself).
+	var ai := BaseAI.new()
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var mildred2 := _add_ally(s2, "mildred2", "mildred_def", "p1")
+	mildred2.just_summoned = false
+	_add_resources(s2, "p1", 2)
+	var big := CardInstance.create("big", "ongo_def", "p2", "p2_hero_row")
+	s2.cards["big"] = big
+	s2.zones["p2_hero_row"].card_ids.append("big")
+	ok(ai._get_ally_power_actions(s2, db, "p1").is_empty(),
+		"md-l: sacrifice_self power never fired proactively")
+
+	# Doomed on the chain: cashed in on the opposing ability, not its equipment.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var mildred3 := _add_ally(s3, "mildred3", "mildred_def", "p2")
+	mildred3.just_summoned = false
+	_add_resources(s3, "p1", 3)
+	_add_resources(s3, "p2", 2)
+	var big3 := CardInstance.create("big3", "ongo_def", "p1", "p1_hero_row")
+	s3.cards["big3"] = big3
+	s3.zones["p1_hero_row"].card_ids.append("big3")
+	var robe3 := CardInstance.create("robe3", "robe_def", "p1", "p1_hero_row")
+	s3.cards["robe3"] = robe3
+	s3.zones["p1_hero_row"].card_ids.append("robe3")
+	_add_card_to_hand(s3, "vanq3", "vanq_def", "p1")
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq3", "target_id": "mildred3"}), db)
+	StackResolver.pass_priority(s3, db)      # p1 passes — priority to p2
+	var act := ai.decide_action(s3, db, "p2")
+	ok(act != null and act.action_type == "use_ally_power" \
+			and act.params.get("card_id", "") == "mildred3" \
+			and act.params.get("target_id", "") == "big3",
+		"md-m: chain-threatened Mildred cashes in on the opposing ability")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

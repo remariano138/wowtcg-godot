@@ -15,7 +15,7 @@
     },
     {
       "card_def_id": "dark_portal_304",
-      "count": 1,
+      "count": 3,
       "_card_name": "A New Plague"
     },
     {
@@ -30,7 +30,7 @@
     },
     {
       "card_def_id": "azeroth_345",
-      "count": 4,
+      "count": 2,
       "_card_name": "Torek's Assault"
     },
     {
@@ -55,8 +55,13 @@
     },
     {
       "card_def_id": "azeroth_246",
-      "count": 4,
+      "count": 3,
       "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_77",
+      "count": 1,
+      "_card_name": "Dispel Magic"
     },
     {
       "card_def_id": "azeroth_260",

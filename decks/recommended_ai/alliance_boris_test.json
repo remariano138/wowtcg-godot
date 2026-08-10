@@ -135,8 +135,13 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 4,
+      "count": 3,
       "_card_name": "Liba Wobblebonk"
+    },
+    {
+      "card_def_id": "azeroth_77",
+      "count": 1,
+      "_card_name": "Dispel Magic"
     }
   ],
   "recommended_ai_id": "ai_generic",

@@ -4190,6 +4190,10 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	# Fires as the combat step starts, before the strike point / attack window —
 	# no cost, no choice, so it resolves inline rather than on the chain.
 	events.append_array(_fire_berserking_on_attack(state, attacker_id, db))
+	# Morik: "When Morik attacks, each player draws a card." Non-targeted,
+	# mandatory and free, so it resolves inline as the combat step starts —
+	# nothing goes on the chain. See data/rules_deviations.md "Morik".
+	events.append_array(_fire_attack_draw_each_player(state, attacker_id, db))
 	# Rule 602.1: the attacking player can strike with weapons now (and only
 	# now), before the attack window opens. Doesn't use the chain.
 	var strike := _open_strike_point(state, attacker_id, "attack", db)
@@ -4254,6 +4258,38 @@ static func _fire_berserking_on_attack(state: GameState, attacker_id: String,
 		events.append(GameEvent.counter_changed(card.instance_id, "berserk", removed, 0))
 		state.combat_atk_bonus[attacker_id] = \
 			int(state.combat_atk_bonus.get(attacker_id, 0)) + per * removed
+	return events
+
+
+# Morik (`on_attack_draw_each_player:N`): "When Morik attacks, each player draws
+# a card." Fires only when the flagged card is ITSELF the attacker (an attacking
+# hero or another ally leaves it alone). Draws go in turn order — the attacker's
+# controller first, then the opponent — through GameLogic.draw_one, so the decked
+# rule (410.6b) applies to this forced draw like any other.
+static func _fire_attack_draw_each_player(state: GameState, attacker_id: String,
+		db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	var atk := state.get_card(attacker_id)
+	if not atk:
+		return events
+	var def := db.get_def(atk.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return events
+	var amount := 0
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0].strip_edges() == "on_attack_draw_each_player":
+			amount = int(p[1]) if p.size() > 1 else 1
+			break
+	if amount <= 0:
+		return events
+	for pid in [atk.controller, _other_player(state, atk.controller)]:
+		if pid == "":
+			continue
+		for _i in range(amount):
+			events.append_array(_draw_one(state, pid))
 	return events
 
 

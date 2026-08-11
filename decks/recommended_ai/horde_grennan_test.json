@@ -15,7 +15,7 @@
     },
     {
       "card_def_id": "azeroth_352",
-      "count": 1,
+      "count": 2,
       "_card_name": "In Dreams"
     },
     {
@@ -30,7 +30,7 @@
     },
     {
       "card_def_id": "azeroth_351",
-      "count": 3,
+      "count": 2,
       "_card_name": "A Donation of Wool"
     },
     {
@@ -44,6 +44,11 @@
       "_card_name": "Chromatic Cloak"
     },
     {
+      "card_def_id": "azeroth_328",
+      "count": 2,
+      "_card_name": "Iceblade Hacker"
+    },
+    {
       "card_def_id": "azeroth_114",
       "count": 2,
       "_card_name": "Purge"
@@ -52,11 +57,6 @@
       "card_def_id": "azeroth_108",
       "count": 1,
       "_card_name": "Elemental Focus"
-    },
-    {
-      "card_def_id": "azeroth_328",
-      "count": 2,
-      "_card_name": "Iceblade Hacker"
     },
     {
       "card_def_id": "dark_portal_234",
@@ -109,9 +109,9 @@
       "_card_name": "Frost Shock"
     },
     {
-      "card_def_id": "dark_portal_213",
+      "card_def_id": "dark_portal_224",
       "count": 2,
-      "_card_name": "Guardian Steppestrider"
+      "_card_name": "Morik"
     },
     {
       "card_def_id": "azeroth_106",

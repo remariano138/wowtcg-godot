@@ -188,6 +188,14 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		return events
 	var target_ps := state.players.get(target.controller) as PlayerState
 
+	# Thysta Spiritlasher's "if no damage was dealt this turn" condition. Set
+	# here, AFTER prevention: damage prevented in full ceases to exist (717.2b)
+	# and must not count. This is the only write site, so every damage source in
+	# the game — combat, abilities, powers, triggers — feeds it by construction.
+	# put_damage (405.3 self-damage costs) is a separate primitive and correctly
+	# does not, matching the call made for Berserking's counters.
+	state.damage_dealt_this_turn = true
+
 	# Torek's Assault condition: track when a hero is damaged by an opposing ally.
 	if target_ps and target_ps.hero_instance_id == target_id:
 		var source_card := state.get_card(source_id)

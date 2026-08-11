@@ -146,6 +146,10 @@ func _ready() -> void:
 		_test_infernal_decline_gives_control,
 		_test_infernal_decline_pet_uniqueness,
 		_test_infernal_end_of_turn_damage,
+		_test_thysta_burns_idle_turn,
+		_test_thysta_silent_after_damage,
+		_test_thysta_prevented_damage_still_counts_as_none,
+		_test_thysta_stacks_and_sees_earlier_damage,
 		_test_hierophant_caydiem_power,
 		_test_tanwa_long_range,
 		_test_generic_ai_all_out_hero_lethal,
@@ -236,6 +240,7 @@ func _ready() -> void:
 		_test_stone_guard_rashun_totems_and_tokens,
 		_test_wazzuli_party_heal,
 		_test_stylean_enter_play_party_heal,
+		_test_morik_attack_draws_each_player,
 		_test_windseer_ready_on_attack,
 		_test_windseer_ready_declined_and_unaffordable,
 		_test_windfury_totem_party_ready,
@@ -8544,6 +8549,136 @@ func _test_infernal_end_of_turn_damage() -> void:
 	eq(state.get_card("infernal_inst").damage_taken, 0, "sc39d-f: Infernal doesn't damage itself")
 
 
+const THYSTA_EFFECTS := "end_of_turn_damage_hero_if_none_dealt:3:fire"
+
+
+# Thysta fires at the end of EACH player's turn and hits THAT player's hero —
+# so on her own controller's idle turn she burns her own side. The end-of-turn
+# scan for "your turn" triggers is turn-player-scoped, so this also proves the
+# separate each-player sweep reaches a non-turn-player's card.
+func _test_thysta_burns_idle_turn() -> void:
+	_buf.append("\n-- Thysta Spiritlasher: idle turn burns that turn's player for 3 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("thysta_def", 3, 5, [], 5, THYSTA_EFFECTS)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "thysta_inst", "thysta_def", "p1")
+
+	# p1's own turn ends with nothing having happened → p1's OWN hero takes 3.
+	state.phase       = "action"
+	state.turn_player = "p1"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p1_hero", db), 27, "thy-a: controller's own hero took 3 on their idle turn")
+	eq(state.get_current_hp("p2_hero", db), 30, "thy-b: opposing hero untouched")
+
+	# Now p2's turn, equally idle: Thysta is p1's card but still fires, and hits
+	# p2's hero — "that player" is whoever's turn ended.
+	state.damage_dealt_this_turn = false
+	state.phase       = "action"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p2_hero", db), 27, "thy-c: fires on the opponent's turn too, hitting their hero")
+	eq(state.get_current_hp("p1_hero", db), 27, "thy-d: controller's hero not hit a second time")
+
+
+# Any damage, from any source, to any character, anywhere in the turn.
+func _test_thysta_silent_after_damage() -> void:
+	_buf.append("\n-- Thysta Spiritlasher: any damage this turn silences her --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("thysta_def", 3, 5, [], 5, THYSTA_EFFECTS)
+	db.ally("dummy_def", 0, 5, [], 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "thysta_inst", "thysta_def", "p1")
+	_add_ally(state, "dummy_inst", "dummy_def", "p2")
+	state.turn_player = "p1"
+
+	# A single point of damage on an ALLY — not a hero, and not even the turn
+	# player's — is still "damage dealt this turn".
+	GameLogic.deal_damage(state, "thysta_inst", "dummy_inst", 1, db)
+	ok(state.damage_dealt_this_turn, "thy-e: ally damage sets the turn flag")
+
+	state.phase = "action"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p1_hero", db), 30, "thy-f: no burn — damage was dealt this turn")
+
+	# The flag clears at the next turn start, so the following idle turn burns.
+	state.phase = "end"
+	TurnManager.advance_phase(state, db)   # end → next turn (ready)
+	ok(not state.damage_dealt_this_turn, "thy-g: flag resets at turn start")
+
+
+# Rule 717.2b: damage prevented in full ceases to exist, so it was never dealt
+# and Thysta still fires. Consistent with every other "damage actually dealt"
+# rider in the engine (whelp bounce, discard_per_damage).
+func _test_thysta_prevented_damage_still_counts_as_none() -> void:
+	_buf.append("\n-- Thysta Spiritlasher: fully prevented damage doesn't count as dealt --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("thysta_def", 3, 5, [], 5, THYSTA_EFFECTS)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "thysta_inst", "thysta_def", "p1")
+	state.turn_player = "p1"
+
+	# 1 damage at p1's hero against a 1-point prevention pool: fully absorbed.
+	state.players["p1"].damage_prevention = 1
+	GameLogic.deal_damage(state, "thysta_inst", "p1_hero", 1, db)
+
+	eq(state.get_card("p1_hero").damage_taken, 0, "thy-h: damage fully prevented")
+	ok(not state.damage_dealt_this_turn, "thy-i: prevented damage did NOT set the flag")
+
+	state.phase = "action"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p1_hero", db), 27, "thy-j: Thysta still fires for 3")
+
+
+# Two copies trigger simultaneously — the first one's damage must not suppress
+# the second. And the condition is retroactive: a Thysta arriving mid-turn,
+# after damage was already dealt, stays silent (the reason the flag is tracked
+# unconditionally rather than only while such a card is in play).
+func _test_thysta_stacks_and_sees_earlier_damage() -> void:
+	_buf.append("\n-- Thysta Spiritlasher: copies stack; mid-turn arrival sees earlier damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("thysta_def", 3, 5, [], 5, THYSTA_EFFECTS)
+	db.ally("dummy_def", 0, 5, [], 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	# One copy per player, to also prove the sweep is per-controller-agnostic.
+	_add_ally(state, "thysta_a", "thysta_def", "p1")
+	_add_ally(state, "thysta_b", "thysta_def", "p2")
+	state.phase       = "action"
+	state.turn_player = "p1"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p1_hero", db), 24, "thy-k: both copies fired (3 + 3) at the turn player's hero")
+
+	# Fresh turn, damage dealt EARLY, then a Thysta enters play afterwards.
+	state.damage_dealt_this_turn = false
+	state.turn_player = "p2"
+	_add_ally(state, "dummy_inst", "dummy_def", "p1")
+	GameLogic.deal_damage(state, "thysta_b", "dummy_inst", 1, db)
+	var late := _add_ally(state, "thysta_late", "thysta_def", "p2")
+	late.just_summoned = true
+
+	state.phase = "action"
+	TurnManager.advance_phase(state, db)
+
+	eq(state.get_current_hp("p2_hero", db), 30,
+		"thy-l: no copy fires — damage was dealt before the late arrival entered play")
+
+
 func _test_hierophant_caydiem_power() -> void:
 	_buf.append("\n-- Hierophant Caydiem: 1 nature damage to target + heal 1 from another target --")
 	var db := MockDB.new()
@@ -12766,6 +12901,74 @@ func _test_stylean_enter_play_party_heal() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 # Windseer Tarus — first attack each turn, may pay 1 to ready him
 # ══════════════════════════════════════════════════════════════════════════════
+
+func _test_morik_attack_draws_each_player() -> void:
+	_buf.append("\n-- Morik: when he attacks, each player draws a card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("morik_def", 2, 2, (["ferocity"] as Array[String]), 3,
+		"on_attack_draw_each_player:1")
+	db.ally("plain_def", 3, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_stock_deck(state, "p1", "plain_def", 5)
+	_stock_deck(state, "p2", "plain_def", 5)
+	var morik := _add_ally(state, "morik", "morik_def", "p1")
+	# Ferocity: he attacks the turn he lands.
+	morik.just_summoned = true
+	state.players["p1"].resource_placed_this_turn = true
+
+	ok("morik" in StackResolver.get_legal_attackers(state, "p1", db),
+		"mk-a: Ferocity makes Morik a legal attacker the turn he lands")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "morik", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts → trigger fires
+
+	eq(state.zones["p1_hand"].card_ids.size(), 1, "mk-b: attacker's controller drew 1")
+	eq(state.zones["p2_hand"].card_ids.size(), 1, "mk-c: opponent drew 1 as well")
+	eq(state.zones["p1_deck"].card_ids.size(), 4, "mk-d: p1 deck down by 1")
+	eq(state.zones["p2_deck"].card_ids.size(), 4, "mk-e: p2 deck down by 1")
+	ok(state.combat_attack_window,
+		"mk-f: trigger resolved inline — attack window open, nothing on the chain")
+	ok(state.pending_actions.is_empty(), "mk-g: chain is empty")
+
+	# A DIFFERENT attacker must not fire Morik's trigger (it keys on the attacker
+	# itself, not on Morik being in play).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_stock_deck(state2, "p1", "plain_def", 5)
+	_stock_deck(state2, "p2", "plain_def", 5)
+	_add_ally(state2, "morik", "morik_def", "p1")
+	var other := _add_ally(state2, "other", "plain_def", "p1")
+	other.just_summoned = false
+	state2.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "other", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+
+	eq(state2.zones["p1_hand"].card_ids.size(), 0,
+		"mk-h: another ally attacking draws nothing")
+	eq(state2.zones["p2_hand"].card_ids.size(), 0, "mk-i: opponent drew nothing either")
+
+	# The forced draw is a real draw — attacking with Morik on an empty deck
+	# decks you (410.6b).
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	_stock_deck(state3, "p2", "plain_def", 5)   # p1's deck is empty
+	var morik3 := _add_ally(state3, "morik", "morik_def", "p1")
+	morik3.just_summoned = false
+	state3.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "morik", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)
+
+	ok("p1" in state3.decked_players, "mk-j: attacking on an empty deck decks the attacker")
+
 
 func _test_windseer_ready_on_attack() -> void:
 	_buf.append("\n-- Windseer Tarus: pay 1 to ready after the first attack --")

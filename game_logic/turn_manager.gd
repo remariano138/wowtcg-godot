@@ -97,6 +97,9 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	var events: Array[GameEvent] = [GameEvent.turn_changed(state.turn_number, state.turn_player)]
 
 	# Reset once-per-turn flags.
+	# Thysta Spiritlasher's "no damage was dealt this turn" watch starts clean
+	# each turn; the end-phase trigger reads it before this next reset.
+	state.damage_dealt_this_turn = false
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false
@@ -200,6 +203,20 @@ static func _enter_end(state: GameState, db) -> Array[GameEvent]:
 	# Triggered effects: "at the end of your turn" (only the turn player's chars).
 	for card in state.cards_in_play(state.turn_player):
 		events.append_array(_apply_end_of_turn_effects(state, card, db))
+
+	# "At the end of EACH player's turn" triggers (Thysta Spiritlasher) fire on
+	# both turns, so they need their own sweep over every player's cards — the
+	# scan above is deliberately scoped to the turn player and must stay that
+	# way for "at the end of YOUR turn" (Infernal).
+	# The "no damage was dealt this turn" condition is sampled ONCE, here: these
+	# triggers all trigger simultaneously, so two Thystas both see the clean
+	# turn and both fire. Re-reading it per card would let the first one's own
+	# damage suppress the second — and would be unreliable anyway, since
+	# defer_packets can hold the damage behind an armor prevention point.
+	var none_dealt := not state.damage_dealt_this_turn
+	for pid in state.players:
+		for card in state.cards_in_play(pid):
+			events.append_array(_apply_each_turn_end_effects(state, card, db, none_dealt))
 
 	# Expire "this turn" buffs (duration_type == "turns"). Sweep every card in
 	# play for both players — a "this turn" modifier ends at end of turn no
@@ -479,6 +496,44 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 					packets.append({"source": card.instance_id,
 						"target": opp_hero.instance_id, "amount": amount})
 				events.append_array(StackResolver.defer_packets(state, db, packets))
+	return events
+
+
+# "At the end of each player's turn" triggers — fired for EVERY player's cards
+# (see the sweep in _enter_end), not just the turn player's.
+static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, db,
+		none_dealt: bool) -> Array[GameEvent]:
+	if not db:
+		return []
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return []
+	var events: Array[GameEvent] = []
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		match parts[0].strip_edges():
+			"end_of_turn_damage_hero_if_none_dealt":
+				# Thysta Spiritlasher: "At the end of each player's turn, if no
+				# damage was dealt this turn, [this] deals AMOUNT DMG_TYPE damage
+				# to that player's hero."
+				# "That player" is the player whose turn is ending — the TURN
+				# PLAYER, whoever controls Thysta. On her controller's own idle
+				# turn she burns their hero: the clock is symmetric.
+				if not none_dealt:
+					continue
+				var amount := int(parts[1]) if parts.size() > 1 else 1
+				var dmg_type := parts[2].strip_edges() if parts.size() > 2 else ""
+				var hero := state.get_hero(state.turn_player)
+				if not hero:
+					continue
+				# Through defer_packets like every other damage source, so the
+				# hero's controller gets the armor prevention point (717.2c).
+				events.append_array(StackResolver.defer_packets(state, db, [{
+					"source": card.instance_id,
+					"target": hero.instance_id,
+					"amount": amount,
+					"dmg_type": dmg_type,
+				}]))
 	return events
 
 

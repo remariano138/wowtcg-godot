@@ -302,6 +302,40 @@ no card id is hardcoded in `stack_resolver.gd`.
 
 ---
 
+## Morik (`dark_portal_224`)
+
+**Printed text:** "When Morik attacks, each player draws a card."
+
+**Rule 703 / 708:** in paper play this triggered power creates a triggered effect
+that goes on the chain as the attack happens, resolving with a priority window
+before the cards are drawn.
+
+**Deviation:** the engine resolves it immediately in
+`StackResolver._resolve_propose_combat`, right after `combat_started` is emitted
+and before the strike point / attack window — the same site and for the same
+reason as Donna Calister above. `_fire_attack_draw_each_player` reads the
+data-driven `on_attack_draw_each_player:N` flag off the ATTACKER's own def, so it
+fires only when the flagged card is itself attacking.
+
+**Why:** the effect has no target, no cost and no choice, so a chain-based
+implementation would add complexity with no observable difference. The only
+visible consequence of the timing is that both players hold the drawn card
+during the attack/defend windows and may play it there — which is what the
+printed timing gives you anyway, since the trigger resolves before those windows
+open.
+
+**Draw order:** "each player" is resolved in turn order — the attacker's
+controller first, then the opponent. This only matters when both players would
+be decked by the same trigger; the forced draws go through `GameLogic.draw_one`,
+so the decked rule (410.6b) applies normally and attacking with Morik on an
+empty deck loses you the game.
+
+**How to apply this pattern to future cards:** an on-attack, non-targeted,
+costless trigger belongs inline at this site behind its own effects flag — do
+not hardcode a card id in `stack_resolver.gd`.
+
+---
+
 ## Frostbolt / Frost Shock — AI ignores the "can't attack (or protect)" rider
 
 **Cards:** Frostbolt (`azeroth_56`, 3 frost) and Frost Shock (`azeroth_109`,
@@ -725,3 +759,52 @@ shape is "click once per point of damage".
 at all; a player who wants to dump resources must do it some other way.
 Enforcement site: `StackResolver._can_play_divided_damage` in
 `game_logic/stack_resolver.gd`.
+
+---
+
+## Thysta Spiritlasher — an inline "each player's turn" trigger
+
+**Card:** Thysta Spiritlasher (`dark_portal_236`, 5-cost 3/5 Horde Orc Warlock).
+Printed text: "At the end of each player's turn, if no damage was dealt this
+turn, Thysta Spiritlasher deals 3 fire damage to that player's hero."
+
+**Deviation:** by 501.1a/410 the trigger should go on the chain and open a
+priority window before its damage resolves. It resolves **inline** in
+`TurnManager._enter_end` instead, exactly like Watcher Mal'wi's and Morik's
+triggers: it is mandatory, free, has no choice and no target, so nothing about
+the window changes what happens. The damage still goes through
+`StackResolver.defer_packets`, so the hero's controller keeps the armor
+prevention point (717.2c) — the one decision the trigger does present.
+
+**Rulings pinned alongside it:**
+
+- **"That player" is the turn player**, i.e. the hero of whoever's turn just
+  ended — not Thysta's controller and not their opponent. On her controller's
+  own idle turn she burns their own hero. The clock is symmetric, and that is
+  the point of the card: it punishes whoever wastes a turn.
+- **"No damage was dealt" is global** — any damage, from any source, to any
+  character on either side, at any point in the turn. Tracked by the single
+  `GameState.damage_dealt_this_turn` flag written in `GameLogic.deal_damage`.
+- **Damage prevented in full does not count as dealt** (717.2b — the packet
+  ceases to exist), so a hit fully absorbed by armor leaves Thysta live. This
+  matches every other "damage actually dealt" rider in the engine (whelp bounce,
+  `discard_per_damage`, `drain_heal_per_damage`). Self-damage paid as a cost via
+  `put_damage` (405.3) likewise doesn't count, the same call made for
+  Berserking's counters.
+- **The condition is sampled once** for all copies, before any of them fire, so
+  two Thystas both burn a clean turn for 3 each rather than the first silencing
+  the second.
+
+**Why the flag is tracked unconditionally**, in every game, whether or not such a
+card is on the board: the condition is retroactive. A Thysta entering play
+mid-turn must still see damage dealt *before* she arrived, and there is nothing
+on the board to reconstruct that from — damage that killed an ally leaves no
+trace at all. Gating the tracking on her presence would not be an optimization,
+it would be a wrong answer.
+
+**Consequences:** the end-phase trigger sweep in `TurnManager._enter_end` now has
+two passes — the original turn-player-scoped one for "at the end of YOUR turn"
+(Infernal), and a second all-players pass for "each player's turn" triggers. New
+each-player end triggers belong in `_apply_each_turn_end_effects`, not the
+turn-player one. Enforcement sites: `TurnManager._apply_each_turn_end_effects`
+and the flag write in `GameLogic.deal_damage`.

@@ -29,6 +29,14 @@ var turn_player: String = ""       # player_id of who has the active turn
 var first_player: String = ""      # player_id who goes first (set once at game start)
 var phase: String = "setup"
 var priority_player: String = ""   # player_id who currently holds priority
+# Thysta Spiritlasher: "if no damage was dealt this turn". Set by
+# GameLogic.deal_damage whenever >= 1 damage actually LANDS (fully prevented
+# damage ceases to exist, 717.2b, and so doesn't count); cleared at every turn
+# start. Tracked unconditionally rather than only while such a card is in play:
+# the condition is retroactive, and a Thysta entering play mid-turn must still
+# see damage dealt BEFORE she arrived — damage that killed an ally leaves no
+# trace on the board to reconstruct it from.
+var damage_dealt_this_turn: bool = false
 
 # ── Interrupt stack (rule 409 / 410) ──────────────────────────────────────────
 # A stack of proposed-but-not-yet-resolved actions. Last in, first resolved.
@@ -712,6 +720,7 @@ func to_dict() -> Dictionary:
 		"turn_player":       turn_player,
 		"phase":             phase,
 		"priority_player":   priority_player,
+		"damage_dealt_this_turn": damage_dealt_this_turn,
 		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
@@ -729,6 +738,7 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.turn_player        = d.get("turn_player", "")
 	gs.phase              = d.get("phase", "setup")
 	gs.priority_player    = d.get("priority_player", "")
+	gs.damage_dealt_this_turn = d.get("damage_dealt_this_turn", false)
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
 	for a in d.get("pending_actions", []):
 		gs.pending_actions.append(PendingAction.from_dict(a))

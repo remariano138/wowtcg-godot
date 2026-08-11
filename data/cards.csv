@@ -227,7 +227,7 @@ azeroth,225,Arnold Flem,4,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Uncommon,,"When 
 azeroth,226,Bala Silentblade,3,Ally,Horde,Rogue,,Orc Rogue,1,Melee,4,Common,,Bala Silentblade has +3 ATK while attacking an exhausted hero or ally.,verified,implemented,atk_vs_exhausted_defender:3,assets\cards\bala_silentblade.png,
 azeroth,227,Barak the Shamed,3,Ally,Horde,Warrior,,Orc Warrior,5,Melee,5,Rare,,,unchecked,,,assets\cards\barak_the_shamed.png,
 azeroth,228,Benethor Draigo,3,Ally,Horde,Mage,,Undead Mage,4,Fire,2,Common,,,verified,implemented,,assets\cards\benethor_draigo.png,
-azeroth,229,Besh'iah,6,Ally,Horde,Priest,,Troll Priest,4,Shadow,4,Common,,,unchecked,,,assets\cards\beshiah.png,
+azeroth,229,Besh'iah,6,Ally,Horde,Priest,,Troll Priest,4,Shadow,4,Common,,"Destroy an ally in your party -> Destroy target ability.",verified,implemented,activated_power:0:destroy_ability:0::ability:sacrifice_ally+no_activate,assets\cards\beshiah.png,
 azeroth,230,Blood Guard Mal'wani,4,Ally,Horde,Rogue,,Troll Rogue,1,Melee,5,Common,,Blood Guard Mal'wani has +1 ATK for each damage on him.,verified,implemented,atk_per_damage_self:1,assets\cards\blood_guard_malwani.png,
 azeroth,231,Brigg,1,Ally,Horde,Warrior,,Orc Warrior,1,Melee,2,Common,,"When Brigg deals combat damage to an ally with damage on it, destroy that ally.",verified,implemented,on_combat_damage_destroys_damaged_ally,assets\cards\brigg.png,
 azeroth,232,Confessor Mildred,2,Ally,Horde,Priest,,Undead Priest,2,Shadow,2,Common,,"2, Destroy Confessor Mildred -> Destroy target ability.",verified,implemented,activated_power:2:destroy_ability:0::ability:sacrifice_self,assets\cards\confessor_mildred.png,

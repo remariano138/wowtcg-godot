@@ -1163,11 +1163,15 @@ func _update_targeting_cursor(dmg_type: String, dmg_amount: int) -> void:
 		var icon_file_map: Dictionary = {
 			"heal":    "GreenCrossHeal",
 			"destroy": "SkullDestroy",
+			# Picking the ally a power eats as its cost (Gertha, Besh'iah) — the
+			# same skull; the status line says which pick this is.
+			"sacrifice": "SkullDestroy",
 		}
 		# Oversized icons need a compensating scale (standard is 0.55).
 		var icon_scale_map: Dictionary = {
-			"heal":    Vector2(0.055, 0.055),
-			"destroy": Vector2(0.55 / 8.0, 0.55 / 8.0),
+			"heal":      Vector2(0.055, 0.055),
+			"destroy":   Vector2(0.55 / 8.0, 0.55 / 8.0),
+			"sacrifice": Vector2(0.55 / 8.0, 0.55 / 8.0),
 		}
 		var key    := dmg_type.to_lower()
 		var fname  := key if not icon_file_map.has(key) else (icon_file_map[key] as String)

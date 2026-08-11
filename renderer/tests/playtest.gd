@@ -3478,6 +3478,10 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	var name_str := def.card_name if def else source_id
 	if dmg_type == "heal":
 		_set_status("✚ %s — select a target to heal  [Esc to cancel]" % name_str)
+	# Phase 1 of a two-pick sacrifice power (Gertha, Besh'iah): the cost, not the
+	# effect's target — say so, or the player can't tell the two picks apart.
+	elif dmg_type == "sacrifice":
+		_set_status("☠ %s — select an ally to sacrifice  [Esc to cancel]" % name_str)
 	# Ravenous Bite's two sequential ally picks (see InputRouter._is_atk_swing).
 	elif dmg_type in ["atk_up", "atk_down"]:
 		var swing: Array = StackResolver.atk_swing_amounts(def)

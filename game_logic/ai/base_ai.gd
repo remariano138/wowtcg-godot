@@ -951,6 +951,24 @@ func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
 	return target_id if lethal else ""
 
 
+# The ally a sacrifice_ally power should eat: our least valuable body, never the
+# source itself (Gertha and Besh'iah are both repeatable engines — spending the
+# engine to fire it once is a downgrade). Returns [instance_id, value]; the id is
+# "" when we control nothing else. Random tiebreak on equal value.
+func _cheapest_sacrifice_ally(state: GameState, db, player_id: String,
+		source_id: String) -> Array:
+	var sac_id := ""
+	var sac_val := INF
+	for own in state.cards_in_zone(player_id + "_ally_row"):
+		if own.instance_id == source_id:
+			continue
+		var v := card_value_score(state, db, own.instance_id)
+		if v < sac_val or (v == sac_val and randi() % 2 == 0):
+			sac_val = v
+			sac_id = own.instance_id
+	return [sac_id, sac_val]
+
+
 # Kavai the Wanderer (destroy_ability_or_equipment + sacrifice_self) and Moira
 # Darkheart (destroy_equipment + sacrifice_self): the power
 # destroys the SOURCE as a cost, so it is never fired proactively —
@@ -1016,7 +1034,8 @@ func doomed_sacrifice_action(state: GameState, db, player_id: String) -> Pending
 			"destroy_ability_or_equipment": sac_kinds = ["ability", "equipment"]
 			"destroy_equipment":            sac_kinds = ["equipment"]
 			"destroy_ability":              sac_kinds = ["ability"]
-		if sac_kinds.is_empty() or ap.get("extra_cost", "") != "sacrifice_self":
+		if sac_kinds.is_empty() or not StackResolver.power_has_extra_cost(
+				ap.get("extra_cost", ""), "sacrifice_self"):
 			continue
 		if not _is_doomed(state, db, card.instance_id, threatened):
 			continue
@@ -1904,12 +1923,11 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		if ap.is_empty():
 			continue
 		var extra_cost_str: String = ap.get("extra_cost", "")
-		var once_per_turn: bool = extra_cost_str == "once_per_turn"
+		var once_per_turn: bool = StackResolver.power_has_extra_cost(extra_cost_str, "once_per_turn")
 		# put_damage_self / no_activate (e.g. Acolyte Demia, Hierophant Caydiem)
 		# have no [Activate] tap symbol — 701.2 payment powers, not gated by
 		# summoning sickness or exhaustion. Mirrors StackResolver._can_use_ally_power.
-		var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self") \
-			or extra_cost_str == "no_activate" or extra_cost_str == "sacrifice_self"
+		var no_activate_symbol: bool = StackResolver._power_has_no_activate_symbol(extra_cost_str)
 		if once_per_turn:
 			if card.used_this_turn:
 				continue
@@ -1924,8 +1942,9 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			if state.cards_in_zone(player_id + "_hand").size() > max_hand - draw_n:
 				continue
 			# Kena Shadowbrand pays with self-damage — don't draw herself to death.
-			if extra_cost_str.begins_with("activate_put_damage_self"):
-				var self_dmg := int(extra_cost_str.split(":")[1]) if extra_cost_str.split(":").size() > 1 else 1
+			if StackResolver.power_has_extra_cost(extra_cost_str, "activate_put_damage_self"):
+				var self_dmg := StackResolver.power_extra_cost_arg(
+					extra_cost_str, "activate_put_damage_self", 1)
 				if state.get_current_hp(card.instance_id, db) <= self_dmg:
 					continue
 		# Ilandre Moonspear: only cycle a hand that is actually dead — the swap
@@ -1974,7 +1993,8 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_id})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
-		elif ap.get("effect", "") == "destroy_ally" and extra_cost_str == "sacrifice_ally":
+		elif ap.get("effect", "") == "destroy_ally" \
+				and StackResolver.power_has_extra_cost(extra_cost_str, "sacrifice_ally"):
 			# Gertha, The Old Crone: "1, Destroy an ally in your party -> Destroy
 			# target ally." Sacrifice our LOWEST-value own ally (never Gertha
 			# herself — she's the engine) to destroy the enemy's HIGHEST-value
@@ -1988,15 +2008,9 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				if v > kill_val or (v == kill_val and randi() % 2 == 0):
 					kill_val = v
 					kill_id = enemy.instance_id
-			var sac_id := ""
-			var sac_val := INF
-			for own in state.cards_in_zone(player_id + "_ally_row"):
-				if own.instance_id == card.instance_id:
-					continue  # keep Gertha in play to reuse the power
-				var v := card_value_score(state, db, own.instance_id)
-				if v < sac_val or (v == sac_val and randi() % 2 == 0):
-					sac_val = v
-					sac_id = own.instance_id
+			var sac := _cheapest_sacrifice_ally(state, db, player_id, card.instance_id)
+			var sac_id: String = sac[0]
+			var sac_val: float = sac[1]
 			if kill_id != "" and sac_id != "" and kill_val > sac_val:
 				var act := PendingAction.make("use_ally_power", player_id, {
 					"card_id": card.instance_id, "target_id": kill_id,
@@ -2025,7 +2039,7 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 		elif ap.get("effect", "") == "destroy_ability_or_equipment" \
-				and ap.get("extra_cost", "") == "sacrifice_self" \
+				and StackResolver.power_has_extra_cost(extra_cost_str, "sacrifice_self") \
 				and bool(ap.get("cost_x", false)):
 			# "Chipper" Ironbane: "(X), Destroy [this] -> Destroy target ability
 			# or equipment with cost X." Kavai's power on a 2-cost 3/1, so unlike
@@ -2049,7 +2063,7 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 		elif ap.get("effect", "") == "destroy_ability" \
-				and ap.get("extra_cost", "") != "sacrifice_self":
+				and not StackResolver.power_has_extra_cost(extra_cost_str, "sacrifice_self"):
 			# Lafiel: "2, [Activate] -> Destroy target ability." Opposing in-play
 			# abilities only (never our own ongoing/attachments), highest-cost
 			# first — same value bar as Burn Away's AI branch, except the power
@@ -2071,8 +2085,19 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					best_ab_cost = ab_cost
 					best_ab = cid
 			if best_ab != "":
-				var act := PendingAction.make("use_ally_power", player_id,
-					{"card_id": card.instance_id, "target_id": best_ab})
+				var ab_params := {"card_id": card.instance_id, "target_id": best_ab}
+				# Besh'iah pays the same destroy with an ALLY instead of a tap:
+				# "Destroy an ally in your party -> Destroy target ability." Spend
+				# our least valuable body (never Besh'iah herself — she's the
+				# engine, and she's repeatable since the power has no tap symbol),
+				# and only when the ability is worth at least what we give up.
+				if StackResolver.power_sacrifice_is_separate(ap):
+					var ab_sac := _cheapest_sacrifice_ally(state, db, player_id, card.instance_id)
+					var ab_sac_id: String = ab_sac[0]
+					if ab_sac_id == "" or float(best_ab_cost) < float(ab_sac[1]):
+						continue
+					ab_params["sacrifice_id"] = ab_sac_id
+				var act := PendingAction.make("use_ally_power", player_id, ab_params)
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 		elif ap.get("effect", "") == "rfg_graveyard_ally":

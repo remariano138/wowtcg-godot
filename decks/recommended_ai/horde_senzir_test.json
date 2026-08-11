@@ -2,11 +2,16 @@
   "deck_id": "horde_senzir_test",
   "display_name": "Horde_test (Sen'zir)",
   "hero_card_def_id": "azeroth_14",
-  "card_entries": [    
+  "card_entries": [
     {
-      "card_def_id": "azeroth_344",
-      "count": 1,
-      "_card_name": "For the Horde!"
+      "card_def_id": "azeroth_345",
+      "count": 2,
+      "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "dark_portal_309",
+      "count": 2,
+      "_card_name": "Thwarting Kolkar Aggression"
     },
     {
       "card_def_id": "azeroth_355",
@@ -24,16 +29,6 @@
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
-      "card_def_id": "azeroth_345",
-      "count": 1,
-      "_card_name": "Torek's Assault"
-    },
-    {
-      "card_def_id": "dark_portal_309",
-      "count": 1,
-      "_card_name": "Thwarting Kolkar Aggression"
-    },
-    {
       "card_def_id": "azeroth_351",
       "count": 1,
       "_card_name": "A Donation of Wool"
@@ -45,7 +40,7 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 1,
       "_card_name": "Chasing A-Me 01"
     },
     {
@@ -80,8 +75,13 @@
     },
     {
       "card_def_id": "azeroth_165",
-      "count": 2,
+      "count": 1,
       "_card_name": "Quick Strike"
+    },
+    {
+      "card_def_id": "azeroth_168",
+      "count": 1,
+      "_card_name": "Shattering Blow"
     },
     {
       "card_def_id": "azeroth_41",
@@ -115,8 +115,13 @@
     },
     {
       "card_def_id": "azeroth_236",
-      "count": 2,
+      "count": 1,
       "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "dark_portal_224",
+      "count": 2,
+      "_card_name": "Morik"
     },
     {
       "card_def_id": "azeroth_248",
@@ -124,9 +129,9 @@
       "_card_name": "Ka'tali Stonetusk"
     },
     {
-      "card_def_id": "dark_portal_210",
-      "count": 2,
-      "_card_name": "Ghank"
+      "card_def_id": "dark_portal_141",
+      "count": 1,
+      "_card_name": "First to Fall"
     },
     {
       "card_def_id": "dark_portal_134",
@@ -169,9 +174,9 @@
       "_card_name": "Master of the Hunt"
     },
     {
-      "card_def_id": "azeroth_249",
+      "card_def_id": "azeroth_229",
       "count": 2,
-      "_card_name": "Kulan Earthguard"
+      "_card_name": "Besh'iah"
     },
     {
       "card_def_id": "azeroth_231",

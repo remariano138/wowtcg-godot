@@ -1597,9 +1597,8 @@ func get_playable_card_ids() -> Array:
 			if ap_needs_target:
 				# Affordability only — target chosen after targeting mode starts.
 				var ap_extra_cost: String = ap_data.get("extra_cost", "")
-				var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
-				var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self") \
-					or ap_extra_cost == "no_activate" or ap_extra_cost == "sacrifice_self"
+				var ap_once_per_turn: bool = StackResolver.power_has_extra_cost(ap_extra_cost, "once_per_turn")
+				var ap_no_activate_symbol: bool = StackResolver._power_has_no_activate_symbol(ap_extra_cost)
 				var ap_ready_ok: bool
 				if ap_once_per_turn:
 					ap_ready_ok = not card.used_this_turn
@@ -1774,9 +1773,8 @@ func get_context_actions(instance_id: String) -> Array:
 						# No turn_player restriction — ally powers work on either player's turn
 						# as long as you hold priority (e.g. defending with Grimdron's power).
 						var ap_extra_cost: String = ap_data.get("extra_cost", "")
-						var ap_once_per_turn: bool = ap_extra_cost == "once_per_turn"
-						var ap_no_activate_symbol: bool = ap_extra_cost.begins_with("put_damage_self") \
-							or ap_extra_cost == "no_activate" or ap_extra_cost == "sacrifice_self"
+						var ap_once_per_turn: bool = StackResolver.power_has_extra_cost(ap_extra_cost, "once_per_turn")
+						var ap_no_activate_symbol: bool = StackResolver._power_has_no_activate_symbol(ap_extra_cost)
 						var ap_ready_ok: bool
 						if ap_once_per_turn:
 							ap_ready_ok = not card.used_this_turn
@@ -1928,7 +1926,12 @@ func handle_context_action(action: PendingAction) -> void:
 				var ally_def := db.get_def(ally_card.card_def_id) as CardDef if ally_card and db else null
 				var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
 				var ap_dmg_type: String
-				if ally_ap and (ally_ap.get("effect", "") as String) in ["heal_target", "heal_x_from_target"]:
+				# Two-pick sacrifice powers (Gertha, Besh'iah) open on phase 1, the
+				# ally to SACRIFICE — a different question from what the effect
+				# destroys, so it gets its own cursor and prompt.
+				if StackResolver.power_sacrifice_is_separate(ally_ap):
+					ap_dmg_type = "sacrifice"
+				elif ally_ap and (ally_ap.get("effect", "") as String) in ["heal_target", "heal_x_from_target"]:
 					ap_dmg_type = "heal"
 				elif ally_ap and (ally_ap.get("effect", "") as String).begins_with("destroy"):
 					ap_dmg_type = "destroy"   # Kavai — same cursor as Vanquish/Burn Away
@@ -2613,22 +2616,24 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 	var ally := state.get_card(ally_id)
 	if not ally:
 		return result
-	# Kavai the Wanderer: targets are in-play ability / equipment cards (both
-	# players), not heroes and allies — candidates from the resolver, filtered
-	# through can_submit like every other targeting mode.
 	var ally_def := db.get_def(ally.card_def_id) as CardDef
 	var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
 	var ally_ap_kind := (ally_ap.get("targets", "") as String)
+	# Two-pick sacrifice powers (Gertha, The Old Crone → destroy target ally;
+	# Besh'iah → destroy target ability). Phase 1 = the ally to SACRIFICE (our own
+	# party, the source itself included); phase 2 = whatever the power's own
+	# effect targets, which is why it delegates by target kind rather than
+	# assuming allies. Checked before the kind branches below — Besh'iah's kind is
+	# "ability", and answering that first would skip her sacrifice pick entirely.
+	if StackResolver.power_sacrifice_is_separate(ally_ap):
+		if _targeting_first_target == "":
+			for card in state.cards_in_zone(local_player + "_ally_row"):
+				result.append(card.instance_id)
+			return result
+		return _ally_power_effect_targets(ally_id, ally_ap_kind,
+			{"sacrifice_id": _targeting_first_target})
 	if ally_ap_kind in ["ability_or_equipment", "ability", "equipment"]:
-		# Lafiel / Moira Darkheart narrow the same picker to one kind.
-		for kind in (["ability", "equipment"] if ally_ap_kind == "ability_or_equipment" else [ally_ap_kind]):
-			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
-				var d_act := PendingAction.make("use_ally_power", local_player,
-					{"card_id": ally_id, "target_id": cid,
-						"x_value": _ally_power_x_for(ally_id, cid)})
-				if StackResolver.can_submit(state, d_act, db):
-					result.append(cid)
-		return result
+		return _ally_power_effect_targets(ally_id, ally_ap_kind, {})
 	if _is_ally_damage_and_heal_power(ally_id):
 		if _targeting_first_target == "":
 			# Phase 1: show all valid damage targets (those with a valid heal partner).
@@ -2661,25 +2666,6 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 					if StackResolver.can_submit(state, act, db):
 						result.append(ps.hero_instance_id)
 		return result
-	if _is_ally_sacrifice_destroy_power(ally_id):
-		# Gertha, The Old Crone: two-pick. Phase 1 = the ally to sacrifice (our
-		# own party, Gertha included); phase 2 = the destroy target (any ally,
-		# either party, minus the one we already chose to sacrifice).
-		if _targeting_first_target == "":
-			for card in state.cards_in_zone(local_player + "_ally_row"):
-				result.append(card.instance_id)
-		else:
-			for pid in state.players:
-				for card in state.cards_in_zone(pid + "_ally_row"):
-					if card.instance_id == _targeting_first_target:
-						continue
-					var act := PendingAction.make("use_ally_power", local_player, {
-						"card_id": ally_id, "sacrifice_id": _targeting_first_target,
-						"target_id": card.instance_id,
-					})
-					if StackResolver.can_submit(state, act, db):
-						result.append(card.instance_id)
-		return result
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
 			var act := PendingAction.make("use_ally_power", local_player,
@@ -2695,6 +2681,38 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 	return result
 
 
+# Candidates for what an activated power's EFFECT targets, by target kind.
+# `extra` carries any params already chosen (a two-pick power's sacrifice_id), so
+# every candidate is validated by can_submit against the real, complete
+# submission — the resolver stays the single authority on legality.
+func _ally_power_effect_targets(ally_id: String, kind: String, extra: Dictionary) -> Array:
+	var result: Array = []
+	var candidates: Array = []
+	if kind in ["ability_or_equipment", "ability", "equipment"]:
+		# Kavai the Wanderer targets in-play ability / equipment cards of either
+		# player; Lafiel / Moira / Besh'iah narrow the same picker to one kind.
+		for k in (["ability", "equipment"] if kind == "ability_or_equipment" else [kind]):
+			candidates.append_array(StackResolver.get_destroy_kind_candidates(state, db, k))
+	else:
+		for pid in state.players:
+			for card in state.cards_in_zone(pid + "_ally_row"):
+				candidates.append(card.instance_id)
+			if kind == "hero_or_ally":
+				var ps := state.players.get(pid) as PlayerState
+				if ps and ps.hero_instance_id != "":
+					candidates.append(ps.hero_instance_id)
+	for cid: String in candidates:
+		var params := {"card_id": ally_id, "target_id": cid,
+			"x_value": _ally_power_x_for(ally_id, cid)}
+		params.merge(extra)
+		if StackResolver.can_submit(state, PendingAction.make("use_ally_power",
+				local_player, params), db):
+			result.append(cid)
+	return result
+
+
+# Whether an activated power picks its sacrifice separately from its own target
+# (Gertha, Besh'iah) — the two-phase targeting flow below.
 func _is_ally_sacrifice_destroy_power(ally_id: String) -> bool:
 	if not db or not state:
 		return false
@@ -2704,9 +2722,8 @@ func _is_ally_sacrifice_destroy_power(ally_id: String) -> bool:
 	var def := db.get_def(ally.card_def_id) as CardDef
 	if not def:
 		return false
-	var ap := StackResolver._ally_activated_power(def)
-	return (ap.get("effect", "") as String) == "destroy_ally" \
-		and (ap.get("extra_cost", "") as String) == "sacrifice_ally"
+	return StackResolver.power_sacrifice_is_separate(
+		StackResolver._ally_activated_power(def))
 
 
 func _is_ally_damage_and_heal_power(ally_id: String) -> bool:
@@ -2893,17 +2910,18 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 		var sd_legal := _get_ally_power_targets(_targeting_source)
 		if _targeting_first_target == "":
 			# Phase 1: instance_id is the ally to SACRIFICE (one of our own party,
-			# Gertha herself included). Esc cancels; clicking a non-candidate no-ops.
+			# the source herself included). Esc cancels; a non-candidate no-ops.
 			if instance_id in sd_legal:
 				_targeting_first_target = instance_id
 				targeting_started.emit(_targeting_source, "destroy", 0)
 				refresh_highlights()
 			return
-		# Phase 2: instance_id is the destroy target (any ally, either party).
+		# Phase 2: instance_id is what the EFFECT destroys — an ally either party
+		# for Gertha, an in-play ability for Besh'iah.
 		if instance_id == _targeting_first_target:
 			# Clicked the sacrifice again — step back to the sacrifice pick.
 			_targeting_first_target = ""
-			targeting_started.emit(_targeting_source, "destroy", 0)
+			targeting_started.emit(_targeting_source, "sacrifice", 0)
 			refresh_highlights()
 			return
 		if instance_id not in sd_legal:

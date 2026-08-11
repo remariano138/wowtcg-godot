@@ -271,6 +271,8 @@ func _ready() -> void:
 		_test_ai_chipper_target_first,
 		_test_lafiel_destroys_ability,
 		_test_lafiel_fizzles_and_ai,
+		_test_beshiah_sacrifice_destroys_ability,
+		_test_beshiah_repeatable_and_ai,
 		_test_moira_destroys_equipment,
 		_test_moira_killed_in_response_and_ai,
 		_test_dispel_magic_instant_destroy_ability,
@@ -17734,6 +17736,130 @@ func _test_lafiel_fizzles_and_ai() -> void:
 	eq(acts.size(), 1, "lf-s: AI generates exactly one Lafiel activation")
 	eq(acts[0].params.get("target_id", ""), "big",
 		"lf-t: AI destroys the most expensive opposing ability")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Besh'iah (azeroth_229): "Destroy an ally in your party -> Destroy target
+# ability." Lafiel's destroy pool paid with Gertha's sacrifice_ally cost, and
+# with NO [Activate] tap symbol — the two-pick flow and the tap symbol are
+# independent axes of the EXTRACOST field (`sacrifice_ally+no_activate`).
+# ══════════════════════════════════════════════════════════════════════════════
+
+const BESHIAH_RECIPE := "activated_power:0:destroy_ability:0::ability:sacrifice_ally+no_activate"
+
+func _test_beshiah_sacrifice_destroys_ability() -> void:
+	_buf.append("\n-- Besh'iah: sacrifice a party ally -> destroy target ability --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("beshiah_def", 4, 4, [], 6, BESHIAH_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var beshiah := _add_ally(state, "beshiah", "beshiah_def", "p1")
+	var chump := _add_ally(state, "chump", "body_def", "p1")
+	chump.just_summoned = false
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+
+	# bi-a: the sacrifice is a real cost — no sacrifice_id, no power.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "beshiah", "target_id": "ongo"}), db),
+		"bi-a: illegal with no sacrifice_id")
+	# bi-b: equipment is not in the pool (Lafiel's `ability` kind, not Kavai's).
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "beshiah", "target_id": "robe", "sacrifice_id": "chump"}), db),
+		"bi-b: equipment is NOT a legal target")
+	# bi-c: no [Activate] tap symbol — usable the turn she lands and while
+	# exhausted, which is the whole difference from Gertha.
+	beshiah.just_summoned = true
+	beshiah.is_exhausted = true
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "beshiah", "target_id": "ongo", "sacrifice_id": "chump"})
+	ok(StackResolver.can_submit(state, use, db),
+		"bi-c: legal while summoning-sick AND exhausted (no tap symbol)")
+
+	StackResolver.submit_action(state, use, db)
+	ok(state.get_card("chump").zone_id == "p1_ally_row",
+		"bi-d: sacrifice not paid at announcement (paid at resolution)")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("chump").zone_id, "p1_graveyard", "bi-e: chump sacrificed")
+	eq(state.get_card("ongo").zone_id, "p2_graveyard", "bi-f: target ability destroyed")
+	eq(state.get_card("beshiah").zone_id, "p1_ally_row", "bi-g: Besh'iah stays in play")
+	eq(state.get_available_resources("p1"), 0, "bi-h: costs no resources")
+
+
+func _test_beshiah_repeatable_and_ai() -> void:
+	_buf.append("\n-- Besh'iah: repeatable, sacrifice killed in response, AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("beshiah_def", 4, 4, [], 6, BESHIAH_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.ability("big_def", 5, "ongoing")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var beshiah := _add_ally(state, "beshiah", "beshiah_def", "p1")
+	beshiah.just_summoned = false
+	var chump := _add_ally(state, "chump", "body_def", "p1")
+	chump.just_summoned = false
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var big := CardInstance.create("big", "big_def", "p2", "p2_hero_row")
+	state.cards["big"] = big
+	state.zones["p2_hero_row"].card_ids.append("big")
+
+	# The sacrifice is killed in response: like sacrifice_self, the cost no-ops
+	# at resolution and the announced destroy still resolves.
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "beshiah", "target_id": "ongo", "sacrifice_id": "chump"}), db)
+	GameLogic.destroy_card(state, "chump")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("ongo").zone_id, "p2_graveyard",
+		"bi-i: destroy still resolves when the sacrifice died in response")
+
+	# No tap symbol and no resource cost, so she fires again the same turn —
+	# the only limit is having another ally to eat.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "beshiah", "target_id": "big", "sacrifice_id": "chump"}), db),
+		"bi-j: a dead ally is not a legal sacrifice")
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "beshiah", "target_id": "big", "sacrifice_id": "beshiah"}), db),
+		"bi-k: repeatable the same turn — she may even eat herself")
+
+	# AI: spends its least valuable body on the most expensive OPPOSING ability,
+	# never its own ability and never Besh'iah herself.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var b2 := _add_ally(s2, "beshiah2", "beshiah_def", "p1")
+	b2.just_summoned = false
+	var c2 := _add_ally(s2, "chump2", "body_def", "p1")
+	c2.just_summoned = false
+	var own := CardInstance.create("own", "ongo_def", "p1", "p1_hero_row")
+	s2.cards["own"] = own
+	s2.zones["p1_hero_row"].card_ids.append("own")
+	var ai := BaseAI.new()
+	ok(ai._get_ally_power_actions(s2, db, "p1").is_empty(),
+		"bi-l: AI never destroys its own ability")
+
+	var obig := CardInstance.create("obig", "big_def", "p2", "p2_hero_row")
+	s2.cards["obig"] = obig
+	s2.zones["p2_hero_row"].card_ids.append("obig")
+	var acts := ai._get_ally_power_actions(s2, db, "p1")
+	eq(acts.size(), 1, "bi-m: AI generates exactly one Besh'iah activation")
+	eq(acts[0].params.get("target_id", ""), "obig", "bi-n: AI destroys the opposing ability")
+	eq(acts[0].params.get("sacrifice_id", ""), "chump2",
+		"bi-o: AI sacrifices the chump, never Besh'iah herself")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -3446,12 +3446,11 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if not state.pending_actions.is_empty():
 			return false
 	var extra_cost_str: String = ap.get("extra_cost", "")
-	var once_per_turn: bool = extra_cost_str == "once_per_turn"
+	var once_per_turn: bool = power_has_extra_cost(extra_cost_str, "once_per_turn")
 	# put_damage_self (e.g. Acolyte Demia) has no [Activate] tap symbol either —
 	# its cost is just the resource + self-damage, so it's a plain payment power
 	# (701.2), not an activated power (701.3). No summoning sickness, no exhaust.
-	var no_activate_symbol: bool = extra_cost_str.begins_with("put_damage_self") \
-		or extra_cost_str == "no_activate" or extra_cost_str == "sacrifice_self"
+	var no_activate_symbol: bool = _power_has_no_activate_symbol(extra_cost_str)
 	if once_per_turn:
 		# No [Activate] tap symbol on this power (rule 701.3/3216): it isn't gated
 		# by summoning sickness or the card's exhausted state, only by its own
@@ -3479,14 +3478,15 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# since the target is picked interactively after the power is chosen.
 	var skip_target: bool = action.params.get("_skip_target_check", false)
 	var targets_kind: String = ap.get("targets", "")
-	# Gertha, The Old Crone (destroy_ally effect + sacrifice_ally cost): a
-	# two-pick power. Beyond the destroy target (validated by the "ally" block
-	# below), the sacrifice cost picks one of the source player's OWN allies,
-	# named separately in sacrifice_id (Bizzik, whose sacrifice IS its only
-	# target, rides target_id instead and doesn't reach this branch). Required at
-	# submission; the no-target probe omits it, like the destroy target itself.
-	if ap.get("effect", "") == "destroy_ally" and extra_cost_str == "sacrifice_ally" \
-			and not skip_target:
+	# Two-pick powers (Gertha, The Old Crone: destroy_ally; Besh'iah:
+	# destroy_ability). Beyond the power's own destroy target (validated by the
+	# kind-specific blocks below), the sacrifice_ally cost picks one of the source
+	# player's OWN allies, named separately in sacrifice_id — Bizzik, whose
+	# sacrifice IS his only target, rides target_id instead and doesn't reach this
+	# branch. Required at submission; the no-target probe omits it, like the
+	# destroy target itself. The gate is the COST, not the effect, so the two
+	# cards share it and a future sacrifice power inherits it.
+	if power_sacrifice_is_separate(ap) and not skip_target:
 		var sac_id: String = action.params.get("sacrifice_id", "")
 		var sac_card := state.get_card(sac_id)
 		if not _is_ally(state, sac_id) or not sac_card \
@@ -3587,7 +3587,16 @@ static func _is_ally(state: GameState, card_id: String) -> bool:
 # Whether a power's extra cost token can currently be paid.
 static func _can_pay_extra_power_cost(state: GameState, player_id: String,
 		extra_cost: String, db = null) -> bool:
-	var token := extra_cost.split(":")[0] if extra_cost != "" else ""
+	for entry in power_extra_costs(extra_cost):
+		if not _can_pay_one_extra_power_cost(state, player_id, entry, db):
+			return false
+	return true
+
+
+# One `+`-separated token of the EXTRACOST field (see power_extra_costs).
+static func _can_pay_one_extra_power_cost(state: GameState, player_id: String,
+		entry: String, db = null) -> bool:
+	var token := entry.split(":")[0]
 	match token:
 		"", null:
 			return true
@@ -3608,7 +3617,7 @@ static func _can_pay_extra_power_cost(state: GameState, player_id: String,
 		"rfg_allies":
 			# Augustus Corpsemonger: remove N ally cards in your graveyard from
 			# the game. Payable only if the graveyard holds at least N of them.
-			var need := int(extra_cost.split(":")[1]) if extra_cost.split(":").size() > 1 else 0
+			var need := int(entry.split(":")[1]) if entry.split(":").size() > 1 else 0
 			return _count_graveyard_allies(state, player_id, db) >= need
 		"sacrifice_ally":
 			# Bizzik Sparkcog: destroy an ally in your party as a cost. Payable
@@ -3656,20 +3665,20 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 	# entry (rule 412.2 — see _pay_activate_costs in submit_action). Only the
 	# costs below are still paid here at resolution, deliberately: a sacrifice
 	# whose card is killed in response no-ops while the effect still resolves.
-	if extra_cost.begins_with("put_damage_self") \
-			or extra_cost.begins_with("activate_put_damage_self"):
+	if power_has_extra_cost(extra_cost, "put_damage_self") \
+			or power_has_extra_cost(extra_cost, "activate_put_damage_self"):
 		# Rule 405.3: put (not deal) damage on the source itself (Acolyte Demia;
 		# Kena Shadowbrand). Can be exactly fatal — check destruction after paying.
-		var put_parts := extra_cost.split(":")
-		var put_amount: int = int(put_parts[1]) if put_parts.size() > 1 else 1
+		var put_amount := power_extra_cost_arg(extra_cost, "put_damage_self",
+			power_extra_cost_arg(extra_cost, "activate_put_damage_self", 1))
 		events.append_array(GameLogic.put_damage(state, card_id, put_amount, db))
 		events.append_array(_check_destroyed_trigger(state, card_id, card_id, db))
-	elif extra_cost.begins_with("rfg_allies"):
+	elif power_has_extra_cost(extra_cost, "rfg_allies"):
 		# Augustus Corpsemonger: remove N ally cards in your graveyard from the
 		# game (rule 415.7a — owner's RFG zone). The specific cards are auto-
 		# chosen in graveyard order (see data/rules_deviations.md — the player
 		# doesn't pick which dead allies leave, only a cost is paid).
-		var rfg_n := int(extra_cost.split(":")[1]) if extra_cost.split(":").size() > 1 else 0
+		var rfg_n := power_extra_cost_arg(extra_cost, "rfg_allies", 0)
 		var removed := 0
 		for gy_card in state.cards_in_zone(action.source_player + "_graveyard"):
 			if removed >= rfg_n:
@@ -3679,11 +3688,12 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				events.append_array(GameLogic.move_card(state, gy_card.instance_id, gy_card.owner + "_rfg"))
 				events.append(GameEvent.card_removed_from_game(gy_card.instance_id, action.source_player))
 				removed += 1
-	elif extra_cost == "sacrifice_ally":
+	elif power_has_extra_cost(extra_cost, "sacrifice_ally"):
 		# Destroy a chosen ally in your party as a cost. Bizzik Sparkcog's
 		# sacrifice IS its only target, so it rides target_id (may be Bizzik
-		# himself); Gertha, The Old Crone names it separately in sacrifice_id
-		# because her target_id is the ally her effect destroys. Like
+		# himself); Gertha, The Old Crone and Besh'iah name it separately in
+		# sacrifice_id because their target_id is what the EFFECT destroys — an
+		# ally for Gertha, an ability for Besh'iah. Like
 		# sacrifice_self, the cost is paid here at resolution — if the chosen
 		# ally already left play (killed in response), the sacrifice no-ops and
 		# the effect still resolves, matching "costs are paid at announcement".
@@ -3691,7 +3701,7 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			action.params.get("target_id", ""))
 		if _is_ally(state, sac_id):
 			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
-	elif extra_cost == "sacrifice_self":
+	elif power_has_extra_cost(extra_cost, "sacrifice_self"):
 		# Kavai the Wanderer / Mana Agate: destroy the source itself as a cost.
 		# The source may be an ally (Kavai) or an ongoing ability in the hero row
 		# (Mana Agate) — any in-play source works. If an opponent already
@@ -5974,14 +5984,57 @@ static func _pay_resources(state: GameState, player_id: String,
 	return events
 
 
-# Whether an activated power's extra-cost token means the printed cost carries NO
+# ── Activated-power extra costs ───────────────────────────────────────────────
+#
+# The EXTRACOST field is a `+`-joined list of tokens, each of which may carry its
+# own `:`-separated argument ("put_damage_self:1"). Independent axes compose:
+# WHAT the power costs beyond resources (sacrifice_ally, exhaust_hero, …) is one
+# token, and whether the printed cost carries an [Activate] tap symbol is
+# another (no_activate). Besh'iah is `sacrifice_ally+no_activate` — Gertha's
+# cost with the tap symbol dropped. Always ask through these helpers rather than
+# comparing the raw field, or a card with two tokens matches neither.
+
+static func power_extra_costs(extra_cost: String) -> PackedStringArray:
+	if extra_cost == "":
+		return PackedStringArray()
+	return extra_cost.split("+", false)
+
+
+# Whether the power carries `token`, with or without a `:`-argument.
+static func power_has_extra_cost(extra_cost: String, token: String) -> bool:
+	for t in power_extra_costs(extra_cost):
+		if t == token or t.begins_with(token + ":"):
+			return true
+	return false
+
+
+# The `:`-argument of `token` ("put_damage_self:1" → 1), or `fallback`.
+static func power_extra_cost_arg(extra_cost: String, token: String, fallback: int) -> int:
+	for t in power_extra_costs(extra_cost):
+		if t.begins_with(token + ":"):
+			return int(t.split(":")[1])
+	return fallback
+
+
+# Whether an activated power's extra cost means the printed cost carries NO
 # [Activate] tap symbol — the source neither exhausts nor cares about being
 # exhausted (Acolyte Demia's put_damage_self, Hierophant Caydiem's no_activate,
 # Kavai / Mana Agate's sacrifice_self). Note activate_put_damage_self (Kena
 # Shadowbrand) is deliberately NOT in this set: it KEEPS the tap symbol.
 static func _power_has_no_activate_symbol(extra_cost: String) -> bool:
-	return extra_cost.begins_with("put_damage_self") \
-		or extra_cost == "no_activate" or extra_cost == "sacrifice_self"
+	return power_has_extra_cost(extra_cost, "put_damage_self") \
+		or power_has_extra_cost(extra_cost, "no_activate") \
+		or power_has_extra_cost(extra_cost, "sacrifice_self")
+
+
+# Whether the sacrifice_ally cost is picked SEPARATELY from the power's own
+# target, i.e. the power needs a `sacrifice_id` param on top of `target_id`.
+# Bizzik Sparkcog's sacrifice IS his only target (targets=friendly_ally), so it
+# rides target_id; Gertha (targets=ally) and Besh'iah (targets=ability) each
+# destroy something else with the effect, so the sacrifice is its own pick.
+static func power_sacrifice_is_separate(ap: Dictionary) -> bool:
+	return power_has_extra_cost(ap.get("extra_cost", ""), "sacrifice_ally") \
+		and ap.get("targets", "") != "friendly_ally"
 
 
 # Pay an activated power's exhaust-style costs (rule 412.2 — paid on chain entry,
@@ -5996,12 +6049,12 @@ static func _pay_activate_costs(state: GameState, card_id: String,
 	var events: Array[GameEvent] = []
 	var extra_cost: String = ap.get("extra_cost", "")
 	var card := state.get_card(card_id)
-	if extra_cost == "once_per_turn":
+	if power_has_extra_cost(extra_cost, "once_per_turn"):
 		if card:
 			card.used_this_turn = true
 	elif not _power_has_no_activate_symbol(extra_cost):
 		events.append_array(GameLogic.exhaust_card(state, card_id))
-	if extra_cost == "exhaust_hero":
+	if power_has_extra_cost(extra_cost, "exhaust_hero"):
 		var ps := state.players.get(player_id) as PlayerState
 		var hero_id: String = ps.hero_instance_id if ps else ""
 		if hero_id != "":
@@ -6017,12 +6070,12 @@ static func _refund_activate_costs(state: GameState, card_id: String,
 	var events: Array[GameEvent] = []
 	var extra_cost: String = ap.get("extra_cost", "")
 	var card := state.get_card(card_id)
-	if extra_cost == "once_per_turn":
+	if power_has_extra_cost(extra_cost, "once_per_turn"):
 		if card:
 			card.used_this_turn = false
 	elif not _power_has_no_activate_symbol(extra_cost):
 		events.append_array(GameLogic.ready_card(state, card_id))
-	if extra_cost == "exhaust_hero":
+	if power_has_extra_cost(extra_cost, "exhaust_hero"):
 		var ps := state.players.get(player_id) as PlayerState
 		var hero_id: String = ps.hero_instance_id if ps else ""
 		if hero_id != "":

@@ -1673,6 +1673,22 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							}
 							events.append(GameEvent.enter_play_target_required(
 								card_id, "bounce", 0))
+					"exhaust_ally":
+						# Bhenn Checks-the-Sky: "When [this] enters play, you may
+						# exhaust target ally." Optional; any in-play ally either
+						# party — the SOURCE included, since she is in play by the
+						# time her own trigger fires and the printed text says
+						# simply "target ally" (Karkas' pool).
+						if not get_death_target_targets(state, db).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "exhaust_ally",
+								"dmg_type": "exhaust",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "exhaust", 0))
 
 	events.append_array(fire_opposing_ally_enter_watchers(state, card_id, db))
 
@@ -6222,8 +6238,9 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_ability" \
 			and target_id not in get_enter_play_ability_targets(state, db):
 		return false
-	# Karkas Deathhowl: any in-play ally, the source herself included.
-	if String(state.pending_enter_play_effect.get("effect", "")) == "return_to_hand_ally" \
+	# Karkas Deathhowl / Bhenn Checks-the-Sky: any in-play ally, the source included.
+	if String(state.pending_enter_play_effect.get("effect", "")) in \
+			["return_to_hand_ally", "exhaust_ally"] \
 			and target_id not in get_death_target_targets(state, db):
 		return false
 	return true
@@ -6335,6 +6352,14 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 				events.append_array(GameLogic.move_card(
 					state, target_id, rth.owner + "_hand"))
 				events.append(GameEvent.card_returned_to_hand(target_id, source_id))
+		"exhaust_ally":
+			# Bhenn Checks-the-Sky — 706 re-check: fizzle unless the target is
+			# still a legal in-play ally. exhaust_card no-ops on an already-
+			# exhausted ally. Aimed at an attacking ally while its combat
+			# proposal is still on the chain, this fizzles the proposal at the
+			# 601.3 recheck — Exhaustion's interrupt on an Instant Ally body.
+			if target_id in get_death_target_targets(state, db):
+				events.append_array(GameLogic.exhaust_card(state, target_id))
 	return events
 
 

@@ -3064,6 +3064,48 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_router.start_enter_play_targeting(card_id, dmg_type, amount)
 			_refresh_ui()
 		return
+	# Bhenn Checks-the-Sky's optional exhaust ("you may exhaust target ally").
+	# AI: the attacking ally of a combat proposal still on the chain first (that
+	# interrupt is why she was flashed in — exhausting it fizzles the proposal
+	# at the 601.3 recheck), otherwise the opponent's most expensive READY ally.
+	# Never our own side; declines when nothing is worth exhausting. Humans may
+	# Esc to decline (the printed text lets them exhaust their own, Bhenn included).
+	if enter_eff == "exhaust_ally":
+		if ctrl_type != "human":
+			var opp4 := "p2" if ctrl == "p1" else "p1"
+			var cands4: Array[String] = StackResolver.get_death_target_targets(_state, _db)
+			var best_id4 := ""
+			var best_cost4 := -1
+			var attacker4 := ""
+			for a in _state.pending_actions:
+				var pa := a as PendingAction
+				if pa.action_type == "propose_combat" and pa.source_player == opp4:
+					attacker4 = pa.params.get("attacker_id", "")
+			if attacker4 != "" and attacker4 in cands4:
+				best_id4 = attacker4
+			else:
+				for tid in cands4:
+					var t4 := _state.get_card(tid)
+					if not t4 or t4.controller != opp4 or t4.is_exhausted:
+						continue
+					var tdef4 := _db.get_def(t4.card_def_id) as CardDef
+					var tcost4: int = tdef4.cost if tdef4 else 0
+					if tcost4 > best_cost4:
+						best_cost4 = tcost4
+						best_id4 = tid
+			if best_id4 == "":
+				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+			else:
+				var dact4 := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": best_id4})
+				EventBus.emit_events(StackResolver.submit_action(_state, dact4, _db))
+				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
+			_refresh_ui()
+			_schedule_next_turn()
+		else:
+			_router.start_enter_play_targeting(card_id, dmg_type, amount)
+			_refresh_ui()
+		return
 	# Sister Rot rides the same branch with the ability pool instead.
 	if enter_eff == "destroy_armor" or enter_eff == "destroy_armor_or_weapon" \
 			or enter_eff == "destroy_ability":

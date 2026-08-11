@@ -25,13 +25,8 @@
     },
     {
       "card_def_id": "azeroth_361",
-      "count": 3,
+      "count": 4,
       "_card_name": "Zapped Giants"
-    },
-    {
-      "card_def_id": "azeroth_345",
-      "count": 1,
-      "_card_name": "Torek's Assault"
     },
     {
       "card_def_id": "azeroth_351",
@@ -42,6 +37,11 @@
       "card_def_id": "azeroth_350",
       "count": 3,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_282",
+      "count": 1,
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_114",
@@ -134,9 +134,9 @@
       "_card_name": "Shock and Soothe"
     },
     {
-      "card_def_id": "dark_portal_91",
+      "card_def_id": "dark_portal_199",
       "count": 2,
-      "_card_name": "Ancestral Spirit"
+      "_card_name": "Bhenn Checks-the-Sky"
     },
     {
       "card_def_id": "azeroth_240",
@@ -144,19 +144,14 @@
       "_card_name": "Guardian Steelhorn"
     },
     {
-      "card_def_id": "azeroth_116",
-      "count": 2,
-      "_card_name": "Searing Totem"
+      "card_def_id": "dark_portal_94",
+      "count": 1,
+      "_card_name": "Flame Shock"
     },
     {
       "card_def_id": "azeroth_107",
-      "count": 1,
+      "count": 2,
       "_card_name": "Earthbind Totem"
-    },
-    {
-      "card_def_id": "azeroth_111",
-      "count": 1,
-      "_card_name": "Healing Stream Totem"
     },
     {
       "card_def_id": "azeroth_249",

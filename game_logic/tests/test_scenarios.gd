@@ -315,6 +315,8 @@ func _ready() -> void:
 		_test_zygore_bladebreaker_destroys_armor,
 		_test_sister_rot_destroys_ability,
 		_test_sister_rot_decline_and_fizzle,
+		_test_bhenn_exhausts_ally,
+		_test_ai_bhenn_freezes_proposal,
 		_test_karkas_bounces_ally,
 		_test_karkas_self_bounce_decline_and_fizzle,
 		_test_mya_creates_token,
@@ -16195,6 +16197,178 @@ func _test_sister_rot_decline_and_fizzle() -> void:
 # (she is in play when her own trigger fires and the text says "target ally").
 # Bouncing resets damage/exhaust/buffs (400.6a) and destroys attachments (400.5).
 # ══════════════════════════════════════════════════════════════════════════════
+
+####################################################################################
+# Bhenn Checks-the-Sky (dark_portal_199, 2-cost 2/1 Instant Ally — Tauren Druid):
+# "When Bhenn Checks-the-Sky enters play, you may exhaust target ally."
+# Karkas' optional enter-play shape with an exhaust instead of a bounce; the pool
+# is any in-play ally either party, Bhenn herself included.
+####################################################################################
+
+func _test_bhenn_exhausts_ally() -> void:
+	_buf.append("\n-- Bhenn Checks-the-Sky: may exhaust a target ally on enter --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_199", 2, 1, [], 2, "on_enter:exhaust_ally")
+	(db.get_def("dark_portal_199") as CardDef).is_instant = true
+	db.ally("bear_def", 2, 3, [], 2)
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	_add_card_to_hand(state, "bhenn", "dark_portal_199", "p1")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "bhenn"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"bh-a: enter-play choice pending after Bhenn resolves")
+	ok(state.pending_enter_play_effect.get("optional", false),
+		"bh-b: the trigger is optional (\"you may\")")
+
+	var legal := StackResolver.get_death_target_targets(state, db)
+	ok("bear" in legal,  "bh-c: an opposing ally is a legal target")
+	ok("bhenn" in legal, "bh-d: Bhenn herself is a legal target (printed \"target ally\")")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "bhenn", "target_id": "p2_hero"}), db),
+		"bh-e: a hero is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "bhenn", "target_id": "robe"}), db),
+		"bh-f: equipment is NOT a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "bhenn", "target_id": "bear"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(bear.is_exhausted, "bh-g: the target ally is exhausted")
+	ok(state.pending_enter_play_effect.is_empty(), "bh-h: pending effect cleared")
+
+	# Decline: nothing is exhausted, both bodies stay as they were.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 2)
+	_add_card_to_hand(s2, "bhenn2", "dark_portal_199", "p1")
+	var bear2 := _add_ally(s2, "bear2", "bear_def", "p2")
+	StackResolver.submit_action(s2, PendingAction.make("play_ally", "p1",
+		{"card_id": "bhenn2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.decline_enter_play_effect(s2)
+	ok(s2.pending_enter_play_effect.is_empty(), "bh-i: declining clears the choice")
+	ok(not bear2.is_exhausted, "bh-j: nothing exhausted on a decline")
+
+	# Announced target leaves play before resolution → 706 fizzle (no crash, no-op).
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 2)
+	_add_card_to_hand(s3, "bhenn3", "dark_portal_199", "p1")
+	var bear3 := _add_ally(s3, "bear3", "bear_def", "p2")
+	StackResolver.submit_action(s3, PendingAction.make("play_ally", "p1",
+		{"card_id": "bhenn3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.submit_action(s3, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "bhenn3", "target_id": "bear3"}), db)
+	ok(s3.pending_enter_play_effect.is_empty(),
+		"bh-k: marker cleared at announcement — the response window is real")
+	GameLogic.destroy_card(s3, "bear3")
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(bear3.zone_id, "p2_graveyard", "bh-l: the target left play — the exhaust fizzles")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI flashes Bhenn in as a combat instant (Exhaustion's role on a body): played
+# in response to an opposing ally's combat proposal, her enter-play exhaust
+# fizzles the proposal at the 601.3 recheck. Held otherwise, and she can't
+# answer an attacking HERO (her pool is allies only).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_ai_bhenn_freezes_proposal() -> void:
+	_buf.append("\n-- AI plays Bhenn Checks-the-Sky in response to a heavy attack proposal --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   5, 5, [], 4)
+	db.ally("small_def", 2, 2, [], 1)
+	db.ally("dark_portal_199", 2, 1, [], 2, "on_enter:exhaust_ally")
+	(db.get_def("dark_portal_199") as CardDef).is_instant = true
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	_add_card_to_hand(state, "bhenn", "dark_portal_199", "p2")
+	_add_resources(state, "p2", 2)
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p1 passes → priority p2
+
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.action_type == "play_ally"
+			and act.params.get("card_id") == "bhenn"
+			and not act.params.has("target_id"),
+		"bhai-a: AI flashes Bhenn in, announcing no target (picked at her own choice point)")
+
+	# Play it out: she resolves, her choice opens, the scene would aim it at the
+	# attacker — the proposal then fizzles at the 601.3 recheck.
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # play_ally resolves
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"bhai-b: her enter-play choice opened")
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p2", {"source_card_id": "bhenn", "target_id": "big"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # the exhaust resolves
+	ok(state.get_card("big").is_exhausted, "bhai-c: the attacker is exhausted")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # the proposal fizzles
+	ok(not state.combat_attack_window,
+		"bhai-d: proposal cancelled — no combat, hero untouched")
+	eq(state.get_card("p2_hero").damage_taken, 0, "bhai-e: hero took no damage")
+
+	# Held: never blind-played on the AI's own action window.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(s2, "bhenn2", "dark_portal_199", "p1")
+	_add_resources(s2, "p1", 2)
+	s2.players["p1"].resource_placed_this_turn = true
+	var held := true
+	for a in ai.get_reasonable_actions(s2, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "bhenn2":
+			held = false
+	ok(held, "bhai-f: Bhenn is held — never blind-played on the AI's own turn")
+
+	# An attacking HERO can't be answered: her pool is allies only.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(s3, "bhenn3", "dark_portal_199", "p2")
+	_add_resources(s3, "p2", 2)
+	s3.players["p1"].resource_placed_this_turn = true
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s3, db)
+	ok(ai.exhaust_attacker_action(s3, db, "p2") == null,
+		"bhai-g: Bhenn is not offered against an attacking hero")
+
+	# Chip attack (2 ATK, hero at full) → hold her, same worth math as Exhaustion.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	var small := _add_ally(s4, "small", "small_def", "p1")
+	small.just_summoned = false
+	_add_card_to_hand(s4, "bhenn4", "dark_portal_199", "p2")
+	_add_resources(s4, "p2", 2)
+	s4.players["p1"].resource_placed_this_turn = true
+	StackResolver.submit_action(s4, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "small", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s4, db)
+	ok(ai.decide_action(s4, db, "p2") == null,
+		"bhai-h: AI holds Bhenn against a 2-ATK chip attack")
+
 
 func _test_karkas_bounces_ally() -> void:
 	_buf.append("\n-- Karkas Deathhowl: may bounce a target ally on enter --")

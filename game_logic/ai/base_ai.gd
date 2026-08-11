@@ -27,6 +27,14 @@ extends RefCounted
 #       proposal at the 601.3 recheck (an exhausted character can't attack). Same
 #       timing/role as Litori's target_cant_attack freeze — see
 #       exhaust_attacker_action(). Too late once the attack window is open.
+#   "combat_instant_exhaust_on_enter" — Instant ALLY whose enters-play trigger
+#       exhausts a target ally (effects: on_enter:exhaust_ally). Exactly the
+#       role above, on a body instead of a spell: flashed in while an opposing
+#       combat proposal is on the chain, the play_ally link resolves first, her
+#       trigger exhausts the attacking ALLY, and the proposal fizzles at the
+#       601.3 recheck. The play announces NO target_id — the target is picked
+#       at her own enter-play choice point (playtest _handle_enter_play_target,
+#       which aims at state.combat_attacker). See exhaust_attacker_action().
 #   "combat_instant_destroy_protector" — Instant Ability that destroys the ally
 #       currently protecting this combat (effects: destroy_target:protecting_ally).
 #       Unlike the defensive tags above, this is played by the ATTACKER during the
@@ -60,6 +68,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_17":  "combat_instant_exhaust",     # Bash — exhaust target hero or ally (+ bear form ongoing)
 	"dark_portal_137": "combat_instant_exhaust", # War Stomp — exhaust ALL opposing heroes and allies (no target)
 	"azeroth_99":  "combat_instant_exhaust",     # Gouge — exhaust target hero or ally (+ can't-ready-next-step rider, not modeled for AI)
+	"dark_portal_199": "combat_instant_exhaust_on_enter", # Bhenn Checks-the-Sky — Instant Ally, on enter: you may exhaust target ally
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
 	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_172": "combat_instant_save_bounce", # Withdraw — put target ally into its owner's hand
@@ -422,6 +431,20 @@ func exhaust_attacker_action(state: GameState, db, player_id: String) -> Pending
 		var act := PendingAction.make(_action_type_for(card, db), player_id, e_params)
 		if StackResolver.can_submit(state, act, db):
 			return act
+
+	# Bhenn Checks-the-Sky (combat_instant_exhaust_on_enter): the same interrupt
+	# on an Instant ALLY. Playing her announces no target — her enters-play
+	# trigger opens its own choice point once the play_ally link resolves, and
+	# the scene aims it at the attacker. Her pool is allies only, so like
+	# Exhaustion she can't answer an attacking hero.
+	if attacker_is_ally:
+		for card in state.cards_in_zone(player_id + "_hand"):
+			if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_exhaust_on_enter":
+				continue
+			var b_act := PendingAction.make(_action_type_for(card, db), player_id,
+				{"card_id": card.instance_id})
+			if StackResolver.can_submit(state, b_act, db):
+				return b_act
 	return null
 
 

@@ -311,6 +311,15 @@ Related Form behaviors:
   **hero** (ally-only Exhaustion is skipped for hero attackers via
   `_exhausts_heroes`). Action type comes from `_action_type_for` (Bash is an
   ongoing Instant Ability → `play_ability`).
+- **Bhenn Checks-the-Sky** (`dark_portal_199`) is tagged
+  `"combat_instant_exhaust_on_enter"` — the same interrupt on an Instant ALLY
+  instead of a spell, handled by a second loop at the end of
+  `exhaust_attacker_action` (same worth math, attacker must be an ally). The
+  `play_ally` announces **no `target_id`**: her enters-play trigger opens its
+  own choice point once the link resolves, and the scene
+  (`playtest._handle_enter_play_target`, `exhaust_ally` branch) aims it at the
+  attacking ally of the proposal still on the chain — else the opponent's most
+  expensive READY ally, else declines.
 - **Claw** (`dark_portal_20`) is tagged `"combat_instant_dmg"` — standard
   ambush math in `combat_instant_action` (action type `play_ability`); the cat
   form ongoing it leaves behind is a free rider the AI doesn't model.

@@ -558,7 +558,7 @@ dark_portal,195,Vindicator Enkallus,4,Ally,Alliance,Shaman,,Draenei Shaman,3,Nat
 dark_portal,196,Warden Ravella,3,Ally,Alliance,Warrior,,Night Elf Warrior,2,Melee,3,Common,"Protector, Untargetable",,verified,implemented,,assets\cards\warden_ravella.png,
 dark_portal,197,Wisp,,,,,,,,,,,,,,,,assets\cards\wisp.png,
 dark_portal,198,Araelun,,,,,,,,,,,,,,,,assets\cards\araelun.png,
-dark_portal,199,Bhenn Checks-the-Sky,,,,,,,,,,,,,,,,assets\cards\bhenn_checks_the_sky.png,
+dark_portal,199,Bhenn Checks-the-Sky,2,Instant Ally,Horde,Druid,,Tauren Druid,2,Nature,1,Common,,"When Bhenn Checks-the-Sky enters play, you may exhaust target ally.",verified,implemented,on_enter:exhaust_ally,assets\cards\bhenn_checks_the_sky.png,
 dark_portal,200,Bluffwatchers,,,,,,,,,,,,,,,,assets\cards\bluffwatchers.png,
 dark_portal,201,Boneshanks,3,Ally,Horde,Warrior,,Undead Warrior,3,Melee,2,Common,,"When Boneshanks is destroyed, destroy target ally.",verified,implemented,on_destroyed:destroy_target:ally,assets\cards\boneshanks.png,
 dark_portal,202,Branu Wildbloom,,,,,,,,,,,,,,,,assets\cards\branu_wildbloom.png,

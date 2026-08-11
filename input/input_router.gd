@@ -1621,7 +1621,7 @@ func get_playable_card_ids() -> Array:
 				# false green with nothing to target.
 				var ap_action := PendingAction.make("use_ally_power", local_player,
 					{"card_id": card.instance_id,
-						"_skip_target_check": (ap_data.get("targets", "") as String) in ["graveyard_ally", "ability_or_equipment", "ability", "equipment"]})
+						"_skip_target_check": (ap_data.get("targets", "") as String) in ["graveyard_ally", "ability_or_equipment", "ability", "equipment", "exhausted_ally"]})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
 	return result
@@ -1758,10 +1758,10 @@ func get_context_actions(instance_id: String) -> Array:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
 					var ap_kind: String = ap_data.get("targets", "") as String
-					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment"]
+					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment", "exhausted_ally"]
 					var ap_needs_gy_target: bool = ap_kind == "graveyard_ally"
 					var ap_enabled: bool
-					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability", "equipment"]:
+					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability", "equipment", "exhausted_ally"]:
 						# Target picked afterward (graveyard browser / targeting mode) —
 						# the skip-target probe checks everything else, including that
 						# a candidate exists at all.

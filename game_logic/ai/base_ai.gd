@@ -1994,6 +1994,52 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 		elif ap.get("effect", "") == "destroy_ally" \
+				and ap.get("targets", "") == "exhausted_ally":
+			# Lhurg Venomblade: "[Activate] -> Destroy target exhausted ally."
+			# Coup de Grâce's heuristic on a repeatable power — destroy the MOST
+			# valuable exhausted OPPOSING ally. No value floor: the whole price is
+			# his tap, and an exhausted ally is a spent attacker, so any kill is a
+			# profit. Never our own allies, which are exhausted precisely because
+			# they just attacked.
+			var opp_x := _other_player_id(state, player_id)
+			var best_x := ""
+			var best_x_score := -1.0
+			for enemy in state.cards_in_zone(opp_x + "_ally_row"):
+				if not enemy.is_exhausted:
+					continue
+				var x_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": enemy.instance_id})
+				if not StackResolver.can_submit(state, x_act, db):
+					continue
+				var x_score := card_value_score(state, db, enemy.instance_id)
+				if x_score > best_x_score:
+					best_x_score = x_score
+					best_x = enemy.instance_id
+			if best_x != "":
+				result.append(PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_x}))
+		elif ap.get("effect", "") == "heal_party":
+			# Lady Courtney Noel: "[Activate] -> heals N damage from each hero and
+			# ally in your party." Non-targeted, so the generic else-branch below
+			# would tap her every turn for nothing. Only fire when the heal does
+			# real work — someone in our party is actually damaged.
+			var party_amt: int = int(ap.get("amount", 0))
+			var party_worth := false
+			if party_amt > 0:
+				var party_hero := state.get_hero(player_id)
+				if party_hero and party_hero.damage_taken > 0:
+					party_worth = true
+				if not party_worth:
+					for own_ally in state.cards_in_zone(player_id + "_ally_row"):
+						if own_ally.damage_taken > 0:
+							party_worth = true
+							break
+			if party_worth:
+				var party_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id})
+				if StackResolver.can_submit(state, party_act, db):
+					result.append(party_act)
+		elif ap.get("effect", "") == "destroy_ally" \
 				and StackResolver.power_has_extra_cost(extra_cost_str, "sacrifice_ally"):
 			# Gertha, The Old Crone: "1, Destroy an ally in your party -> Destroy
 			# target ally." Sacrifice our LOWEST-value own ally (never Gertha

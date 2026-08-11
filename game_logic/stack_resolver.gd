@@ -1006,6 +1006,17 @@ static func _is_exhausted_ally(state: GameState, target_id: String, db) -> bool:
 			and _is_legal_target(state, target_id, db)
 
 
+# Whether ANY legal exhausted-ally target exists on the board (either party).
+# Backs the no-target probes for Coup de Grâce and for Lhurg Venomblade's
+# `exhausted_ally` power target kind, so neither lights up with nothing to kill.
+static func _any_exhausted_ally(state: GameState, db) -> bool:
+	for pid: String in state.players:
+		for ally: CardInstance in state.cards_in_zone(pid + "_ally_row"):
+			if _is_exhausted_ally(state, ally.instance_id, db):
+				return true
+	return false
+
+
 # ── Cost-banded destroy (Trophy Kill / Prey on the Weak) ──────────────────────
 # `target_cost_min:N` / `target_cost_max:N` are RIDERS on an existing
 # `destroy_target:ally` segment, not a new target kind — the target is an
@@ -3546,6 +3557,16 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 			return true
 		var a_tid: String = action.params.get("target_id", "")
 		return a_tid in a_cands and _is_legal_target(state, a_tid, db)
+	# Lhurg Venomblade ("[Activate] -> Destroy target exhausted ally"): Coup de
+	# Grâce's pool as an activated-power target kind, sharing its predicate. Even
+	# the no-target probe requires an exhausted ally to exist somewhere (either
+	# party) — no false green with nothing to kill.
+	if targets_kind == "exhausted_ally":
+		if not _any_exhausted_ally(state, db):
+			return false
+		if skip_target:
+			return true
+		return _is_exhausted_ally(state, action.params.get("target_id", ""), db)
 	if skip_target:
 		return true
 	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
@@ -3752,9 +3773,16 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		"destroy_ally":
 			# Augustus Corpsemonger: "Destroy target ally." Re-check at resolution
 			# (rule 706 / glossary 4217) — fizzle if the target left play or
-			# became Untargetable after the announce.
+			# became Untargetable after the announce. Lhurg Venomblade narrows the
+			# same effect with TARGETS=exhausted_ally, so the re-check tightens to
+			# match: an ally that READIED in response fizzles the destroy, exactly
+			# as with Coup de Grâce.
 			var destroy_id: String = action.params.get("target_id", "")
-			if _is_legal_target(state, destroy_id, db) and _is_ally(state, destroy_id):
+			var destroy_ok := _is_legal_target(state, destroy_id, db) \
+					and _is_ally(state, destroy_id)
+			if destroy_ok and ap.get("targets", "") == "exhausted_ally":
+				destroy_ok = _is_exhausted_ally(state, destroy_id, db)
+			if destroy_ok:
 				events.append_array(_destroy_card_trigger(state, destroy_id, card_id, db))
 		"destroy_ability_or_equipment":
 			# Kavai the Wanderer: "Destroy target ability or equipment." Re-check
@@ -3853,6 +3881,22 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var target_id: String = action.params.get("target_id", "")
 			if _is_legal_target(state, target_id, db):
 				events.append_array(GameLogic.heal(state, target_id, amount, db, card_id))
+		"heal_party":
+			# Lady Courtney Noel: "[Activate] -> [she] heals N damage from each hero
+			# and ally in your party." Non-targeted and friendly-only, so 706
+			# Untargetable is irrelevant and nothing is announced; the source is the
+			# power's own card. Same party sweep as Healing Stream Totem's
+			# heal_party_each_turn, read live at resolution — allies that arrived
+			# after the announce are healed, and the source heals itself too.
+			var party_amount: int = int(ap.get("amount", 0))
+			var party_pid := card.controller
+			for party_ally in state.cards_in_zone(party_pid + "_ally_row"):
+				events.append_array(GameLogic.heal(
+					state, party_ally.instance_id, party_amount, db, card_id))
+			var party_hero := state.get_hero(party_pid)
+			if party_hero:
+				events.append_array(GameLogic.heal(
+					state, party_hero.instance_id, party_amount, db, card_id))
 		"buff_atk_target":
 			# Elder Moorf: "Target ally has +X ATK this turn."
 			var amount: int = int(ap.get("amount", 0))

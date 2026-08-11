@@ -355,6 +355,10 @@ func _ready() -> void:
 		_test_ilandre_moonspear_power,
 		_test_ilandre_empty_hand_and_ai_gate,
 		_test_lowdown_luppo_shadefizzle,
+		_test_lhurg_destroys_exhausted_ally,
+		_test_lhurg_fizzle_and_ai,
+		_test_lady_courtney_heals_party,
+		_test_lady_courtney_gates_and_ai,
 	]
 
 	for t in tests:
@@ -19704,3 +19708,228 @@ func _has_error_containing(errors: Array, needle: String) -> bool:
 		if needle in str(e):
 			return true
 	return false
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lhurg Venomblade (azeroth_199): "[Activate] -> Destroy target exhausted ally."
+# Coup de Grâce's target pool (`exhausted_ally`) as an activated-power TARGETS
+# kind, on a plain [Activate] tap power: no resource cost, but he exhausts at
+# announcement and is summoning-sickness gated, so it is once per ready.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const LHURG_RECIPE := "activated_power:0:destroy_ally:0::exhausted_ally"
+
+func _test_lhurg_destroys_exhausted_ally() -> void:
+	_buf.append("\n-- Lhurg Venomblade: destroy target exhausted ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("lhurg_def", 2, 2, [], 4, LHURG_RECIPE)
+	db.ally("victim_def", 3, 3, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var lhurg := _add_ally(state, "lhurg", "lhurg_def", "p1")
+	lhurg.just_summoned = false
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+
+	var probe := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "lhurg", "_skip_target_check": true})
+
+	# lh-a: no exhausted ally anywhere -> not even the highlight probe passes.
+	ok(not StackResolver.can_submit(state, probe, db),
+		"lh-a: no highlight while no exhausted ally exists")
+	# lh-b: a READY ally is not a legal target.
+	var hit := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "lhurg", "target_id": "victim"})
+	ok(not StackResolver.can_submit(state, hit, db),
+		"lh-b: a ready ally is NOT a legal target")
+	# lh-c: heroes are never legal ("target exhausted ALLY").
+	victim.is_exhausted = true
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lhurg", "target_id": "p2_hero"}), db),
+		"lh-c: enemy hero is NOT a legal target")
+	ok(StackResolver.can_submit(state, probe, db),
+		"lh-d: highlightable once an exhausted ally exists")
+	ok(StackResolver.can_submit(state, hit, db),
+		"lh-e: an exhausted ally IS a legal target")
+
+	# lh-f: the [Activate] tap symbol is paid at announcement (rule 412.2).
+	StackResolver.submit_action(state, hit, db)
+	ok(state.get_card("lhurg").is_exhausted,
+		"lh-f: Lhurg exhausts at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("victim").zone_id, "p2_graveyard", "lh-g: exhausted ally destroyed")
+	eq(state.get_available_resources("p1"), 0, "lh-h: costs no resources")
+
+	# lh-i: once per ready — the tap is spent.
+	var v2 := _add_ally(state, "v2", "victim_def", "p2")
+	v2.just_summoned = false
+	v2.is_exhausted  = true
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "lhurg", "target_id": "v2"}), db),
+		"lh-i: not usable again while exhausted")
+
+	# lh-j: summoning sickness gates the tap power.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var fresh := _add_ally(s2, "fresh", "lhurg_def", "p1")
+	fresh.just_summoned = true
+	var v3 := _add_ally(s2, "v3", "victim_def", "p2")
+	v3.just_summoned = false
+	v3.is_exhausted  = true
+	ok(not StackResolver.can_submit(s2, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "fresh", "target_id": "v3"}), db),
+		"lh-j: summoning-sick Lhurg can't use the tap power")
+
+	# lh-k: "target exhausted ally" is party-agnostic — our OWN exhausted ally is
+	# a legal target for a human (the AI never picks one, see lh-p).
+	fresh.just_summoned = false
+	var own := _add_ally(s2, "own", "victim_def", "p1")
+	own.just_summoned = false
+	own.is_exhausted  = true
+	ok(StackResolver.can_submit(s2, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "fresh", "target_id": "own"}), db),
+		"lh-k: a friendly exhausted ally is a legal target")
+
+
+func _test_lhurg_fizzle_and_ai() -> void:
+	_buf.append("\n-- Lhurg Venomblade: readied-in-response fizzle + AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("lhurg_def", 2, 2, [], 4, LHURG_RECIPE)
+	db.ally("weak_def",  1, 1, [], 1)
+	db.ally("prize_def", 5, 5, [], 5)
+
+	# lh-l: the target readies in response -> the destroy fizzles (706 re-check,
+	# same as Coup de Grâce).
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var lhurg := _add_ally(state, "lhurg", "lhurg_def", "p1")
+	lhurg.just_summoned = false
+	var prize := _add_ally(state, "prize", "prize_def", "p2")
+	prize.just_summoned = false
+	prize.is_exhausted  = true
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "lhurg", "target_id": "prize"}), db)
+	state.get_card("prize").is_exhausted = false   # readies in response
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.is_in_play("prize"),
+		"lh-l: fizzles — target readied before resolution")
+
+	# AI: most valuable EXHAUSTED opposing ally; never a ready one, never our own.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var l2 := _add_ally(s2, "lhurg2", "lhurg_def", "p1")
+	l2.just_summoned = false
+	s2.phase = "action"
+	s2.turn_player = "p1"
+	var mine := _add_ally(s2, "mine", "prize_def", "p1")
+	mine.just_summoned = false
+	mine.is_exhausted  = true
+	var ready_enemy := _add_ally(s2, "ready_enemy", "prize_def", "p2")
+	ready_enemy.just_summoned = false
+	var ai := BaseAI.new()
+	ok(ai._get_ally_power_actions(s2, db, "p1").is_empty(),
+		"lh-m: AI won't fire on its own exhausted ally or a ready enemy")
+
+	var weak := _add_ally(s2, "weak", "weak_def", "p2")
+	weak.just_summoned = false
+	weak.is_exhausted  = true
+	var big := _add_ally(s2, "big", "prize_def", "p2")
+	big.just_summoned = false
+	big.is_exhausted  = true
+	var acts := ai._get_ally_power_actions(s2, db, "p1")
+	eq(acts.size(), 1, "lh-n: AI generates exactly one Lhurg activation")
+	eq(acts[0].params.get("target_id", ""), "big",
+		"lh-o: AI kills the most valuable exhausted opposing ally")
+	ok(acts[0].params.get("target_id", "") != "mine",
+		"lh-p: AI never targets its own ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lady Courtney Noel (azeroth_194): "[Activate] -> Lady Courtney Noel heals 1
+# damage from each hero and ally in your party." Non-targeted, friendly-only
+# party sweep (the same one Healing Stream Totem does at each turn start), on a
+# plain [Activate] tap power.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const COURTNEY_RECIPE := "activated_power:0:heal_party:1"
+
+func _test_lady_courtney_heals_party() -> void:
+	_buf.append("\n-- Lady Courtney Noel: heal 1 from each hero and ally in your party --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("courtney_def", 1, 4, [], 3, COURTNEY_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var courtney := _add_ally(state, "courtney", "courtney_def", "p1")
+	courtney.just_summoned = false
+	courtney.damage_taken  = 2
+	var friend := _add_ally(state, "friend", "body_def", "p1")
+	friend.just_summoned = false
+	friend.damage_taken  = 3
+	var healthy := _add_ally(state, "healthy", "body_def", "p1")
+	healthy.just_summoned = false
+	var enemy := _add_ally(state, "enemy", "body_def", "p2")
+	enemy.damage_taken = 3
+	state.get_card("p1_hero").damage_taken = 5
+	state.get_card("p2_hero").damage_taken = 5
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "courtney"})
+	ok(StackResolver.can_submit(state, use, db), "lc-a: legal with no target at all")
+	StackResolver.submit_action(state, use, db)
+	ok(state.get_card("courtney").is_exhausted,
+		"lc-b: exhausts at announcement ([Activate])")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("p1_hero").damage_taken, 4, "lc-c: own hero healed 1")
+	eq(state.get_card("friend").damage_taken, 2, "lc-d: friendly ally healed 1")
+	eq(state.get_card("courtney").damage_taken, 1, "lc-e: she heals herself too")
+	eq(state.get_card("healthy").damage_taken, 0,
+		"lc-f: an undamaged ally stays at 0 (no negative damage)")
+	eq(state.get_card("enemy").damage_taken, 3, "lc-g: opposing ally NOT healed")
+	eq(state.get_card("p2_hero").damage_taken, 5, "lc-h: opposing hero NOT healed")
+	eq(state.get_available_resources("p1"), 0, "lc-i: costs no resources")
+
+
+func _test_lady_courtney_gates_and_ai() -> void:
+	_buf.append("\n-- Lady Courtney Noel: tap gates + AI only heals when it helps --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("courtney_def", 1, 4, [], 3, COURTNEY_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var fresh := _add_ally(state, "fresh", "courtney_def", "p1")
+	fresh.just_summoned = true
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "fresh"})
+	ok(not StackResolver.can_submit(state, use, db),
+		"lc-j: summoning-sick — the tap power can't be used")
+	fresh.just_summoned = false
+	fresh.is_exhausted  = true
+	ok(not StackResolver.can_submit(state, use, db),
+		"lc-k: exhausted — once per ready")
+	fresh.is_exhausted = false
+	ok(StackResolver.can_submit(state, use, db), "lc-l: usable once ready")
+
+	# AI: never taps her on an undamaged party (the heal would do nothing).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.phase = "action"
+	s2.turn_player = "p1"
+	var c2 := _add_ally(s2, "courtney2", "courtney_def", "p1")
+	c2.just_summoned = false
+	var hurt_enemy := _add_ally(s2, "hurt_enemy", "body_def", "p2")
+	hurt_enemy.damage_taken = 3
+	var ai := BaseAI.new()
+	ok(ai._get_ally_power_actions(s2, db, "p1").is_empty(),
+		"lc-m: AI holds the power while its own party is undamaged")
+
+	s2.get_card("p1_hero").damage_taken = 4
+	var acts := ai._get_ally_power_actions(s2, db, "p1")
+	eq(acts.size(), 1, "lc-n: AI heals once its own hero is damaged")
+	eq(acts[0].params.get("card_id", ""), "courtney2", "lc-o: the action is hers")

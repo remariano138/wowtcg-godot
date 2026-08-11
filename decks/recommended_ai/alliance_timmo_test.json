@@ -60,8 +60,13 @@
     },
     {
       "card_def_id": "azeroth_222",
-      "count": 2,
+      "count": 1,
       "_card_name": "Warden Tonarin"
+    },
+    {
+      "card_def_id": "azeroth_199",
+      "count": 1,
+      "_card_name": "Lhurg Venomblade"
     },
     {
       "card_def_id": "azeroth_212",

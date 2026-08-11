@@ -1,4 +1,4 @@
-﻿{
+{
   "deck_id": "alliance_boris_test",
   "display_name": "Alliance_test (Boris)",
   "hero_card_def_id": "azeroth_1",
@@ -97,10 +97,10 @@
       "card_def_id": "azeroth_192",
       "count": 4,
       "_card_name": "Kor Cindervein"
-    },    
+    },
     {
       "card_def_id": "azeroth_197",
-      "count": 4,
+      "count": 2,
       "_card_name": "Latro Abiectus"
     },
     {
@@ -142,6 +142,11 @@
       "card_def_id": "azeroth_77",
       "count": 1,
       "_card_name": "Dispel Magic"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

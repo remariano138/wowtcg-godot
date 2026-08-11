@@ -959,11 +959,51 @@ func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
 # die when the open combat window concludes — cash her in on the opponent's
 # most expensive in-play ability or equipment, so her death isn't wasted (and
 # an opposing removal spell aimed at her fizzles at its 709.2a recheck).
+# The X an ability/equipment-destroy power must announce for a given target.
+# 0 for every fixed-cost power ("Chipper" Ironbane is the only X one so far),
+# where the resolver ignores x_value entirely.
+func _power_x_for(db, state: GameState, ap: Dictionary, target_id: String) -> int:
+	if not bool(ap.get("cost_x", false)):
+		return 0
+	var t := state.get_card(target_id)
+	var t_def := db.get_def(t.card_def_id) as CardDef if t else null
+	return StackResolver.printed_cost(t_def) if t_def else 0
+
+
+# The opponent's most valuable in-play ability/equipment this power can destroy,
+# "" if none qualifies. Printed cost is the value proxy (as everywhere else in
+# the AI) and, for an X-cost power, it is ALSO the price — which is exactly the
+# heuristic "Chipper" Ironbane needs: see the target first, then pay for it,
+# rather than picking an X and hunting for something that matches. Unaffordable
+# targets are dropped here rather than left for can_submit to reject, so a rich
+# target we can't pay for doesn't hide a cheaper one we can.
+# `min_cost` filters out targets not worth the source's life (0 = no floor).
+func _best_power_destroy_target(state: GameState, db, player_id: String,
+		ap: Dictionary, kinds: Array, min_cost: int) -> String:
+	var opp := "p2" if player_id == "p1" else "p1"
+	var avail := state.get_available_resources(player_id)
+	var best := ""
+	var best_cost := min_cost - 1
+	for kind in kinds:
+		for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+			var t := state.get_card(cid)
+			if not t or t.controller != opp:
+				continue
+			var t_def := db.get_def(t.card_def_id) as CardDef
+			var t_cost: int = StackResolver.printed_cost(t_def) if t_def else 0
+			if t_cost <= best_cost:
+				continue
+			if StackResolver.power_resource_cost(ap, _power_x_for(db, state, ap, cid)) > avail:
+				continue
+			best_cost = t_cost
+			best = cid
+	return best
+
+
 func doomed_sacrifice_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null
 	var threatened := _chain_threatened_ally(state, db, player_id)
-	var opp := "p2" if player_id == "p1" else "p1"
 	for card in state.cards_in_zone(player_id + "_ally_row"):
 		var def := db.get_def(card.card_def_id) as CardDef
 		if not def:
@@ -981,22 +1021,12 @@ func doomed_sacrifice_action(state: GameState, db, player_id: String) -> Pending
 		if not _is_doomed(state, db, card.instance_id, threatened):
 			continue
 		# Meaningful target only: the opponent's most expensive candidate.
-		var best := ""
-		var best_cost := -1
-		for kind in sac_kinds:
-			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
-				var t := state.get_card(cid)
-				if not t or t.controller != opp:
-					continue
-				var t_def := db.get_def(t.card_def_id) as CardDef
-				var t_cost: int = t_def.cost if t_def else 0
-				if t_cost > best_cost:
-					best_cost = t_cost
-					best = cid
+		var best := _best_power_destroy_target(state, db, player_id, ap, sac_kinds, 0)
 		if best == "":
 			continue
 		var act := PendingAction.make("use_ally_power", player_id,
-			{"card_id": card.instance_id, "target_id": best})
+			{"card_id": card.instance_id, "target_id": best,
+				"x_value": _power_x_for(db, state, ap, best)})
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
@@ -1130,6 +1160,12 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if gx_act:
 					result.append(gx_act)
 				continue
+			if def and StackResolver._has_effect_flag_prefix(def, "next_card_cost_mod"):
+				# Nature's Swiftness: only play it when the discount can be spent
+				# on a big card in hand this turn — otherwise it's a dead 3 drop.
+				if not _next_card_discount_worth_playing(state, db, player_id,
+						card.instance_id, def):
+					continue
 			if def and StackResolver._has_effect_flag_prefix(def, "rapid_fire_ready_on_strike"):
 				# Rapid Fire grants nothing on its own — its whole value is chaining
 				# ranged strikes, so only play it when we can actually pay for at
@@ -1270,6 +1306,40 @@ static func _pure_draw_amount(def: CardDef) -> int:
 # first). The cheapest ready Ranged weapon sets the bar — a player may hold more
 # than one. Strike cost is read through StackResolver.get_strike_cost so
 # discounts and opposing strike taxes (Margaret Fowl) count.
+# Nature's Swiftness ("you pay (5) less to play your next card this turn")
+# grants nothing on its own, so the AI plays it only when the discount can
+# actually be cashed in THIS turn: some other card in hand must
+#   (a) cost at least the discount — anything cheaper wastes part of it, and
+#   (b) be affordable once discounted, out of what is left after paying for
+#       Nature's Swiftness itself (a 6-cost needs 1 spare resource, and so on).
+# X-cost cards are skipped: their printed cost is a floor, not the price.
+func _next_card_discount_worth_playing(state: GameState, db, player_id: String,
+		card_id: String, def: CardDef) -> bool:
+	if not db:
+		return false
+	var discount := 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "next_card_cost_mod":
+			discount = -int(parts[1]) if parts.size() > 1 else 0
+	if discount <= 0:
+		return false
+	var left := state.get_available_resources(player_id) \
+		- state.get_play_cost(card_id, db)
+	if left < 0:
+		return false
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if card.instance_id == card_id:
+			continue
+		var c_def := db.get_def(card.card_def_id) as CardDef
+		if not c_def or c_def.cost_x or c_def.card_type == "Quest":
+			continue
+		var cost := state.get_play_cost(card.instance_id, db)
+		if cost >= discount and cost - discount <= left:
+			return true
+	return false
+
+
 func _rapid_fire_worth_playing(state: GameState, db, player_id: String,
 		card_id: String, def: CardDef) -> bool:
 	if not db:
@@ -1952,6 +2022,30 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			if best_kill != "":
 				var act := PendingAction.make("use_ally_power", player_id,
 					{"card_id": card.instance_id, "target_id": best_kill})
+				if StackResolver.can_submit(state, act, db):
+					result.append(act)
+		elif ap.get("effect", "") == "destroy_ability_or_equipment" \
+				and ap.get("extra_cost", "") == "sacrifice_self" \
+				and bool(ap.get("cost_x", false)):
+			# "Chipper" Ironbane: "(X), Destroy [this] -> Destroy target ability
+			# or equipment with cost X." Kavai's power on a 2-cost 3/1, so unlike
+			# Kavai (doomed-only — a 6-cost 4/6 body is worth more than most
+			# targets) he is ALSO fired proactively: the body is cheap enough
+			# that trading it for a real threat is a fine deal on its own.
+			#
+			# The heuristic runs target-first, which is what the X demands: pick
+			# the best OPPOSING target we can afford, then pay exactly its
+			# printed cost. `min_cost` is the source's own printed cost, so he
+			# won't spend himself on a 1-cost totem or Form; a cheaper target is
+			# still available to doomed_sacrifice_action, which has no floor and
+			# fires when he's dying anyway.
+			var chip_cost := StackResolver.printed_cost(def)
+			var best_dae := _best_power_destroy_target(state, db, player_id, ap,
+				["ability", "equipment"], chip_cost)
+			if best_dae != "":
+				var act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_dae,
+						"x_value": _power_x_for(db, state, ap, best_dae)})
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 		elif ap.get("effect", "") == "destroy_ability" \

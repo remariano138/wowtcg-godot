@@ -210,6 +210,8 @@ func _ready() -> void:
 		_test_weapon_defend_strike,
 		_test_margaret_fowl_strike_cost_aura,
 		_test_elemental_focus_cost_aura,
+		_test_natures_swiftness_discount,
+		_test_natures_swiftness_ai_gate,
 		_test_lightning_storm_divided_damage,
 		_test_lightning_storm_targets_focus_and_ai,
 		_test_devilsaur_leggings,
@@ -264,6 +266,9 @@ func _ready() -> void:
 		_test_kavai_sacrifice_destroys_ability_or_equipment,
 		_test_kavai_fizzles_opposing_removal,
 		_test_ai_kavai_doomed_cash_in,
+		_test_chipper_x_cost_destroy,
+		_test_chipper_affordability_and_retract,
+		_test_ai_chipper_target_first,
 		_test_lafiel_destroys_ability,
 		_test_lafiel_fizzles_and_ai,
 		_test_moira_destroys_equipment,
@@ -11740,6 +11745,119 @@ func _test_lightning_storm_targets_focus_and_ai() -> void:
 	ok(not offered, "ls-g: no kill available — AI holds the card")
 
 
+func _test_natures_swiftness_discount() -> void:
+	_buf.append("\n-- Nature's Swiftness: next card costs (5) less this turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_28", 3, "next_card_cost_mod:-5", "Restoration Talent")
+	db.ally("big_def", 5, 5, [], 8)
+	db.ally("small_def", 1, 1, [], 2)
+	db.ability("filler_def", 4, "draw:1", "Restoration")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "ns", "azeroth_28", "p1")
+	_add_card_to_hand(state, "big", "big_def", "p1")
+	_add_card_to_hand(state, "big2", "big_def", "p1")
+	_add_card_to_hand(state, "small", "small_def", "p1")
+	_add_card_to_hand(state, "filler", "filler_def", "p1")
+	_add_card_to_hand(state, "opp_big", "big_def", "p2")
+	_add_resources(state, "p1", 12)
+	_add_resources(state, "p2", 12)
+
+	# ns-a: printed costs before the grant.
+	eq(state.get_play_cost("big", db), 8, "ns-a: printed cost without the grant")
+	eq(state.players["p1"].next_card_cost_mod, 0, "ns-a2: no grant yet")
+
+	# ns-b: resolve Nature's Swiftness (a plain Ability -> graveyard).
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "ns"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("ns").zone_id, "p1_graveyard", "ns-b: Nature's Swiftness resolved away")
+	eq(state.players["p1"].next_card_cost_mod, -5, "ns-b2: the grant is live")
+
+	# ns-c: while live it shows on EVERY card in hand — any one could be next.
+	eq(state.get_play_cost("big", db), 3, "ns-c: 8 -> 3")
+	eq(state.get_play_cost("small", db), 0, "ns-c2: 2 floors at 0, never negative")
+	eq(state.get_play_cost("opp_big", db), 8, "ns-c3: opponent unaffected")
+
+	# ns-d: retracting the announcement puts the discount back untouched.
+	var before := state.get_available_resources("p1")
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "big"}), db)
+	eq(before - state.get_available_resources("p1"), 3, "ns-d: paid 3, not 8")
+	eq(state.players["p1"].next_card_cost_mod, 0, "ns-d2: consumed on chain entry")
+	StackResolver.retract_last(state, "p1", db)
+	eq(state.get_available_resources("p1"), before, "ns-d3: retraction refunds exactly 3")
+	eq(state.players["p1"].next_card_cost_mod, -5, "ns-d4: retraction restores the grant")
+
+	# ns-e: the NEXT card spends it — one shot, whatever type it is.
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "big"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.is_in_play("big"), "ns-e: the discounted ally resolved into play")
+	eq(state.players["p1"].next_card_cost_mod, 0, "ns-e2: grant spent, not refunded")
+	eq(state.get_play_cost("big2", db), 8, "ns-e3: the card after it pays full price")
+
+	# ns-f: unused, the grant expires with the turn it was gained in.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "filler"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	state.players["p1"].next_card_cost_mod = -5
+	state.phase = "end"
+	TurnManager.advance_phase(state, db)   # end -> next turn (ready)
+	eq(state.players["p1"].next_card_cost_mod, 0, "ns-f: grant cleared at turn start")
+
+
+func _test_natures_swiftness_ai_gate() -> void:
+	_buf.append("\n-- Nature's Swiftness: AI only plays it with a big card to spend it on --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_28", 3, "next_card_cost_mod:-5", "Restoration Talent")
+	db.ally("big_def", 5, 5, [], 8)
+	db.ally("cheap_def", 1, 1, [], 3)
+
+	# ns-ai-a: nothing worth discounting in hand -> the AI holds the card.
+	var st1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(st1, "ns", "azeroth_28", "p1")
+	_add_card_to_hand(st1, "cheap", "cheap_def", "p1")
+	_add_resources(st1, "p1", 10)
+	var ai := BaseAI.new()
+	var offered := false
+	for act in ai.get_reasonable_actions(st1, db, "p1"):
+		if act.action_type == "play_ability" and act.params.get("card_id", "") == "ns":
+			offered = true
+	ok(not offered, "ns-ai-a: no card costing 5+ in hand — AI holds it")
+
+	# ns-ai-b: an 8-cost ally in hand, but only 3 resources spare after paying
+	# for Nature's Swiftness itself -> the discounted 3 is exactly affordable.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(st2, "ns", "azeroth_28", "p1")
+	_add_card_to_hand(st2, "big", "big_def", "p1")
+	_add_resources(st2, "p1", 6)
+	offered = false
+	for act in ai.get_reasonable_actions(st2, db, "p1"):
+		if act.action_type == "play_ability" and act.params.get("card_id", "") == "ns":
+			offered = true
+	ok(offered, "ns-ai-b: 8-cost payable at 3 after the discount — AI plays it")
+
+	# ns-ai-c: same hand, one resource short of casting the discounted ally this
+	# turn -> the discount would be wasted, so the card is held.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(st3, "ns", "azeroth_28", "p1")
+	_add_card_to_hand(st3, "big", "big_def", "p1")
+	_add_resources(st3, "p1", 5)
+	offered = false
+	for act in ai.get_reasonable_actions(st3, db, "p1"):
+		if act.action_type == "play_ability" and act.params.get("card_id", "") == "ns":
+			offered = true
+	ok(not offered, "ns-ai-c: can't also pay the discounted cost this turn — AI holds it")
+
+
 func _test_elemental_focus_cost_aura() -> void:
 	_buf.append("\n-- Elemental Focus: Elemental ability cost aura --")
 	var db := MockDB.new()
@@ -14073,6 +14191,173 @@ func _test_ai_kavai_doomed_cash_in() -> void:
 		ok(not (a.action_type == "use_ally_power" \
 				and a.params.get("card_id", "") == "kavai4"),
 			"kd-e: proactive power use never generated")
+
+
+# ── "Chipper" Ironbane: "(X), Destroy [this] → Destroy target ability or
+# equipment with cost X." Kavai's power with the fixed cost swapped for an X
+# that must EQUAL the target's printed cost. ──────────────────────────────────
+
+const CHIPPER_RECIPE := "activated_power:X:destroy_ability_or_equipment:0::ability_or_equipment:sacrifice_self"
+
+func _test_chipper_x_cost_destroy() -> void:
+	_buf.append("\n-- \"Chipper\" Ironbane: X must equal the target's printed cost --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chip_def", 3, 1, [], 2, CHIPPER_RECIPE)
+	db.ability("ongo4_def", 4, "ongoing")
+	db.equipment("robe2_def", 2, "equipment:chest:0")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var chip := _add_ally(state, "chip", "chip_def", "p1")
+	_add_resources(state, "p1", 4)
+
+	var ongo := CardInstance.create("ongo4", "ongo4_def", "p2", "p2_hero_row")
+	state.cards["ongo4"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo4")
+	var robe := CardInstance.create("robe2", "robe2_def", "p2", "p2_hero_row")
+	state.cards["robe2"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe2")
+
+	# ci-a..c: X must match the target's printed cost exactly — not less, not more.
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "chip", "target_id": "ongo4", "x_value": 4}), db),
+		"ci-a: X = 4 legal against the cost-4 ability")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "chip", "target_id": "ongo4", "x_value": 2}), db),
+		"ci-b: X = 2 illegal against the cost-4 ability")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "chip", "target_id": "robe2", "x_value": 4}), db),
+		"ci-c: X = 4 illegal against the cost-2 equipment")
+
+	# ci-d: no [Activate] tap symbol (sacrifice_self) — usable sick and exhausted.
+	chip.just_summoned = true
+	chip.is_exhausted = true
+	ok(StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "chip", "target_id": "robe2", "x_value": 2}), db),
+		"ci-d: usable while just summoned and exhausted")
+
+	# ci-e: resolve on the cost-4 ability — X = 4 resources paid, both cards die.
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "chip", "target_id": "ongo4", "x_value": 4}), db)
+	eq(state.get_available_resources("p1"), 0, "ci-e: X = 4 resources paid at announce")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(chip.zone_id, "p1_graveyard", "ci-f: Chipper sacrificed to the graveyard")
+	eq(ongo.zone_id, "p2_graveyard", "ci-g: target ability destroyed")
+
+
+func _test_chipper_affordability_and_retract() -> void:
+	_buf.append("\n-- \"Chipper\" Ironbane: affordability gate + retraction refund --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chip_def", 3, 1, [], 2, CHIPPER_RECIPE)
+	db.ability("ongo5_def", 5, "ongoing")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "chip", "chip_def", "p1")
+	_add_resources(state, "p1", 2)
+	var ongo := CardInstance.create("ongo5", "ongo5_def", "p2", "p2_hero_row")
+	state.cards["ongo5"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo5")
+
+	# ci-h: the only target costs 5 and we have 2 — illegal, and the skip-target
+	# highlight probe must go dark too (no false green on an unpayable board).
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "chip", "target_id": "ongo5", "x_value": 5}), db),
+		"ci-h: unaffordable X illegal")
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "chip", "_skip_target_check": true}), db),
+		"ci-i: highlight probe dark with no affordable target")
+
+	# ci-j: with the resources, announce then retract — the X is refunded in full.
+	_add_resources(state, "p1", 3)
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "chip", "target_id": "ongo5", "x_value": 5}), db)
+	eq(state.get_available_resources("p1"), 0, "ci-j: X = 5 paid")
+	StackResolver.retract_last(state, "p1", db)
+	eq(state.get_available_resources("p1"), 5, "ci-k: retraction refunds the full X")
+
+
+func _test_ai_chipper_target_first() -> void:
+	_buf.append("\n-- \"Chipper\" Ironbane AI: sees the target first, then pays --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chip_def", 3, 1, [], 2, CHIPPER_RECIPE)
+	db.ability("ongo1_def", 1, "ongoing")
+	db.ability("ongo3_def", 3, "ongoing")
+	db.ability("ongo6_def", 6, "ongoing")
+	var ai := BaseAI.new()
+
+	# Case 1 — two affordable targets: take the more valuable one and pay its cost.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var chip := _add_ally(state, "chip", "chip_def", "p1")
+	chip.just_summoned = false
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	for pair in [["cheap", "ongo1_def"], ["rich", "ongo3_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p2", "p2_hero_row")
+		state.cards[pair[0]] = c
+		state.zones["p2_hero_row"].card_ids.append(pair[0])
+
+	var found: PendingAction = null
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "chip":
+			found = a
+	ok(found != null and found.params.get("target_id", "") == "rich" \
+			and int(found.params.get("x_value", 0)) == 3,
+		"ci-l: proactively destroys the cost-3 ability, announcing X = 3")
+
+	# Case 2 — the valuable target is unaffordable: fall back to an affordable
+	# one rather than generating nothing (target-first, not X-first).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	var chip2 := _add_ally(state2, "chip2", "chip_def", "p1")
+	chip2.just_summoned = false
+	_add_resources(state2, "p1", 3)
+	state2.players["p1"].resource_placed_this_turn = true
+	for pair2 in [["big", "ongo6_def"], ["mid", "ongo3_def"]]:
+		var c2 := CardInstance.create(pair2[0], pair2[1], "p2", "p2_hero_row")
+		state2.cards[pair2[0]] = c2
+		state2.zones["p2_hero_row"].card_ids.append(pair2[0])
+
+	var found2: PendingAction = null
+	for a2 in ai.get_reasonable_actions(state2, db, "p1"):
+		if a2.action_type == "use_ally_power" and a2.params.get("card_id", "") == "chip2":
+			found2 = a2
+	ok(found2 != null and found2.params.get("target_id", "") == "mid" \
+			and int(found2.params.get("x_value", 0)) == 3,
+		"ci-m: unaffordable cost-6 skipped for the affordable cost-3")
+
+	# Case 3 — only a cost-1 target: below Chipper's own printed cost, so the
+	# 3/1 body is not spent on it proactively.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	var chip3 := _add_ally(state3, "chip3", "chip_def", "p1")
+	chip3.just_summoned = false
+	_add_resources(state3, "p1", 3)
+	state3.players["p1"].resource_placed_this_turn = true
+	var small := CardInstance.create("small", "ongo1_def", "p2", "p2_hero_row")
+	state3.cards["small"] = small
+	state3.zones["p2_hero_row"].card_ids.append("small")
+	for a3 in ai.get_reasonable_actions(state3, db, "p1"):
+		ok(not (a3.action_type == "use_ally_power" \
+				and a3.params.get("card_id", "") == "chip3"),
+			"ci-n: cost-1 target below the value floor — held")
+
+	# Case 4 — never fired on our OWN ability, however expensive.
+	var state4 := _base_state(db, "p1_hero", "p2_hero")
+	var chip4 := _add_ally(state4, "chip4", "chip_def", "p1")
+	chip4.just_summoned = false
+	_add_resources(state4, "p1", 3)
+	state4.players["p1"].resource_placed_this_turn = true
+	var own := CardInstance.create("own", "ongo3_def", "p1", "p1_hero_row")
+	state4.cards["own"] = own
+	state4.zones["p1_hero_row"].card_ids.append("own")
+	for a4 in ai.get_reasonable_actions(state4, db, "p1"):
+		ok(not (a4.action_type == "use_ally_power" \
+				and a4.params.get("card_id", "") == "chip4"),
+			"ci-o: never destroys our own ability")
 
 
 # ── Chops / Voss Treebender: "When [this] attacks, you may exhaust target

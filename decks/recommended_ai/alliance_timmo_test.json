@@ -1,4 +1,4 @@
-﻿{
+{
   "deck_id": "alliance_timmo_test",
   "display_name": "Alliance_test (Timmo)",
   "hero_card_def_id": "azeroth_7",
@@ -130,7 +130,7 @@
     },
     {
       "card_def_id": "azeroth_190",
-      "count": 2,
+      "count": 1,
       "_card_name": "Kena Shadowbrand"
     },
     {
@@ -145,7 +145,7 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 2,
+      "count": 1,
       "_card_name": "Liba Wobblebonk"
     },
     {
@@ -162,6 +162,11 @@
       "card_def_id": "dark_portal_196",
       "count": 3,
       "_card_name": "Warden Ravella"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

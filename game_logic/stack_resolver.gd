@@ -38,8 +38,21 @@ static func submit_action(state: GameState, action: PendingAction,
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":
 				events.append_array(GameLogic.move_card(state, card_id, "chain"))
+				# Nature's Swiftness: "you pay (5) less to play your next card this
+				# turn." The discount is read by _pay_cost's get_play_cost below,
+				# then consumed here, because the play cost is paid on chain entry
+				# (412.2). Stashing the spent amount on the action lets retract_last
+				# put it back (and recompute the refund at the discounted cost); a
+				# card that RESOLVES — or fizzles — keeps it spent: it was played.
+				var ncd_ps := state.players.get(action.source_player) as PlayerState
+				var ncd_spent: int = ncd_ps.next_card_cost_mod if ncd_ps else 0
 				events.append_array(_pay_cost(state, card_id, action.source_player, db,
 					int(action.params.get("x_value", 0))))
+				if ncd_spent != 0 and ncd_ps:
+					ncd_ps.next_card_cost_mod = 0
+					action.params["_next_card_cost_mod"] = ncd_spent
+					events.append(GameEvent.next_card_discount_spent(
+						action.source_player, card_id, ncd_spent))
 				# Stat tracking: a card was played from hand (excludes resources,
 				# which are a separate branch below). See StatTracker.
 				events.append(GameEvent.card_played(action.source_player, card_id))
@@ -74,7 +87,8 @@ static func submit_action(state: GameState, action: PendingAction,
 				var ap_card := state.get_card(ap_card_id)
 				var ap_def  := db.get_def(ap_card.card_def_id) as CardDef if ap_card else null
 				var ap_data := _ally_activated_power(ap_def) if ap_def else {}
-				var ap_cost := int(ap_data.get("resource_cost", 0))
+				var ap_cost := power_resource_cost(ap_data,
+					int(action.params.get("x_value", 0)))
 				if ap_cost > 0:
 					events.append_array(_pay_resources(state, action.source_player, ap_cost))
 				# Rule 412.2: the [Activate] tap symbol, the once-per-turn mark and
@@ -2398,6 +2412,28 @@ static func _resolve_play_instant(state: GameState,
 								rf_ps.rapid_fire_ready_cost = rf_cost
 							events.append(GameEvent.rapid_fire_gained(
 								action.source_player, rf_cost))
+					"next_card_cost_mod":
+						# Nature's Swiftness: "You pay (5) less to play your next
+						# card this turn." Recipe `next_card_cost_mod:-5`. A
+						# one-shot, player-wide, this-turn grant (like Rapid Fire's
+						# and Cold Blood's), so it lives on PlayerState and is
+						# cleared at the start of every turn. It is read live inside
+						# GameState.get_play_cost — the choke point every cost path
+						# uses — and consumed by the next card that reaches the
+						# chain (412.2, see submit_action). Forward-looking: cards
+						# already played this turn are past. The BEST (largest)
+						# discount wins if somehow granted twice; they don't stack,
+						# since each grant is about "your next card".
+						# "Restoration Hero Required" is the Talent-spec restriction
+						# the deck authorizer enforces via rule 100.2c, not a gate
+						# here.
+						var ncd_amt := int(parts[1]) if parts.size() > 1 else 0
+						var ncd_ps3 := state.players.get(action.source_player) as PlayerState
+						if ncd_ps3 and ncd_amt != 0:
+							if ncd_amt < ncd_ps3.next_card_cost_mod:
+								ncd_ps3.next_card_cost_mod = ncd_amt
+							events.append(GameEvent.next_card_discount_gained(
+								action.source_player, ncd_amt))
 					"hero_damage_destroys_ally_this_turn":
 						# Cold Blood: "When your hero deals damage to an ally this
 						# turn, destroy that ally." A player-wide, this-turn grant
@@ -2577,8 +2613,14 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 			# extra_cost may itself carry a colon-separated amount (e.g.
 			# "put_damage_self:1"), so rejoin everything past field 6.
 			var extra_parts := parts.slice(6) if parts.size() > 6 else PackedStringArray()
+			# "Chipper" Ironbane: the printed cost is X, announced with the power
+			# as x_value (like Aimed Shot's X-cost play). resource_cost stays 0 —
+			# call power_resource_cost(ap, x_value) rather than reading the field
+			# directly, so every pay/refund/afford site agrees on the real price.
+			var cost_is_x: bool = parts.size() > 1 and parts[1].strip_edges() == "X"
 			return {
-				"resource_cost": int(parts[1]) if parts.size() > 1 else 0,
+				"cost_x":        cost_is_x,
+				"resource_cost": 0 if cost_is_x else (int(parts[1]) if parts.size() > 1 else 0),
 				"effect":        parts[2] if parts.size() > 2 else "",
 				"amount":        int(parts[3]) if parts.size() > 3 else 0,
 				"dmg_type":      parts[4] if parts.size() > 4 else "",
@@ -2586,6 +2628,34 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 				"extra_cost":    ":".join(extra_parts) if extra_parts.size() > 0 else "",
 			}
 	return {}
+
+
+# The resource cost an activated power actually charges. Fixed for every power
+# printed so far; for an X-cost power ("Chipper" Ironbane) it's the x_value
+# announced with the action. The ONE place the two cases are reconciled — pay
+# (submit_action), refund (retract_last), affordability (_can_use_ally_power)
+# and the UI's enable/highlight probes all go through it.
+static func power_resource_cost(ap: Dictionary, x_value: int) -> int:
+	if bool(ap.get("cost_x", false)):
+		return max(x_value, 0)
+	return int(ap.get("resource_cost", 0))
+
+
+# "Chipper" Ironbane: "(X), Destroy [this] -> Destroy target ability or
+# equipment with cost X." X is not a free choice — any legal announce has
+# X == the target's PRINTED cost (never a modified one: an in-play card was
+# paid for long ago, exactly as with Trophy Kill's cost band). So the power is
+# really "pick a target you can afford, pay its cost", and the UI derives X
+# from the target instead of asking for it.
+static func power_cost_matches_target(ap: Dictionary, state: GameState,
+		target_id: String, x_value: int, db) -> bool:
+	if not bool(ap.get("cost_x", false)):
+		return true
+	var card := state.get_card(target_id)
+	if not card or db == null:
+		return false
+	var t_def := db.get_def(card.card_def_id) as CardDef
+	return t_def != null and x_value == printed_cost(t_def)
 
 
 # Parse the "equipment:SLOT:DEF[:CAPACITY]" segment from a CardDef's effects string.
@@ -3396,7 +3466,8 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 			return false
 		if card.is_exhausted:
 			return false
-	if state.get_available_resources(action.source_player) < int(ap.get("resource_cost", 0)):
+	var ap_x := int(action.params.get("x_value", 0))
+	if state.get_available_resources(action.source_player) < power_resource_cost(ap, ap_x):
 		return false
 	# Extra, card-specific costs baked into the power (e.g. Mooncloth Robe also
 	# exhausts your hero). If the hero can't pay, the power can't be used.
@@ -3442,9 +3513,25 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 			+ get_destroy_kind_candidates(state, db, "equipment")
 		if d_cands.is_empty():
 			return false
+		# "Chipper" Ironbane: X must equal the target's printed cost, so the
+		# no-target probe needs a candidate the player can actually AFFORD —
+		# otherwise he'd stay green with only an unpayable target on the board.
+		if bool(ap.get("cost_x", false)):
+			var avail := state.get_available_resources(action.source_player)
+			var any_affordable := false
+			for cid in d_cands:
+				var c_card := state.get_card(cid)
+				var c_def := db.get_def(c_card.card_def_id) as CardDef if c_card else null
+				if c_def and printed_cost(c_def) <= avail:
+					any_affordable = true
+					break
+			if not any_affordable:
+				return false
 		if skip_target:
 			return true
 		var d_tid: String = action.params.get("target_id", "")
+		if not power_cost_matches_target(ap, state, d_tid, ap_x, db):
+			return false
 		return d_tid in d_cands and _is_legal_target(state, d_tid, db)
 	# Lafiel ("Destroy target ability") / Moira Darkheart ("Destroy target armor
 	# or weapon" — exactly the equipment pool, since every Equipment card is one
@@ -5984,7 +6071,8 @@ static func retract_last(state: GameState, player_id: String,
 			var ap_card2 := state.get_card(ap_card_id2)
 			var ap_def2  := db.get_def(ap_card2.card_def_id) as CardDef if ap_card2 else null
 			var ap_data2 := _ally_activated_power(ap_def2) if ap_def2 else {}
-			var ap_cost2 := int(ap_data2.get("resource_cost", 0))
+			var ap_cost2 := power_resource_cost(ap_data2,
+				int(top.params.get("x_value", 0)))
 			for res_card in state.cards_in_zone(player_id + "_resource_row"):
 				if ap_cost2 <= 0:
 					break
@@ -5994,6 +6082,14 @@ static func retract_last(state: GameState, player_id: String,
 			# Also undo the exhaust-style costs paid on chain entry.
 			events.append_array(_refund_activate_costs(state, ap_card_id2,
 				player_id, ap_data2))
+	# Nature's Swiftness' one-shot discount was consumed on chain entry — put it
+	# back BEFORE the refund below recomputes the cost, so we refund exactly the
+	# resources that were exhausted (the discounted cost), not the printed one.
+	var ncd_back: int = int(top.params.get("_next_card_cost_mod", 0))
+	if ncd_back != 0:
+		var ncd_ps2 := state.players.get(player_id) as PlayerState
+		if ncd_ps2:
+			ncd_ps2.next_card_cost_mod = ncd_back
 	if top.action_type in ["play_ally", "play_instant", "play_ability"] and db and card_id != "":
 		var cost: int = state.get_play_cost(card_id, db, int(top.params.get("x_value", 0)))
 		for res_card in state.cards_in_zone(player_id + "_resource_row"):

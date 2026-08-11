@@ -47,6 +47,14 @@ var melee_strike_discount: int = 0
 # the start of every turn, so it lasts exactly the turn it was gained in.
 var rapid_fire_ready_cost: int = -1
 
+# Nature's Swiftness: "You pay (5) less to play your next card this turn."
+# The DISCOUNT (a negative delta, 0 = inactive), read live inside
+# GameState.get_play_cost and consumed by the next card this player plays
+# (cost paid on chain entry, rule 412.2 — so retracting that announcement
+# restores it). Cleared at the start of every turn, so it lasts exactly the
+# turn it was gained in and is never refunded once the card resolved.
+var next_card_cost_mod: int = 0
+
 # Cold Blood: "When your hero deals damage to an ally this turn, destroy that
 # ally." The turn-event-log INDEX at which the grant became active, or -1 when
 # inactive. The trigger is forward-looking — an ally your hero damaged earlier

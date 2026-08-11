@@ -114,11 +114,6 @@
       "_card_name": "Krol Blade"
     },
     {
-      "card_def_id": "azeroth_40",
-      "count": 1,
-      "_card_name": "Master of the Hunt"
-    },
-    {
       "card_def_id": "azeroth_34",
       "count": 1,
       "_card_name": "Aspect of the Hawk"
@@ -150,7 +145,7 @@
     },
     {
       "card_def_id": "azeroth_222",
-      "count": 3,
+      "count": 2,
       "_card_name": "Warden Tonarin"
     },
     {
@@ -172,6 +167,11 @@
       "card_def_id": "azeroth_43",
       "count": 2,
       "_card_name": "Rapid Fire"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

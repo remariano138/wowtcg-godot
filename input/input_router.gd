@@ -2588,6 +2588,24 @@ func _ability_needs_target(card_id: String) -> bool:
 	return _instant_needs_target(card_id)
 
 
+# "Chipper" Ironbane: "(X), Destroy [this] -> Destroy target ability or
+# equipment with cost X." X isn't a free choice — a legal announce always has
+# X == the target's printed cost, so it's DERIVED from the click rather than
+# asked for in an X dialog. Returns 0 for every fixed-cost power (the resolver
+# ignores x_value there).
+func _ally_power_x_for(ally_id: String, target_id: String) -> int:
+	if not db or not state:
+		return 0
+	var ally := state.get_card(ally_id)
+	var ally_def := db.get_def(ally.card_def_id) as CardDef if ally else null
+	var ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
+	if not bool(ap.get("cost_x", false)):
+		return 0
+	var t := state.get_card(target_id)
+	var t_def := db.get_def(t.card_def_id) as CardDef if t else null
+	return StackResolver.printed_cost(t_def) if t_def else 0
+
+
 func _get_ally_power_targets(ally_id: String) -> Array:
 	var result: Array = []
 	if not db or not state:
@@ -2606,7 +2624,8 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 		for kind in (["ability", "equipment"] if ally_ap_kind == "ability_or_equipment" else [ally_ap_kind]):
 			for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
 				var d_act := PendingAction.make("use_ally_power", local_player,
-					{"card_id": ally_id, "target_id": cid})
+					{"card_id": ally_id, "target_id": cid,
+						"x_value": _ally_power_x_for(ally_id, cid)})
 				if StackResolver.can_submit(state, d_act, db):
 					result.append(cid)
 		return result
@@ -2906,7 +2925,8 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 	if instance_id not in legal:
 		return
 	var action := PendingAction.make("use_ally_power", local_player,
-		{"card_id": _targeting_source, "target_id": instance_id})
+		{"card_id": _targeting_source, "target_id": instance_id,
+			"x_value": _ally_power_x_for(_targeting_source, instance_id)})
 	_targeting_source = ""
 	targeting_cancelled.emit()
 	var events := StackResolver.submit_action(state, action, db)

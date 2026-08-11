@@ -380,6 +380,17 @@ static func ranged_weapon_bonus_gained(player_id: String, amount: int) -> GameEv
 static func rapid_fire_gained(player_id: String, cost: int) -> GameEvent:
 	return make("rapid_fire_gained", {"player": player_id, "cost": cost})
 
+# Nature's Swiftness: the "your next card costs (N) less this turn" grant, and
+# the moment it is spent (on the chain entry of the card that used it).
+static func next_card_discount_gained(player_id: String, amount: int) -> GameEvent:
+	return make("next_card_discount_gained", {"player": player_id, "amount": amount})
+
+static func next_card_discount_spent(player_id: String, card_id: String,
+		amount: int) -> GameEvent:
+	return make("next_card_discount_spent", {
+		"player": player_id, "card_id": card_id, "amount": amount,
+	})
+
 static func enter_play_target_required(card_id: String, dmg_type: String, amount: int) -> GameEvent:
 	return make("enter_play_target_required", {
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,

@@ -674,8 +674,26 @@ func get_play_cost(instance_id: String, db, x: int = 0) -> int:
 	if not def:
 		return 0
 	if def.cost_x:
-		return _ability_cost_aura(inst, def, max(def.cost_base + x + inst.sum_stat("cost"), 0), db)
-	return _ability_cost_aura(inst, def, max(def.cost + inst.sum_stat("cost"), 0), db)
+		return _next_card_discount(inst,
+			_ability_cost_aura(inst, def, max(def.cost_base + x + inst.sum_stat("cost"), 0), db))
+	return _next_card_discount(inst,
+		_ability_cost_aura(inst, def, max(def.cost + inst.sum_stat("cost"), 0), db))
+
+
+# Nature's Swiftness: "You pay (5) less to play your next card this turn."
+# A one-shot, player-scoped, this-turn discount held on PlayerState and read
+# here — the single choke point every cost path goes through (affordability
+# gating, payment, refund, the AI's cost math, the router's preview), so the
+# discount covers all of them at once. Applied AFTER Elemental Focus' aura and
+# floored at 0: EF's "to a minimum of (1)" restricts EF's own reduction, not a
+# later one. Consumed at chain entry by whichever card is played next (see
+# StackResolver.submit_action), so while it is live it shows on EVERY card in
+# hand — any one of them could be the next card played.
+func _next_card_discount(inst: CardInstance, cost: int) -> int:
+	var ps := players.get(inst.controller) as PlayerState
+	if not ps or ps.next_card_cost_mod == 0:
+		return cost
+	return max(cost + ps.next_card_cost_mod, 0)
 
 
 # Elemental Focus: "Ongoing: You pay (1) less to play Elemental abilities, to a

@@ -1,16 +1,16 @@
-﻿{
+{
   "deck_id": "alliance_moonshadow_test",
   "display_name": "Alliance_test (Moonshadow)",
   "hero_card_def_id": "azeroth_6",
-  "card_entries": [    
+  "card_entries": [
     {
       "card_def_id": "azeroth_342",
       "count": 1,
       "_card_name": "The Missing Diplomat"
-    },    
+    },
     {
       "card_def_id": "dark_portal_289",
-      "count": 2,
+      "count": 4,
       "_card_name": "Crown of the Earth"
     },
     {
@@ -20,7 +20,7 @@
     },
     {
       "card_def_id": "azeroth_340",
-      "count": 3,
+      "count": 1,
       "_card_name": "The Defias Brotherhood"
     },
     {
@@ -30,13 +30,23 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 3,
+      "count": 2,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
     },
     {
       "card_def_id": "azeroth_332",
       "count": 1,
       "_card_name": "Rod of the Ogre Magi"
+    },
+    {
+      "card_def_id": "dark_portal_267",
+      "count": 1,
+      "_card_name": "Ramstein's Lightning Bolts"
     },
     {
       "card_def_id": "azeroth_196",
@@ -49,14 +59,19 @@
       "_card_name": "Innervate"
     },
     {
-      "card_def_id": "azeroth_176",
-      "count": 2,
-      "_card_name": "Apprentice Teep"
+      "card_def_id": "azeroth_28",
+      "count": 1,
+      "_card_name": "Nature's Swiftness"
     },
     {
       "card_def_id": "azeroth_222",
-      "count": 4,
+      "count": 2,
       "_card_name": "Warden Tonarin"
+    },
+    {
+      "card_def_id": "dark_portal_196",
+      "count": 2,
+      "_card_name": "Warden Ravella"
     },
     {
       "card_def_id": "dark_portal_157",
@@ -80,7 +95,7 @@
     },
     {
       "card_def_id": "azeroth_187",
-      "count": 2,
+      "count": 1,
       "_card_name": "Hannah the Unstoppable"
     },
     {
@@ -102,7 +117,7 @@
       "card_def_id": "azeroth_184",
       "count": 3,
       "_card_name": "Galahandra Keeper of the Silent Grove"
-    },    
+    },
     {
       "card_def_id": "dark_portal_170",
       "count": 2,
@@ -125,7 +140,7 @@
     },
     {
       "card_def_id": "azeroth_175",
-      "count": 2,
+      "count": 1,
       "_card_name": "Anika Berlyn"
     },
     {
@@ -162,6 +177,11 @@
       "card_def_id": "azeroth_160",
       "count": 2,
       "_card_name": "Fall Back"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

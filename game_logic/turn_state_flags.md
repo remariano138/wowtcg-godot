@@ -106,5 +106,6 @@ turn. Not log candidates — they're state, not history.
 | `ranged_weapon_atk_bonus` | `PlayerState` | Elendril |
 | `rapid_fire_ready_cost` | `PlayerState` | Rapid Fire |
 | `cold_blood_from_index` | `PlayerState` | Cold Blood — an INDEX into `turn_events` (Category A is where the effect's facts live); makes the trigger forward-looking |
+| `next_card_cost_mod` | `PlayerState` | Nature's Swiftness — one-shot: consumed at the chain entry of the next card played (restored by `retract_last`), cleared at turn start if unused |
 | `damage_prevention` | `PlayerState` | Armor pool (safety clear — scoped to its combat) |
 | `gouge_skip_ready` (counter) | `CardInstance` | Gouge, Iceblade Hacker — consumed at the ready step rather than cleared |

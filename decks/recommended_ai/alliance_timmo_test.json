@@ -45,8 +45,13 @@
     },
     {
       "card_def_id": "dark_portal_260",
-      "count": 2,
+      "count": 1,
       "_card_name": "Pads of the Dread Wolf"
+    },
+    {
+      "card_def_id": "dark_portal_177",
+      "count": 1,
+      "_card_name": "\"Lowdown\" Luppo Shadefizzle"
     },
     {
       "card_def_id": "azeroth_176",
@@ -84,9 +89,9 @@
       "_card_name": "Galahandra Keeper of the Silent Grove"
     },
     {
-      "card_def_id": "azeroth_291",
+      "card_def_id": "dark_portal_267",
       "count": 1,
-      "_card_name": "Green Whelp Armor"
+      "_card_name": "Ramstein's Lightning Bolts"
     },
     {
       "card_def_id": "azeroth_213",
@@ -109,9 +114,14 @@
       "_card_name": "Latro Abiectus"
     },
     {
-      "card_def_id": "dark_portal_192",
-      "count": 2,
-      "_card_name": "Tim"
+      "card_def_id": "azeroth_92",
+      "count": 1,
+      "_card_name": "Cold Blood"
+    },
+    {
+      "card_def_id": "azeroth_93",
+      "count": 1,
+      "_card_name": "Coup de Grace"
     },
     {
       "card_def_id": "azeroth_214",
@@ -135,23 +145,23 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 3,
+      "count": 2,
       "_card_name": "Liba Wobblebonk"
     },
     {
-      "card_def_id": "dark_portal_164",
+      "card_def_id": "dark_portal_184",
       "count": 1,
-      "_card_name": "Gertha, The Old Crone"
+      "_card_name": "Mya, Dragonling Wrangler"
     },
     {
-      "card_def_id": "azeroth_172",
+      "card_def_id": "azeroth_99",
       "count": 2,
-      "_card_name": "Withdraw"
+      "_card_name": "Gouge"
     },
     {
-      "card_def_id": "azeroth_221",
-      "count": 2,
-      "_card_name": "Tristan Rapidstrike"
+      "card_def_id": "dark_portal_196",
+      "count": 3,
+      "_card_name": "Warden Ravella"
     }
   ],
   "recommended_ai_id": "ai_generic",

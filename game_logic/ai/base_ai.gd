@@ -1863,6 +1863,20 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		if ap.get("effect", "") == "hand_to_deck_draw" \
 				and not _hand_is_dead(state, db, player_id):
 			continue
+		# Ramstein's Lightning Bolts: the AoE is SYMMETRIC (it hits our own hero
+		# and allies too) and destroying the item is the cost, so firing it on a
+		# neutral board is a straight card loss. Simple gate for now: only when
+		# the opponent has more allies on the board than we do — and never when
+		# our own hero would die to it, which would hand them the game.
+		if ap.get("effect", "") == "deal_damage_aoe_all":
+			var opp_id := _other_player_id(state, player_id)
+			if state.cards_in_zone(opp_id + "_ally_row").size() \
+					<= state.cards_in_zone(player_id + "_ally_row").size():
+				continue
+			var own_hero: String = (state.players.get(player_id) as PlayerState).hero_instance_id
+			if own_hero != "" \
+					and state.get_current_hp(own_hero, db) <= int(ap.get("amount", 0)):
+				continue
 		if ap.get("effect", "") == "buff_atk_target_attacking":
 			# Ryn Dreamstrider: friendly +ATK buff — never target the enemy.
 			# Pick our own highest-ATK ready attacker (ally or hero).

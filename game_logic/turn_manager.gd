@@ -120,6 +120,10 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			p.ranged_weapon_atk_bonus = 0
 			# Rapid Fire's "whenever you strike ... this turn" grant likewise.
 			p.rapid_fire_ready_cost = -1
+			# Cold Blood's "when your hero deals damage to an ally this turn"
+			# grant likewise — and its index would be meaningless anyway once
+			# turn_events is cleared above.
+			p.cold_blood_from_index = -1
 
 	# Clear summoning sickness and ready all in-play cards for the turn player.
 	for card in state.cards_in_play(state.turn_player):

@@ -47,6 +47,15 @@ var melee_strike_discount: int = 0
 # the start of every turn, so it lasts exactly the turn it was gained in.
 var rapid_fire_ready_cost: int = -1
 
+# Cold Blood: "When your hero deals damage to an ally this turn, destroy that
+# ally." The turn-event-log INDEX at which the grant became active, or -1 when
+# inactive. The trigger is forward-looking — an ally your hero damaged earlier
+# this turn is not retroactively doomed — and the log is what carries the
+# "which ally, dealt by whom" facts (see game_logic/turn_state_flags.md), so an
+# index into it is the whole state this effect needs. Cleared at the start of
+# every turn, so it lasts exactly the turn it was gained in.
+var cold_blood_from_index: int = -1
+
 # Elendril's flip power: "Your Ranged weapons have +3 ATK this turn." Applied
 # to this player's Ranged weapons in GameState.get_atk; cleared at the start of
 # every turn (so it lasts exactly the turn it was gained in).

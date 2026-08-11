@@ -2398,6 +2398,24 @@ static func _resolve_play_instant(state: GameState,
 								rf_ps.rapid_fire_ready_cost = rf_cost
 							events.append(GameEvent.rapid_fire_gained(
 								action.source_player, rf_cost))
+					"hero_damage_destroys_ally_this_turn":
+						# Cold Blood: "When your hero deals damage to an ally this
+						# turn, destroy that ally." A player-wide, this-turn grant
+						# (like Rapid Fire's), so it is tracked on PlayerState and
+						# cleared at the start of every turn. ANY damage counts, not
+						# just combat — so rather than a new hook per damage source
+						# it is evaluated off the turn event log (see
+						# game_logic/turn_state_flags.md), which every damage source
+						# already feeds by construction. Storing the log index makes
+						# the trigger forward-looking, as printed: an ally the hero
+						# damaged EARLIER this turn is not retroactively doomed.
+						var cb_ps := state.players.get(action.source_player) as PlayerState
+						if cb_ps:
+							# Earliest grant wins if somehow granted twice this turn.
+							if cb_ps.cold_blood_from_index < 0:
+								cb_ps.cold_blood_from_index = state.turn_events.size()
+							events.append(GameEvent.make("cold_blood_gained",
+								{"player_id": action.source_player, "source_id": card_id}))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
@@ -2570,7 +2588,7 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 	return {}
 
 
-# Parse the "equipment:SLOT:DEF" segment from a CardDef's effects string.
+# Parse the "equipment:SLOT:DEF[:CAPACITY]" segment from a CardDef's effects string.
 # Returns {} if the card isn't equipment (per its recipe).
 static func _equipment_info(def: CardDef) -> Dictionary:
 	for segment in def.effects.split("|"):
@@ -2579,6 +2597,11 @@ static func _equipment_info(def: CardDef) -> Dictionary:
 			return {
 				"slot": (parts[1].strip_edges() if parts.size() > 1 else "").to_lower(),
 				"def":  int(parts[2]) if parts.size() > 2 else 0,
+				# Rule 414.3b: the number in parentheses on the type line — how many
+				# cards with that slot tag a player may control. Every armor/weapon
+				# slot printed so far is "(1)", so the field is optional and defaults
+				# to 1; Ramstein's Lightning Bolts is Trinket (2).
+				"capacity": max(1, int(parts[3])) if parts.size() > 3 else 1,
 			}
 	return {}
 
@@ -3151,6 +3174,8 @@ static func _apply_packet_group(state: GameState, db,
 			events.append_array(_apply_damage_riders(
 				state, target_id, source_id, str(p.get("riders", ""))))
 	_clear_damage_prevention(state)   # 717.2c: excess DEF beyond the packet is wasted
+	# Cold Blood: any ally this group's hero damage landed on is destroyed.
+	events.append_array(_fire_cold_blood(state, db))
 	match group.get("after", ""):
 		"totem_next":
 			events.append_array(_open_next_totem_trigger(state, db))
@@ -3685,6 +3710,36 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				packets.append({"source": card_id,
 					"target": ally.instance_id, "amount": amount})
 			events.append_array(defer_packets(state, db, packets))
+		"deal_damage_aoe_all":
+			# "Your hero deals N <type> damage to each hero and ally."
+			# (Ramstein's Lightning Bolts.) Symmetric and non-targeted: it hits
+			# BOTH players' heroes and every ally on the board, the controller's
+			# own included — so 706 Untargetable is irrelevant (it restricts
+			# targets of links). The source is the controller's HERO as printed,
+			# not the item, which is what makes it inherit Lionheart Helm's
+			# unpreventable aura and feed Cold Blood's "your hero deals damage to
+			# an ally" trigger. Not tagged from_ability — an equipment power is
+			# not an ability, so Chromatic Cloak doesn't boost it.
+			var aoe_all_amount: int = int(ap.get("amount", 0))
+			var aoe_ps := state.players.get(card.controller) as PlayerState
+			var aoe_hero: String = aoe_ps.hero_instance_id if aoe_ps else ""
+			if aoe_hero != "" and aoe_all_amount > 0:
+				var aoe_all_packets: Array = []
+				# Controller's side first, then the opponent's — a fixed order so
+				# sequential prevention points are deterministic.
+				for pid in [card.controller, _other_player(state, card.controller)]:
+					var side_ps := state.players.get(pid) as PlayerState
+					if side_ps and side_ps.hero_instance_id != "":
+						aoe_all_packets.append({"source": aoe_hero,
+							"target": side_ps.hero_instance_id,
+							"amount": aoe_all_amount,
+							"dmg_type": str(ap.get("dmg_type", ""))})
+					for side_ally in state.cards_in_zone(pid + "_ally_row"):
+						aoe_all_packets.append({"source": aoe_hero,
+							"target": side_ally.instance_id,
+							"amount": aoe_all_amount,
+							"dmg_type": str(ap.get("dmg_type", ""))})
+				events.append_array(defer_packets(state, db, aoe_all_packets))
 		"deal_damage_to_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
@@ -4612,6 +4667,13 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		atk_events, def_events, db))
 
+	# Cold Blood ("When your hero deals damage to an ally this turn, destroy that
+	# ally") — the same trigger point, but sourced from the turn event log, so it
+	# covers a hero attacking an ally and a hero retaliating onto an attacking
+	# ally without needing either case spelled out here. Both combat packets have
+	# landed by now, so a defender that killed the hero's target still retaliated.
+	events.append_array(_fire_cold_blood(state, db))
+
 	# Iceblade Hacker (rule 305.2 triggered equipment power): "When your hero
 	# deals combat damage to an ally, that ally can't ready during its
 	# controller's next ready step." Same trigger point as Devilsaur Leggings,
@@ -4731,6 +4793,43 @@ static func _fire_hero_combat_dmg_destroys_ally(state: GameState,
 			and _combat_dmg_landed(def_events, attacker_id) > 0 \
 			and state.is_in_play(attacker_id):
 		events.append_array(_destroy_card_trigger(state, attacker_id, defender_id, db))
+	return events
+
+
+# Cold Blood: "When your hero deals damage to an ally this turn, destroy that
+# ally." Evaluated off the turn event log rather than hooked into each damage
+# source — every damage packet in the game records a `damage_dealt` entry in
+# GameLogic.deal_damage (see game_logic/turn_state_flags.md), so this one sweep
+# covers combat, abilities, hero/ally powers, totems and end-of-turn burns by
+# construction. Called from the two points where damage has just landed:
+# _apply_packet_group (the prevention pipeline) and _do_combat_conclusion
+# (beside Devilsaur Leggings' trigger, so combat's simultaneous damage has both
+# hits placed before anything is destroyed).
+#
+# Only entries from the grant's own index on are considered, so the trigger is
+# forward-looking as printed. Re-scanning already-handled entries is harmless:
+# the ally is out of play by then. The destroy is mandatory (no cost, no choice,
+# nothing on the chain) and applies to ANY ally the hero damages, the
+# controller's own included — the card says "an ally", not "an opposing ally".
+static func _fire_cold_blood(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	for pid in state.players:
+		var ps := state.players[pid] as PlayerState
+		if not ps or ps.cold_blood_from_index < 0 or ps.hero_instance_id == "":
+			continue
+		var i := ps.cold_blood_from_index
+		while i < state.turn_events.size():
+			var entry: Dictionary = state.turn_events[i]
+			i += 1
+			if entry.get("type", "") != "damage_dealt":
+				continue
+			if entry.get("source_id", "") != ps.hero_instance_id:
+				continue
+			var victim_id: String = entry.get("target_id", "")
+			if not _is_ally(state, victim_id):
+				continue
+			events.append_array(_destroy_card_trigger(
+				state, victim_id, ps.hero_instance_id, db))
 	return events
 
 
@@ -6804,13 +6903,38 @@ static func _check_equipment_uniqueness(state: GameState, card_id: String, db) -
 				or (two_handed and d_slot == "off_hand") \
 				or (slot == "off_hand" and _has_effect_flag(d, "two_handed")):
 			same_slot_ids.append(c.instance_id)
-	if same_slot_ids.size() <= 1:
+	# 414.3b: the slot's capacity, not a flat 1 — Trinket (2) allows two. Taken as
+	# the STRICTEST capacity in the conflicting set, so the Two-Handed/Off-Hand
+	# cross-conflicts folded in above (414.3c, always capacity 1) still violate
+	# on the second card the way they always did.
+	if same_slot_ids.size() <= _equipment_slot_capacity(state, same_slot_ids, db):
 		return []
 	state.pending_equip_sacrifice_player = card.controller
 	state.pending_equip_sacrifice_ids.assign(same_slot_ids)
 	var typed_ids: Array[String] = []
 	typed_ids.assign(same_slot_ids)
 	return [GameEvent.equipment_sacrifice_required(card.controller, typed_ids)]
+
+
+# How many of a conflicting equipment set a player may control (rule 414.3b) —
+# the strictest `equipment:SLOT:DEF:CAPACITY` capacity among them, so a set mixing
+# a Two-Handed weapon with an Off-Hand equipment (414.3c) stays at 1. Falls back
+# to 1 without a database, which is the pre-Trinket behaviour.
+static func _equipment_slot_capacity(state: GameState, ids: Array, db) -> int:
+	if db == null:
+		return 1
+	var capacity := -1
+	for cid in ids:
+		var c := state.get_card(cid)
+		if not c:
+			continue
+		var d := db.get_def(c.card_def_id) as CardDef
+		if not d:
+			continue
+		var cap := int(_equipment_info(d).get("capacity", 1))
+		if capacity < 0 or cap < capacity:
+			capacity = cap
+	return capacity if capacity > 0 else 1
 
 
 # Called directly by the scene (not via submit_action), like choose_pet_sacrifice.
@@ -6831,7 +6955,7 @@ static func choose_equipment_sacrifice(state: GameState, card_id: String,
 	for cid in state.pending_equip_sacrifice_ids:
 		if state.is_in_play(cid):
 			surviving.append(cid)
-	if surviving.size() <= 1:
+	if surviving.size() <= _equipment_slot_capacity(state, surviving, db):
 		state.pending_equip_sacrifice_player = ""
 		state.pending_equip_sacrifice_ids.clear()
 	else:

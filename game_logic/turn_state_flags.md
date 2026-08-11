@@ -56,7 +56,7 @@ GameState.has_turn_event(type) / turn_events_of(type)
 
 | Type | Written in | Snapshot fields | Read by |
 |---|---|---|---|
-| `damage_dealt` | `GameLogic.deal_damage` — AFTER prevention (717.2b: fully absorbed damage was never dealt) and AFTER the 405.3 excess guard (a packet at an already-0-HP target places nothing) | `source_id`, `target_id`, `amount`, `source_controller`, `target_controller`, `source_is_ally`, `target_is_hero` | Thysta Spiritlasher (`dark_portal_236`): any entry this turn → she stays silent (`TurnManager._apply_each_turn_end_effects`). Torek's Assault (`azeroth_345`): entry with `target_is_hero` ∧ `source_is_ally` ∧ `source_controller` = completer ∧ `target_controller` ≠ completer (`StackResolver.can_submit` quest gate) |
+| `damage_dealt` | `GameLogic.deal_damage` — AFTER prevention (717.2b: fully absorbed damage was never dealt) and AFTER the 405.3 excess guard (a packet at an already-0-HP target places nothing) | `source_id`, `target_id`, `amount`, `source_controller`, `target_controller`, `source_is_ally`, `target_is_hero` | Thysta Spiritlasher (`dark_portal_236`): any entry this turn → she stays silent (`TurnManager._apply_each_turn_end_effects`). Torek's Assault (`azeroth_345`): entry with `target_is_hero` ∧ `source_is_ally` ∧ `source_controller` = completer ∧ `target_controller` ≠ completer (`StackResolver.can_submit` quest gate). Cold Blood (`azeroth_92`): entry with `source_id` = the granting player's hero ∧ target still an ally in play → destroy it (`StackResolver._fire_cold_blood`) |
 
 `put_damage` (405.3 self-damage costs) deliberately does not record — self-costs
 are not "damage dealt", the same call made for Berserking's counters.
@@ -105,5 +105,6 @@ turn. Not log candidates — they're state, not history.
 | `melee_strike_discount` | `PlayerState` | Gorebelly |
 | `ranged_weapon_atk_bonus` | `PlayerState` | Elendril |
 | `rapid_fire_ready_cost` | `PlayerState` | Rapid Fire |
+| `cold_blood_from_index` | `PlayerState` | Cold Blood — an INDEX into `turn_events` (Category A is where the effect's facts live); makes the trigger forward-looking |
 | `damage_prevention` | `PlayerState` | Armor pool (safety clear — scoped to its combat) |
 | `gouge_skip_ready` (counter) | `CardInstance` | Gouge, Iceblade Hacker — consumed at the ready step rather than cleared |

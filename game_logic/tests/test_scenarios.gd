@@ -36,6 +36,9 @@ func _ready() -> void:
 		_test_activate_costs_paid_on_announce,
 		_test_activate_costs_refunded_on_retract,
 		_test_equipment_slot_uniqueness,
+		_test_ramstein_lightning_bolts,
+		_test_trinket_slot_capacity_two,
+		_test_ai_ramstein_gate,
 		_test_ai_plays_equipment,
 		_test_pads_block_combat,
 		_test_pads_block_decline,
@@ -210,6 +213,8 @@ func _ready() -> void:
 		_test_lightning_storm_divided_damage,
 		_test_lightning_storm_targets_focus_and_ai,
 		_test_devilsaur_leggings,
+		_test_cold_blood_hero_damage_destroys_ally,
+		_test_cold_blood_scope_and_expiry,
 		_test_iceblade_hacker,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
@@ -342,6 +347,7 @@ func _ready() -> void:
 		_test_quest_choice_ai_hooks,
 		_test_ilandre_moonspear_power,
 		_test_ilandre_empty_hand_and_ai_gate,
+		_test_lowdown_luppo_shadefizzle,
 	]
 
 	for t in tests:
@@ -2299,6 +2305,131 @@ func _test_equipment_slot_uniqueness() -> void:
 
 	# eu-d: pending state cleared.
 	eq(state.pending_equip_sacrifice_player, "", "eu-d: pending_equip_sacrifice_player cleared")
+
+
+const RAMSTEIN_EFFECTS := "equipment:trinket:0:2|activated_power:2:deal_damage_aoe_all:1:nature::sacrifice_self"
+
+
+func _ramstein_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("ramstein_def", 3, RAMSTEIN_EFFECTS, "Item")
+	db.equipment("trinket2_def", 2, "equipment:trinket:0:2", "Item")
+	db.ally("frail_def", 1, 1)
+	db.ally("tough_def", 2, 3)
+	return db
+
+
+func _put_in_hero_row(state: GameState, inst_id: String, def_id: String,
+		ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_hero_row")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_hero_row"].card_ids.append(inst_id)
+	return card
+
+
+# Ramstein's Lightning Bolts (dark_portal_267, 3, Equipment — Item, Trinket (2)):
+# "(2), Destroy Ramstein's Lightning Bolts -> Your hero deals 1 nature damage to
+# each hero and ally." Symmetric AoE, hero-sourced, paid by destroying the item.
+func _test_ramstein_lightning_bolts() -> void:
+	_buf.append("\n-- Ramstein's Lightning Bolts: symmetric 1 to every character --")
+	var db := _ramstein_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 4)
+	var ram := _put_in_hero_row(st, "ram", "ramstein_def", "p1")
+	# No [Activate] tap symbol (sacrifice_self), so neither of these blocks it.
+	ram.is_exhausted  = true
+	ram.just_summoned = true
+	var mine := _add_ally(st, "mine", "frail_def", "p1")     # 1/1 — our own, dies
+	var theirs := _add_ally(st, "theirs", "frail_def", "p2") # 1/1 — theirs, dies
+	var tough := _add_ally(st, "tough", "tough_def", "p2")   # 2/3 — survives with 1
+	for c in [mine, theirs, tough]:
+		(c as CardInstance).just_summoned = false
+
+	var act := PendingAction.make("use_ally_power", "p1", {"card_id": "ram"})
+	ok(StackResolver.can_submit(st, act, db),
+		"rl-a: usable while exhausted / just summoned (no tap symbol)")
+	StackResolver.submit_action(st, act, db)
+	eq(st.get_available_resources("p1"), 2, "rl-a2: the 2 resource cost was paid")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	eq(st.get_card("p1_hero").damage_taken, 1, "rl-b: our OWN hero took 1")
+	eq(st.get_card("p2_hero").damage_taken, 1, "rl-b2: the opposing hero took 1")
+	ok(not st.is_in_play("mine"), "rl-c: our own 1/1 died to it")
+	ok(not st.is_in_play("theirs"), "rl-c2: their 1/1 died to it")
+	eq(st.get_card("tough").damage_taken, 1, "rl-c3: the 2/3 survived with 1 damage")
+	eq(st.get_card("ram").zone_id, "p1_graveyard",
+		"rl-d: the item destroyed itself as the cost")
+
+	# The damage is HERO-sourced as printed, not item-sourced — which is what
+	# makes it feed "your hero deals damage" riders (Cold Blood).
+	var hero_sourced := 0
+	for e in st.turn_events:
+		if e.get("type", "") == "damage_dealt" and e.get("source_id", "") == "p1_hero":
+			hero_sourced += 1
+	eq(hero_sourced, 5, "rl-e: all five packets are sourced from the hero")
+
+
+# Rule 414.3b: Trinket (2) — the first slot with a capacity above 1.
+func _test_trinket_slot_capacity_two() -> void:
+	_buf.append("\n-- Trinket (2): two coexist, a third violates uniqueness --")
+	var db := _ramstein_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+
+	# Two trinkets: no violation.
+	_put_in_hero_row(st, "t1", "trinket2_def", "p1")
+	var ev1 := StackResolver._check_equipment_uniqueness(st, "t1", db)
+	_put_in_hero_row(st, "t2", "ramstein_def", "p1")
+	var ev2 := StackResolver._check_equipment_uniqueness(st, "t2", db)
+	eq(ev1.size(), 0, "tc-a: one trinket is fine")
+	eq(ev2.size(), 0, "tc-b: two trinkets coexist — capacity is 2, not 1")
+	eq(st.pending_equip_sacrifice_player, "", "tc-b2: no sacrifice pending")
+
+	# A third one does violate.
+	_put_in_hero_row(st, "t3", "trinket2_def", "p1")
+	var ev3 := StackResolver._check_equipment_uniqueness(st, "t3", db)
+	eq(ev3.size(), 1, "tc-c: the third trinket triggers the sacrifice choice")
+	eq(st.pending_equip_sacrifice_player, "p1", "tc-c2: choice addressed to the controller")
+	eq(st.pending_equip_sacrifice_ids.size(), 3, "tc-c3: all three are candidates")
+
+	# Destroying ONE resolves it — capacity 2 means two may remain.
+	StackResolver.choose_equipment_sacrifice(st, "t3", db)
+	eq(st.pending_equip_sacrifice_player, "", "tc-d: one destroy is enough at capacity 2")
+	ok(not st.is_in_play("t3"), "tc-d2: the chosen trinket was destroyed")
+	ok(st.is_in_play("t1") and st.is_in_play("t2"), "tc-d3: the other two stayed")
+
+
+# The AI's gate: symmetric AoE + self-destroy, so it only fires when the
+# opponent is the one with more allies on the board.
+func _test_ai_ramstein_gate() -> void:
+	_buf.append("\n-- Ramstein's Lightning Bolts: AI board-count gate --")
+	var db := _ramstein_db()
+	var ai := BaseAI.new()
+
+	# Even boards (1 each): held.
+	var even := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(even, "p1", 4)
+	_put_in_hero_row(even, "ram", "ramstein_def", "p1")
+	_add_ally(even, "a1", "tough_def", "p1")
+	_add_ally(even, "b1", "tough_def", "p2")
+	var held := ai._get_ally_power_actions(even, db, "p1")
+	eq(held.size(), 0, "rg-a: even board -> the AI holds the item")
+
+	# They have more allies: fired.
+	var good := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(good, "p1", 4)
+	_put_in_hero_row(good, "ram2", "ramstein_def", "p1")
+	_add_ally(good, "b2", "tough_def", "p2")
+	_add_ally(good, "b3", "tough_def", "p2")
+	var fired := ai._get_ally_power_actions(good, db, "p1")
+	eq(fired.size(), 1, "rg-b: outnumbered -> the AI fires it")
+
+	# ... but never when the blast would kill our own hero.
+	good.get_card("p1_hero").damage_taken = 29
+	var suicide := ai._get_ally_power_actions(good, db, "p1")
+	eq(suicide.size(), 0, "rg-c: never fired when our own hero would die to it")
 
 
 func _test_ai_plays_equipment() -> void:
@@ -11084,6 +11215,137 @@ func _test_devilsaur_leggings() -> void:
 	eq(s3.get_card("tank3").damage_taken, 3, "dl-c2: ally kept its 3 combat damage")
 
 
+func _cold_blood_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("cold_def", 1, "draw:1|hero_damage_destroys_ally_this_turn",
+		"Assassination Talent")
+	db.instant("bolt_def", 1, "deal_damage_to_target:1:frost")
+	db.ally("tank_def", 0, 5)     # 0/5 — survives anything we throw at it
+	db.ally("pinger_def", 1, 3, [], 2,
+		"activated_power:0:deal_damage_to_target:1:fire:hero_or_ally")
+	return db
+
+
+# Cold Blood (azeroth_92, 1, Instant Ability — Assassination Talent): "Draw a
+# card. When your hero deals damage to an ally this turn, destroy that ally."
+# ANY damage, not just combat — so the trigger is evaluated off the turn event
+# log (StackResolver._fire_cold_blood) rather than hooked per damage source.
+func _test_cold_blood_hero_damage_destroys_ally() -> void:
+	_buf.append("\n-- Cold Blood: any hero damage to an ally destroys it this turn --")
+	var db := _cold_blood_db()
+
+	# ── Case 1: ability damage. A 1-point frost bolt kills a 0/5.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	_stock_deck(s1, "p1", "tank_def", 3)
+	var tank := _add_ally(s1, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	_add_card_to_hand(s1, "cold", "cold_def", "p1")
+	_add_card_to_hand(s1, "bolt", "bolt_def", "p1")
+
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "cold"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	eq(s1.zones["p1_hand"].card_ids.size(), 2, "cb-a: drew a card (bolt + the drawn one)")
+	eq(s1.players["p1"].cold_blood_from_index, 0, "cb-a2: grant active from the current log index")
+
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt", "target_id": "tank"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	ok(not s1.is_in_play("tank"), "cb-b: 1 damage from the hero destroyed the 0/5 ally")
+	eq(s1.get_card("tank").zone_id, "p2_graveyard", "cb-b2: it went to the graveyard")
+
+	# ── Case 2: combat damage, same trigger, via the conclusion.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	(db._defs["p1_hero"] as CardDef).printed_atk = 1
+	_add_resources(s2, "p1", 4)
+	_stock_deck(s2, "p1", "tank_def", 3)
+	var tank2 := _add_ally(s2, "tank2", "tank_def", "p2")
+	tank2.just_summoned = false
+	_add_card_to_hand(s2, "cold2", "cold_def", "p1")
+
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "cold2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank2"}), db)
+	for _i in 6:
+		StackResolver.pass_priority(s2, db)
+	ok(not s2.is_in_play("tank2"), "cb-c: 1 combat damage from the hero destroyed the ally")
+	(db._defs["p1_hero"] as CardDef).printed_atk = 0
+
+	# ── Gate: without Cold Blood the same bolt just chips the ally.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	var tank3 := _add_ally(s3, "tank3", "tank_def", "p2")
+	tank3.just_summoned = false
+	_add_card_to_hand(s3, "bolt3", "bolt_def", "p1")
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt3", "target_id": "tank3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	ok(s3.is_in_play("tank3"), "cb-d: no Cold Blood -> the ally survives")
+	eq(s3.get_card("tank3").damage_taken, 1, "cb-d2: it just took the 1 damage")
+
+
+# Scope of the trigger: forward-looking, hero-sourced only, and gone next turn.
+func _test_cold_blood_scope_and_expiry() -> void:
+	_buf.append("\n-- Cold Blood: forward-looking, hero-only, expires at turn start --")
+	var db := _cold_blood_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	_stock_deck(st, "p1", "tank_def", 5)
+	var early := _add_ally(st, "early", "tank_def", "p2")
+	var late := _add_ally(st, "late", "tank_def", "p2")
+	var mine := _add_ally(st, "mine", "tank_def", "p1")
+	var pinger := _add_ally(st, "pinger", "pinger_def", "p1")
+	for c in [early, late, mine, pinger]:
+		(c as CardInstance).just_summoned = false
+	_add_card_to_hand(st, "cold", "cold_def", "p1")
+	_add_card_to_hand(st, "bolt", "bolt_def", "p1")
+	_add_card_to_hand(st, "bolt2", "bolt_def", "p1")
+
+	# Damage dealt BEFORE Cold Blood resolves is not retroactively doomed.
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt", "target_id": "early"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("early").damage_taken, 1, "cb-e0: the early ally took 1")
+
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "cold"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(st.is_in_play("early"), "cb-e: damage dealt before Cold Blood doesn't retro-kill")
+
+	# An ALLY's damage is not "your hero deals damage" — the pinger's ping is
+	# sourced from the ally, so the target survives.
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "pinger", "target_id": "late"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("late").damage_taken, 1, "cb-f0: the ping landed")
+	ok(st.is_in_play("late"), "cb-f: ally-sourced damage doesn't trigger Cold Blood")
+
+	# "An ally" is literal — the controller's own ally dies to their own hero too.
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt2", "target_id": "mine"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(not st.is_in_play("mine"), "cb-g: the hero's own ally is destroyed as well")
+
+	# The grant lasts exactly the turn it was gained in.
+	st.phase = "end"
+	TurnManager.advance_phase(st, db)   # end -> next turn (ready)
+	eq(st.players["p1"].cold_blood_from_index, -1, "cb-h: grant cleared at turn start")
+
+
 # Iceblade Hacker (azeroth_328, Weapon—Axe, Melee (1), 2 ATK / strike 2): "When
 # your hero deals combat damage to an ally, that ally can't ready during its
 # controller's next ready step." Same trigger point as Devilsaur Leggings, but
@@ -18916,5 +19178,118 @@ func _has_power_action(ai: BaseAI, state: GameState, db, card_id: String) -> boo
 	for a in ai.get_reasonable_actions(state, db, "p1"):
 		var pa := a as PendingAction
 		if pa.action_type == "use_ally_power" and pa.params.get("card_id", "") == card_id:
+			return true
+	return false
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# "Lowdown" Luppo Shadefizzle (dark_portal_177, 2-cost 2/1 Alliance Gnome Rogue)
+# — Gnome Hero Required; Elusive, Stealth, Untargetable.
+#
+# Pure CSV recipe (requires_hero_race:Gnome + the three keywords). Nothing here
+# is new machinery; what IS new is the three keywords stacked on ONE body, so
+# the test pins the combination: he can neither be chosen as a defender
+# (elusive) nor as a link target (untargetable), and while HE attacks nobody may
+# protect (stealth) — a 2-power evasive body whose only answer is a
+# non-targeting one (AoE, or an attack he chooses to defend).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_lowdown_luppo_shadefizzle() -> void:
+	_buf.append("\n-- \"Lowdown\" Luppo Shadefizzle: elusive + stealth + untargetable --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	var luppo_kw: Array[String] = ["elusive", "stealth", "untargetable"]
+	db.ally("luppo_def", 2, 1, luppo_kw, 2, "requires_hero_race:Gnome")
+	db.ally("plain_def", 2, 2, [], 2)
+	db.ally("guard_def", 2, 4, (["protector"] as Array[String]), 3)
+	db.ability("vanquish_def", 3, "destroy_target:ally")
+	db.instant("quickstrike_def", 2, "deal_damage_to_target:2:melee")
+	db.ability("flamestrike_def", 7, "deal_damage_aoe_opponent:3:fire")
+
+	# ── Elusive + Untargetable on defence (Luppo controlled by p2) ────────────
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 10)
+	_add_ally(state, "luppo", "luppo_def", "p2")
+	_add_ally(state, "plain", "plain_def", "p2")
+	var atk := _add_ally(state, "atk", "plain_def", "p1")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "vq", "vanquish_def", "p1")
+	_add_card_to_hand(state, "qs", "quickstrike_def", "p1")
+
+	var defenders := StackResolver.get_legal_defenders(state, "atk", db)
+	ok("luppo" not in defenders, "luppo-a: elusive — can't be chosen as defender")
+	ok("plain" in defenders, "luppo-b: the plain ally beside him still can")
+
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "vq", "target_id": "luppo"}), db),
+		"luppo-c: untargetable — a destroy ability can't name him")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "qs", "target_id": "luppo"}), db),
+		"luppo-d: untargetable — a damage instant can't name him either")
+
+	# ── AoE is not targeting: it still kills a 1-health Luppo ─────────────────
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 10)
+	_add_ally(state2, "luppo2", "luppo_def", "p2")
+	state2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state2, "fs", "flamestrike_def", "p1")
+	var cast := PendingAction.make("play_ability", "p1", {"card_id": "fs"})
+	ok(StackResolver.can_submit(state2, cast, db), "luppo-e: AoE needs no target — legal")
+	StackResolver.submit_action(state2, cast, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.get_card("luppo2").zone_id, "p2_graveyard",
+		"luppo-f: AoE kills him — untargetable is no shield against it")
+
+	# ── Stealth on offence (Luppo controlled by p1, attacking) ────────────────
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	var luppo3 := _add_ally(state3, "luppo3", "luppo_def", "p1")
+	luppo3.just_summoned = false
+	var plain3 := _add_ally(state3, "plain3", "plain_def", "p1")
+	plain3.just_summoned = false
+	_add_ally(state3, "guard3", "guard_def", "p2")
+
+	ok(StackResolver.get_legal_protectors(state3, "luppo3", "p2_hero", db).is_empty(),
+		"luppo-g: stealth — no protector may step in front of his attack")
+	ok("guard3" in StackResolver.get_legal_protectors(state3, "plain3", "p2_hero", db),
+		"luppo-h: the same protector still answers a non-Stealth attacker")
+
+	# ── Gnome Hero Required (rule 100.2b, deck legality only) ─────────────────
+	db.hero("gnome_hero", 30)
+	db.hero("orc_hero", 30)
+	db.get_def("gnome_hero").tags = "Gnome Rogue"
+	db.get_def("orc_hero").tags   = "Orc Warrior"
+	db.ally("filler_def", 1, 1, [], 1)
+
+	var luppo_entry := DeckCardEntry.new()
+	luppo_entry.card_def_id = "luppo_def"
+	luppo_entry.count       = 4
+	var filler_entry := DeckCardEntry.new()
+	filler_entry.card_def_id = "filler_def"
+	filler_entry.count       = 56
+
+	var legal := DeckDefinition.new()
+	legal.deck_id          = "luppo_gnome"
+	legal.display_name     = "Luppo (Gnome)"
+	legal.hero_card_def_id = "gnome_hero"
+	legal.card_entries     = [luppo_entry, filler_entry]
+	# (The filler entry trips rule 100.4's 4-copy cap — irrelevant here, so this
+	# asserts on the race clause specifically rather than on a zero error count.)
+	ok(not _has_error_containing(DeckManager.authorize_deck_def(legal, db), "Gnome hero"),
+		"luppo-i: no race complaint under a Gnome hero")
+
+	var illegal := DeckDefinition.new()
+	illegal.deck_id          = "luppo_orc"
+	illegal.display_name     = "Luppo (Orc)"
+	illegal.hero_card_def_id = "orc_hero"
+	illegal.card_entries     = [luppo_entry, filler_entry]
+	ok(_has_error_containing(DeckManager.authorize_deck_def(illegal, db), "Gnome hero"),
+		"luppo-j: rejected under a non-Gnome hero (rule 100.2b)")
+
+
+func _has_error_containing(errors: Array, needle: String) -> bool:
+	for e in errors:
+		if needle in str(e):
 			return true
 	return false

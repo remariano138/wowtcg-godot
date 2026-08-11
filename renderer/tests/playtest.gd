@@ -3448,7 +3448,14 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 			_set_status("▼ %s — select the ally that gets %+d ATK this turn  [click the spell to go back]"
 				% [name_str, amt])
 	else:
-		_set_status("⚔ %s — select a target  [Esc to cancel]" % name_str)
+		# Lightning Storm: X clicks, one per point of damage — the prompt counts
+		# "N / X target" (the same ally may be clicked more than once).
+		var div: Array = _router.divided_progress()
+		if int(div[1]) > 0:
+			_set_status("⚡ %s — %d / %d target — click an ally for each point of damage  [Esc to cancel]"
+				% [name_str, int(div[0]) + 1, int(div[1])])
+		else:
+			_set_status("⚔ %s — select a target  [Esc to cancel]" % name_str)
 	_refresh_ui()
 
 

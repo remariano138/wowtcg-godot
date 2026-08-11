@@ -458,6 +458,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 			return false
 		if def and _has_effect_flag_prefix(def, "multi_shot"):
 			if not _can_play_multi_shot(state, action, db): return false
+		elif def and is_divided_damage_def(def):
+			# Lightning Storm: X ally picks (repeats allowed) announced as target_ids.
+			if not _can_play_divided_damage(state, action, db): return false
 		elif def and is_atk_swing_def(def):
 			# Ravenous Bite: two mandatory ally targets announced with the play.
 			if not _can_play_atk_swing(state, action, db): return false
@@ -568,6 +571,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 			return true
 		if def and _has_effect_flag_prefix(def, "chain_lightning"):
 			if not _can_play_chain_lightning(state, action, db): return false
+		elif def and is_divided_damage_def(def):
+			# Lightning Storm: X ally picks (repeats allowed) announced as target_ids.
+			if not _can_play_divided_damage(state, action, db): return false
 		elif def and is_atk_swing_def(def):
 			# Ravenous Bite: two mandatory ally targets announced with the play.
 			if not _can_play_atk_swing(state, action, db): return false
@@ -786,7 +792,7 @@ static func _instant_needs_target(def: CardDef) -> bool:
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
 				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
-				"grant_keyword_target"]:
+				"grant_keyword_target", "divided_damage"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -840,6 +846,10 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 		# Ravenous Bite: BOTH announced targets are allies (parts[1..] are the
 		# signed amounts, not a target kind).
 		if parts[0] == "atk_swing":
+			return true
+		# Lightning Storm: every announced target is an ally (parts[1] is the
+		# literal "X" damage pool, not a target kind).
+		if parts[0] == "divided_damage":
 			return true
 	return false
 
@@ -898,6 +908,57 @@ static func _can_play_damage_and_heal(state: GameState, action: PendingAction, d
 		return false
 	for tid in [dmg_id, heal_id]:
 		if not _is_legal_target(state, tid, db) or not _is_hero_or_ally(state, tid, db):
+			return false
+	return true
+
+
+# ── Lightning Storm (dark_portal_98) — `divided_damage:X:TYPE:ally` ───────────
+# "Your hero deals X nature damage divided as you choose to any number of
+# target allies." (cost "2+X", so the announced X is BOTH the price and the
+# damage pool — see _can_afford_play / GameState.get_play_cost, which already
+# apply Elemental Focus' discount to `cost_base + X`, so a discount lets the
+# player announce a bigger X for the same resources.)
+#
+# The division is announced as `target_ids`: a list of exactly X ally ids in
+# pick order, WITH repeats allowed — one entry per point of damage, which is
+# what makes "divided as you choose" a plain click sequence (X clicks) instead
+# of a bespoke allocation widget. Every entry is a real target (706 —
+# Untargetable allies are excluded, unlike Multi-Shot's select-don't-target
+# exception), and the pool is allies only: heroes are never legal.
+#
+# At resolution the picks are tallied per ally and each distinct target takes
+# ONE packet of its total, in first-pick order (see the `divided_damage` branch
+# of _resolve_play_instant) — so replacement effects and per-damage riders see
+# one 3-damage hit rather than three 1-damage hits.
+static func is_divided_damage_def(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "divided_damage")
+
+
+static func divided_damage_type(def: CardDef) -> String:
+	if not def:
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "divided_damage" and parts.size() > 2:
+			return parts[2].to_lower().strip_edges()
+	return ""
+
+
+# Announced picks must all be legal allies, and there must be exactly X of them
+# (every point of the pool is spent — the card divides X, it doesn't waste it).
+# `_divided_probe` relaxes ONLY the count, for the UI/AI to test one click at a
+# time while the list is still being built; a real submission never carries it.
+static func _can_play_divided_damage(state: GameState, action: PendingAction, db) -> bool:
+	var x := int(action.params.get("x_value", 0))
+	if x < 1:
+		return false
+	var picks: Array = action.params.get("target_ids", [])
+	if picks.is_empty() or picks.size() > x:
+		return false
+	if picks.size() != x and not bool(action.params.get("_divided_probe", false)):
+		return false
+	for tid in picks:
+		if not _is_legal_target(state, tid, db) or not _is_ally(state, tid):
 			return false
 	return true
 
@@ -2207,6 +2268,38 @@ static func _resolve_play_instant(state: GameState,
 							# own destroy check; a target killed by an earlier wave
 							# is skipped at land time (711.1).
 							events.append_array(defer_packets(state, db, cl_packets))
+					"divided_damage":
+						# "Your hero deals X nature damage divided as you choose to
+						# any number of target allies." (Lightning Storm). The X
+						# picks announced in `target_ids` (one per point, repeats
+						# allowed) are tallied per ally and land as ONE packet each,
+						# in first-pick order — so a triple-picked ally takes a
+						# single 3-damage hit, and the replacement effects
+						# (Chromatic Cloak, World in Flames) apply once per target
+						# rather than once per point.
+						# Each target is re-checked on its own (706 / glossary
+						# 4217): killing or bouncing one in response fizzles only
+						# that ally's share, the rest of the division still lands.
+						var dd_type := parts[2].to_lower().strip_edges() if parts.size() > 2 else ""
+						var dd_ps := state.players.get(action.source_player) as PlayerState
+						var dd_hero: String = dd_ps.hero_instance_id if dd_ps else ""
+						if dd_hero != "":
+							var dd_order: Array[String] = []
+							var dd_tally := {}
+							for dd_tid in action.params.get("target_ids", []):
+								if not dd_tally.has(dd_tid):
+									dd_order.append(dd_tid)
+									dd_tally[dd_tid] = 0
+								dd_tally[dd_tid] += 1
+							var dd_packets: Array = []
+							for dd_tid in dd_order:
+								if not _is_legal_target(state, dd_tid, db) \
+										or not _is_ally(state, dd_tid):
+									continue
+								dd_packets.append({"source": dd_hero, "target": dd_tid,
+									"amount": int(dd_tally[dd_tid]), "dmg_type": dd_type,
+									"from_ability": true})
+							events.append_array(defer_packets(state, db, dd_packets))
 					"multi_shot":
 						# "Your hero deals N ranged damage to each of up to three
 						# target heroes and/or allies." (Multi-Shot). Recipe
@@ -2854,6 +2947,31 @@ static func defer_packets(state: GameState, db, packets: Array,
 			or state.pending_prevention_deferred.size() > 1:
 		return []
 	return _open_or_apply_next_group(state, db)
+
+
+# Preview-only (UI): what a hero-sourced damage packet would ACTUALLY deal right
+# now, after the 717-style replacement effects defer_packets applies (Chromatic
+# Cloak's ability +1, Shadowform/Aspect's typed +N, World in Flames' doubling),
+# in the same fixed order. Used by the targeting cursor so the player sees the
+# real number rather than the printed one; the authoritative amount is still
+# computed in defer_packets at resolution.
+static func preview_hero_damage_amount(state: GameState, db, player_id: String,
+		amount: int, dmg_type: String, from_ability: bool) -> int:
+	if amount <= 0 or db == null or state == null:
+		return amount
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return amount
+	var p := {
+		"source": ps.hero_instance_id,
+		"amount": amount,
+		"dmg_type": dmg_type,
+		"from_ability": from_ability,
+	}
+	p["amount"] = _ability_bonus_amount(state, db, p)
+	p["amount"] = _typed_damage_bonus_amount(state, db, p)
+	p["amount"] = _fire_doubled_amount(state, db, p)
+	return int(p["amount"])
 
 
 # World in Flames (azeroth_61): "Ongoing: If your hero would deal fire damage,
@@ -5973,6 +6091,9 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					if amount2 > 0:
 						events.append_array(defer_packets(state, db, [{
 							"source": hero_id, "target": target_id, "amount": amount2,
+							# The printed type must travel with the packet — it is
+							# what Shadowform / World in Flames key off.
+							"dmg_type": parts[1].to_lower().strip_edges() if parts.size() > 1 else "",
 						}]))
 			"deal_x_damage_to_ally":
 				# Format: deal_x_damage_to_ally:DMG_TYPE
@@ -5982,9 +6103,14 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				# hero is preventable with own DEF armor (717.2c).
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and _is_legal_target(state, target_id, db):
+					# Only the OUTGOING packet carries the printed damage type:
+					# the self-damage is the power's cost ("put X damage on her"),
+					# not shadow damage the hero deals, so Shadowform must not
+					# inflate what Dizdemona pays.
 					events.append_array(defer_packets(state, db, [
 						{"source": hero_id, "target": hero_id, "amount": x_value},
-						{"source": hero_id, "target": target_id, "amount": x_value},
+						{"source": hero_id, "target": target_id, "amount": x_value,
+							"dmg_type": parts[1].to_lower().strip_edges() if parts.size() > 1 else ""},
 					]))
 			"target_cant_attack":
 				# Litori Frostburn: "Target hero or ally can't attack this turn."
@@ -6018,6 +6144,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				if x_value >= 1 and _is_legal_target(state, target_id, db):
 					events.append_array(defer_packets(state, db, [{
 						"source": hero_id, "target": target_id, "amount": x_value,
+						"dmg_type": parts[1].to_lower().strip_edges() if parts.size() > 1 else "",
 					}]))
 			"melee_strike_discount":
 				# Gorebelly: "You pay (3) less the next time you strike with a
@@ -6057,6 +6184,7 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				if _is_legal_target(state, target_id, db):
 					events.append_array(defer_packets(state, db, [{
 						"source": hero_id, "target": target_id, "amount": dmg_amount,
+						"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
 					}]))
 	return events
 

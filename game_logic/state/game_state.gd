@@ -626,8 +626,40 @@ func get_play_cost(instance_id: String, db, x: int = 0) -> int:
 	if not def:
 		return 0
 	if def.cost_x:
-		return max(def.cost_base + x + inst.sum_stat("cost"), 0)
-	return max(def.cost + inst.sum_stat("cost"), 0)
+		return _ability_cost_aura(inst, def, max(def.cost_base + x + inst.sum_stat("cost"), 0), db)
+	return _ability_cost_aura(inst, def, max(def.cost + inst.sum_stat("cost"), 0), db)
+
+
+# Elemental Focus: "Ongoing: You pay (1) less to play Elemental abilities, to a
+# minimum of (1)." Recipe `ability_cost_mod_by_tag:TAG:DELTA:FLOOR`, read LIVE
+# off the card controller's hero_row (never cached) — so it covers cards drawn
+# after the aura resolved and lifts the instant the aura leaves play.
+# The floor is on the REDUCTION, not on the cost: a printed-0 or printed-1
+# ability is left alone entirely (the early return), the discount simply can't
+# take a more expensive one below FLOOR. TAG matches the def's type-line tags by
+# substring, the way form_break does ("Elemental Talent" matches "Elemental").
+# Stacks per copy in play.
+func _ability_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
+	if not db or def.card_type != "Ability":
+		return cost
+	var delta := 0
+	var floor_cost := 0
+	for c in cards_in_zone(inst.controller + "_hero_row"):
+		var a_def: CardDef = db.get_def(c.card_def_id)
+		if not a_def:
+			continue
+		for seg in a_def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0] != "ability_cost_mod_by_tag" or p.size() < 4:
+				continue
+			var tag := p[1].strip_edges()
+			if tag == "" or not (tag in def.tags):
+				continue
+			delta += int(p[2])
+			floor_cost = max(floor_cost, int(p[3]))
+	if delta == 0 or cost <= floor_cost:
+		return cost
+	return max(cost + delta, floor_cost)
 
 
 # ── Resource helpers ───────────────────────────────────────────────────────────

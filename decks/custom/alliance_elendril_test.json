@@ -85,8 +85,18 @@
     },
     {
       "card_def_id": "dark_portal_40",
-      "count": 3,
+      "count": 2,
       "_card_name": "Trophy Kill"
+    },
+    {
+      "card_def_id": "azeroth_196",
+      "count": 1,
+      "_card_name": "Lafiel"
+    },
+    {
+      "card_def_id": "dark_portal_173",
+      "count": 1,
+      "_card_name": "Kavai the Wanderer"
     },
     {
       "card_def_id": "azeroth_311",
@@ -120,13 +130,13 @@
     },
     {
       "card_def_id": "azeroth_197",
-      "count": 2,
+      "count": 1,
       "_card_name": "Latro Abiectus"
     },
     {
-      "card_def_id": "azeroth_187",
+      "card_def_id": "azeroth_209",
       "count": 1,
-      "_card_name": "Hannah the Unstoppable"
+      "_card_name": "Moira Darkheart"
     },
     {
       "card_def_id": "dark_portal_179",

@@ -1073,6 +1073,13 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if ms_action:
 					result.append(ms_action)
 				continue
+			if def and StackResolver.is_divided_damage_def(def):
+				# Lightning Storm: X is both the price and the damage pool, so
+				# the AI buys exactly the points it can convert into kills.
+				var dd_action := _divided_damage_action(state, db, player_id, card.instance_id, action_type)
+				if dd_action:
+					result.append(dd_action)
+				continue
 			if def and StackResolver.is_attachment_def(def):
 				# Attachment (rule 400): buff → own ally, debuff → enemy ally.
 				result.append_array(_attach_actions(state, db, player_id, card.instance_id, action_type, def))
@@ -2978,6 +2985,75 @@ func _other_player_id(state: GameState, player_id: String) -> String:
 # Candidate order: allies the shot KILLS first (efficient removal), then the
 # remaining allies (highest HP soak), then the opposing hero. Each candidate is
 # validated with an incremental can_submit probe (announce order enforced).
+# ── Lightning Storm (dark_portal_98) — `divided_damage:X:TYPE:ally` ──────────
+# "Your hero deals X nature damage divided as you choose to any number of
+# target allies", cost "2+X" — so X is BOTH the price and the damage pool, and
+# the AI's whole decision is how many points are worth buying.
+#
+# Policy: buy exactly the points it can convert into DEAD opposing allies, and
+# nothing more. Candidates are the opponent's allies only (never our own, per
+# the CLAUDE.md AI targeting convention; heroes aren't legal targets at all),
+# taken most-valuable-first and skipped when their remaining HP doesn't fit the
+# budget left. If no ally can be killed outright the card is held — spending 2
+# resources plus a card on chip damage spread over a board is the classic way
+# to waste this card, and the X paid for it is gone either way.
+#
+# The announce is one target id per point of damage (repeats allowed), which
+# the engine tallies back into one packet per ally.
+func _divided_damage_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	# Largest X we can pay for right now, asked of get_play_cost one X at a time
+	# so a cost aura (Elemental Focus) buys the extra point it should.
+	var avail := state.get_available_resources(player_id)
+	var max_x := 0
+	for x in range(1, avail + 1):
+		if state.get_play_cost(card_id, db, x) <= avail:
+			max_x = x
+		else:
+			break
+	if max_x < 1:
+		return null
+
+	var opp := _other_player_id(state, player_id)
+	var candidates: Array = []
+	for ally in state.cards_in_zone(opp + "_ally_row"):
+		var hp := state.get_current_hp(ally.instance_id, db)
+		if hp <= 0:
+			continue
+		candidates.append({
+			"id": ally.instance_id, "hp": hp,
+			"value": card_value_score(state, db, ally.instance_id),
+		})
+	if candidates.is_empty():
+		return null
+	candidates.sort_custom(func(a, b): return float(a["value"]) > float(b["value"]))
+
+	var budget := max_x
+	var picks: Array[String] = []
+	for cand in candidates:
+		var hp: int = int(cand["hp"])
+		if hp > budget:
+			continue   # can't finish it off — don't waste points on it
+		budget -= hp
+		for _i in hp:
+			picks.append(cand["id"] as String)
+		if budget <= 0:
+			break
+	if picks.is_empty():
+		return null   # nothing dies — hold the card
+
+	var action := PendingAction.make(action_type, player_id, {
+		"card_id": card_id, "x_value": picks.size(), "target_ids": picks,
+	})
+	if StackResolver.can_submit(state, action, db):
+		return action
+	return null
+
+
 func _multi_shot_action(state: GameState, db, player_id: String,
 		card_id: String, action_type: String) -> PendingAction:
 	var card := state.get_card(card_id)

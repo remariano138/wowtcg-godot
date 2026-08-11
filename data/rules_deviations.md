@@ -698,3 +698,30 @@ damaged ally SURVIVES the hit. It fires in BOTH combat roles, since the text say
 defender, and Brigg defending and retaliating onto a damaged attacking ally.
 Enforcement site: `StackResolver._fire_combat_dmg_destroys_damaged_ally` in
 `game_logic/stack_resolver.gd`.
+
+---
+
+## Lightning Storm — "any number of target allies" means at least one
+
+Card: Lightning Storm (`dark_portal_98`), 2+X, Ability — Elemental.
+Printed text: "Your hero deals X nature damage divided as you choose to any
+number of target allies."
+
+**Deviation:** "any number" literally includes ZERO, so the printed card can be
+cast with no targets at all (paying 2+X to do nothing). The engine refuses that
+cast: `_can_play_divided_damage` requires at least one announced target, and the
+highlight probe (`_targeted_play_has_legal_target`, via the ally-only branch)
+goes dark when no legal ally is in play, so the card is unplayable on an empty
+board. The engine also requires the announce to spend EVERY point of the
+announced X — the player can't buy X=5 and assign only 3 — since X is chosen
+freely at announcement and under-assigning is only ever a way to overpay.
+
+**Why:** the only reachable difference is a strictly self-harming line of play
+(burning a card and resources for no effect), and allowing it would mean the
+targeting UI has to offer a "cast at nothing" exit from a flow whose entire
+shape is "click once per point of damage".
+
+**Consequences:** with no ally on either board Lightning Storm can't be played
+at all; a player who wants to dump resources must do it some other way.
+Enforcement site: `StackResolver._can_play_divided_damage` in
+`game_logic/stack_resolver.gd`.

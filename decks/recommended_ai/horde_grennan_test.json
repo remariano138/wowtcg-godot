@@ -45,13 +45,13 @@
     },
     {
       "card_def_id": "azeroth_114",
-      "count": 1,
+      "count": 2,
       "_card_name": "Purge"
     },
     {
-      "card_def_id": "azeroth_248",
+      "card_def_id": "azeroth_108",
       "count": 1,
-      "_card_name": "Ka'tali Stonetusk"
+      "_card_name": "Elemental Focus"
     },
     {
       "card_def_id": "azeroth_328",
@@ -74,11 +74,6 @@
       "_card_name": "Into the Fray"
     },
     {
-      "card_def_id": "azeroth_260",
-      "count": 1,
-      "_card_name": "Taz'dingo"
-    },
-    {
       "card_def_id": "dark_portal_210",
       "count": 1,
       "_card_name": "Ghank"
@@ -89,9 +84,9 @@
       "_card_name": "Bala Silentblade"
     },
     {
-      "card_def_id": "azeroth_242",
+      "card_def_id": "dark_portal_98",
       "count": 1,
-      "_card_name": "Hierophant Caydiem"
+      "_card_name": "Lightning Storm"
     },
     {
       "card_def_id": "dark_portal_137",

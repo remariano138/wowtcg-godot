@@ -107,6 +107,10 @@ var _targeting_first_target: String = ""  # "" = first pick pending; non-empty =
 # Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
 # The player can stop after 1 or 2 picks via pass_priority_action() (Space / pass button).
 var _chain_lightning_picked: Array[String] = []
+# Lightning Storm: one entry per point of the announced X, in click order —
+# repeats allowed (the same ally may be clicked several times). See
+# _handle_divided_click.
+var _divided_picked: Array[String] = []
 # Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
 var _targeting_x_value: int = 0
 # Modal spell (707.1c): card awaiting its mode choice ("" = none), and the mode
@@ -294,9 +298,7 @@ func handle_card_click(instance_id: String) -> void:
 			and (_ability_needs_target(instance_id) if action_type == "play_ability"
 				else _instant_needs_target(instance_id)):
 		_targeting_source = instance_id
-		var max_x := state.get_available_resources(local_player) \
-			- state.get_play_cost(instance_id, db, 0)
-		x_select_requested.emit(instance_id, max_x)
+		x_select_requested.emit(instance_id, _max_affordable_x(instance_id))
 		return
 	# Ancestral Spirit: the target is an ally card in your graveyard — open the
 	# graveyard browser instead of board targeting.
@@ -768,6 +770,9 @@ func start_targeting(source_id: String, action_type: String,
 	_targeting_source      = source_id
 	_targeting_action_type = action_type
 	_targeting_dmg_type    = dmg_type
+	# Lightning Storm's click list belongs to one cast — a fresh targeting flow
+	# always starts from zero points assigned.
+	_divided_picked        = []
 	refresh_highlights()
 	targeting_started.emit(source_id, dmg_type, dmg_amount)
 
@@ -884,6 +889,7 @@ func cancel_targeting() -> void:
 	_targeting_x_value      = 0
 	_targeting_mode         = -1
 	_chain_lightning_picked = []
+	_divided_picked         = []
 	refresh_highlights()
 	targeting_cancelled.emit()
 
@@ -940,7 +946,7 @@ func choose_modal_mode(mode_index: int) -> void:
 	match parts[0]:
 		"deal_damage_to_target":
 			dmg_type = parts[2].to_lower() if parts.size() > 2 else ""
-			amount   = int(parts[1]) if parts.size() > 1 else 0
+			amount   = _preview_dmg(int(parts[1]) if parts.size() > 1 else 0, dmg_type, true)
 		"heal_target":
 			dmg_type = "heal"
 			amount   = int(parts[1]) if parts.size() > 1 else 0
@@ -1049,6 +1055,10 @@ func _handle_ability_targeting_click(instance_id: String) -> void:
 	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
 		return
+	# Lightning Storm: one click per point of X (see _handle_divided_click).
+	if _is_divided_damage(_targeting_source):
+		_handle_divided_click(instance_id)
+		return
 	var action := PendingAction.make("play_ability", local_player,
 		_instant_params(_targeting_source, instance_id))
 	if StackResolver.can_submit(state, action, db):
@@ -1137,9 +1147,89 @@ func _submit_chain_lightning() -> void:
 	refresh_highlights()
 
 
+# ── Lightning Storm (dark_portal_98) — X clicks, one per point of damage ──────
+#
+# The X is picked first (the shared X-select dialog, since the card costs
+# "2+X"), then the player clicks an ally once per point: X clicks total, the
+# SAME ally may be clicked repeatedly, and the status line counts "N / X
+# target". Nothing is submitted until the last point is assigned — Esc (or
+# clicking the spell) cancels the whole cast, since no cost has been paid yet.
+
+func _is_divided_damage(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.is_divided_damage_def(def)
+
+
+# [points assigned so far, total X] for the current divided-damage cast, so the
+# scene can render the "N / X target" prompt. [0, 0] when none is in progress.
+func divided_progress() -> Array:
+	if _targeting_source == "" or not _is_divided_damage(_targeting_source):
+		return [0, 0]
+	return [_divided_picked.size(), _targeting_x_value]
+
+
+# Probe/submission params. `_divided_probe` relaxes the "exactly X picks" rule
+# in StackResolver._can_play_divided_damage so a partial list can be tested one
+# click at a time; it is never set on the real submission.
+func _divided_params(extra_target_id: String = "", probe := false) -> Dictionary:
+	var picks: Array[String] = _divided_picked.duplicate()
+	if extra_target_id != "":
+		picks.append(extra_target_id)
+	var params := {
+		"card_id":   _targeting_source,
+		"x_value":   _targeting_x_value,
+		"target_ids": picks,
+	}
+	if probe:
+		params["_divided_probe"] = true
+	return params
+
+
+func _handle_divided_click(instance_id: String) -> void:
+	if instance_id == _targeting_source:
+		cancel_targeting()
+		return
+	if _divided_picked.size() >= _targeting_x_value:
+		return
+	var probe := PendingAction.make(_action_type_for(_targeting_source), local_player,
+		_divided_params(instance_id, true))
+	if not StackResolver.can_submit(state, probe, db):
+		return
+	_divided_picked.append(instance_id)
+	if _divided_picked.size() >= _targeting_x_value:
+		_submit_divided()
+		return
+	# Re-emit to refresh the "N / X target" prompt and the cursor's remaining
+	# point count; every legal ally stays legal (repeats are allowed).
+	targeting_started.emit(_targeting_source, _targeting_dmg_type,
+		_targeting_x_value - _divided_picked.size())
+	refresh_highlights()
+
+
+func _submit_divided() -> void:
+	var action := PendingAction.make(_action_type_for(_targeting_source), local_player,
+		_divided_params())
+	_targeting_source  = ""
+	_divided_picked    = []
+	_targeting_x_value = 0
+	targeting_cancelled.emit()
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
+
+
 func _handle_instant_targeting_click(instance_id: String) -> void:
 	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
+		return
+	if _is_divided_damage(_targeting_source):
+		_handle_divided_click(instance_id)
 		return
 	# Ravenous Bite: phase 1 picks the +ATK ally, phase 2 the -ATK ally.
 	if _is_atk_swing(_targeting_source) and _targeting_first_target == "":
@@ -2083,6 +2173,10 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 func _get_ability_targets(card_id: String) -> Array:
 	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
+	# Lightning Storm: every legal ally stays offered for every one of the X
+	# clicks (the same ally may take several points).
+	if _is_divided_damage(card_id):
+		return _get_divided_targets(card_id)
 	# Burn Away / Shattering Blow: targets are in-play ability / equipment
 	# cards (hero rows, totems, attachments), not heroes and allies.
 	var kind := _destroy_kind(card_id)
@@ -2138,9 +2232,26 @@ func _get_chain_lightning_targets(card_id: String) -> Array:
 	return result
 
 
+# Remaining legal allies for the current Lightning Storm click. Unlike Chain
+# Lightning nothing drops out as picks accumulate — repeats are the point — so
+# this is just "every ally the announce would accept as the next point".
+func _get_divided_targets(card_id: String) -> Array:
+	var result: Array = []
+	var atype := _action_type_for(card_id)
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var probe := PendingAction.make(atype, local_player,
+				_divided_params(card.instance_id, true))
+			if StackResolver.can_submit(state, probe, db):
+				result.append(card.instance_id)
+	return result
+
+
 func _get_instant_targets(card_id: String) -> Array:
 	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
+	if _is_divided_damage(card_id):
+		return _get_divided_targets(card_id)
 	var kind := _destroy_kind(card_id)
 	if kind in ["ability", "equipment"]:
 		return _get_destroy_kind_targets(card_id, "play_instant", kind)
@@ -2262,6 +2373,25 @@ func _is_atk_swing(card_id: String) -> bool:
 	return StackResolver.is_atk_swing_def(def)
 
 
+# Largest X the player can announce for an X-cost hand card right now. Asked of
+# get_play_cost one X at a time rather than derived arithmetically, so any
+# cost aura it applies is honoured exactly — Elemental Focus' "(1) less, to a
+# minimum of (1)" makes Lightning Storm's total `2 + X - 1`, and the player
+# should be offered the extra point of damage that discount buys, not the X
+# the printed cost would allow.
+func _max_affordable_x(card_id: String) -> int:
+	if not state or not db:
+		return 0
+	var avail := state.get_available_resources(local_player)
+	var best := 0
+	for x in range(1, avail + 1):
+		if state.get_play_cost(card_id, db, x) <= avail:
+			best = x
+		else:
+			break
+	return best
+
+
 func _card_cost_x(card_id: String) -> bool:
 	if not db:
 		return false
@@ -2349,6 +2479,11 @@ func _card_dmg_type(card_id: String) -> String:
 			"multi_shot":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 2: return parts[2].to_lower()
+			# Lightning Storm (divided_damage:X:TYPE:ally) — parts[1] is the
+			# literal "X", the type is the third field.
+			"divided_damage":
+				var parts := entry.strip_edges().split(":")
+				if parts.size() > 2: return parts[2].to_lower()
 			"heal_target": return "heal"
 	return ""
 
@@ -2364,10 +2499,10 @@ func _chain_lightning_amount_for(card_id: String, picked_count: int) -> int:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0].strip_edges() == "chain_lightning" and parts.size() > 1 + picked_count:
-			return int(parts[1 + picked_count])
+			return _preview_dmg(int(parts[1 + picked_count]), _card_dmg_type(card_id), true)
 		# Multi-Shot deals the same amount to every target (recipe multi_shot:N:TYPE).
 		if parts[0].strip_edges() == "multi_shot" and parts.size() > 1:
-			return int(parts[1])
+			return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
 	return 0
 
 
@@ -2383,12 +2518,27 @@ func _card_dmg_amount(card_id: String) -> int:
 		var parts := entry.strip_edges().split(":")
 		match parts[0].strip_edges():
 			"deal_damage_to_target", "attach_deal_damage", "deal_damage_and_heal":
-				if parts.size() > 1: return int(parts[1])
+				if parts.size() > 1:
+					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
 			"chain_lightning":
-				if parts.size() > 1: return int(parts[1])
+				if parts.size() > 1:
+					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
 			"multi_shot":
-				if parts.size() > 1: return int(parts[1])
+				if parts.size() > 1:
+					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
 	return 0
+
+
+# The targeting cursor should show what the effect will ACTUALLY deal, not the
+# printed number: hero-sourced damage passes through the 717-style replacement
+# effects (Chromatic Cloak, Shadowform / Aspect of the Hawk, World in Flames) as
+# it enters the packet pipeline. Mirrors StackResolver.defer_packets — see
+# StackResolver.preview_hero_damage_amount.
+func _preview_dmg(amount: int, dmg_type: String, from_ability: bool) -> int:
+	if amount <= 0 or dmg_type in ["", "heal", "destroy"]:
+		return amount
+	return StackResolver.preview_hero_damage_amount(state, db, local_player,
+		amount, dmg_type, from_ability)
 
 
 func _hero_power_dmg_amount(hero_id: String) -> int:
@@ -2400,7 +2550,9 @@ func _hero_power_dmg_amount(hero_id: String) -> int:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["deal_damage_to_target", "deal_damage_and_heal"] and parts.size() > 1:
-			return int(parts[1])
+			# Hero POWERS are not abilities — Chromatic Cloak doesn't apply, but
+			# the typed bonuses / fire doubling do.
+			return _preview_dmg(int(parts[1]), _hero_power_dmg_type(hero_id), false)
 	return 0
 
 
@@ -2585,11 +2737,18 @@ func confirm_x_value(x_value: int) -> void:
 	var src_card := state.get_card(_targeting_source)
 	var src_zone := state.zones.get(src_card.zone_id) as Zone if src_card else null
 	if src_zone and src_zone.zone_type == "hand":
+		var x_dmg_type := _card_dmg_type(_targeting_source)
+		# Lightning Storm divides X over several packets, so the cursor counts
+		# the points still to assign (raw) rather than previewing a single
+		# packet through the replacement effects.
+		var x_cursor := x_value if _is_divided_damage(_targeting_source) \
+			else _preview_dmg(x_value, x_dmg_type, true)
 		start_targeting(_targeting_source, _action_type_for(_targeting_source),
-			_card_dmg_type(_targeting_source), x_value)
+			x_dmg_type, x_cursor)
 		return
 	var dmg_type := "heal" if _is_heal_x_power(_targeting_source) else "shadow"
-	start_targeting(_targeting_source, "activate_power_x", dmg_type, x_value)
+	start_targeting(_targeting_source, "activate_power_x", dmg_type,
+		_preview_dmg(x_value, dmg_type, false))
 
 
 # Returns valid targets for an X-value hero power (damage or heal).

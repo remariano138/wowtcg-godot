@@ -202,6 +202,9 @@ func _ready() -> void:
 		_test_weapon_attack_strike,
 		_test_weapon_defend_strike,
 		_test_margaret_fowl_strike_cost_aura,
+		_test_elemental_focus_cost_aura,
+		_test_lightning_storm_divided_damage,
+		_test_lightning_storm_targets_focus_and_ai,
 		_test_devilsaur_leggings,
 		_test_iceblade_hacker,
 		_test_bone_bow_grants_long_range,
@@ -295,6 +298,7 @@ func _ready() -> void:
 		_test_ai_shadow_word_pain_targets_hero_only,
 		_test_shadowform_shadow_bonus,
 		_test_shadowform_holy_break,
+		_test_hero_power_damage_is_typed,
 		_test_aspect_of_the_hawk,
 		_test_aspect_slot_independent_of_form,
 		_test_ai_develops_ongoing_abilities_first,
@@ -971,7 +975,7 @@ class MockDB extends RefCounted:
 		d.card_type      = "Quest"
 		_defs[def_id] = d
 
-	func instant(def_id: String, cost: int, effects: String) -> void:
+	func instant(def_id: String, cost: int, effects: String, tags: String = "") -> void:
 		var d := CardDef.new()
 		d.card_def_id    = def_id
 		d.card_name      = def_id
@@ -979,10 +983,11 @@ class MockDB extends RefCounted:
 		d.card_type      = "Ability"
 		d.is_instant     = true
 		d.effects        = effects
+		d.tags           = tags
 		_defs[def_id] = d
 
 	# Non-instant ability, action-phase timing (e.g. Vanquish-speed or ongoing).
-	func ability(def_id: String, cost: int, effects: String) -> void:
+	func ability(def_id: String, cost: int, effects: String, tags: String = "") -> void:
 		var d := CardDef.new()
 		d.card_def_id    = def_id
 		d.card_name      = def_id
@@ -990,6 +995,7 @@ class MockDB extends RefCounted:
 		d.card_type      = "Ability"
 		d.is_instant     = false
 		d.effects        = effects
+		d.tags           = tags
 		_defs[def_id] = d
 
 	# Totem (rule 305.3): an Instant Ability that enters play as an ability ally
@@ -11185,6 +11191,223 @@ func _test_ai_elendril_flip_for_lethal() -> void:
 
 # Margaret Fowl (dark_portal_179): "You pay 1 less to strike with weapons.
 # Opponents pay 1 more to strike with weapons." Live aura on get_strike_cost.
+# Elemental Focus (azeroth_108): "Ongoing: You pay (1) less to play Elemental
+# abilities, to a minimum of (1)." The floor is on the REDUCTION — a printed-0 or
+# printed-1 Elemental ability is unaffected, not raised.
+# Lightning Storm (dark_portal_98, "2+X", Ability — Elemental): "Your hero
+# deals X nature damage divided as you choose to any number of target allies."
+# The division is announced as `target_ids` — one entry per point, repeats
+# allowed — and resolves as ONE packet per distinct ally, in first-pick order.
+func _storm_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("storm_def", 0, "divided_damage:X:nature:ally", "Elemental")
+	var sd := db._defs["storm_def"] as CardDef
+	sd.cost = -1
+	sd.cost_x = true
+	sd.cost_base = 2
+	db.ability("azeroth_108", 2, "ongoing|ability_cost_mod_by_tag:Elemental:-1:1",
+		"Elemental Talent")
+	db.ally("grunt_def", 2, 3, [], 3)
+	db.ally("frail_def", 1, 1, [], 1)
+	db.ally("hidden_def", 2, 3, (["untargetable"] as Array[String]), 3)
+	return db
+
+
+func _test_lightning_storm_divided_damage() -> void:
+	_buf.append("\n-- Lightning Storm: X divided over target allies --")
+	var db := _storm_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 8)
+	var a := _add_ally(st, "sa", "grunt_def", "p2")
+	var b := _add_ally(st, "sb", "grunt_def", "p2")
+	a.just_summoned = false
+	b.just_summoned = false
+	_add_card_to_hand(st, "storm", "storm_def", "p1")
+
+	# ls-a: X must be announced, and every point must be assigned.
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "target_ids": ["sa"]}), db),
+		"ls-a: no announced X — rejected")
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "x_value": 3, "target_ids": ["sa", "sb"]}), db),
+		"ls-a2: fewer picks than X — rejected")
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "x_value": 2, "target_ids": ["sa", "sa", "sb"]}), db),
+		"ls-a3: more picks than X — rejected")
+	# Heroes are not legal targets ("any number of target ALLIES").
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "x_value": 1, "target_ids": ["p2_hero"]}), db),
+		"ls-a4: the hero is not a legal target")
+	# 2+X: X=7 costs 9 with 8 available.
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "x_value": 7,
+		 "target_ids": ["sa", "sa", "sa", "sa", "sa", "sa", "sa"]}), db),
+		"ls-a5: unaffordable X — rejected")
+
+	# ls-b: X=4 split 3/1 — cost 2+4 paid at submission, damage tallied per ally.
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "x_value": 4, "target_ids": ["sa", "sa", "sa", "sb"]}), db)
+	eq(st.get_available_resources("p1"), 2, "ls-b: paid 2+X at submission")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(st.get_card("sa") == null or st.get_card("sa").zone_id == "p2_graveyard",
+		"ls-b2: the triple-picked 3-HP ally died")
+	eq(st.get_card("sb").damage_taken, 1, "ls-b3: the single-picked ally took 1")
+	ok("storm" in st.zones["p1_graveyard"].card_ids, "ls-b4: card resolved to graveyard")
+
+
+func _test_lightning_storm_targets_focus_and_ai() -> void:
+	_buf.append("\n-- Lightning Storm: 706, Elemental Focus, AI division --")
+	var db := _storm_db()
+
+	# ls-c: Untargetable allies are excluded (706 — no Multi-Shot exception).
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 8)
+	_add_ally(st, "hid", "hidden_def", "p2")
+	_add_card_to_hand(st, "storm", "storm_def", "p1")
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm", "x_value": 1, "target_ids": ["hid"]}), db),
+		"ls-c: Untargetable ally is not a legal pick")
+
+	# ls-d: a target that left play before resolution fizzles ITS share only —
+	# the rest of the division still lands (706 / glossary 4217).
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 8)
+	var g1 := _add_ally(st2, "g1", "grunt_def", "p2")
+	var g2 := _add_ally(st2, "g2", "grunt_def", "p2")
+	g1.just_summoned = false
+	g2.just_summoned = false
+	_add_card_to_hand(st2, "storm2", "storm_def", "p1")
+	StackResolver.submit_action(st2, PendingAction.make("play_ability", "p1",
+		{"card_id": "storm2", "x_value": 3, "target_ids": ["g1", "g1", "g2"]}), db)
+	GameLogic.move_card(st2, "g1", "p2_graveyard")   # g1 leaves play in response
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	eq(st2.get_card("g2").damage_taken, 1, "ls-d: the surviving target still took its point")
+
+	# ls-e: Elemental Focus' discount buys a BIGGER X for the same resources —
+	# 2+X-1, so 8 resources reach X=7 instead of X=6.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 8)
+	_add_card_to_hand(st3, "storm3", "storm_def", "p1")
+	eq(st3.get_play_cost("storm3", db, 6), 8, "ls-e: X=6 costs 8 without the aura")
+	var ef := CardInstance.create("ef", "azeroth_108", "p1", "p1_hero_row")
+	st3.cards["ef"] = ef
+	st3.zones["p1_hero_row"].card_ids.append("ef")
+	eq(st3.get_play_cost("storm3", db, 6), 7, "ls-e2: X=6 costs 7 with the aura")
+	eq(st3.get_play_cost("storm3", db, 7), 8, "ls-e3: X=7 is now affordable")
+
+	# ls-f: AI buys exactly the points it can convert into kills (3-HP grunt +
+	# 1-HP frail = X 4), assigning one entry per point.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 8)
+	var ag := _add_ally(st4, "ag", "grunt_def", "p2")
+	var af := _add_ally(st4, "af", "frail_def", "p2")
+	ag.just_summoned = false
+	af.just_summoned = false
+	_add_card_to_hand(st4, "storm4", "storm_def", "p1")
+	var ai := BaseAI.new()
+	var storm_act: PendingAction = null
+	for act in ai.get_reasonable_actions(st4, db, "p1"):
+		if act.params.get("card_id", "") == "storm4":
+			storm_act = act
+	ok(storm_act != null, "ls-f: AI offers Lightning Storm")
+	if storm_act:
+		var picks: Array = storm_act.params.get("target_ids", [])
+		eq(int(storm_act.params.get("x_value", 0)), 4, "ls-f2: AI buys X = 4 (both kills)")
+		eq(picks.count("ag"), 3, "ls-f3: 3 points on the 3-HP grunt")
+		eq(picks.count("af"), 1, "ls-f4: 1 point on the 1-HP ally")
+
+	# ls-g: nothing killable → the card is held rather than chipped away.
+	var st5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st5, "p1", 4)   # X can reach 2 — not enough for a 3-HP ally
+	var tough := _add_ally(st5, "tough", "grunt_def", "p2")
+	tough.just_summoned = false
+	_add_card_to_hand(st5, "storm5", "storm_def", "p1")
+	var ai2 := BaseAI.new()
+	var offered := false
+	for act in ai2.get_reasonable_actions(st5, db, "p1"):
+		if act.params.get("card_id", "") == "storm5":
+			offered = true
+	ok(not offered, "ls-g: no kill available — AI holds the card")
+
+
+func _test_elemental_focus_cost_aura() -> void:
+	_buf.append("\n-- Elemental Focus: Elemental ability cost aura --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_108", 2, "ongoing|ability_cost_mod_by_tag:Elemental:-1:1",
+		"Elemental Talent")
+	db.ability("purge_def", 3, "destroy_target:ability", "Elemental")
+	db.instant("shock_def", 2, "deal_damage_to_target:2:frost", "Elemental")
+	db.ability("free_def", 0, "draw:1", "Elemental")
+	db.ability("one_def", 1, "draw:1", "Elemental")
+	db.ability("holy_def", 3, "draw:1", "Holy")
+	db.ally("ele_ally_def", 2, 2, [], 3)
+	(db._defs["ele_ally_def"] as CardDef).tags = "Elemental"
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "ef", "azeroth_108", "p1")
+	_add_card_to_hand(state, "ef2", "azeroth_108", "p1")
+	_add_card_to_hand(state, "purge", "purge_def", "p1")
+	_add_card_to_hand(state, "shock", "shock_def", "p1")
+	_add_card_to_hand(state, "free", "free_def", "p1")
+	_add_card_to_hand(state, "one", "one_def", "p1")
+	_add_card_to_hand(state, "holy", "holy_def", "p1")
+	_add_card_to_hand(state, "ele_ally", "ele_ally_def", "p1")
+	_add_card_to_hand(state, "opp_purge", "purge_def", "p2")
+	_add_resources(state, "p1", 25)
+	_add_resources(state, "p2", 25)
+
+	# ef-a: no aura in play -> printed costs.
+	eq(state.get_play_cost("purge", db), 3, "ef-a: printed cost without the aura")
+	eq(state.get_play_cost("ef", db), 2, "ef-a2: Elemental Focus itself costs 2")
+
+	# ef-b: resolve Elemental Focus (an ongoing Ability -> hero row).
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "ef"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("ef").zone_id, "p1_hero_row", "ef-b: Elemental Focus is in play")
+
+	eq(state.get_play_cost("purge", db), 2, "ef-c: Elemental ability 3 -> 2")
+	eq(state.get_play_cost("shock", db), 1, "ef-c2: Elemental instant 2 -> 1")
+	eq(state.get_play_cost("holy", db), 3, "ef-c3: non-Elemental ability unchanged")
+	eq(state.get_play_cost("ele_ally", db), 3, "ef-c4: Elemental ALLY unchanged (abilities only)")
+	# The floor is on the reduction: cheap abilities are left exactly as printed.
+	eq(state.get_play_cost("one", db), 1, "ef-c5: printed 1 stays 1")
+	eq(state.get_play_cost("free", db), 0, "ef-c6: printed 0 stays 0 (not raised)")
+	# Elemental Focus's own type line is "Elemental Talent", so a second copy is
+	# discounted by the first.
+	eq(state.get_play_cost("ef2", db), 1, "ef-c7: second copy costs 1")
+	# "You pay" — the opponent's Elemental abilities are untouched.
+	eq(state.get_play_cost("opp_purge", db), 3, "ef-c8: opponent unaffected")
+
+	# ef-d: the discount is what the player actually PAYS.
+	var before := state.get_available_resources("p1")
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "purge", "target_id": "ef"}), db)
+	eq(before - state.get_available_resources("p1"), 2, "ef-d: paid 2, not 3")
+	StackResolver.retract_last(state, "p1", db)
+	eq(state.get_available_resources("p1"), before, "ef-d2: retraction refunds 2")
+
+	# ef-e: stacks per copy, still floored at 1.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "ef2"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_play_cost("purge", db), 1, "ef-e: two copies -> 3 becomes 1")
+	eq(state.get_play_cost("shock", db), 1, "ef-e2: 2-cost floors at 1, never 0")
+
+	# ef-f: read live — the discount lifts the moment the aura leaves play.
+	GameLogic.destroy_card(state, "ef")
+	GameLogic.destroy_card(state, "ef2")
+	eq(state.get_play_cost("purge", db), 3, "ef-f: aura gone -> printed cost")
+
+
 func _test_margaret_fowl_strike_cost_aura() -> void:
 	_buf.append("\n-- Margaret Fowl: strike-cost aura --")
 	var db := MockDB.new()
@@ -15210,6 +15433,54 @@ func _test_shadowform_shadow_bonus() -> void:
 	eq(StackResolver._typed_damage_bonus_amount(state, db,
 		{"source": "p1_hero", "amount": 2, "dmg_type": "shadow"}), 2,
 		"sf-g: bonus gone once Shadowform leaves play")
+
+
+# Hero POWERS are not abilities (no Chromatic Cloak bonus), but they DO carry a
+# printed damage type — so the typed replacement auras apply to them. Every
+# hero-power packet site must pass its dmg_type along or the aura silently
+# can't see it (Omedus's burn was landing untyped).
+func _test_hero_power_damage_is_typed() -> void:
+	_buf.append("\n-- Hero powers carry their printed damage type (Shadowform boosts them) --")
+	var db := MockDB.new()
+	db.hero("omedus_def", 26, 3, "deal_7_minus_hand_to_hero:shadow")
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_88", 3, SHADOWFORM_FX)
+	(db._defs["azeroth_88"] as CardDef).tags = "Shadow Talent"
+
+	var state := _base_state(db, "omedus_def", "p2_hero")
+	_add_form_in_play(state, "sf", "azeroth_88", "p1")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Opponent's hand is empty → 7 damage printed, 8 under Shadowform.
+	StackResolver.submit_action(state, PendingAction.make("activate_power", "p1",
+		{"hero_id": "omedus_def", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 8,
+		"hpt-a: Omedus's 7 shadow became 8 under Shadowform")
+
+	# Dizdemona: the self-damage is the power's COST, not shadow damage her hero
+	# deals — only the outgoing packet is boosted.
+	var db2 := MockDB.new()
+	db2.hero("diz_def", 28, 3, "deal_x_damage_to_ally:shadow")
+	db2.hero("p2_hero", 30)
+	db2.ally("chump_def", 1, 9, [], 1)
+	db2.ability("azeroth_88", 3, SHADOWFORM_FX)
+	(db2._defs["azeroth_88"] as CardDef).tags = "Shadow Talent"
+
+	var st2 := _base_state(db2, "diz_def", "p2_hero")
+	_add_form_in_play(st2, "sf2", "azeroth_88", "p1")
+	_add_ally(st2, "chump", "chump_def", "p2")
+	_add_resources(st2, "p1", 8)
+	st2.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(st2, PendingAction.make("activate_power", "p1",
+		{"hero_id": "diz_def", "target_id": "chump", "x_value": 3}), db2)
+	StackResolver.pass_priority(st2, db2)
+	StackResolver.pass_priority(st2, db2)
+	eq(st2.get_card("chump").damage_taken, 4, "hpt-b: X=3 shadow became 4 on the target")
+	eq(st2.get_card("diz_def").damage_taken, 3, "hpt-c: the self-cost stays 3, not boosted")
 
 
 const HAWK_FX := "ongoing|aspect:1|hero_damage_bonus_by_type:ranged:1"

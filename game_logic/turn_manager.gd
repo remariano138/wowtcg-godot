@@ -124,6 +124,9 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			# grant likewise — and its index would be meaningless anyway once
 			# turn_events is cleared above.
 			p.cold_blood_from_index = -1
+			# Operation Recombobulation's "when an opposing non-token ally is
+			# destroyed this turn" grant — same shape, same reason.
+			p.recomb_from_index = -1
 			# Nature's Swiftness' "next card this turn" discount likewise — an
 			# unused discount expires with the turn it was gained in.
 			p.next_card_cost_mod = 0

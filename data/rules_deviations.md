@@ -809,3 +809,37 @@ two passes — the original turn-player-scoped one for "at the end of YOUR turn"
 each-player end triggers belong in `_apply_each_turn_end_effects`, not the
 turn-player one. Enforcement sites: `TurnManager._apply_each_turn_end_effects`
 and the `damage_dealt` record in `GameLogic.deal_damage`.
+
+---
+
+## Operation Recombobulation — reward trigger resolved immediately, not on the chain
+
+**Card:** Operation Recombobulation (`dark_portal_292`, Quest, Alliance, Gnome
+Hero Required). Printed text: "Pay (4) to complete this quest. Reward: When an
+opposing non-token ally is destroyed this turn, you may put an ally card from
+your graveyard into your hand." Recipe flag
+`recursion_on_opposing_ally_death:1`.
+
+**Deviation:** by the rules the reward's watcher is a triggered ability (703)
+that should be ADDED TO THE CHAIN each time a qualifying ally dies, respondable
+before it resolves. The engine instead opens it as a direct-call optional choice
+(`pending_recomb_queue` + `pending_recomb_player`, resolved via
+`choose_recombobulation`; `""` declines) at the moment of destruction — the same
+immediate-resolution pattern as Boneshanks' death trigger, and for the same
+reason: there is no generic chain-based triggered-effect machinery. Nothing is
+lost in practice, since the effect takes no target in play and moving a card out
+of a graveyard cannot be responded to meaningfully.
+
+**Multiple deaths in one event** (an AoE clearing the opposing board, or a
+combat where both allies die) queue one choice each and are answered
+front-first, one browser at a time.
+
+**Hotseat:** prompted for a human completer even off-seat, routed
+`_route_choice(player, "public")` — a graveyard is open information, so no hand
+hiding and no handoff.
+
+**Why:** see Boneshanks. Enforcement sites: `StackResolver._fire_recombobulation`
+/ `_open_next_recomb` / `choose_recombobulation` in
+`game_logic/stack_resolver.gd`, fed by the `ally_destroyed` turn-log entry
+recorded in `GameLogic.check_destroyed` / `destroy_card` (see
+`game_logic/turn_state_flags.md`).

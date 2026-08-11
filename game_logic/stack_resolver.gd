@@ -53,6 +53,20 @@ static func submit_action(state: GameState, action: PendingAction,
 					action.params["_next_card_cost_mod"] = ncd_spent
 					events.append(GameEvent.next_card_discount_spent(
 						action.source_player, card_id, ncd_spent))
+				# Sever the Cord: "As an additional cost to play [this], destroy an
+				# ally in your party." Paid HERE, on chain entry (412.2) — not at
+				# resolution like the activated-power sacrifice_ally cost. The
+				# opponent may still answer the link (bounce or kill the target),
+				# and the sacrifice has been spent for nothing; that asymmetry is
+				# the card. Because a destroyed ally can't be un-destroyed, the
+				# announcement is marked non-retractable (see can_retract).
+				var sac_def := db.get_def(state.get_card(card_id).card_def_id) as CardDef if db else null
+				if sac_def and play_cost_sacrifices_ally(sac_def):
+					var sac_id: String = action.params.get("sacrifice_id", "")
+					if sac_id != "" and state.is_in_play(sac_id):
+						events.append_array(
+							_destroy_card_trigger(state, sac_id, card_id, db))
+					action.params["_cost_paid_irreversibly"] = true
 				# Stat tracking: a card was played from hand (excludes resources,
 				# which are a separate branch below). See StatTracker.
 				events.append(GameEvent.card_played(action.source_player, card_id))
@@ -192,6 +206,10 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# A pending death-triggered target choice (Boneshanks) must be resolved via
 	# choose_death_target() before priority can move.
 	if state.pending_death_target_player != "":
+		return []
+	# A pending Operation Recombobulation fetch must be resolved (or declined) via
+	# choose_recombobulation() before priority can move.
+	if state.pending_recomb_player != "":
 		return []
 	# A pending armor-prevention decision (717.2c) must be resolved via
 	# choose_prevention() before priority can move.
@@ -344,6 +362,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_death_target_player != "":
 		return false
 
+	# Operation Recombobulation's optional graveyard fetch blocks everything until
+	# resolved (or declined) via choose_recombobulation().
+	if state.pending_recomb_player != "":
+		return false
+
 	# Armor prevention point (717.2c) blocks everything until resolved via
 	# choose_prevention().
 	if state.pending_prevention_player != "":
@@ -470,6 +493,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		# Modal (707.1c): the chosen mode must be announced with the play.
 		if def and is_modal_def(def) and selected_mode(def, action) == "":
 			return false
+		# Sever the Cord: the sacrificed ally is announced with the play (412.2).
+		if def and not _play_cost_sacrifice_ok(state, def, action):
+			return false
 		if def and _has_effect_flag_prefix(def, "multi_shot"):
 			if not _can_play_multi_shot(state, action, db): return false
 		elif def and is_divided_damage_def(def):
@@ -547,6 +573,11 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		var def := db.get_def(card.card_def_id) as CardDef
 		# Modal (707.1c): the chosen mode must be announced with the play.
 		if def and is_modal_def(def) and selected_mode(def, action) == "":
+			return false
+		# Sever the Cord: the sacrificed ally is announced with the play (412.2).
+		# (Here for the sorcery-speed twin of the instant path above; a future
+		# non-instant card with the same cost gets it for free.)
+		if def and not _play_cost_sacrifice_ok(state, def, action):
 			return false
 		# Graveyard-reanimate ability (Ancestral Spirit): the target is an ally
 		# CARD in the caster's graveyard, announced with the play — cost gated
@@ -711,6 +742,12 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		var scan_pid := player_id if player_id != "" else state.turn_player
 		var req := get_graveyard_search_requirement(def)
 		return not get_graveyard_search_candidates(state, scan_pid, req, db).is_empty()
+	# Sever the Cord: an additional cost that can't be paid makes the card
+	# unplayable (412.2) — it goes dark with no ally in the caster's party.
+	if play_cost_sacrifices_ally(def):
+		var sac_pid := player_id if player_id != "" else state.turn_player
+		if get_play_sacrifice_candidates(state, sac_pid).is_empty():
+			return false
 	if not _instant_needs_target(def):
 		return true
 	# Shock and Soothe: needs TWO distinct legal hero-or-ally targets.
@@ -1015,6 +1052,44 @@ static func _any_exhausted_ally(state: GameState, db) -> bool:
 			if _is_exhausted_ally(state, ally.instance_id, db):
 				return true
 	return false
+
+
+# ── Sacrifice-an-ally play cost (Sever the Cord) ──────────────────────────────
+#
+# "As an additional cost to play Sever the Cord, destroy an ally in your party."
+# The activated-power `sacrifice_ally` EXTRACOST pays at RESOLUTION (a source
+# killed in response no-ops the cost); this is the HAND-CARD form and pays at
+# ANNOUNCEMENT (rule 412.2, like The Love Potion's exhaust_allies) — which is
+# the whole point of the card: bounce or kill the target in response and the
+# sacrifice has still been spent, for nothing.
+#
+# The sacrifice rides the play as `sacrifice_id` (its own pick, never target_id
+# — the effect targets a different ally). Announcing the sacrifice as the
+# destroy target too is LEGAL, since targets are chosen before costs are paid;
+# it simply fizzles at resolution (706).
+static func play_cost_sacrifices_ally(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "play_cost_sacrifice_ally")
+
+
+# Allies in `player_id`'s party that may pay the cost — any ally_row card,
+# ready or exhausted, totems included (305.3a: a Totem is an ally).
+static func get_play_sacrifice_candidates(state: GameState, player_id: String) -> Array:
+	var result: Array = []
+	for ally: CardInstance in state.cards_in_zone(player_id + "_ally_row"):
+		result.append(ally.instance_id)
+	return result
+
+
+# Submission gate: the announced sacrifice must be one of them. The highlight
+# probe (`_skip_target_check`) only asks that SOME ally could pay.
+static func _play_cost_sacrifice_ok(state: GameState, def: CardDef,
+		action: PendingAction) -> bool:
+	if not play_cost_sacrifices_ally(def):
+		return true
+	var cands := get_play_sacrifice_candidates(state, action.source_player)
+	if action.params.get("_skip_target_check", false):
+		return not cands.is_empty()
+	return action.params.get("sacrifice_id", "") in cands
 
 
 # ── Cost-banded destroy (Trophy Kill / Prey on the Weak) ──────────────────────
@@ -3257,6 +3332,9 @@ static func _apply_packet_group(state: GameState, db,
 	_clear_damage_prevention(state)   # 717.2c: excess DEF beyond the packet is wasted
 	# Cold Blood: any ally this group's hero damage landed on is destroyed.
 	events.append_array(_fire_cold_blood(state, db))
+	# Operation Recombobulation: any opposing non-token ally that died in this
+	# group (including to Cold Blood just above) offers its owner a fetch.
+	events.append_array(_fire_recombobulation(state, db))
 	match group.get("after", ""):
 		"totem_next":
 			events.append_array(_open_next_totem_trigger(state, db))
@@ -4974,6 +5052,97 @@ static func _fire_cold_blood(state: GameState, db) -> Array[GameEvent]:
 	return events
 
 
+# Operation Recombobulation: "When an opposing non-token ally is destroyed this
+# turn, you may put an ally card from your graveyard into your hand." Read off
+# the turn event log rather than hooked into each removal effect — every
+# destruction in the game records an `ally_destroyed` entry where
+# GameEvent.card_destroyed is built (see game_logic/turn_state_flags.md), so this
+# one sweep covers combat, damage, destroy effects, sacrifice costs and
+# state-based deaths by construction. Called from the three points a
+# destruction can have just happened: the two resolver destroy wrappers and
+# _apply_packet_group (whose non-recursive branch destroys without a wrapper).
+#
+# Only entries from the grant's own index on count — the trigger is
+# forward-looking as printed — and the index is advanced past everything scanned,
+# so each death fires the reward at most once. "Opposing" and "non-token" are
+# read from the entry's frozen snapshot, not re-derived: by now the ally is in a
+# graveyard (or, if it was a token, gone).
+static func _fire_recombobulation(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	for pid in state.players:
+		var ps := state.players[pid] as PlayerState
+		if not ps or ps.recomb_from_index < 0:
+			continue
+		var i := ps.recomb_from_index
+		while i < state.turn_events.size():
+			var entry: Dictionary = state.turn_events[i]
+			i += 1
+			if entry.get("type", "") != "ally_destroyed":
+				continue
+			if not bool(entry.get("is_ally", false)):
+				continue
+			if bool(entry.get("is_token", false)):
+				continue
+			if str(entry.get("controller", "")) == pid:
+				continue   # "an OPPOSING ally"
+			state.pending_recomb_queue.append(pid)
+		ps.recomb_from_index = state.turn_events.size()
+	events.append_array(_open_next_recomb(state, db))
+	return events
+
+
+# Peek the front queued Recombobulation fetch and open it. Skips queued entries
+# whose owner has no ally card left in his graveyard (nothing to fetch — the
+# trigger simply does nothing rather than opening an empty choice).
+static func _open_next_recomb(state: GameState, db) -> Array[GameEvent]:
+	if state.pending_recomb_player != "":
+		return []   # one at a time
+	while not state.pending_recomb_queue.is_empty():
+		var pid: String = state.pending_recomb_queue[0]
+		var candidates := get_recomb_candidates(state, pid, db)
+		if candidates.is_empty():
+			state.pending_recomb_queue.pop_front()
+			continue
+		state.pending_recomb_player = pid
+		return [GameEvent.recomb_choice_opened(pid, candidates)]
+	state.pending_recomb_player = ""
+	return []
+
+
+# Resolve the open Recombobulation fetch: put the chosen ally card from the
+# completer's own graveyard into his hand, then open the next queued fetch.
+# card_id "" declines ("you MAY"). Direct call — no chain, no priority pass.
+static func choose_recombobulation(state: GameState, card_id: String, db) -> Array[GameEvent]:
+	if state.pending_recomb_player == "" or state.pending_recomb_queue.is_empty():
+		return []
+	var pid: String = state.pending_recomb_queue.pop_front()
+	state.pending_recomb_player = ""
+	var events: Array[GameEvent] = []
+	if card_id == "":
+		events.append(GameEvent.recomb_declined(pid))
+	elif card_id in get_recomb_candidates(state, pid, db):
+		# Re-checked against the live candidate list: the card must still be an
+		# ally card in this player's graveyard.
+		events.append_array(GameLogic.move_card(state, card_id, pid + "_hand"))
+		events.append(GameEvent.card_returned_from_graveyard(card_id, pid))
+	events.append_array(_open_next_recomb(state, db))
+	return events
+
+
+# Ally cards in this player's OWN graveyard — the fetch pool ("an ally card from
+# YOUR graveyard"). Card type, not zone: a Totem card in the graveyard is an
+# Ability, and an ally token never reaches a graveyard at all.
+static func get_recomb_candidates(state: GameState, player_id: String, db) -> Array[String]:
+	var result: Array[String] = []
+	if db == null:
+		return result
+	for card in state.cards_in_zone(player_id + "_graveyard"):
+		var cdef := db.get_def(card.card_def_id) as CardDef
+		if cdef and cdef.card_type == "Ally":
+			result.append(card.instance_id)
+	return result
+
+
 # Total combat damage from a deal_damage event list that landed on target_id.
 static func _combat_dmg_landed(dmg_events: Array, target_id: String) -> int:
 	var total := 0
@@ -5424,6 +5593,19 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 				if q_token_id != "":
 					events.append_array(_put_token_into_play(
 						state, player_id, q_token_id, q_token_n, db))
+			"recursion_on_opposing_ally_death":
+				# Operation Recombobulation (dark_portal_292): "Reward: When an
+				# opposing non-token ally is destroyed this turn, you may put an ally
+				# card from your graveyard into your hand." Cold Blood's grant shape —
+				# store the turn-event-log index the reward became active at, so the
+				# trigger is forward-looking as printed and every death this turn is
+				# then read off the log's `ally_destroyed` entries
+				# (see game_logic/turn_state_flags.md). Re-completing sets the index
+				# only if not already active, so a second quest can't rewind past
+				# deaths the first one already handled.
+				var rc_ps := state.players.get(player_id) as PlayerState
+				if rc_ps and rc_ps.recomb_from_index < 0:
+					rc_ps.recomb_from_index = state.turn_events.size()
 			"discard_from_hand":
 				var n := int(parts[1])
 				state.pending_discard_player = player_id
@@ -6139,7 +6321,11 @@ static func can_retract(state: GameState, player_id: String) -> bool:
 	if state.consecutive_passes != 0:
 		return false
 	var top: PendingAction = state.pending_actions.back()
-	return top.source_player == player_id
+	if top.source_player != player_id:
+		return false
+	# An additional cost paid in destroyed permanents (Sever the Cord's
+	# sacrifice) can't be refunded, so the announcement can't be taken back.
+	return not top.params.get("_cost_paid_irreversibly", false)
 
 
 static func retract_last(state: GameState, player_id: String,
@@ -6962,6 +7148,7 @@ static func _check_destroyed_trigger(state: GameState, card_id: String,
 			if controller != "":
 				events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 			break
+	events.append_array(_fire_recombobulation(state, db))
 	return events
 
 
@@ -6997,6 +7184,7 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 		events.append_array(_fire_on_destroyed(state, card_id, db))
 		if controller != "":
 			events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
+	events.append_array(_fire_recombobulation(state, db))
 	return events
 
 

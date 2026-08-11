@@ -176,6 +176,9 @@ func _ready() -> void:
 		_test_coup_de_grace_destroys_exhausted_ally,
 		_test_cost_banded_destroy,
 		_test_shred_soul_removes_ally_from_game,
+		_test_sever_the_cord_sacrifice_cost,
+		_test_sever_the_cord_paid_at_announcement,
+		_test_ai_sever_the_cord,
 		_test_cannibalize,
 		_test_cannibalize_empty_and_fizzle,
 		_test_ai_cannibalize,
@@ -217,6 +220,8 @@ func _ready() -> void:
 		_test_devilsaur_leggings,
 		_test_cold_blood_hero_damage_destroys_ally,
 		_test_cold_blood_scope_and_expiry,
+		_test_recombobulation_fetch_on_opposing_ally_death,
+		_test_recombobulation_scope_and_decline,
 		_test_iceblade_hacker,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
@@ -9677,6 +9682,186 @@ func _test_shred_soul_removes_ally_from_game() -> void:
 		"shred-e2: live once an ally is in play")
 
 
+# Sever the Cord (azeroth_131): "As an additional cost to play Sever the Cord,
+# destroy an ally in your party. Destroy target ally."
+const SEVER_EFFECTS := "destroy_target:ally|play_cost_sacrifice_ally"
+
+func _sever_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("chump_def", 1, 1, [], 1)
+	db.ally("big_def", 5, 5, [], 5)
+	db.instant("azeroth_131", 2, SEVER_EFFECTS)
+	return db
+
+
+func _test_sever_the_cord_sacrifice_cost() -> void:
+	_buf.append("\n-- Sever the Cord: sacrifice-an-ally play cost --")
+	var db := _sever_db()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "sever", "azeroth_131", "p1")
+	var chump := _add_ally(state, "chump", "chump_def", "p1")
+	chump.just_summoned = false
+	var target := _add_ally(state, "target", "big_def", "p2")
+	target.just_summoned = false
+
+	# stc-a: the cost must be announced with the play.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "sever", "target_id": "target"}), db),
+		"stc-a: no sacrifice announced -> illegal")
+
+	# stc-b: only an ally in YOUR OWN party can pay it.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "sever", "target_id": "target", "sacrifice_id": "target"}), db),
+		"stc-b: an opposing ally can't pay the cost")
+
+	# stc-c: a legal announcement — sacrifice ours, destroy theirs.
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": "sever", "target_id": "target", "sacrifice_id": "chump"})
+	ok(StackResolver.can_submit(state, act, db), "stc-c: legal announcement")
+	StackResolver.submit_action(state, act, db)
+
+	# stc-d: the cost is paid on chain entry (412.2) — the ally is already dead
+	# while the spell still sits on the chain.
+	ok(not state.is_in_play("chump"), "stc-d: sacrifice destroyed at announcement")
+	ok("chump" in state.zones["p1_graveyard"].card_ids,
+		"stc-d2: sacrifice reached the graveyard (destroyed, not exiled)")
+	ok(state.is_in_play("target"), "stc-d3: target still in play (spell unresolved)")
+
+	# stc-e: a destroyed ally can't be refunded, so the announcement is stuck.
+	ok(not StackResolver.can_retract(state, "p1"),
+		"stc-e: announcement is non-retractable")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.is_in_play("target"), "stc-f: target destroyed on resolution")
+	ok("sever" in state.zones["p1_graveyard"].card_ids,
+		"stc-f2: the spell resolved to its owner's graveyard")
+
+	# stc-g: with no ally in our party the cost can't be paid — the card goes
+	# dark in hand and can't be announced at all.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	s2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s2, "sever2", "azeroth_131", "p1")
+	var lone := _add_ally(s2, "lone", "big_def", "p2")
+	lone.just_summoned = false
+	var sever_def := db.get_def("azeroth_131") as CardDef
+	ok(not StackResolver._targeted_play_has_legal_target(s2, sever_def, db, "p1"),
+		"stc-g: goes dark with no ally to sacrifice")
+	ok(not StackResolver.can_submit(s2, PendingAction.make("play_instant", "p1",
+			{"card_id": "sever2", "target_id": "lone", "sacrifice_id": "lone"}), db),
+		"stc-g2: can't announce without an ally of our own")
+	var mine := _add_ally(s2, "mine", "chump_def", "p1")
+	mine.just_summoned = false
+	ok(StackResolver._targeted_play_has_legal_target(s2, sever_def, db, "p1"),
+		"stc-g3: live once we control an ally")
+
+
+# The point of paying at announcement: answering the link leaves the caster
+# down an ally AND a card, with nothing to show for it.
+func _test_sever_the_cord_paid_at_announcement() -> void:
+	_buf.append("\n-- Sever the Cord: cost is spent even when the spell fizzles --")
+	var db := _sever_db()
+	db.instant("bounce_def", 1, "return_to_hand:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_resources(state, "p2", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "sever", "azeroth_131", "p1")
+	_add_card_to_hand(state, "bounce", "bounce_def", "p2")
+	var chump := _add_ally(state, "chump", "chump_def", "p1")
+	chump.just_summoned = false
+	var target := _add_ally(state, "target", "big_def", "p2")
+	target.just_summoned = false
+
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "sever", "target_id": "target", "sacrifice_id": "chump"}), db)
+	StackResolver.pass_priority(state, db)
+	# p2 answers by bouncing the target out from under the announce.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "bounce", "target_id": "target"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # bounce resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # Sever the Cord resolves (fizzles)
+
+	ok("target" in state.zones["p2_hand"].card_ids,
+		"stcf-a: the target was saved (bounced to its owner's hand)")
+	ok(not state.is_in_play("chump"),
+		"stcf-b: the sacrifice was still spent — the cost was paid at announcement")
+	ok("sever" in state.zones["p1_graveyard"].card_ids,
+		"stcf-c: the spell resolved (fizzled) to the graveyard")
+
+	# stcf-d: naming the sacrifice as the target too is legal at announcement
+	# (targets are chosen before costs are paid) and simply fizzles.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	s2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s2, "sever2", "azeroth_131", "p1")
+	var solo := _add_ally(s2, "solo", "chump_def", "p1")
+	solo.just_summoned = false
+	var self_act := PendingAction.make("play_instant", "p1",
+		{"card_id": "sever2", "target_id": "solo", "sacrifice_id": "solo"})
+	ok(StackResolver.can_submit(s2, self_act, db),
+		"stcf-d: naming the sacrifice as the target is a legal announcement")
+	StackResolver.submit_action(s2, self_act, db)
+	ok(not s2.is_in_play("solo"), "stcf-d2: it died to the cost")
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	ok("sever2" in s2.zones["p1_graveyard"].card_ids,
+		"stcf-d3: the destroy fizzled and the spell resolved away")
+
+
+func _test_ai_sever_the_cord() -> void:
+	_buf.append("\n-- Sever the Cord: AI announces a sacrifice and won't trade down --")
+	var db := _sever_db()
+	var ai := BaseAI.new()
+
+	# Good trade: eat our 1/1, kill their 5/5.
+	var good := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(good, "p1", 5)
+	good.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(good, "sever", "azeroth_131", "p1")
+	var g_chump := _add_ally(good, "chump", "chump_def", "p1")
+	g_chump.just_summoned = false
+	var g_big := _add_ally(good, "big", "big_def", "p2")
+	g_big.just_summoned = false
+	var acts := ai._targeted_instant_actions(good, db, "p1", "sever")
+	eq(acts.size(), 1, "aistc-a: one action offered")
+	eq(str(acts[0].params.get("target_id", "")), "big", "aistc-a2: aimed at their 5/5")
+	eq(str(acts[0].params.get("sacrifice_id", "")), "chump",
+		"aistc-a3: pays with our least valuable ally")
+	ok(StackResolver.can_submit(good, acts[0], db), "aistc-a4: the action is submittable")
+
+	# Bad trade: our only ally is the 5/5, theirs is a 1/1 — held.
+	var bad := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(bad, "p1", 5)
+	bad.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(bad, "sever", "azeroth_131", "p1")
+	var b_big := _add_ally(bad, "mine", "big_def", "p1")
+	b_big.just_summoned = false
+	var b_chump := _add_ally(bad, "theirs", "chump_def", "p2")
+	b_chump.just_summoned = false
+	eq(ai._targeted_instant_actions(bad, db, "p1", "sever").size(), 0,
+		"aistc-b: never pays a better ally for a worse one")
+
+	# No ally of our own at all: no actions (the cost is unpayable).
+	var none := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(none, "p1", 5)
+	none.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(none, "sever", "azeroth_131", "p1")
+	var n_t := _add_ally(none, "theirs", "big_def", "p2")
+	n_t.just_summoned = false
+	eq(ai._targeted_instant_actions(none, db, "p1", "sever").size(), 0,
+		"aistc-c: no ally to sacrifice -> no actions")
+
+
 func _test_cost_banded_destroy() -> void:
 	_buf.append("\n-- Trophy Kill / Prey on the Weak: printed-cost banded destroy --")
 	var db := MockDB.new()
@@ -11237,6 +11422,155 @@ func _cold_blood_db() -> MockDB:
 	db.ally("pinger_def", 1, 3, [], 2,
 		"activated_power:0:deal_damage_to_target:1:fire:hero_or_ally")
 	return db
+
+
+# ── Operation Recombobulation (dark_portal_292) ─────────────────────────────
+# Quest, Alliance, Gnome Hero Required: "Pay (4) to complete this quest.
+# Reward: When an opposing non-token ally is destroyed this turn, you may put an
+# ally card from your graveyard into your hand."
+func _recomb_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("recomb_def", 4, "requires_hero_race:Gnome|recursion_on_opposing_ally_death:1")
+	db.instant("vanquish_def", 1, "destroy_target:ally")
+	db.ally("body_def", 2, 2, [], 3)
+	db.token("token_def", 1, 1)
+	return db
+
+
+func _recomb_state(db: MockDB) -> GameState:
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	# The quest sits face-up in p1's resource row like any uncompleted quest.
+	var quest := CardInstance.create("recomb", "recomb_def", "p1", "p1_resource_row")
+	state.cards["recomb"] = quest
+	state.zones["p1_resource_row"].card_ids.append("recomb")
+	# An ally card already in p1's own graveyard — the fetch pool.
+	var dead := CardInstance.create("dead_ally", "body_def", "p1", "p1_graveyard")
+	state.cards["dead_ally"] = dead
+	state.zones["p1_graveyard"].card_ids.append("dead_ally")
+	return state
+
+
+func _complete_recomb(state: GameState, db) -> void:
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "recomb"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+
+func _test_recombobulation_fetch_on_opposing_ally_death() -> void:
+	_buf.append("\n-- Operation Recombobulation: fetch on opposing ally death --")
+	var db := _recomb_db()
+	var state := _recomb_state(db)
+	var victim := _add_ally(state, "victim", "body_def", "p2")
+	victim.just_summoned = false
+	_add_card_to_hand(state, "vanq", "vanquish_def", "p1")
+
+	_complete_recomb(state, db)
+	ok(state.get_card("recomb").face_down, "or-a: quest completed")
+	eq(state.pending_recomb_player, "", "or-b: no fetch pending before any death")
+
+	# Kill the opposing ally with a destroy effect.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq", "target_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("victim").zone_id, "p2_graveyard", "or-c: opposing ally destroyed")
+	eq(state.pending_recomb_player, "p1", "or-d: the fetch choice opened for the completer")
+	eq(StackResolver.get_recomb_candidates(state, "p1", db), ["dead_ally"],
+		"or-e: only ally cards in the completer's OWN graveyard are candidates")
+
+	# The choice blocks priority until it is answered.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"or-f: pass_priority is blocked while the fetch is pending")
+
+	StackResolver.choose_recombobulation(state, "dead_ally", db)
+	eq(state.get_card("dead_ally").zone_id, "p1_hand", "or-g: fetched ally card is in hand")
+	eq(state.pending_recomb_player, "", "or-h: choice closed")
+
+	# Every qualifying death fires, not just the first.
+	var victim2 := _add_ally(state, "victim2", "body_def", "p2")
+	victim2.just_summoned = false
+	var g2 := CardInstance.create("dead2", "body_def", "p1", "p1_graveyard")
+	state.cards["dead2"] = g2
+	state.zones["p1_graveyard"].card_ids.append("dead2")
+	StackResolver._destroy_card_trigger(state, "victim2", "", db)
+	eq(state.pending_recomb_player, "p1", "or-i: a second death opens a second fetch")
+	StackResolver.choose_recombobulation(state, "dead2", db)
+	eq(state.get_card("dead2").zone_id, "p1_hand", "or-j: second fetch resolved")
+
+
+func _test_recombobulation_scope_and_decline() -> void:
+	_buf.append("\n-- Operation Recombobulation: scope, tokens, decline --")
+	var db := _recomb_db()
+
+	# ── Our OWN ally dying does not trigger ("an OPPOSING ally").
+	var s1 := _recomb_state(db)
+	var mine := _add_ally(s1, "mine", "body_def", "p1")
+	mine.just_summoned = false
+	_complete_recomb(s1, db)
+	StackResolver._destroy_card_trigger(s1, "mine", "", db)
+	eq(s1.pending_recomb_player, "", "or2-a: our own ally's death does not trigger")
+
+	# ── A TOKEN dying does not trigger ("non-token ally").
+	var s2 := _recomb_state(db)
+	var tok := _add_ally(s2, "tok", "token_def", "p2")
+	tok.is_token = true
+	tok.just_summoned = false
+	_complete_recomb(s2, db)
+	StackResolver._destroy_card_trigger(s2, "tok", "", db)
+	eq(s2.pending_recomb_player, "", "or2-b: a destroyed token does not trigger")
+
+	# ── Forward-looking: an ally that died BEFORE the quest completed is past.
+	var s3 := _recomb_state(db)
+	var early := _add_ally(s3, "early", "body_def", "p2")
+	early.just_summoned = false
+	StackResolver._destroy_card_trigger(s3, "early", "", db)
+	eq(s3.pending_recomb_player, "", "or2-c: no grant yet, so no fetch")
+	_complete_recomb(s3, db)
+	eq(s3.pending_recomb_player, "",
+		"or2-d: an earlier death is not retroactively fetched")
+
+	# ── Empty graveyard: the trigger simply doesn't open a choice.
+	var s4 := _recomb_state(db)
+	s4.zones["p1_graveyard"].card_ids.clear()
+	var v4 := _add_ally(s4, "v4", "body_def", "p2")
+	v4.just_summoned = false
+	_complete_recomb(s4, db)
+	StackResolver._destroy_card_trigger(s4, "v4", "", db)
+	eq(s4.pending_recomb_player, "", "or2-e: nothing to fetch, no choice opened")
+
+	# ── Decline: "you MAY" — the card stays in the graveyard.
+	var s5 := _recomb_state(db)
+	var v5 := _add_ally(s5, "v5", "body_def", "p2")
+	v5.just_summoned = false
+	_complete_recomb(s5, db)
+	StackResolver._destroy_card_trigger(s5, "v5", "", db)
+	eq(s5.pending_recomb_player, "p1", "or2-f: fetch opened")
+	StackResolver.choose_recombobulation(s5, "", db)
+	eq(s5.get_card("dead_ally").zone_id, "p1_graveyard", "or2-g: declined — card stays put")
+	eq(s5.pending_recomb_player, "", "or2-h: choice closed on decline")
+
+	# ── Combat death triggers too (the damage path, not a destroy effect).
+	var s6 := _recomb_state(db)
+	var atk := _add_ally(s6, "atk", "body_def", "p1")
+	atk.just_summoned = false
+	var def_ally := _add_ally(s6, "def", "body_def", "p2")
+	def_ally.just_summoned = false
+	_complete_recomb(s6, db)
+	StackResolver.submit_action(s6, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "atk", "defender_id": "def"}), db)
+	for _i in 6:
+		StackResolver.pass_priority(s6, db)
+	eq(s6.get_card("def").zone_id, "p2_graveyard", "or2-i: defender died in combat")
+	eq(s6.pending_recomb_player, "p1", "or2-j: combat death opens the fetch")
+	StackResolver.choose_recombobulation(s6, "", db)
+
+	# ── The grant is a this-turn grant: it is cleared at the next turn start.
+	var ps6 := s6.players["p1"] as PlayerState
+	ok(ps6.recomb_from_index >= 0, "or2-k: grant active during the turn it was gained")
 
 
 # Cold Blood (azeroth_92, 1, Instant Ability — Assassination Talent): "Draw a

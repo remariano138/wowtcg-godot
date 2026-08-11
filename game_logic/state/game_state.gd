@@ -56,6 +56,12 @@ var priority_player: String = ""   # player_id who currently holds priority
 #     Appended AFTER prevention (717.2b — fully absorbed damage was never
 #     dealt) and AFTER the 405.3 excess guard (a packet at an already-0-HP
 #     target places nothing), i.e. exactly when damage_dealt is constructed.
+#   "ally_destroyed" — {card_id, controller, owner, is_ally, is_token}
+#     Appended wherever GameEvent.card_destroyed is constructed
+#     (GameLogic.check_destroyed / destroy_card / the 400.5 attachment sweep),
+#     i.e. while the card is still in play. Every field is a SNAPSHOT: by read
+#     time the card sits in a graveyard (so "was it an ally?" is no longer
+#     derivable from its zone) and a token has gone to RFG.
 var turn_events: Array = []
 
 # The one append site. Keep new record calls co-located with the matching
@@ -263,6 +269,16 @@ var pending_quest_facedown_ids: Array[String] = []  # that player's face-up ques
 # the totem / strike choices. pass_priority / can_submit hard-block while pending.
 # Prompted for a HUMAN controller even in hotseat (the choice is board-public).
 var pending_death_triggers: Array = []
+
+# ── Operation Recombobulation (dark_portal_292) ───────────────────────────────
+# "When an opposing non-token ally is destroyed this turn, you may put an ally
+# card from your graveyard into your hand." Each qualifying death queues one
+# OPTIONAL pick for the quest completer, resolved one at a time via
+# StackResolver.choose_recombobulation (a direct call — no chain, no priority
+# pass, like the Boneshanks death target). A death with nothing in the
+# graveyard to fetch never opens a choice.
+var pending_recomb_queue: Array[String] = []   # completer ids, front-first
+var pending_recomb_player: String = ""         # who must decide now; "" = none
 var pending_death_target_player: String = ""  # controller who must pick a target ally; "" = none
 
 # Players who have been required to draw a card from an empty deck (rule

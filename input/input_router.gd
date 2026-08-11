@@ -306,6 +306,12 @@ func handle_card_click(instance_id: String) -> void:
 		start_ability_graveyard_selection(instance_id)
 		return
 	if action_type == "play_ability" and _ability_needs_target(instance_id):
+		# Sever the Cord's twin at sorcery speed: the sacrificed ally is picked
+		# first, the destroy target second.
+		if _is_play_cost_sacrifice(instance_id):
+			_targeting_first_target = ""
+			start_targeting(instance_id, "play_ability", "sacrifice", 0)
+			return
 		start_targeting(instance_id, "play_ability",
 			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
 		return
@@ -318,6 +324,11 @@ func handle_card_click(instance_id: String) -> void:
 		if _is_atk_swing(instance_id):
 			_targeting_first_target = ""
 			start_targeting(instance_id, "play_instant", "atk_up", 0)
+			return
+		# Sever the Cord: sequential picks, the sacrificed ally first.
+		if _is_play_cost_sacrifice(instance_id):
+			_targeting_first_target = ""
+			start_targeting(instance_id, "play_instant", "sacrifice", 0)
 			return
 		# Shock and Soothe: sequential picks, the damage target first.
 		if _is_instant_damage_and_heal(instance_id):
@@ -1247,6 +1258,22 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		targeting_started.emit(_targeting_source, "atk_down", 0)
 		refresh_highlights()
 		return
+	# Sever the Cord: phase 1 picks the ally sacrificed as an additional cost
+	# (own party only), phase 2 the destroy target.
+	if _is_play_cost_sacrifice(_targeting_source) and _targeting_first_target == "":
+		if instance_id == _targeting_source:
+			cancel_targeting()
+			return
+		var sac_probe := PendingAction.make(_action_type_for(_targeting_source),
+			local_player, _instant_params(_targeting_source, instance_id))
+		if not StackResolver.can_submit(state, sac_probe, db):
+			return
+		_targeting_first_target = instance_id
+		# Re-emit so the prompt switches to the destroy half and the legal
+		# targets (either party) re-highlight.
+		targeting_started.emit(_targeting_source, "destroy", 0)
+		refresh_highlights()
+		return
 	# Shock and Soothe: phase 1 picks the damage target, phase 2 the heal target.
 	if _is_instant_damage_and_heal(_targeting_source) and _targeting_first_target == "":
 		if instance_id == _targeting_source:
@@ -1282,6 +1309,14 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		if _is_atk_swing(_targeting_source) and _targeting_first_target != "":
 			_targeting_first_target = ""
 			targeting_started.emit(_targeting_source, "atk_up", 0)
+			refresh_highlights()
+			return
+		# Sever the Cord phase 2: clicking the spell again steps back to the
+		# sacrifice pick instead of cancelling the whole cast. Nothing has been
+		# paid yet — the sacrifice is destroyed only on submission.
+		if _is_play_cost_sacrifice(_targeting_source) and _targeting_first_target != "":
+			_targeting_first_target = ""
+			targeting_started.emit(_targeting_source, "sacrifice", 0)
 			refresh_highlights()
 			return
 		# Shock and Soothe phase 2: same step-back to the damage pick.
@@ -2322,11 +2357,33 @@ func _instant_params(card_id: String, target_id: String) -> Dictionary:
 		else:
 			params["target_id"]      = _targeting_first_target
 			params["heal_target_id"] = target_id
+	# Sever the Cord: the sacrificed ally rides the same submission as the
+	# target. During phase 1 (no pick yet) the clicked ally fills BOTH slots, so
+	# can_submit answers "is this a legal sacrifice?" on its own — naming the
+	# sacrifice as the target is legal (targets are chosen before costs are
+	# paid), it just fizzles, so only own allies pass the probe.
+	if _is_play_cost_sacrifice(card_id):
+		if _targeting_first_target == "":
+			params["sacrifice_id"] = target_id
+		else:
+			params["sacrifice_id"] = _targeting_first_target
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
 	if _targeting_x_value > 0:
 		params["x_value"] = _targeting_x_value
 	return params
+
+
+# True for a hand card with a "destroy an ally in your party" additional play
+# cost (Sever the Cord, `play_cost_sacrifice_ally`): the sacrifice is picked
+# first, the spell's own target second — the two-phase `_targeting_first_target`
+# flow Ravenous Bite and Gertha's two-pick power already use.
+func _is_play_cost_sacrifice(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.play_cost_sacrifices_ally(def)
 
 
 # True for a two-target damage+heal spell played from hand (Shock and Soothe,

@@ -35,8 +35,13 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 1,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "dark_portal_292",
+      "count": 1,
+      "_card_name": "Operation Recombobulation"
     },
     {
       "card_def_id": "azeroth_298",
@@ -74,9 +79,9 @@
       "_card_name": "Adept Breton"
     },
     {
-      "card_def_id": "dark_portal_114",
+      "card_def_id": "azeroth_131",
       "count": 2,
-      "_card_name": "Shred Soul"
+      "_card_name": "Sever the Cord"
     },
     {
       "card_def_id": "azeroth_134",

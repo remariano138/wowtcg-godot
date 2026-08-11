@@ -35,8 +35,13 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 1,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "dark_portal_292",
+      "count": 1,
+      "_card_name": "Operation Recombobulation"
     },
     {
       "card_def_id": "azeroth_331",

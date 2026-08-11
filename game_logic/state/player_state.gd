@@ -64,6 +64,17 @@ var next_card_cost_mod: int = 0
 # every turn, so it lasts exactly the turn it was gained in.
 var cold_blood_from_index: int = -1
 
+# Operation Recombobulation (dark_portal_292): "When an opposing non-token ally
+# is destroyed this turn, you may put an ally card from your graveyard into your
+# hand." Cold Blood's shape exactly — the turn-event-log INDEX at which the quest
+# reward became active, or -1 when inactive. Forward-looking as printed (an ally
+# that died earlier this turn does not retro-trigger), and the log's
+# `ally_destroyed` entries carry the facts (whose ally, was it a token) that are
+# unrecoverable from the board once the card is in a graveyard. The sweep
+# advances this index past every entry it has handled, so a death fires the
+# reward exactly once. Cleared at the start of every turn.
+var recomb_from_index: int = -1
+
 # Elendril's flip power: "Your Ranged weapons have +3 ATK this turn." Applied
 # to this player's Ranged weapons in GameState.get_atk; cleared at the start of
 # every turn (so it lasts exactly the turn it was gained in).

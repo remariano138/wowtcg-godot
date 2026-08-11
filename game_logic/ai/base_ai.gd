@@ -1749,6 +1749,23 @@ func choose_death_target(state: GameState, db, player_id: String) -> String:
 	return ranked_own[ranked_own.size() - 1]
 
 
+# Operation Recombobulation: "When an opposing non-token ally is destroyed this
+# turn, you may put an ally card from your graveyard into your hand." The fetch
+# is free — no cost, no card spent — so the only reason to decline is a full
+# hand, where the card would be discarded at wrap-up (503.2a) for nothing.
+# Otherwise take the most valuable ally card back.
+func choose_recombobulation(state: GameState, db, player_id: String) -> String:
+	if not db:
+		return ""
+	var candidates := StackResolver.get_recomb_candidates(state, player_id, db)
+	if candidates.is_empty():
+		return ""
+	var hand := state.zones.get(player_id + "_hand") as Zone
+	if hand and hand.card_ids.size() >= state.get_max_hand_size(player_id, db):
+		return ""
+	return sort_valuable_cards(state, db, candidates)[0]
+
+
 # ── Quest reward choices ("Choose one … you may choose both") ────────────────
 # Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
 # Earth. Policy: ALWAYS take both modes when the race condition allows it
@@ -3658,8 +3675,28 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 		max_x = state.get_available_resources(player_id) \
 			- state.get_play_cost(card_id, db, 0)
 
+	# Sever the Cord: "destroy an ally in your party" is an additional cost, so
+	# every announcement below has to carry a sacrifice or can_submit rejects it.
+	# Eat our least valuable body (the spell is in hand — there's no source ally
+	# to exclude), and only when the target is worth strictly more than what we
+	# give up: the card already costs a card and resources, and paying a better
+	# ally for a worse one is how this gets misplayed. No ally to eat → no
+	# actions at all, which is also what the highlight probe says.
+	var sac_id := ""
+	var sac_val := 0.0
+	if spell_def and StackResolver.play_cost_sacrifices_ally(spell_def):
+		var sac := _cheapest_sacrifice_ally(state, db, player_id, "")
+		sac_id = str(sac[0])
+		if sac_id == "":
+			return result
+		sac_val = float(sac[1])
+
 	for ally in state.cards_in_zone(opp + "_ally_row"):
 		var params := {"card_id": card_id, "target_id": ally.instance_id}
+		if sac_id != "":
+			if card_value_score(state, db, ally.instance_id) <= sac_val:
+				continue
+			params["sacrifice_id"] = sac_id
 		if spell_def and spell_def.cost_x:
 			var x: int = min(max_x, state.get_current_hp(ally.instance_id, db))
 			if x < 1:

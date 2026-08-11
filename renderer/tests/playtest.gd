@@ -163,6 +163,7 @@ var _gy_max:           int = 1
 var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
+var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). See _gy_filter_active.
 var _gy_reveal_card_type: String = ""   # reveal-pick: required card type, kept so the choice can be re-opened if a pick is refused
 var _gy_filter_active: bool = false   # true = _gy_selectable is authoritative, INCLUDING when empty (reveal-pick with no matching card ⇒ nothing is pickable). Without this an empty dict read as "all selectable" and let the player submit an illegal pick, which the engine refuses — leaving the choice pending forever and hard-locking the turn.
@@ -2455,6 +2456,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_totem_target(event.payload)
 		"death_target_required":
 			_handle_death_target(event.payload)
+		"recomb_choice_opened":
+			_handle_recomb_choice(event.payload)
 		"mulligan_phase_started":
 			_handle_mulligan_started(event.payload)
 		"mulligan_committed":
@@ -3243,6 +3246,34 @@ func _on_totem_target_resolved() -> void:
 # HUMAN controller (either seat) is always PROMPTED to choose — even in hotseat,
 # since the choice is board-public (no hidden information). The choice is
 # resolved on the shared screen with the router acting for the controller.
+# Operation Recombobulation: an opposing non-token ally died while the quest
+# reward is active, so the completer MAY put an ally card from his own graveyard
+# into his hand. Optional and board-public (a graveyard is open information), so
+# the off-seat hotseat player is routed with "public" — no hand hiding, no
+# handoff, just the browser and their click.
+func _handle_recomb_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var card_ids: Array = payload.get("card_ids", [])
+	if _route_choice(player, "public") == "ai":
+		var pick := ""
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			pick = (ai_obj as BaseAI).choose_recombobulation(_state, _db, player)
+		var events := StackResolver.choose_recombobulation(_state, pick, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Operation Recombobulation — put an ally card from your graveyard into your hand",
+			0, 1)
+	_gy_recomb_mode = true
+	_gy_confirm_btn.text = "Take it (C)"
+	_gy_cancel_btn.text = "Decline (Esc)"
+	_set_status("An opposing ally was destroyed — take an ally card back, or decline")
+	_refresh_ui()
+
+
 func _handle_death_target(payload: Dictionary) -> void:
 	var card_id: String = payload.get("card_id", "")
 	var ctrl: String    = payload.get("player", "")
@@ -3889,6 +3920,9 @@ func _update_gy_confirm() -> void:
 func _on_gy_confirm_pressed() -> void:
 	if _gy_view_only or _gy_confirm_btn.disabled:
 		return
+	if _gy_recomb_mode:
+		_resolve_recomb_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
+		return
 	if _gy_reveal_mode:
 		var pick: String = _gy_selected[0] if not _gy_selected.is_empty() else ""
 		var payload := {
@@ -3963,6 +3997,9 @@ func _on_gy_cancel_pressed() -> void:
 		return
 	if _gy_reveal_mode:
 		return  # mandatory reveal-pick — no cancel
+	if _gy_recomb_mode:
+		_resolve_recomb_choice("")   # "you may" — Esc/Cancel declines the fetch
+		return
 	var was_view_only := _gy_view_only
 	_close_gy_dialog()
 	if not was_view_only:
@@ -3970,11 +4007,25 @@ func _on_gy_cancel_pressed() -> void:
 	_refresh_ui()
 
 
+# Shared exit for the Recombobulation browser: "" declines. Another queued
+# death re-opens the browser through recomb_choice_opened, so this only has to
+# hand input back to the seated player and resume driving.
+func _resolve_recomb_choice(pick: String) -> void:
+	_close_gy_dialog()
+	var events := StackResolver.choose_recombobulation(_state, pick, _db)
+	_exit_choice_peek_mode()
+	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+
+
 func _close_gy_dialog() -> void:
 	_dismiss_gy_confirm_popup()
 	_gy_ask_confirm = false
 	_gy_confirm_heal = 0
 	_gy_reveal_mode = false
+	_gy_recomb_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
 	_gy_dialog.visible = false

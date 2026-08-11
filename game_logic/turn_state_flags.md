@@ -57,9 +57,18 @@ GameState.has_turn_event(type) / turn_events_of(type)
 | Type | Written in | Snapshot fields | Read by |
 |---|---|---|---|
 | `damage_dealt` | `GameLogic.deal_damage` — AFTER prevention (717.2b: fully absorbed damage was never dealt) and AFTER the 405.3 excess guard (a packet at an already-0-HP target places nothing) | `source_id`, `target_id`, `amount`, `source_controller`, `target_controller`, `source_is_ally`, `target_is_hero` | Thysta Spiritlasher (`dark_portal_236`): any entry this turn → she stays silent (`TurnManager._apply_each_turn_end_effects`). Torek's Assault (`azeroth_345`): entry with `target_is_hero` ∧ `source_is_ally` ∧ `source_controller` = completer ∧ `target_controller` ≠ completer (`StackResolver.can_submit` quest gate). Cold Blood (`azeroth_92`): entry with `source_id` = the granting player's hero ∧ target still an ally in play → destroy it (`StackResolver._fire_cold_blood`) |
+| `ally_destroyed` | `GameLogic.check_destroyed`, `GameLogic.destroy_card`, and the 400.5 attachment sweep in `move_card` — co-located with every `GameEvent.card_destroyed` construction, i.e. while the card is still in play | `card_id`, `controller`, `owner`, `is_ally`, `is_token` | Operation Recombobulation (`dark_portal_292`): entry with `is_ally` ∧ not `is_token` ∧ `controller` ≠ the completer → the completer MAY fetch an ally card out of his graveyard (`StackResolver._fire_recombobulation`) |
 
 `put_damage` (405.3 self-damage costs) deliberately does not record — self-costs
 are not "damage dealt", the same call made for Berserking's counters.
+
+Every `ally_destroyed` field is a snapshot for the reason rule 2 gives, and this
+entry is the sharpest case of it: by the time a condition reads the entry the
+card sits in a graveyard, so its zone can no longer answer "was it an ally?",
+and a token has been redirected to RFG and answers nothing at all. `is_ally` is
+therefore frozen from the zone the card occupied at the moment it died, and
+`controller` from who controlled it then (an Infernal handed over mid-turn
+died on the new controller's side).
 
 ### Adding a turn-history condition
 
@@ -105,6 +114,7 @@ turn. Not log candidates — they're state, not history.
 | `melee_strike_discount` | `PlayerState` | Gorebelly |
 | `ranged_weapon_atk_bonus` | `PlayerState` | Elendril |
 | `rapid_fire_ready_cost` | `PlayerState` | Rapid Fire |
+| `recomb_from_index` | `PlayerState` | Operation Recombobulation — an INDEX into `turn_events`, exactly like `cold_blood_from_index`; advanced past every entry the sweep has handled, so a death fires the reward once |
 | `cold_blood_from_index` | `PlayerState` | Cold Blood — an INDEX into `turn_events` (Category A is where the effect's facts live); makes the trigger forward-looking |
 | `next_card_cost_mod` | `PlayerState` | Nature's Swiftness — one-shot: consumed at the chain entry of the next card played (restored by `retract_last`), cleared at turn start if unused |
 | `damage_prevention` | `PlayerState` | Armor pool (safety clear — scoped to its combat) |

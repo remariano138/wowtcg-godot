@@ -416,6 +416,17 @@ static func death_target_required(card_id: String, player_id: String) -> GameEve
 		"card_id": card_id, "player": player_id,
 	})
 
+# Operation Recombobulation: an opposing non-token ally died and the quest
+# completer MAY fetch an ally card out of his graveyard. `card_ids` is the
+# selectable set (never empty — the choice does not open otherwise).
+static func recomb_choice_opened(player_id: String, card_ids: Array) -> GameEvent:
+	return make("recomb_choice_opened", {
+		"player": player_id, "card_ids": card_ids,
+	})
+
+static func recomb_declined(player_id: String) -> GameEvent:
+	return make("recomb_declined", {"player": player_id})
+
 static func card_returned_from_graveyard(card_id: String, player_id: String) -> GameEvent:
 	return make("card_returned_from_graveyard", {
 		"card_id": card_id, "player": player_id,

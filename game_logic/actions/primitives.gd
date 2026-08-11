@@ -110,6 +110,7 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 			for att_id in card.attachments.duplicate():
 				var att := state.get_card(att_id)
 				if att:
+					_record_ally_destroyed(state, att_id)
 					events.append(GameEvent.card_destroyed(att_id, card_id))
 					events.append_array(move_card(state, att_id, att.owner + "_graveyard"))
 			card.attachments.clear()
@@ -411,6 +412,25 @@ static func put_damage(state: GameState, target_id: String, amount: int, db) -> 
 	]
 
 
+# ── ally_destroyed turn-log entry ──────────────────────────────────────────────
+# Co-located with every GameEvent.card_destroyed construction (see
+# game_logic/turn_state_flags.md). Snapshot fields are frozen here because none
+# of them survives to read time: the card is in a graveyard (zone lookup can no
+# longer say "ally"), a token is on its way to RFG, and control may change.
+static func _record_ally_destroyed(state: GameState, card_id: String) -> void:
+	var card := state.get_card(card_id)
+	if not card:
+		return
+	var zone := state.zones.get(card.zone_id) as Zone
+	state.record("ally_destroyed", {
+		"card_id": card_id,
+		"controller": card.controller,
+		"owner": card.owner,
+		"is_ally": zone != null and zone.zone_type == "ally_row",
+		"is_token": card.is_token,
+	})
+
+
 # ── check_destroyed ────────────────────────────────────────────────────────────
 # State-based check: if the card is in play with HP <= 0, destroy it.
 # Heroes are a special case — their death triggers game_over and they do NOT
@@ -430,6 +450,7 @@ static func check_destroyed(state: GameState, card_id: String,
 		# resolver emit game_over directly.
 		return []
 	var events: Array[GameEvent] = []
+	_record_ally_destroyed(state, card_id)
 	events.append(GameEvent.card_destroyed(card_id, source_id))
 	events.append_array(move_card(state, card_id, card.owner + "_graveyard"))
 	return events
@@ -488,6 +509,7 @@ static func destroy_card(state: GameState, card_id: String,
 	if not card or not state.is_in_play(card_id):
 		return []
 	var events: Array[GameEvent] = []
+	_record_ally_destroyed(state, card_id)
 	events.append(GameEvent.card_destroyed(card_id, source_id))
 	events.append_array(move_card(state, card_id, card.owner + "_graveyard"))
 	return events

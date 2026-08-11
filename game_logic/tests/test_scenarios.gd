@@ -4820,6 +4820,13 @@ func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
 	ok(StackResolver.can_use_quest_no_target_check(state, "torek_inst", "p1", db),
 		"sc26c-d: probe succeeds once our ally damages the opposing hero")
 
+	# Snapshot semantics: the condition was true at the moment the damage
+	# landed, so the ally dying afterwards must not un-satisfy it (the turn
+	# event log records facts at write time, not references re-derived at read).
+	GameLogic.move_card(state, "p1_ally", "p1_graveyard")
+	ok(StackResolver.can_use_quest_no_target_check(state, "torek_inst", "p1", db),
+		"sc26c-d2: probe still succeeds after that ally has died")
+
 	var hand_before: int = state.zones["p1_hand"].card_ids.size()
 	for i in 5:
 		var did := "deck_%d" % i
@@ -4841,8 +4848,8 @@ func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
 	# Flag resets at the start of a new turn (action -> end -> next turn's ready).
 	TurnManager.advance_phase(state, db)
 	TurnManager.advance_phase(state, db)
-	ok(not state.players["p2"].hero_damaged_by_ally_this_turn,
-		"sc26c-h: hero_damaged_by_ally_this_turn resets at next turn start")
+	ok(state.turn_events.is_empty(),
+		"sc26c-h: turn event log resets at next turn start")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8576,7 +8583,7 @@ func _test_thysta_burns_idle_turn() -> void:
 
 	# Now p2's turn, equally idle: Thysta is p1's card but still fires, and hits
 	# p2's hero — "that player" is whoever's turn ended.
-	state.damage_dealt_this_turn = false
+	state.turn_events.clear()
 	state.phase       = "action"
 	state.turn_player = "p2"
 	TurnManager.advance_phase(state, db)
@@ -8602,7 +8609,7 @@ func _test_thysta_silent_after_damage() -> void:
 	# A single point of damage on an ALLY — not a hero, and not even the turn
 	# player's — is still "damage dealt this turn".
 	GameLogic.deal_damage(state, "thysta_inst", "dummy_inst", 1, db)
-	ok(state.damage_dealt_this_turn, "thy-e: ally damage sets the turn flag")
+	ok(state.has_turn_event("damage_dealt"), "thy-e: ally damage is recorded in the turn log")
 
 	state.phase = "action"
 	TurnManager.advance_phase(state, db)
@@ -8612,7 +8619,7 @@ func _test_thysta_silent_after_damage() -> void:
 	# The flag clears at the next turn start, so the following idle turn burns.
 	state.phase = "end"
 	TurnManager.advance_phase(state, db)   # end → next turn (ready)
-	ok(not state.damage_dealt_this_turn, "thy-g: flag resets at turn start")
+	ok(not state.has_turn_event("damage_dealt"), "thy-g: turn log resets at turn start")
 
 
 # Rule 717.2b: damage prevented in full ceases to exist, so it was never dealt
@@ -8634,7 +8641,7 @@ func _test_thysta_prevented_damage_still_counts_as_none() -> void:
 	GameLogic.deal_damage(state, "thysta_inst", "p1_hero", 1, db)
 
 	eq(state.get_card("p1_hero").damage_taken, 0, "thy-h: damage fully prevented")
-	ok(not state.damage_dealt_this_turn, "thy-i: prevented damage did NOT set the flag")
+	ok(not state.has_turn_event("damage_dealt"), "thy-i: prevented damage was NOT recorded")
 
 	state.phase = "action"
 	TurnManager.advance_phase(state, db)
@@ -8665,7 +8672,7 @@ func _test_thysta_stacks_and_sees_earlier_damage() -> void:
 	eq(state.get_current_hp("p1_hero", db), 24, "thy-k: both copies fired (3 + 3) at the turn player's hero")
 
 	# Fresh turn, damage dealt EARLY, then a Thysta enters play afterwards.
-	state.damage_dealt_this_turn = false
+	state.turn_events.clear()
 	state.turn_player = "p2"
 	_add_ally(state, "dummy_inst", "dummy_def", "p1")
 	GameLogic.deal_damage(state, "thysta_b", "dummy_inst", 1, db)

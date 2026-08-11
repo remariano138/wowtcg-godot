@@ -52,11 +52,6 @@ var rapid_fire_ready_cost: int = -1
 # every turn (so it lasts exactly the turn it was gained in).
 var ranged_weapon_atk_bonus: int = 0
 
-# Rule-condition tracking for quests like Torek's Assault: whether this
-# player's hero was dealt damage by an opposing ally this turn. Reset at the
-# start of each turn.
-var hero_damaged_by_ally_this_turn: bool = false
-
 # Party-wide "+X ATK while attacking this turn" grants (Rayder, For the
 # Horde!). Kept here instead of as per-card buffs so they also apply to
 # allies that enter play AFTER the effect resolves, for the rest of the turn.

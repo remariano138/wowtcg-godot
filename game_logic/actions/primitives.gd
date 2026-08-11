@@ -188,22 +188,6 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		return events
 	var target_ps := state.players.get(target.controller) as PlayerState
 
-	# Thysta Spiritlasher's "if no damage was dealt this turn" condition. Set
-	# here, AFTER prevention: damage prevented in full ceases to exist (717.2b)
-	# and must not count. This is the only write site, so every damage source in
-	# the game — combat, abilities, powers, triggers — feeds it by construction.
-	# put_damage (405.3 self-damage costs) is a separate primitive and correctly
-	# does not, matching the call made for Berserking's counters.
-	state.damage_dealt_this_turn = true
-
-	# Torek's Assault condition: track when a hero is damaged by an opposing ally.
-	if target_ps and target_ps.hero_instance_id == target_id:
-		var source_card := state.get_card(source_id)
-		if source_card and source_card.controller != target.controller:
-			var source_zone := state.zones.get(source_card.zone_id) as Zone
-			if source_zone and source_zone.zone_type == "ally_row":
-				target_ps.hero_damaged_by_ally_this_turn = true
-
 	var old_hp := state.get_current_hp(target_id, db)
 
 	# Rule 405.3: excess damage beyond fatal is lost, not placed.
@@ -213,6 +197,35 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 	target.damage_taken += actual
 	var new_hp := state.get_current_hp(target_id, db)
 	var max_hp := state.get_max_hp(target_id, db)
+
+	# Turn event log (turn-history conditions — Thysta Spiritlasher's "if no
+	# damage was dealt this turn", Torek's Assault's "opposing hero damaged by
+	# an ally in your party this turn"; see game_logic/turn_state_flags.md).
+	# Recorded here and nowhere else, deliberately paired with the damage_dealt
+	# event so log truth == event truth:
+	#   - AFTER prevention, so damage absorbed in full doesn't count (717.2b);
+	#   - AFTER the 405.3 excess guard above, so a packet at an already-0-HP
+	#     target (possible mid-combat, since deal_damage only places damage and
+	#     check_destroyed runs separately) doesn't count either.
+	# The controller/zone facts are SNAPSHOTTED now — by the time a condition
+	# scans the log the source may be in a graveyard or under new control
+	# (Infernal), and re-deriving from the id would answer a different question.
+	# Every damage source funnels through here, so new effects feed the log by
+	# construction. put_damage (405.3 self-damage costs) is a separate primitive
+	# and correctly does not record — same call made for Berserking's counters.
+	var source_card := state.get_card(source_id)
+	var source_zone: Zone = null
+	if source_card:
+		source_zone = state.zones.get(source_card.zone_id) as Zone
+	state.record("damage_dealt", {
+		"source_id":         source_id,
+		"target_id":         target_id,
+		"amount":            actual,
+		"source_controller": source_card.controller if source_card else "",
+		"target_controller": target.controller,
+		"source_is_ally":    source_zone != null and source_zone.zone_type == "ally_row",
+		"target_is_hero":    target_ps != null and target_ps.hero_instance_id == target_id,
+	})
 
 	events.append(GameEvent.damage_dealt(source_id, target_id, actual))
 	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))

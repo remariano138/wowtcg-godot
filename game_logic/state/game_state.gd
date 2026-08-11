@@ -29,14 +29,54 @@ var turn_player: String = ""       # player_id of who has the active turn
 var first_player: String = ""      # player_id who goes first (set once at game start)
 var phase: String = "setup"
 var priority_player: String = ""   # player_id who currently holds priority
-# Thysta Spiritlasher: "if no damage was dealt this turn". Set by
-# GameLogic.deal_damage whenever >= 1 damage actually LANDS (fully prevented
-# damage ceases to exist, 717.2b, and so doesn't count); cleared at every turn
-# start. Tracked unconditionally rather than only while such a card is in play:
-# the condition is retroactive, and a Thysta entering play mid-turn must still
-# see damage dealt BEFORE she arrived — damage that killed an ally leaves no
-# trace on the board to reconstruct it from.
-var damage_dealt_this_turn: bool = false
+# ── Turn event log (turn-history conditions) ──────────────────────────────────
+# Structured record of rules-relevant things that HAPPENED this turn, for cards
+# whose condition reads turn history rather than board state (Thysta
+# Spiritlasher's "if no damage was dealt this turn", Torek's Assault's "if an
+# opposing hero was dealt damage this turn by an ally in your party").
+# See game_logic/turn_state_flags.md for the full design rationale.
+#
+# Rules of the log:
+#   - Entries are appended by the PRIMITIVES (e.g. GameLogic.deal_damage), at
+#     the moment the fact becomes true — NOT at event-bus emission. Rules
+#     functions return events and the caller emits, so a condition read
+#     mid-resolution would miss bus-level entries from its own chain.
+#   - Entries snapshot the facts a condition needs AT WRITE TIME (was the
+#     source an ally, who controlled it). Payloads hold ids; by read time the
+#     card may be in a graveyard or under new control, so re-deriving from ids
+#     gives a different answer than the moment the fact was true.
+#   - Recorded unconditionally, in every game: turn-history conditions are
+#     retroactive (a Thysta entering play mid-turn must see damage dealt
+#     before she arrived, which nothing on the board records).
+#   - Cleared at every turn start (TurnManager._enter_ready), so it stays
+#     bounded and "this turn" is simply "in the log".
+# Entry shape: {"type": String, ...snapshot fields}. Current types:
+#   "damage_dealt" — {source_id, target_id, amount, source_controller,
+#                     target_controller, source_is_ally, target_is_hero}
+#     Appended AFTER prevention (717.2b — fully absorbed damage was never
+#     dealt) and AFTER the 405.3 excess guard (a packet at an already-0-HP
+#     target places nothing), i.e. exactly when damage_dealt is constructed.
+var turn_events: Array = []
+
+# The one append site. Keep new record calls co-located with the matching
+# GameEvent construction in the primitive, so log truth == event truth.
+func record(event_type: String, data: Dictionary) -> void:
+	var entry := {"type": event_type}
+	entry.merge(data)
+	turn_events.append(entry)
+
+func has_turn_event(event_type: String) -> bool:
+	for e in turn_events:
+		if e.get("type", "") == event_type:
+			return true
+	return false
+
+func turn_events_of(event_type: String) -> Array:
+	var result: Array = []
+	for e in turn_events:
+		if e.get("type", "") == event_type:
+			result.append(e)
+	return result
 
 # ── Interrupt stack (rule 409 / 410) ──────────────────────────────────────────
 # A stack of proposed-but-not-yet-resolved actions. Last in, first resolved.
@@ -720,7 +760,7 @@ func to_dict() -> Dictionary:
 		"turn_player":       turn_player,
 		"phase":             phase,
 		"priority_player":   priority_player,
-		"damage_dealt_this_turn": damage_dealt_this_turn,
+		"turn_events":       turn_events.duplicate(true),
 		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
@@ -738,7 +778,7 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.turn_player        = d.get("turn_player", "")
 	gs.phase              = d.get("phase", "setup")
 	gs.priority_player    = d.get("priority_player", "")
-	gs.damage_dealt_this_turn = d.get("damage_dealt_this_turn", false)
+	gs.turn_events        = (d.get("turn_events", []) as Array).duplicate(true)
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
 	for a in d.get("pending_actions", []):
 		gs.pending_actions.append(PendingAction.from_dict(a))

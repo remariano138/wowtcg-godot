@@ -783,8 +783,9 @@ prevention point (717.2c) — the one decision the trigger does present.
   own idle turn she burns their own hero. The clock is symmetric, and that is
   the point of the card: it punishes whoever wastes a turn.
 - **"No damage was dealt" is global** — any damage, from any source, to any
-  character on either side, at any point in the turn. Tracked by the single
-  `GameState.damage_dealt_this_turn` flag written in `GameLogic.deal_damage`.
+  character on either side, at any point in the turn. Answered from the turn
+  event log (`GameState.turn_events`, `damage_dealt` entries recorded in
+  `GameLogic.deal_damage` — see `game_logic/turn_state_flags.md`).
 - **Damage prevented in full does not count as dealt** (717.2b — the packet
   ceases to exist), so a hit fully absorbed by armor leaves Thysta live. This
   matches every other "damage actually dealt" rider in the engine (whelp bounce,
@@ -795,7 +796,7 @@ prevention point (717.2c) — the one decision the trigger does present.
   two Thystas both burn a clean turn for 3 each rather than the first silencing
   the second.
 
-**Why the flag is tracked unconditionally**, in every game, whether or not such a
+**Why the log is kept unconditionally**, in every game, whether or not such a
 card is on the board: the condition is retroactive. A Thysta entering play
 mid-turn must still see damage dealt *before* she arrived, and there is nothing
 on the board to reconstruct that from — damage that killed an ally leaves no
@@ -807,4 +808,4 @@ two passes — the original turn-player-scoped one for "at the end of YOUR turn"
 (Infernal), and a second all-players pass for "each player's turn" triggers. New
 each-player end triggers belong in `_apply_each_turn_end_effects`, not the
 turn-player one. Enforcement sites: `TurnManager._apply_each_turn_end_effects`
-and the flag write in `GameLogic.deal_damage`.
+and the `damage_dealt` record in `GameLogic.deal_damage`.

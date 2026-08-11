@@ -5073,10 +5073,21 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	if ally_req > 0 \
 			and state.cards_in_zone(action.source_player + "_ally_row").size() < ally_req:
 		return false
-	# Torek's Assault-style condition: opposing hero damaged by our ally this turn.
+	# Torek's Assault-style condition: opposing hero damaged by our ally this
+	# turn. Read from the turn event log (see game_logic/turn_state_flags.md);
+	# the snapshot fields answer "was the source OUR ally at the moment the
+	# damage landed", which stays true even if that ally has since died or
+	# changed control.
 	if quest_requires_hero_damaged_by_ally(def):
-		var opp_ps := state.players.get(_other_player(state, action.source_player)) as PlayerState
-		if not opp_ps or not opp_ps.hero_damaged_by_ally_this_turn:
+		var found := false
+		for e in state.turn_events_of("damage_dealt"):
+			if e.get("target_is_hero", false) \
+					and e.get("source_is_ally", false) \
+					and e.get("source_controller", "") == action.source_player \
+					and e.get("target_controller", "") != action.source_player:
+				found = true
+				break
+		if not found:
 			return false
 	# Engine-only deviation — see data/rules_deviations.md.
 	if quest_requires_turn_player(def) and state.turn_player != action.source_player:

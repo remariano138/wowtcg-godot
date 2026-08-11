@@ -97,9 +97,10 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	var events: Array[GameEvent] = [GameEvent.turn_changed(state.turn_number, state.turn_player)]
 
 	# Reset once-per-turn flags.
-	# Thysta Spiritlasher's "no damage was dealt this turn" watch starts clean
-	# each turn; the end-phase trigger reads it before this next reset.
-	state.damage_dealt_this_turn = false
+	# The turn event log (turn-history conditions — Thysta, Torek's Assault)
+	# starts clean each turn: "this turn" means "in the log". The end-phase
+	# triggers read it before this next reset.
+	state.turn_events.clear()
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false
@@ -112,7 +113,6 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		var p := state.players[pid] as PlayerState
 		if p:
 			p.damage_prevention = 0
-			p.hero_damaged_by_ally_this_turn = false
 			p.party_atk_buffs_this_turn.clear()
 			# "This turn" strike discount (Gorebelly) never survives into a new turn.
 			p.melee_strike_discount = 0
@@ -213,7 +213,7 @@ static func _enter_end(state: GameState, db) -> Array[GameEvent]:
 	# turn and both fire. Re-reading it per card would let the first one's own
 	# damage suppress the second — and would be unreliable anyway, since
 	# defer_packets can hold the damage behind an armor prevention point.
-	var none_dealt := not state.damage_dealt_this_turn
+	var none_dealt := not state.has_turn_event("damage_dealt")
 	for pid in state.players:
 		for card in state.cards_in_play(pid):
 			events.append_array(_apply_each_turn_end_effects(state, card, db, none_dealt))

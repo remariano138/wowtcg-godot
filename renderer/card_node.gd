@@ -49,6 +49,8 @@ var _counter_badge_bg: Panel = null
 var _counter_badge_lbl: Label = null
 var _hp_badge_bg: Panel = null
 var _hp_badge_lbl: Label = null
+var _stack_badge_bg: Panel = null
+var _stack_badge_lbl: Label = null
 var _stats_lbl: Label = null
 
 # Set true while a modal overlay (graveyard browser, X-value dialog, …) is open
@@ -221,6 +223,37 @@ static func create(inst_id: String, card_name: String,
 	hp_lbl.visible  = false
 	node.add_child(hp_lbl)
 	node._hp_badge_lbl = hp_lbl
+
+	# Stack-count badge — white number in a dark grey circle, top-right corner.
+	# Used by the resource-zone stacking (BoardRenderer._res_layout): identical
+	# resources render as one pile, and the pile's representative card wears the
+	# number of cards in it. Hidden while the count is 0 or 1 (a pile of one is
+	# just a card).
+	var stk_bg := Panel.new()
+	var stk_style := StyleBoxFlat.new()
+	stk_style.bg_color = Color(0.2, 0.22, 0.28, 0.95)
+	stk_style.set_corner_radius_all(int(BADGE_D * 0.5))
+	stk_style.set_border_width_all(1)
+	stk_style.border_color = Color(0.8, 0.8, 0.85)
+	stk_bg.add_theme_stylebox_override("panel", stk_style)
+	stk_bg.size     = Vector2(BADGE_D, BADGE_D)
+	stk_bg.position = Vector2(W * 0.5 - BADGE_D - 2, -H * 0.5 + 2)
+	stk_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stk_bg.visible  = false
+	node.add_child(stk_bg)
+	node._stack_badge_bg = stk_bg
+
+	var stk_lbl := Label.new()
+	stk_lbl.add_theme_font_size_override("font_size", 13)
+	stk_lbl.add_theme_color_override("font_color", Color.WHITE)
+	stk_lbl.size     = Vector2(BADGE_D, BADGE_D)
+	stk_lbl.position = stk_bg.position
+	stk_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stk_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	stk_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stk_lbl.visible  = false
+	node.add_child(stk_lbl)
+	node._stack_badge_lbl = stk_lbl
 
 	# Damage badge — centered on card, shown when damage_taken > 0.
 	var badge := Label.new()
@@ -419,6 +452,18 @@ func reveal(duration: float = 1.5) -> void:
 	await get_tree().create_timer(duration).timeout
 	if was_face_down:
 		show_card_back()
+
+
+# Number of identical cards this node fronts for (resource stacking). ≤1 hides
+# the badge — a pile of one is just a card.
+func set_stack_count(count: int) -> void:
+	if not _stack_badge_bg or not _stack_badge_lbl:
+		return
+	var show_it := count > 1
+	_stack_badge_bg.visible  = show_it
+	_stack_badge_lbl.visible = show_it
+	if show_it:
+		_stack_badge_lbl.text = str(count)
 
 
 func set_muted(muted: bool) -> void:

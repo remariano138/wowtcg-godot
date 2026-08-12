@@ -9,7 +9,6 @@ extends Node
 #   register_card(instance_id, node)   — tell the renderer which node is which card
 #   register_zone(zone_id, anchor)     — tell the renderer where each zone sits on screen
 #   set_input_router(router)           — wire card clicks to InputRouter
-#   set_status_label(label)            — label updated with priority / phase info
 #   set_perspective(player_id)         — "" = show all (test/spectator); set = hide opponent hand
 
 # instance_id (String) -> Node2D representing that card visually
@@ -43,7 +42,6 @@ const ATTACH_STACK_GAP := 26.0   # extra peek per additional attachment
 var _death_tweens: Dictionary = {}
 
 var _input_router: InputRouter = null
-var _status_label: Label = null
 
 # Which player is sitting at this screen. "" means spectator/test — show all cards.
 # When set, cards in any other player's hand zone are rendered face-down.
@@ -93,10 +91,17 @@ const SPREAD_ZONES := ["chain",
 	"p1_hero_row", "p2_hero_row",
 	"p1_resource_row", "p2_resource_row"]
 
-# In-play zones need wider spacing so exhausted (rotated 90°) cards don't overlap.
-# When exhausted, a card's footprint is CardNode.H wide, so add ~20px margin.
+# Every in-play card slot is one card HEIGHT square: exhausted, a card is rotated
+# 90° and its footprint becomes H wide, so that is the smallest slot whose
+# contents can never overlap a neighbour in either orientation. It is also what
+# makes the drawn zone grids line up exactly with the cards in them (ready cards
+# touch the top/bottom lines, exhausted ones the left/right).
 # Hand/chain cards are never rotated, so CardNode.W + ~12px margin is fine there.
-const PLAY_SPREAD_GAP := CardNode.H + 20.0
+const CARD_SLOT       := CardNode.H
+const PLAY_SPREAD_GAP := CARD_SLOT
+# Padding used between rows and against the screen edge. Derived from card size
+# so the whole board layout rescales when the cards do.
+const CARD_PAD        := CardNode.H / 5.0
 
 # Hand cards render 1.2x larger than table cards for readability.
 const HAND_CARD_SCALE := 1.2
@@ -299,8 +304,6 @@ func register_zone(zone_id: String, anchor: Node2D) -> void:
 		_zone_cards[zone_id] = []
 	if zone_id.ends_with("_deck"):
 		_create_deck_label(zone_id, anchor)
-	if zone_id.ends_with("_hero_row"):
-		_create_row_placeholder(zone_id, anchor)
 
 
 # Which way cards in a zone face: P2's zones point at P2 (180°, upside-down to
@@ -334,10 +337,6 @@ func set_input_router(router: InputRouter) -> void:
 	router.conditional_highlights_updated.connect(_on_conditional_highlights_updated)
 	router.targeting_started.connect(_on_targeting_started)
 	router.targeting_cancelled.connect(_on_targeting_cancelled)
-
-
-func set_status_label(label: Label) -> void:
-	_status_label = label
 
 
 # Pass the local player's id to hide opponent hand cards. Call before any cards
@@ -413,8 +412,10 @@ func _on_game_event(event: GameEvent) -> void:
 				_move_attachments_with_host(host_id, host_cn.global_position)
 		"card_exhausted":
 			_animate_exhaust(event.payload["card"])
+			_res_restack(event.payload["card"])
 		"card_readied":
 			_animate_ready(event.payload["card"])
+			_res_restack(event.payload["card"])
 		"damage_dealt":
 			_show_damage_number(event.payload["target"], event.payload["amount"])
 		"hp_changed":
@@ -459,7 +460,6 @@ func _on_game_event(event: GameEvent) -> void:
 			var cn := card_nodes.get(event.payload.get("quest_id", "")) as CardNode
 			if cn:
 				cn.show_card_back()
-			_set_status("Quest completed by %s — reward applied!" % event.payload.get("player", "?"))
 		"quest_turned_face_down":
 			# Kolkar: same spent face-down resource state as a completed quest,
 			# but no reward was applied.
@@ -479,7 +479,6 @@ func _on_game_event(event: GameEvent) -> void:
 					_wiggling_id = ""
 				else:
 					hcn.wiggle_for(2.0)
-			_set_status("%s used their hero power!" % event.payload.get("player", "?"))
 		"ally_power_used":
 			var ally_id: String = event.payload.get("ally_id", "")
 			var acn := card_nodes.get(ally_id) as CardNode
@@ -511,39 +510,10 @@ func _on_game_event(event: GameEvent) -> void:
 				if apcn:
 					_wiggling_id = ap_id
 					apcn.start_wiggle()
-			var atype: String = event.payload.get("action_type", "?")
-			if atype == "propose_combat":
-				_set_status("⚔ %s attacks  —  SPACE to let it resolve" % event.payload.get("player", "?"))
-			else:
-				_set_status("Chain +1  (%s playing %s)  —  SPACE to pass" % [
-					event.payload.get("player", "?"), atype])
-		"priority_passed":
-			_set_status("Priority → %s  —  SPACE to pass" % event.payload.get("player", "?"))
-		"priority_window_closed":
-			_set_status("Window closed  (phase: %s)" % event.payload.get("phase", "?"))
-		"action_fizzled":
-			_set_status("Action fizzled: %s" % event.payload.get("reason", "?"))
-		"action_retracted":
-			_set_status("Retracted: %s" % event.payload.get("action_type", "?"))
-		"discard_choice_opened":
-			_set_status("Discard %d card(s) from hand  [click a card]" % event.payload.get("count", 1))
-		"combat_started":
-			_set_status("⚔ Combat begins!")
-		"protect_point_opened":
-			_set_status("⚔ Protect point — defending player may exhaust a Protector  [or skip]")
-		"protect_chosen":
-			var pid: String = event.payload.get("protector_id", "")
-			if pid == "":
-				_set_status("⚔ No protection — combat proceeds")
-			else:
-				_set_status("⚔ Protector intercepts!")
-		"combat_cancelled":
-			_set_status("⚔ Combat cancelled — a combatant left combat")
 		"combat_concluded":
 			var attacker_id: String = event.payload.get("attacker_id", "")
 			if event.payload.get("cancelled", false):
 				# 603.1b: no damage was dealt and a combatant is gone — no lunge.
-				_set_status("⚔ Combat cancelled — no damage dealt")
 				return
 			await _animate_attack(attacker_id, event.payload.get("defender_id", ""))
 			# Re-spread the attacker's zone: layout tweens can conflict with the
@@ -552,16 +522,10 @@ func _on_game_event(event: GameEvent) -> void:
 				if attacker_id in (_zone_cards.get(zone_id, []) as Array):
 					_relayout_zone(zone_id)
 					break
-			var a_dmg: int = event.payload.get("attacker_damage", 0)
-			var d_dmg: int = event.payload.get("defender_damage", 0)
-			_set_status("⚔ Combat resolved  (dealt %d / received %d)" % [a_dmg, d_dmg])
 		"phase_changed":
 			pass   # no visual action needed on phase transitions
 		"deck_shuffled":
 			pass  # no visual needed; card_moved events handle the hand refill
-		"game_over":
-			_set_status("★ GAME OVER  —  %s"
-					% GameEvent.game_over_explanation(event.payload))
 
 
 # ── Animations ─────────────────────────────────────────────────────────────────
@@ -747,6 +711,9 @@ func _apply_zone_scale(card_id: String, zone_id: String) -> void:
 	var node := card_nodes.get(card_id) as Node2D
 	if not node:
 		return
+	# Leaving a resource zone sheds any pile badge (retract to hand, etc.).
+	if not (zone_id in RESOURCE_ZONES) and node is CardNode:
+		(node as CardNode).set_stack_count(0)
 	var is_hand := zone_id.ends_with("_hand")
 	if _is_hero_card(card_id):
 		node.scale = Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE)
@@ -822,6 +789,116 @@ static func _spread_order(zone_id: String, ids: Array) -> Array:
 	return out
 
 
+# ── Resource zone grid ─────────────────────────────────────────────────────────
+# The resource zones lay out as a GRID rather than an ever-widening row: a row
+# of resources grew without bound and pushed into its neighbours, while the
+# number of resources a player accumulates is quite predictable.
+#
+# A cell is square and one card HEIGHT on a side, because an exhausted card is
+# rotated 90° — that is the smallest cell whose contents can never overlap a
+# neighbour in either orientation, and it makes the drawn grid lines touch the
+# card edges exactly (ready cards touch top/bottom, exhausted ones left/right).
+#
+# Cards fill left-to-right then top-to-bottom FROM THEIR OWNER'S SEAT: the list
+# is put through _spread_order (which reverses for p2) and the p2 camera's 180°
+# rotation flips both axes back, so each player reads their own grid the same way.
+const RESOURCE_ZONES  := ["p1_resource_row", "p2_resource_row"]
+const RES_GRID_COLS   := 5
+const RES_GRID_ROWS   := 3
+const RES_CELL        := CARD_SLOT
+
+static func res_grid_size(count: int) -> Vector2:
+	# Overflow past COLS*ROWS grows extra rows rather than overlapping cards.
+	var rows: int = max(RES_GRID_ROWS, int(ceil(float(count) / float(RES_GRID_COLS))))
+	return Vector2(RES_GRID_COLS * RES_CELL, rows * RES_CELL)
+
+
+# ── Resource stacking (pure rendering) ────────────────────────────────────────
+# Identical resources render as ONE pile occupying one slot, with the pile size
+# badged on top (CardNode.set_stack_count). Identical means same ready/exhausted
+# state AND same name — where all face-down cards count as sharing a name.
+# Nothing in the game state or engine changes: every card keeps its own node,
+# the pile's members simply share a slot position, and the engine's exhaust
+# order (face-down first — see StackResolver._resource_pay_order) is what keeps
+# face-down piles together instead of exhausting cards at random.
+#
+# Set by the scene at game start; without it every card is its own pile.
+var _stack_state = null   # GameState — read-only, for pose/name grouping
+var _stack_db = null      # CardDatabase — card names for face-up grouping
+
+func set_state_context(state, db) -> void:
+	_stack_state = state
+	_stack_db = db
+
+
+# A pose flip regroups the piles immediately: the flipped card slides to its
+# new pile (or opens one) the moment the exhaust/ready event lands, and the
+# counts on both piles update with it.
+func _res_restack(card_id: String) -> void:
+	var zone := _zone_of_card(card_id)
+	if zone in RESOURCE_ZONES:
+		_relayout_zone(zone)
+
+
+# Grouping key: cards with equal keys share a pile.
+func _res_stack_key(card_id: String) -> String:
+	if _stack_state == null:
+		return card_id
+	var card = _stack_state.get_card(card_id)
+	if card == null:
+		return card_id
+	var pose := "E|" if card.is_exhausted else "R|"
+	if card.face_down:
+		return pose + "#facedown"
+	var name_key: String = card.card_def_id
+	if _stack_db:
+		var def = _stack_db.get_def(card.card_def_id)
+		if def:
+			name_key = def.card_name
+	return pose + name_key
+
+
+# Slot assignment for a resource zone: one slot per PILE, in order of each
+# pile's first appearance in the (seat-ordered) card list.
+# Returns {"slots": {card_id: slot_idx}, "slot_count": int,
+#          "stack": {card_id: pile size for the pile's representative, else 0}}.
+func _res_layout(zone_id: String) -> Dictionary:
+	var ids: Array = _spread_cards(zone_id)
+	var slots: Dictionary = {}
+	var stack: Dictionary = {}
+	var key_slot: Dictionary = {}   # stack key -> slot idx
+	var key_rep:  Dictionary = {}   # stack key -> representative card_id
+	var next_slot := 0
+	for cid in ids:
+		var key := _res_stack_key(cid)
+		if not key_slot.has(key):
+			key_slot[key] = next_slot
+			key_rep[key]  = cid
+			next_slot += 1
+		slots[cid] = key_slot[key]
+		stack[cid] = 0
+	for cid in ids:
+		stack[key_rep[_res_stack_key(cid)]] += 1
+	return {"slots": slots, "slot_count": next_slot, "stack": stack}
+
+
+# Position of slot `idx` (of `count`) in `zone_id`, as an offset from the zone
+# anchor — the ONE place a zone's card layout is defined, shared by the position
+# query, the settled check and the relayout tween.
+func _slot_offset(zone_id: String, idx: int, count: int) -> Vector2:
+	if zone_id in RESOURCE_ZONES:
+		var rows: int = max(RES_GRID_ROWS,
+			int(ceil(float(count) / float(RES_GRID_COLS))))
+		var col: int = idx % RES_GRID_COLS
+		var row: int = idx / RES_GRID_COLS
+		# Anchor is the grid's centre, like every other zone anchor.
+		return Vector2(
+			(col - (RES_GRID_COLS - 1) * 0.5) * RES_CELL,
+			(row - (rows - 1) * 0.5) * RES_CELL)
+	var gap: float = _spread_gap(zone_id)
+	return Vector2(-gap * (count - 1) * 0.5 + idx * gap, 0.0)
+
+
 # Cards in a hero_row zone, excluding the pinned hero card — used for the spread.
 func _spread_cards(zone_id: String) -> Array:
 	var zc: Array = _zone_cards.get(zone_id, [])
@@ -848,15 +925,20 @@ func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
 	if not (zone_id in SPREAD_ZONES):
 		return anchor.global_position
 
-	var gap: float = _spread_gap(zone_id)
-	var zc: Array  = _spread_cards(zone_id)
+	if zone_id in RESOURCE_ZONES:
+		var lay := _res_layout(zone_id)
+		if not lay["slots"].has(card_id):
+			return anchor.global_position
+		return anchor.global_position \
+			+ _slot_offset(zone_id, lay["slots"][card_id], lay["slot_count"])
+
+	var zc: Array = _spread_cards(zone_id)
 	var count := zc.size()
 	var idx   := zc.find(card_id)
 	if idx < 0 or count <= 1:
 		return anchor.global_position
 
-	var total := gap * (count - 1)
-	return anchor.global_position + Vector2(-total * 0.5 + idx * gap, 0.0)
+	return anchor.global_position + _slot_offset(zone_id, idx, count)
 
 
 # Smoothly slide all cards in a zone to their centred positions.
@@ -899,9 +981,10 @@ func _zone_settled(zone_id: String, ids: Array) -> bool:
 			if cid != hero_id:
 				spread_ids.append(cid)
 	spread_ids = _spread_order(zone_id, spread_ids)
-	var gap: float = _spread_gap(zone_id)
 	var count := spread_ids.size()
-	var total := gap * (count - 1)
+	# Resource zones stack identical cards onto shared slots (see _res_layout);
+	# a pose change (exhaust/ready) regroups, so it also unsettles the zone.
+	var lay: Dictionary = _res_layout(zone_id) if zone_id in RESOURCE_ZONES else {}
 	for i in count:
 		var node := card_nodes.get(spread_ids[i]) as Node2D
 		if not node:
@@ -909,7 +992,9 @@ func _zone_settled(zone_id: String, ids: Array) -> bool:
 		var t: Tween = _pos_tweens.get(spread_ids[i])
 		if t and t.is_valid() and t.is_running():
 			continue   # in flight — its tween owns the final position
-		var target := anchor.global_position + Vector2(-total * 0.5 + i * gap, 0.0)
+		var slot_i: int = lay["slots"].get(spread_ids[i], i) if lay else i
+		var slot_n: int = lay["slot_count"] if lay else count
+		var target := anchor.global_position + _slot_offset(zone_id, slot_i, slot_n)
 		if node.global_position.distance_to(target) > 1.0:
 			return false
 	if hero_id != "" and hero_id in ids:
@@ -930,16 +1015,23 @@ func _relayout_zone(zone_id: String) -> void:
 	if not anchor:
 		return
 	var hero_id := _hero_card_id_for_zone(zone_id)
-	var gap: float = _spread_gap(zone_id)
 	var zc: Array  = _spread_cards(zone_id)
 	var count := zc.size()
+	var lay: Dictionary = _res_layout(zone_id) if zone_id in RESOURCE_ZONES else {}
 	for i in count:
 		var cid: String = zc[i]
 		var node := card_nodes.get(cid) as Node2D
 		if not node:
 			continue
-		var total  := gap * (count - 1)
-		var target := anchor.global_position + Vector2(-total * 0.5 + i * gap, 0.0)
+		var slot_i: int = lay["slots"].get(cid, i) if lay else i
+		var slot_n: int = lay["slot_count"] if lay else count
+		var target := anchor.global_position + _slot_offset(zone_id, slot_i, slot_n)
+		# Pile badge + draw order: the pile's representative renders on top and
+		# wears the count; everyone else hides theirs beneath it.
+		if lay and node is CardNode:
+			var stack_n: int = lay["stack"].get(cid, 0)
+			(node as CardNode).set_stack_count(stack_n)
+			node.z_index = 1 if stack_n > 0 else 0
 		_kill_pos_tween(cid)
 		var tween  := create_tween()
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
@@ -1217,11 +1309,6 @@ func _update_targeting_cursor(dmg_type: String, dmg_amount: int) -> void:
 	_targeting_cursor.visible          = true
 
 
-func _set_status(text: String) -> void:
-	if _status_label:
-		_status_label.text = text
-
-
 # ── Hero HP bar ────────────────────────────────────────────────────────────────
 
 # Returns the player_id if this card is currently in a hero_row, else "".
@@ -1308,21 +1395,11 @@ func _update_hero_bar(player_id: String, card_id: String, new_hp: int, max_hp: i
 	fill.position = Vector2(0.0, bg.size.y - fill_h)
 
 
-# ── Row placeholders ───────────────────────────────────────────────────────────
-# The hero_row (equipment / ongoing abilities) is often empty, which otherwise
-# leaves no visual trace of the zone. Draw a faint, always-visible slot so the
-# player can see where those cards land.
-
-func _create_row_placeholder(zone_id: String, anchor: Node2D) -> void:
-	const PLACEHOLDER_W := CardNode.W * 4.0
-	const PLACEHOLDER_H := CardNode.H
-	var rect := ColorRect.new()
-	rect.color         = Color(1.0, 1.0, 1.0, 0.06)
-	rect.size          = Vector2(PLACEHOLDER_W, PLACEHOLDER_H)
-	rect.position      = anchor.global_position - Vector2(PLACEHOLDER_W * 0.5, PLACEHOLDER_H * 0.5)
-	rect.mouse_filter  = Control.MOUSE_FILTER_IGNORE
-	rect.z_index       = -1
-	add_child(rect)
+# The hero_row used to get a faint 4-card-wide placeholder rectangle so an empty
+# zone still showed where cards land. The drawn zone grids (playtest's
+# _draw_zone_grids) do that job properly now, and the placeholder's slightly
+# lighter patch showed through them as an unexplained fog over the middle three
+# slots — so it is gone.
 
 
 # ── Deck count labels ──────────────────────────────────────────────────────────

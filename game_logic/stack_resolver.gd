@@ -2870,6 +2870,32 @@ static func _resolve_place_resource(state: GameState,
 # Exhaust resources to pay a card's play cost (rule 412.2).
 # Auto-selects ready resources; face-up/face-down both valid.
 # x = announced X for X-cost cards (0 otherwise).
+# Resources in the order costs consume them: FACE-DOWN cards first (each group
+# keeping row order), face-up cards (quests) last. Any ready resource is worth
+# exactly (1), so which one a cost exhausts is game-irrelevant — the order
+# exists for the renderer's resource stacking (identical face-down cards render
+# as one pile per ready/exhausted pose; draining the face-down pile first keeps
+# the zone at two big piles instead of fragmenting it), and spending anonymous
+# resources before named quests is the natural order anyway.
+static func _resource_pay_order(state: GameState, player_id: String) -> Array:
+	var down: Array = []
+	var up:   Array = []
+	for res_card in state.cards_in_zone(player_id + "_resource_row"):
+		if res_card.face_down:
+			down.append(res_card)
+		else:
+			up.append(res_card)
+	return down + up
+
+
+# Refunds (retract_last) ready in the exact reverse — face-up first — so a
+# pay-then-retract round trip is a no-op on which cards ended up exhausted.
+static func _resource_refund_order(state: GameState, player_id: String) -> Array:
+	var order := _resource_pay_order(state, player_id)
+	order.reverse()
+	return order
+
+
 static func _pay_cost(state: GameState, card_id: String,
 		player_id: String, db, x: int = 0) -> Array[GameEvent]:
 	if not db:
@@ -2878,7 +2904,7 @@ static func _pay_cost(state: GameState, card_id: String,
 	if cost <= 0:
 		return []
 	var events: Array[GameEvent] = []
-	for res_card in state.cards_in_zone(player_id + "_resource_row"):
+	for res_card in _resource_pay_order(state, player_id):
 		if cost <= 0:
 			break
 		if not res_card.is_exhausted:
@@ -2892,7 +2918,7 @@ static func _pay_resource_cost(state: GameState, player_id: String,
 		amount: int) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	var remaining := amount
-	for res_card in state.cards_in_zone(player_id + "_resource_row"):
+	for res_card in _resource_pay_order(state, player_id):
 		if remaining <= 0:
 			break
 		if not res_card.is_exhausted:
@@ -6485,7 +6511,7 @@ static func _pay_resources(state: GameState, player_id: String,
 	if cost <= 0:
 		return []
 	var events: Array[GameEvent] = []
-	for res_card in state.cards_in_zone(player_id + "_resource_row"):
+	for res_card in _resource_pay_order(state, player_id):
 		if cost <= 0:
 			break
 		if not res_card.is_exhausted:
@@ -6640,7 +6666,7 @@ static func retract_last(state: GameState, player_id: String,
 			var ap_data2 := _ally_activated_power(ap_def2) if ap_def2 else {}
 			var ap_cost2 := power_resource_cost(ap_data2,
 				int(top.params.get("x_value", 0)))
-			for res_card in state.cards_in_zone(player_id + "_resource_row"):
+			for res_card in _resource_refund_order(state, player_id):
 				if ap_cost2 <= 0:
 					break
 				if res_card.is_exhausted:
@@ -6659,7 +6685,7 @@ static func retract_last(state: GameState, player_id: String,
 			ncd_ps2.next_card_cost_mod = ncd_back
 	if top.action_type in ["play_ally", "play_instant", "play_ability"] and db and card_id != "":
 		var cost: int = state.get_play_cost(card_id, db, int(top.params.get("x_value", 0)))
-		for res_card in state.cards_in_zone(player_id + "_resource_row"):
+		for res_card in _resource_refund_order(state, player_id):
 			if cost <= 0:
 				break
 			if res_card.is_exhausted:
@@ -6673,7 +6699,7 @@ static func retract_last(state: GameState, player_id: String,
 		var q_def2  := db.get_def(q_card2.card_def_id) as CardDef if q_card2 else null
 		if q_def2:
 			var q_cost: int = max(q_def2.cost, 0)
-			for res_card in state.cards_in_zone(player_id + "_resource_row"):
+			for res_card in _resource_refund_order(state, player_id):
 				if q_cost <= 0:
 					break
 				if res_card.is_exhausted:

@@ -71,7 +71,26 @@ var _mulligan_first: String = ""          # first_player, for the order label
 # world and is seen through _camera; all UI lives in the _hud CanvasLayer, which
 # ignores the camera. The camera rotates 180° about the board centre when the
 # screen is handed to P2, so each player sees their own side at the bottom.
-const BOARD_PIVOT := Vector2(960, 475)   # centre of the board area (y=0..950)
+# The board used to be drawn in y=0..950 with a 120px UI strip beneath it. With
+# that strip gone the board is re-centred in the full 1080 viewport: every anchor
+# is written in the old base coordinates and shifted by this offset in
+# _make_anchor. 65 puts the board's own centre (y=475 in base coords, the axis
+# the two players' decks/graveyards mirror about) on the viewport centre, which
+# is what un-crops the top player's deck and hand.
+const VIEWPORT_H := 1080.0
+const BOARD_Y_OFFSET := VIEWPORT_H * 0.5 - 450.0
+
+# The board's single mirror axis, in BASE board coordinates. Every P2 anchor is
+# generated from the matching P1 anchor by reflecting through this point (see
+# _mirror), so the two seats are guaranteed to see identical layouts — the p2
+# camera rotates 180° about exactly this point.
+#
+# It used to be three different axes: rows reflected about y=450, hands about
+# 465, deck/graveyard columns about 475, and the rows were centred on x=1000
+# while the columns reflected about x=960. That made P2's view of their own side
+# sit up to 80px off from P1's view of theirs.
+const BOARD_MIRROR := Vector2(960, 450)
+const BOARD_PIVOT := Vector2(BOARD_MIRROR.x, BOARD_MIRROR.y + BOARD_Y_OFFSET)
 var _hud: CanvasLayer
 var _camera: Camera2D
 var _camera_tween: Tween = null
@@ -148,6 +167,11 @@ var _context_actions: Array   # Array of {label, action, enabled}
 # section (pass / cancel / status) stays permanently on the bar.
 var _turn_info_window: Panel
 var _controls_window:  Panel
+# The chain display's window. Draggable but not closable; auto-shown whenever
+# the chain is non-empty. Stays centred until the player drags it, after which
+# their placement is kept (see _chain_window_moved).
+var _chain_window:       Panel
+var _chain_window_moved: bool = false
 var _turn_info_btn:    Button
 var _controls_btn:     Button
 # Title bar currently being dragged, and the grab offset within it.
@@ -295,6 +319,9 @@ func _build_scene() -> void:
 	bg.color = Color(0.10, 0.13, 0.16)
 	bg.position = Vector2(-480, -270)
 	bg.size  = Vector2(2880, 1620)
+	# Backdrop: must sit behind the zone grid lines, which use negative z_index to
+	# stay under the cards. Without this the table swallowed them entirely.
+	bg.z_index = -100
 	add_child(bg)
 
 	# HUD layer — everything UI goes here so the board camera never rotates it.
@@ -331,58 +358,61 @@ func _build_scene() -> void:
 	# Symmetric board: each player's hero column sits on THEIR right-hand side —
 	# P1 (facing up) on screen-right, P2 (facing down) on screen-left.
 	# P2's labels are rotated 180° so they read upright from P2's seat (TTS-style).
-	_rotate_label_180(_add_label("P2 deck",   Vector2(65,   72), 11, Color(0.4, 0.4, 0.5)))
-	_rotate_label_180(_add_label("P2 grave",  Vector2(245,  72), 11, Color(0.5, 0.4, 0.4)))
-	_add_label("P1 grave",  Vector2(1590, 866), 11, Color(0.4, 0.5, 0.4))
-	_add_label("P1 deck",   Vector2(1750, 866), 11, Color(0.4, 0.4, 0.5))
+	# World-space, so they carry BOARD_Y_OFFSET like the anchors they label. P2's
+	# are the mirror of P1's (and rotated 180°, so they read upright from P2's
+	# seat), same as every zone anchor.
+	var lbl_y: float = DECK_ROW_Y - SLOT_HALF_H - 16.0
+	var GRAVE_LBL_BASE := Vector2(1592, lbl_y)
+	var DECK_LBL_BASE  := Vector2(1774, lbl_y)
+	_add_label("P1 grave", _board_pos(GRAVE_LBL_BASE.x, GRAVE_LBL_BASE.y),
+		11, Color(0.4, 0.5, 0.4))
+	_add_label("P1 deck",  _board_pos(DECK_LBL_BASE.x, DECK_LBL_BASE.y),
+		11, Color(0.4, 0.4, 0.5))
+	var p2_grave_lbl := _mirror(GRAVE_LBL_BASE)
+	var p2_deck_lbl  := _mirror(DECK_LBL_BASE)
+	_rotate_label_180(_add_label("P2 grave", _board_pos(p2_grave_lbl.x, p2_grave_lbl.y),
+		11, Color(0.5, 0.4, 0.4)))
+	_rotate_label_180(_add_label("P2 deck",  _board_pos(p2_deck_lbl.x, p2_deck_lbl.y),
+		11, Color(0.4, 0.4, 0.5)))
 
-	# Status label must exist before renderer.set_status_label is called below.
-	# Positioned under the pass button (centered) once the control panel is built below.
-	_status = _add_label("", Vector2(760, 1025), 15, Color(0.5, 0.8, 0.5), true)
-	_status.size = Vector2(400, 40)
-	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	# Renderer
 	_renderer = BoardRenderer.new()
 	add_child(_renderer)
 
-	# Zone anchors.
-	# Board rows (centre x=1000): p2_hand → p2_resource → p2_hero → p2_ally → chain
-	#   → p1_ally → p1_hero → p1_resource → p1_hand
-	# hero_row sits between ally_row and resource_row (rule 415.8a: hero card,
+	# Zone anchors, in BASE board coordinates (shifted by BOARD_Y_OFFSET in
+	# _make_anchor). ONLY P1's side is declared: every P2 anchor is generated by
+	# _register_mirrored_zone reflecting through BOARD_MIRROR, so the two seats
+	# cannot drift out of symmetry.
+	#
+	# Rows (centre x = BOARD_MIRROR.x): hand → resource zone → hero → ally → chain.
+	# hero_row sits between ally_row and the resources (rule 415.8a: hero card,
 	# equipment, and non-attaching ongoing abilities all live in the hero row).
-	# Side columns are mirrored (each player's hero/deck/graveyard on their own
-	# right-hand side): P1 column at screen-right (deck x=1820, grave x=1640),
-	# P2 column at screen-left (deck x=100, grave x=280).
-	# Row centres are spaced CardNode.H + 10px apart so full rows never overlap
-	# a neighbouring row, regardless of which rows are empty or filled. Every
-	# row anchor is a fixed constant — no runtime repositioning depends on
-	# another zone's contents. Each player's three rows are shifted 1/4 card
-	# height (26px) toward that player's hand, widening the gap around the chain.
-	_renderer.register_zone("p2_hand",         _make_anchor(Vector2(1000,  35)))
-	_renderer.register_zone("p2_resource_row", _make_anchor(Vector2(1000, 139)))
-	_renderer.register_zone("p2_hero_row",     _make_anchor(Vector2(1000, 254)))
-	_renderer.register_zone("p2_ally_row",     _make_anchor(Vector2(1000, 369)))
-	_renderer.register_zone("chain",           _make_anchor(Vector2(1000, 455)))
-	_renderer.register_zone("p1_ally_row",     _make_anchor(Vector2(1000, 531)))
-	_renderer.register_zone("p1_hero_row",     _make_anchor(Vector2(1000, 646)))
-	_renderer.register_zone("p1_resource_row", _make_anchor(Vector2(1000, 761)))
-	_renderer.register_zone("p1_hand",         _make_anchor(Vector2(1000, 895)))
-	# Deck/graveyard are pushed to the outer edge (y = -10 / 960, mirrored about the
-	# board pivot at y=475) so a wide resource row can never overlap them. Each sits
-	# half off-board — the active player's pair tucks under the control panel with
-	# ~50px of card top still visible, enough to hover/click (graveyard peek).
-	_renderer.register_zone("p2_graveyard",    _make_anchor(Vector2( 280, -10)))
-	_renderer.register_zone("p2_deck",         _make_anchor(Vector2( 100, -10)))
-	_renderer.register_zone("p1_graveyard",    _make_anchor(Vector2(1640, 960)))
-	_renderer.register_zone("p1_deck",         _make_anchor(Vector2(1820, 960)))
-
+	# Side columns are mirrored per player (each player's hero/deck/graveyard on
+	# their own right-hand side): P1's column at screen-right, P2's at screen-left.
+	# Row centres are spaced CardNode.H + 10px apart so full rows never overlap a
+	# neighbouring row, regardless of which rows are empty or filled. Every anchor
+	# is a fixed constant — no runtime repositioning depends on zone contents.
+	_register_mirrored_zone("ally_row",  Vector2(BOARD_MIRROR.x, ALLY_ROW_Y))
+	_register_mirrored_zone("hero_row",  Vector2(BOARD_MIRROR.x, HERO_ROW_Y))
+	_register_mirrored_zone("hand",      Vector2(BOARD_MIRROR.x, HAND_ROW_Y))
+	# The resource ZONE is a 5x2 grid in the player's bottom-left corner rather
+	# than a row (see BoardRenderer's resource grid section); the anchor is the
+	# grid's CENTRE. Zone id keeps the "_resource_row" name the engine uses.
+	_register_mirrored_zone("resource_row", RES_ZONE_CENTRE)
+	# Deck/graveyard sit in the outer column, clear of every row. They used to be
+	# half off-board, tucked under the old bottom UI strip with only the card top
+	# showing; with that strip gone and the board re-centred both pairs are now
+	# fully on screen.
+	_register_mirrored_zone("graveyard", Vector2(1640, DECK_ROW_Y))
+	_register_mirrored_zone("deck",      Vector2(1820, DECK_ROW_Y))
 	# Hero card itself stays pinned to the player's side column, above the deck,
-	# at the same height as its hero_row (equipment / ongoing abilities live there).
-	_renderer.register_zone("p2_hero_card",    _make_anchor(Vector2( 100, 254)))
-	_renderer.register_zone("p1_hero_card",    _make_anchor(Vector2(1820, 646)))
+	# at its hero_row's height where the hero's size allows (see HERO_CARD_Y).
+	_register_mirrored_zone("hero_card", Vector2(1820, HERO_CARD_Y))
+	# Shared zone — sits on the mirror axis itself.
+	_renderer.register_zone("chain", _make_anchor(BOARD_MIRROR))
 
-	_renderer.set_status_label(_status)
+	_draw_zone_grids()
 
 	# ── Deck slot card-back sprites ────────────────────────────────────────────────
 	for deck_zone in ["p1_deck", "p2_deck"]:
@@ -419,28 +449,34 @@ func _build_scene() -> void:
 	_build_x_dialog()
 	_build_graveyard_dialog()
 
-	# ── Control panel (y=960..1080) ───────────────────────────────────────────────
-	# Panel background — added before labels/buttons so it renders behind them.
-	# Oversized past both edges so the strip always spans the full window, even
-	# when a wide display (stretch aspect=expand) shows more table than 1920px.
-	var ctrl_panel := Panel.new()
-	ctrl_panel.position = Vector2(-480, 960)
-	ctrl_panel.size     = Vector2(3360, 120)
-	_hud.add_child(ctrl_panel)
+	# ── Control panel ────────────────────────────────────────────────────────────
+	# Two compact blocks instead of the old full-width strip: the pass block
+	# (resource indicator + pass + cancel) centred, and the window-toggle block at
+	# the bottom-right. Everything else that used to sit on the strip now lives in
+	# the two tool windows, so the board keeps the width that strip was eating.
+	# Added before the labels/buttons so they render on top.
+	var pass_panel := Panel.new()
+	pass_panel.position = PASS_BLOCK_RECT.position
+	pass_panel.size     = PASS_BLOCK_RECT.size
+	_hud.add_child(pass_panel)
 
-	var sep_line := ColorRect.new()
-	sep_line.color    = Color(0.28, 0.33, 0.38)
-	sep_line.position = Vector2(-480, 960)
-	sep_line.size     = Vector2(3360, 2)
-	_hud.add_child(sep_line)
+	var win_panel := Panel.new()
+	win_panel.position = WINDOW_BLOCK_RECT.position
+	win_panel.size     = WINDOW_BLOCK_RECT.size
+	_hud.add_child(win_panel)
 
-	# ── Visual chain (bottom-left, above the control panel) ────────────────────
-	# One card-sized entry per link on the chain, stacked bottom-up (LIFO — the
-	# topmost entry is the top of the chain, the one that resolves next).
-	# Rebuilt from _state.pending_actions in _update_chain_panel (via _refresh_ui).
-	_chain_panel = Control.new()
-	_chain_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_hud.add_child(_chain_panel)
+	# ── Visual chain (centred, draggable, shown only while the chain is live) ──
+	# One card-sized entry per link, stacked bottom-up (LIFO — the topmost entry
+	# is the top of the chain, the one that resolves next). Rebuilt from
+	# _state.pending_actions in _update_chain_panel (via _refresh_ui), which also
+	# sizes and shows/hides the window.
+	# Deliberately centre-screen rather than tucked in a corner: a live chain is
+	# the thing the player must react to. It can be dragged aside to peek at what
+	# it covers, but not closed.
+	_chain_panel = _make_tool_window("Chain  ·  top first",
+		Vector2(CHAIN_PANEL_W, 100), Vector2(860, 380), false)
+	_chain_window = _chain_panel.get_parent() as Panel
+	_chain_window.visible = false
 
 	# ── Skip button (top-right, free since P2's column moved screen-left) ──────
 	# The OFF-SCREEN player's pass during an ambush stop: skips the window
@@ -454,19 +490,33 @@ func _build_scene() -> void:
 	_hud.add_child(_skip_btn)
 
 	# ── "Turn info" window (was the bar's left third) ──────────────────────────
-	var info_body := _make_tool_window("Turn info", Vector2(400, 90), Vector2(300, 740))
+	# Opens left of its toggle button, on the button's own side of the mirror line.
+	var info_body := _make_tool_window("Turn info", Vector2(400, 140),
+		Vector2(1240, BOARD_MID_Y - 262))
 	_turn_info_window = info_body.get_parent() as Panel
 	_phase_label    = _add_label("", Vector2(10, 8), 19, Color(0.9, 0.85, 0.45), true, info_body)
 	_priority_label = _add_label("", Vector2(114, 40), 15, Color(0.9, 0.85, 0.3), true, info_body)
-	# _status now lives under the pass button (centre section) instead of here.
 	_add_label("Log [L]", Vector2(10, 40), 13, Color(0.55, 0.55, 0.6), true, info_body)
 
-	# ── Centre section: Cancel + Pass ──────────────────────────────────────────
+	# Prompt line. It used to sit under the pass button, where a stale message
+	# ("Window closed (phase: mulligan)") read as an instruction about the button.
+	# It is now a PROMPT-ONLY channel — every "what just happened" report goes to
+	# the game log instead (see _log_event) — parked in this window until prompts
+	# get a popup of their own.
+	_status = _add_label("", Vector2(10, 84), 14, Color(0.5, 0.8, 0.5), true, info_body)
+	_status.size = Vector2(380, 50)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD
+
+	# ── Pass bar: resource indicator · pass · cancel ───────────────────────────
+	# Laid out relative to PASS_BLOCK_RECT so moving the bar is a one-constant
+	# change (it is about to be mirrored for the top player).
+	var pass_at: Vector2 = PASS_BLOCK_RECT.position
+
 	_cancel_btn = Button.new()
 	_cancel_btn.text     = "Cancel  [Esc]"
-	# To the right of the pass button (pass ends at x=1075) so it never overlaps
-	# the always-present resource-placement indicator sitting to the pass's left.
-	_cancel_btn.position = Vector2(1085, 981)
+	# Directly under the pass button, outside the bar: it only appears while
+	# targeting, so giving it a permanent slot inside the bar just left a hole.
+	_cancel_btn.position = pass_at + Vector2(214, 74)
 	_cancel_btn.size     = Vector2(160, 40)
 	_cancel_btn.visible  = false
 	_cancel_btn.pressed.connect(_on_cancel_btn_pressed)
@@ -474,13 +524,13 @@ func _build_scene() -> void:
 
 	_pass_btn = Button.new()
 	_pass_btn.text     = "Pass Priority  [Space]"
-	_pass_btn.position = Vector2(845, 981)
+	_pass_btn.position = pass_at + Vector2(214, 13)
 	_pass_btn.size     = Vector2(230, 40)
 	_pass_btn.pressed.connect(_on_pass_btn_pressed)
 	_hud.add_child(_pass_btn)
 
 	# Resource-placement indicator (aligned with the pass button, to its left).
-	_resource_label = _add_label("", Vector2(648, 981), 15, Color(1.0, 0.3, 0.3), true)
+	_resource_label = _add_label("", pass_at + Vector2(16, 13), 15, Color(1.0, 0.3, 0.3), true)
 	_resource_label.size = Vector2(190, 40)
 	_resource_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_resource_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -518,7 +568,8 @@ func _build_scene() -> void:
 	# ── "Controls" window (was the bar's right third) ──────────────────────────
 	# Contents keep their former relative layout; the whole block is simply
 	# rebased from screen (1320, 960) to the window body's origin.
-	var ctl_body := _make_tool_window("Controls", Vector2(610, 145), Vector2(1250, 700))
+	var ctl_body := _make_tool_window("Controls", Vector2(610, 145),
+		Vector2(1040, BOARD_MID_Y + 66))
 	_controls_window = ctl_body.get_parent() as Panel
 
 	# ── Speed Mode selector ────────────────────────────────────────────────────
@@ -606,11 +657,13 @@ func _build_scene() -> void:
 	_speed_value_label.size = Vector2(90, 16)
 	_speed_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	# ── Window toggle buttons (bottom-right of the bar) ────────────────────────
+	# ── Window toggle buttons (right of the pass bar, straddling the mirror line)
+	var win_at: Vector2 = WINDOW_BLOCK_RECT.position
+
 	_turn_info_btn = Button.new()
 	_turn_info_btn.text        = "Turn info"
-	_turn_info_btn.position    = Vector2(1690, 975)
-	_turn_info_btn.size        = Vector2(210, 40)
+	_turn_info_btn.position    = win_at + Vector2(12, 8)     # above the line
+	_turn_info_btn.size        = Vector2(110, 40)
 	_turn_info_btn.toggle_mode = true
 	_turn_info_btn.toggled.connect(func(on: bool) -> void:
 		_set_window_open(_turn_info_window, on))
@@ -618,8 +671,8 @@ func _build_scene() -> void:
 
 	_controls_btn = Button.new()
 	_controls_btn.text        = "Controls"
-	_controls_btn.position    = Vector2(1690, 1023)
-	_controls_btn.size        = Vector2(210, 40)
+	_controls_btn.position    = win_at + Vector2(12, 58)     # below the line
+	_controls_btn.size        = Vector2(110, 40)
 	_controls_btn.toggle_mode = true
 	_controls_btn.toggled.connect(func(on: bool) -> void:
 		_set_window_open(_controls_window, on))
@@ -1241,9 +1294,131 @@ func _add_deck_back_sprite(pos: Vector2, facing: float = 0.0) -> void:
 	add_child(tex)
 
 
+# Every board anchor is written in BASE board coordinates (the layout as
+# documented in _build_scene) and shifted down by BOARD_Y_OFFSET here, the one
+# place it is applied — so the whole board can be re-centred in the viewport by
+# changing that single constant. BOARD_MID_Y and BOARD_PIVOT are derived from it.
+# Base board coordinates → world position (see _make_anchor). For world-space
+# decoration that has to travel with the board but isn't a zone anchor.
+func _board_pos(x: float, y: float) -> Vector2:
+	return Vector2(x, y + BOARD_Y_OFFSET)
+
+
+# ── Resource zone grid lines ──────────────────────────────────────────────────
+# The resource ROW is now a resource ZONE: a 5x2 grid in the player's own
+# bottom-left corner instead of one ever-widening row. The cards themselves are
+# placed by BoardRenderer's resource grid (see _slot_offset there); this draws
+# the cell lines behind them.
+#
+# The grid is drawn from the SAME constants the layout uses, so the lines touch
+# the card edges exactly — a cell is one card HEIGHT square, the smallest cell a
+# card can never overflow in either orientation (an exhausted card is rotated
+# 90°, so it is card-height WIDE).
+#
+# ── P1 row positions, derived from card size ──────────────────────────────────
+# Everything below is computed from CardNode's dimensions and BoardRenderer's
+# CARD_PAD (= card height / 5), stacked upward from the bottom screen edge, so
+# resizing the cards rescales the rows, slots and gaps with no further edits.
+# P2's positions are the mirror image of these (see _register_mirrored_zone).
+#
+# All values are in BASE board coordinates: base = world - BOARD_Y_OFFSET.
+# The outermost edge of a player's content, one CARD_PAD off the screen edge:
+const P1_EDGE_Y   := VIEWPORT_H - BoardRenderer.CARD_PAD - BOARD_Y_OFFSET
+const HAND_HALF_H := CardNode.H * BoardRenderer.HAND_CARD_SCALE * 0.5
+const SLOT_HALF_H := BoardRenderer.CARD_SLOT * 0.5
+# Hand sits on the edge; each row stacks a CARD_PAD above the one before it.
+const HAND_ROW_Y := P1_EDGE_Y - HAND_HALF_H
+const HERO_ROW_Y := HAND_ROW_Y - HAND_HALF_H - BoardRenderer.CARD_PAD - SLOT_HALF_H
+const ALLY_ROW_Y := HERO_ROW_Y - BoardRenderer.CARD_SLOT - BoardRenderer.CARD_PAD
+# Deck / graveyard sit in the outer column, bottom-aligned with everything else.
+const DECK_ROW_Y := P1_EDGE_Y - SLOT_HALF_H
+# The hero card shares the deck's column and renders at HERO_CARD_SCALE, so at
+# 2x it no longer fits between its own row's height and the deck. It is pinned
+# to its hero row where possible and otherwise pushed up just enough to clear
+# the deck — which is where the current 2x hero size shows: it ends up slightly
+# above the equipment sitting in its row. Shrinking HERO_CARD_SCALE (or moving
+# the deck column) closes that gap; the clamp only guarantees they never touch.
+const HERO_CARD_Y := minf(HERO_ROW_Y,
+	DECK_ROW_Y - SLOT_HALF_H - BoardRenderer.CARD_PAD
+		- CardNode.H * BoardRenderer.HERO_CARD_SCALE * 0.5)
+
+# Centre of P1's resource grid, in base board coordinates; P2's is its mirror.
+# Bottom-aligned with the hand, in the corner beside it.
+const RES_ZONE_CENTRE := Vector2(
+	BoardRenderer.RES_GRID_COLS * BoardRenderer.RES_CELL * 0.5 + BoardRenderer.CARD_PAD,
+	P1_EDGE_Y - BoardRenderer.RES_GRID_ROWS * BoardRenderer.RES_CELL * 0.5)
+# Plain white — these lines are scaffolding for judging the layout and will be
+# removed once the zone's final look is settled, so they read clearly rather
+# than blending into the board.
+const RES_ZONE_LINE := Color(1.0, 1.0, 1.0, 0.55)
+const HERO_ROW_LINE := Color(0.78, 0.35, 1.0, 0.75)   # abilities / equipment
+const ALLY_ROW_LINE := Color(1.0, 0.9, 0.2, 0.75)     # allies
+
+const ROW_GRID_COLS := 7   # slots outlined per ally / hero row
+
+func _draw_zone_grids() -> void:
+	for spec in [
+		{"centre": RES_ZONE_CENTRE, "cols": BoardRenderer.RES_GRID_COLS,
+			"rows": BoardRenderer.RES_GRID_ROWS, "color": RES_ZONE_LINE},
+		{"centre": Vector2(BOARD_MIRROR.x, HERO_ROW_Y), "cols": ROW_GRID_COLS,
+			"rows": 1, "color": HERO_ROW_LINE},
+		{"centre": Vector2(BOARD_MIRROR.x, ALLY_ROW_Y), "cols": ROW_GRID_COLS,
+			"rows": 1, "color": ALLY_ROW_LINE},
+	]:
+		# Drawn for P1 and, mirrored, for P2 — same construction as the anchors.
+		for base_centre in [spec["centre"], _mirror(spec["centre"])]:
+			_draw_zone_grid(base_centre, spec["cols"], spec["rows"], spec["color"])
+
+
+func _draw_zone_grid(base_centre: Vector2, cols: int, rows: int, color: Color) -> void:
+	var cell: float = BoardRenderer.CARD_SLOT
+	var size := Vector2(cols * cell, rows * cell)
+	var origin := _board_pos(base_centre.x, base_centre.y) - size * 0.5
+
+	var frame := Panel.new()
+	frame.position     = origin
+	frame.size         = size
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.z_index      = -2
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(color.r, color.g, color.b, 0.05)
+	sb.set_border_width_all(2)
+	sb.border_color = color
+	frame.add_theme_stylebox_override("panel", sb)
+	add_child(frame)
+
+	# Interior cell lines only — the frame already draws the outer edges.
+	for col in range(1, cols):
+		_add_grid_line(origin + Vector2(col * cell, 0), Vector2(1, size.y), color)
+	for row in range(1, rows):
+		_add_grid_line(origin + Vector2(0, row * cell), Vector2(size.x, 1), color)
+
+
+func _add_grid_line(pos: Vector2, size: Vector2, color: Color) -> void:
+	var line := ColorRect.new()
+	line.color        = color
+	line.position     = pos
+	line.size         = size
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	line.z_index      = -2
+	add_child(line)
+
+
+# Reflect a base board position through BOARD_MIRROR — P2's side of the table.
+func _mirror(base_pos: Vector2) -> Vector2:
+	return BOARD_MIRROR * 2.0 - base_pos
+
+
+# Register "p1_<suffix>" at `p1_base` and "p2_<suffix>" at its mirror image, so
+# a layout tweak to one side is automatically applied to the other.
+func _register_mirrored_zone(suffix: String, p1_base: Vector2) -> void:
+	_renderer.register_zone("p1_" + suffix, _make_anchor(p1_base))
+	_renderer.register_zone("p2_" + suffix, _make_anchor(_mirror(p1_base)))
+
+
 func _make_anchor(pos: Vector2) -> Node2D:
 	var a := Node2D.new()
-	a.global_position = pos
+	a.global_position = pos + Vector2(0, BOARD_Y_OFFSET)
 	add_child(a)
 	return a
 
@@ -1280,11 +1455,43 @@ func _add_label(text: String, pos: Vector2, size: int, color: Color, hud: bool =
 const TOOL_WINDOW_TITLE_H := 30.0
 const TOOL_WINDOW_FOOT_H  := 42.0
 
-func _make_tool_window(title: String, body_size: Vector2, at: Vector2) -> Control:
+# The board's mirror line: exactly midway between the two ally rows (base y 369
+# and 531), i.e. the line the two players' halves reflect about, shifted with the
+# rest of the board. Note the ROWS mirror about base 450 while the outer
+# deck/graveyard columns mirror about base 475 — the board has always been 25px
+# inconsistent there; this line follows the rows, as asked.
+const BOARD_MID_Y := 450.0 + BOARD_Y_OFFSET
+
+# The two blocks the old full-width bottom strip was trimmed down to.
+#
+# The pass block's TOP edge sits on BOARD_MID_Y, so it reads as belonging to the
+# bottom player: this is the anchor for the planned mirrored design, where each
+# player gets their own pass bar on their own side of the line, greyed out when
+# it isn't theirs to press. It holds only the resource indicator and the pass
+# button; Cancel is transient (targeting only) and hangs just below rather than
+# reserving a permanently-empty third slot inside the bar.
+#
+# The window-toggle pair sits immediately to its right in what that empty slot
+# used to be, CENTRED on the same line — Turn info above it, Controls below.
+# Both blocks are right-aligned to the same margin.
+#
+# Both are also permanent card-input shields: cards hit-test the raw pointer
+# themselves, so anything underneath a block must not answer clicks.
+const BLOCK_RIGHT_EDGE  := 1900.0
+const WINDOW_BLOCK_RECT := Rect2(BLOCK_RIGHT_EDGE - 134.0, BOARD_MID_Y - 53.0, 134, 106)
+const PASS_BLOCK_RECT   := Rect2(WINDOW_BLOCK_RECT.position.x - 10.0 - 460.0,
+	BOARD_MID_Y, 460, 66)
+
+#
+# `closable = false` drops both the ✕ and the Close button (the chain window:
+# the player may move it out of the way but must not dismiss the one display
+# that says what is about to resolve).
+func _make_tool_window(title: String, body_size: Vector2, at: Vector2,
+		closable: bool = true) -> Control:
+	var foot: float = TOOL_WINDOW_FOOT_H if closable else 8.0
 	var win := Panel.new()
 	win.position = at
-	win.size     = Vector2(body_size.x,
-		body_size.y + TOOL_WINDOW_TITLE_H + TOOL_WINDOW_FOOT_H)
+	win.size     = Vector2(body_size.x, body_size.y + TOOL_WINDOW_TITLE_H + foot)
 	win.visible  = false
 	# Above the bar and the chain panel, below the modal dialogs (dimmer z 19+).
 	win.z_index  = 12
@@ -1304,12 +1511,13 @@ func _make_tool_window(title: String, body_size: Vector2, at: Vector2) -> Contro
 	title_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bar.add_child(title_lbl)
 
-	var x_btn := Button.new()
-	x_btn.text     = "✕"
-	x_btn.position = Vector2(body_size.x - 28, 3)
-	x_btn.size     = Vector2(24, 24)
-	x_btn.pressed.connect(func() -> void: _set_window_open(win, false))
-	bar.add_child(x_btn)
+	if closable:
+		var x_btn := Button.new()
+		x_btn.text     = "✕"
+		x_btn.position = Vector2(body_size.x - 28, 3)
+		x_btn.size     = Vector2(24, 24)
+		x_btn.pressed.connect(func() -> void: _set_window_open(win, false))
+		bar.add_child(x_btn)
 
 	var body := Control.new()
 	body.position = Vector2(0, TOOL_WINDOW_TITLE_H)
@@ -1317,13 +1525,14 @@ func _make_tool_window(title: String, body_size: Vector2, at: Vector2) -> Contro
 	body.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	win.add_child(body)
 
-	var close_btn := Button.new()
-	close_btn.text     = "Close"
-	close_btn.position = Vector2(body_size.x - 100,
-		TOOL_WINDOW_TITLE_H + body_size.y + 6)
-	close_btn.size     = Vector2(90, 30)
-	close_btn.pressed.connect(func() -> void: _set_window_open(win, false))
-	win.add_child(close_btn)
+	if closable:
+		var close_btn := Button.new()
+		close_btn.text     = "Close"
+		close_btn.position = Vector2(body_size.x - 100,
+			TOOL_WINDOW_TITLE_H + body_size.y + 6)
+		close_btn.size     = Vector2(90, 30)
+		close_btn.pressed.connect(func() -> void: _set_window_open(win, false))
+		win.add_child(close_btn)
 
 	return body
 
@@ -1343,8 +1552,8 @@ func _set_window_open(win: Panel, open: bool) -> void:
 # underneath. Re-register the open windows' rects whenever one opens, closes or
 # moves.
 func _refresh_card_input_shields() -> void:
-	var rects: Array[Rect2] = []
-	for win in [_turn_info_window, _controls_window]:
+	var rects: Array[Rect2] = [PASS_BLOCK_RECT, WINDOW_BLOCK_RECT]
+	for win in [_turn_info_window, _controls_window, _chain_window]:
 		if win and is_instance_valid(win) and win.visible:
 			rects.append(Rect2(win.position, win.size))
 	CardNode.input_shields = rects
@@ -1362,12 +1571,13 @@ func _on_window_bar_input(win: Panel, ev: InputEvent) -> void:
 	if mb.pressed:
 		_dragging_window = win
 		_drag_offset     = win.get_global_mouse_position() - win.position
-		# Dragged window comes to the front of the other tool window.
-		win.z_index = 13
-		if win == _turn_info_window and _controls_window:
-			_controls_window.z_index = 12
-		elif win == _controls_window and _turn_info_window:
-			_turn_info_window.z_index = 12
+		if win == _chain_window:
+			# Player has placed it themselves — stop auto-centring on resize.
+			_chain_window_moved = true
+		# Dragged window comes to the front of the others.
+		for other in [_turn_info_window, _controls_window, _chain_window]:
+			if other and is_instance_valid(other):
+				other.z_index = 13 if other == win else 12
 	else:
 		_dragging_window = null
 
@@ -1430,6 +1640,8 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	_gm.add_player("p1", GameManager.HUMAN if _p1_type == "human" else GameManager.AI, deck_p1)
 	_gm.add_player("p2", GameManager.HUMAN if _p2_type == "human" else GameManager.AI, deck_p2)
 	_state = _gm.build_state()
+	# Resource stacking reads pose/name straight from the state (pure rendering).
+	_renderer.set_state_context(_state, _db)
 
 	# Seed deck counts before any card_moved events fire.
 	for pid in ["p1", "p2"]:
@@ -1683,40 +1895,56 @@ func _pending_action_card_name(action: PendingAction) -> String:
 
 
 # ── Visual chain panel ─────────────────────────────────────────────────────────
-# Bottom-left stack showing every link on the chain, bottom-up (LIFO: the topmost
-# entry resolves next). Card-backed links show the card image with a caption
+# Stack showing every link on the chain, bottom-up (LIFO: the topmost entry
+# resolves next). Card-backed links show the card image with a caption
 # ("played" / "power" / …); links with no public card face (combat proposals,
 # face-down resources) show a card-sized text rectangle instead.
+#
+# Lives in its own draggable window (_chain_window), which this function sizes
+# to the current link count and shows/hides — an empty chain shows nothing.
 
-const CHAIN_PANEL_X      := 16.0
-const CHAIN_PANEL_BOTTOM := 946.0   # control panel starts at y=960
 const CHAIN_CARD_W       := 90.0
 const CHAIN_CARD_H       := 126.0
 const CHAIN_CAPTION_H    := 18.0
 const CHAIN_ENTRY_GAP    := 8.0
+const CHAIN_PANEL_PAD    := 8.0
+# Wider than an entry so the window title fits; entries are centred in it.
+const CHAIN_PANEL_W      := 200.0
 
 func _update_chain_panel() -> void:
-	if not _chain_panel:
+	if not _chain_panel or not _chain_window:
 		return
 	for child in _chain_panel.get_children():
 		child.queue_free()
 	if not _state or _state.pending_actions.is_empty():
+		if _chain_window.visible:
+			_chain_window.visible = false
+			_refresh_card_input_shields()
 		return
+
 	var count := _state.pending_actions.size()
 	var step := CHAIN_CARD_H + CHAIN_CAPTION_H + CHAIN_ENTRY_GAP
+	var body_h: float = count * step - CHAIN_ENTRY_GAP + CHAIN_PANEL_PAD * 2.0
+	var entry_x: float = (CHAIN_PANEL_W - CHAIN_CARD_W) * 0.5
+
 	for i in count:
 		var action := _state.pending_actions[i] as PendingAction
 		var is_top := (i == count - 1)
-		# index 0 (bottom of the chain) sits lowest; each later link stacks above.
-		var y := CHAIN_PANEL_BOTTOM - CHAIN_CAPTION_H - CHAIN_CARD_H - (count - 1 - i) * step
-		_chain_panel.add_child(_make_chain_entry(action, Vector2(CHAIN_PANEL_X, y), is_top))
-	var header := Label.new()
-	header.text = "CHAIN  ·  top resolves first"
-	header.position = Vector2(CHAIN_PANEL_X,
-			CHAIN_PANEL_BOTTOM - CHAIN_CAPTION_H - CHAIN_CARD_H - (count - 1) * step - 22)
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.9, 0.85, 0.45))
-	_chain_panel.add_child(header)
+		# index 0 (bottom of the chain) sits lowest; each later link stacks above,
+		# so the LAST index — the one that resolves next — is at the top.
+		var y: float = CHAIN_PANEL_PAD + (count - 1 - i) * step
+		_chain_panel.add_child(
+			_make_chain_entry(action, Vector2(entry_x, y), is_top))
+
+	_chain_panel.size = Vector2(CHAIN_PANEL_W, body_h)
+	_chain_window.size = Vector2(CHAIN_PANEL_W, body_h + TOOL_WINDOW_TITLE_H + 8.0)
+	# Re-centre only until the player has dragged it — after that their placement
+	# is theirs to keep, even as links are added and removed.
+	if not _chain_window_moved:
+		_chain_window.position = Vector2(960.0 - _chain_window.size.x * 0.5,
+			540.0 - _chain_window.size.y * 0.5)
+	_chain_window.visible = true
+	_refresh_card_input_shields()
 
 
 func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Control:
@@ -2142,6 +2370,22 @@ func _log_player(pid: String) -> String:
 	return "P1" if pid == "p1" else "P2"
 
 
+# Human wording for a form_broken payload. The reason is engine-generated:
+# "weapon_strike", "non_<tag>_ability" (the Feral forms) or "<tag>_ability"
+# (Shadowform's inverted break) — derive the wording rather than hardcoding
+# one condition.
+func _form_break_reason(reason_raw) -> String:
+	var reason := str(reason_raw)
+	if reason == "weapon_strike":
+		return "a weapon strike"
+	var why := reason.trim_suffix("_ability")
+	if why.begins_with("non_"):
+		why = "non-" + why.trim_prefix("non_").capitalize()
+	else:
+		why = why.capitalize()
+	return "a %s ability" % why
+
+
 func _log_entry(text: String) -> void:
 	_log.append_text(text + "\n")
 	_log.scroll_to_line(_log.get_line_count())
@@ -2296,6 +2540,50 @@ func _log_event(event: GameEvent) -> void:
 				_log_entry("[color=#f44][b]%s destroyed by %s[/b][/color]" % [card_name, src_name])
 			else:
 				_log_entry("[color=#f44][b]%s destroyed[/b][/color]" % card_name)
+		"deck_empty":
+			_log_entry("[color=#a66]%s's deck is empty[/color]"
+				% _log_player(event.payload.get("player", "")))
+		"weapon_struck":
+			_log_entry("[color=#fc8]%s strikes with [b]%s[/b][/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   _log_card(event.payload.get("weapon_id", ""))])
+		"readied_on_strike":
+			_log_entry("[color=#9cf]%s readies %s and their hero[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   _log_card(event.payload.get("weapon_id", ""))])
+		"readied_on_attack":
+			_log_entry("[color=#9cf]%s readies %s[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   _log_card(event.payload.get("card_id", ""))])
+		"attack_exhaust_resolved":
+			_log_entry("[color=#9cf]%s exhausts %s[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   _log_card(event.payload.get("target_id", ""))])
+		"whelp_bounce_resolved":
+			_log_entry("[color=#9cf]%s pays to return %s to hand[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   _log_card(event.payload.get("ally_id", ""))])
+		"form_return_resolved":
+			if event.payload.get("paid", false):
+				_log_entry("[color=#9cf]%s pays to return %s to hand[/color]"
+					% [_log_player(event.payload.get("player", "")),
+					   _log_card(event.payload.get("card_id", ""))])
+		"form_broken":
+			# card_destroyed logs the destruction itself; this adds the WHY.
+			_log_entry("[color=#a66](%s broke %s's Form)[/color]"
+				% [_form_break_reason(event.payload.get("reason", "")),
+				   _log_player(event.payload.get("player", ""))])
+		"ferocity_granted":
+			_log_entry("[color=#af8]%s has ferocity this turn[/color]"
+				% _log_card(event.payload.get("card_id", "")))
+		"quest_turned_face_down":
+			_log_entry("[color=#a66]%s's %s is turned face down (no reward)[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   _log_card(event.payload.get("quest_id", ""))])
+		"hand_returned_to_deck":
+			_log_entry("[color=#888]%s puts their hand (%d cards) on the bottom of their deck[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   event.payload.get("count", 0)])
 		"instant_resolved":
 			var p: String   = _log_player(event.payload.get("player", ""))
 			var cid: String = event.payload.get("card_id", "")
@@ -2503,8 +2791,6 @@ func _on_game_event(event: GameEvent) -> void:
 		"priority_window_closed":
 			# Defer so this event finishes dispatching before TurnManager fires new ones.
 			call_deferred("_on_window_closed")
-		"deck_empty":
-			_set_status("Deck empty for %s" % event.payload.get("player", "?"))
 		"combat_cancelled":
 			_show_combat_cancelled_notice(event.payload)
 		"combat_concluded":
@@ -2527,19 +2813,11 @@ func _on_game_event(event: GameEvent) -> void:
 			_window_generation += 1
 			_handle_strike_ready_point(event.payload)
 		"readied_on_strike":
-			var rs_card := _state.get_card(event.payload.get("weapon_id", ""))
-			var rs_def: CardDef = _db.get_def(rs_card.card_def_id) if rs_card else null
-			_set_status("↻ %s readies %s and their hero" % [event.payload.get("player", "?"),
-				rs_def.card_name if rs_def else "a weapon"])
-			_refresh_ui()
+			_refresh_ui()   # reported by the game log (_log_event)
 		"attack_exhaust_opened":
 			_window_generation += 1
 			_handle_attack_exhaust(event.payload)
 		"attack_exhaust_resolved":
-			var ex_card := _state.get_card(event.payload.get("target_id", ""))
-			var ex_def: CardDef = _db.get_def(ex_card.card_def_id) if ex_card else null
-			_set_status("💤 %s exhausts %s" % [event.payload.get("player", "?"),
-				ex_def.card_name if ex_def else "a character"])
 			_refresh_ui()
 		"whelp_bounce_opened":
 			_window_generation += 1
@@ -2548,22 +2826,10 @@ func _on_game_event(event: GameEvent) -> void:
 			_window_generation += 1
 			_handle_prevention(event.payload)
 		"whelp_bounce_resolved":
-			var b_card := _state.get_card(event.payload.get("ally_id", ""))
-			var b_def: CardDef = _db.get_def(b_card.card_def_id) if b_card else null
-			_set_status("↩ %s returns %s to hand" % [event.payload.get("player", "?"),
-				b_def.card_name if b_def else "an ally"])
 			_refresh_ui()
 		"readied_on_attack":
-			var r_card := _state.get_card(event.payload.get("card_id", ""))
-			var r_def: CardDef = _db.get_def(r_card.card_def_id) if r_card else null
-			_set_status("↻ %s readies %s" % [event.payload.get("player", "?"),
-				r_def.card_name if r_def else "an attacker"])
 			_refresh_ui()
 		"weapon_struck":
-			var w_card := _state.get_card(event.payload.get("weapon_id", ""))
-			var w_def: CardDef = _db.get_def(w_card.card_def_id) if w_card else null
-			_set_status("⚔ %s strikes with %s" % [event.payload.get("player", "?"),
-				w_def.card_name if w_def else "a weapon"])
 			_refresh_ui()
 		"discard_choice_opened":
 			_handle_discard_choice(event.payload)
@@ -2581,29 +2847,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_window_generation += 1
 			_handle_form_return(event.payload)
 		"form_return_resolved":
-			var fr_card := _state.get_card(event.payload.get("card_id", ""))
-			var fr_def: CardDef = _db.get_def(fr_card.card_def_id) if fr_card else null
-			if event.payload.get("paid", false):
-				_set_status("↩ %s pays to return %s to hand" % [event.payload.get("player", "?"),
-					fr_def.card_name if fr_def else "a Form"])
 			_refresh_ui()
 		"form_broken":
-			var fb_card := _state.get_card(event.payload.get("card_id", ""))
-			var fb_def: CardDef = _db.get_def(fb_card.card_def_id) if fb_card else null
-			# Reason is engine-generated: "weapon_strike", "non_<tag>_ability"
-			# (the Feral forms) or "<tag>_ability" (Shadowform's inverted
-			# break). Derive the wording instead of hardcoding one condition.
-			var fb_reason := str(event.payload.get("reason", ""))
-			var fb_why := "weapon strike"
-			if fb_reason != "weapon_strike":
-				fb_why = fb_reason.trim_suffix("_ability")
-				if fb_why.begins_with("non_"):
-					fb_why = "non-" + fb_why.trim_prefix("non_").capitalize()
-				else:
-					fb_why = fb_why.capitalize()
-				fb_why += " ability"
-			_set_status("💢 %s's %s is destroyed (%s)" % [event.payload.get("player", "?"),
-				fb_def.card_name if fb_def else "Form", fb_why])
 			_refresh_ui()
 		"reveal_pick_opened":
 			_handle_reveal_pick(event.payload)
@@ -2616,20 +2861,10 @@ func _on_game_event(event: GameEvent) -> void:
 		"quest_facedown_required":
 			_handle_quest_facedown(event.payload)
 		"ferocity_granted":
-			var fg_card := _state.get_card(event.payload.get("card_id", ""))
-			var fg_def: CardDef = _db.get_def(fg_card.card_def_id) if fg_card else null
-			_set_status("🐺 %s has ferocity this turn" % (fg_def.card_name if fg_def else "An ally"))
 			_refresh_ui()
 		"quest_turned_face_down":
-			var fq_card := _state.get_card(event.payload.get("quest_id", ""))
-			var fq_def: CardDef = _db.get_def(fq_card.card_def_id) if fq_card else null
-			_set_status("🔻 %s's %s is turned face down (no reward)" % [
-				event.payload.get("player", "?"),
-				fq_def.card_name if fq_def else "quest"])
 			_refresh_ui()
 		"hand_returned_to_deck":
-			_set_status("🔄 %s puts their hand (%d cards) on the bottom of their deck"
-				% [event.payload.get("player", "?"), event.payload.get("count", 0)])
 			_refresh_ui()
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)

@@ -550,6 +550,10 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 			elif destroy_target_kind(def) == "equipment":
 				if not _is_in_play_equipment(state, target_id, db):
 					return false
+			elif _instant_targets_hero_or_ally_only(def):
+				# "target hero or ally" — never an in-play ability/equipment.
+				if not _is_hero_or_ally(state, target_id, db):
+					return false
 	return true
 
 
@@ -664,6 +668,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 						action.source_player, db): return false
 			elif destroy_target_kind(def) == "equipment":
 				if not _is_in_play_equipment(state, target_id, db): return false
+			elif _instant_targets_hero_or_ally_only(def):
+				# "target hero or ally" — never an in-play ability/equipment.
+				if not _is_hero_or_ally(state, target_id, db): return false
 	return true
 
 
@@ -944,7 +951,8 @@ static func _modal_target_ok(state: GameState, def: CardDef,
 			return _is_interrupt_target(state, db, action.source_player,
 					action.params.get("target_id", ""), card_id)
 		"hero_or_ally":
-			return _is_legal_target(state, action.params.get("target_id", ""), db)
+			var mt: String = action.params.get("target_id", "")
+			return _is_legal_target(state, mt, db) and _is_hero_or_ally(state, mt, db)
 	return true   # targetless mode (Escape Artist's remove_attackers half)
 
 
@@ -1068,6 +1076,26 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 		# Lightning Storm: every announced target is an ally (parts[1] is the
 		# literal "X" damage pool, not a target kind).
 		if parts[0] == "divided_damage":
+			return true
+	return false
+
+
+# Whether a targeted def's printed target is a CHARACTER ("target hero or ally"
+# — Quick Strike, Natural Selection's heal, Bash, Fireball). _is_legal_target
+# alone only asks "is it in play", which let a click land on an in-play ability
+# (an attachment, an ongoing ability, an equipment) — a card with no health that
+# can't receive damage at all. This is the hero-or-ally counterpart of
+# _instant_targets_ally_only and is checked LAST in the target-kind chain, so
+# the narrower kinds (ally / friendly_ally / weapon / hero) keep priority.
+static func _instant_targets_hero_or_ally_only(def: CardDef) -> bool:
+	if def == null:
+		return false
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] in ["deal_damage_to_target", "heal_target"]:
+			return true
+		if parts[0] in ["exhaust_target", "attach", "grant_keyword_target"] \
+				and parts.size() > 1 and parts[1] == "hero_or_ally":
 			return true
 	return false
 
@@ -3838,6 +3866,10 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		var target_id: String = action.params.get("target_id", "")
 		if not _is_legal_target(state, target_id, db):
 			return false
+		# Every one of these kinds is a CHARACTER target — an in-play ability or
+		# equipment is never legal, whatever zone it happens to sit in.
+		if not _is_hero_or_ally(state, target_id, db):
+			return false
 		# "ally" powers (Elder Moorf buff, Augustus destroy) may only target
 		# allies, not heroes. "friendly_ally" (Bizzik's sacrifice cost) further
 		# requires the ally be in the source player's own party.
@@ -3852,10 +3884,10 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		# (rule 706.1 — "another target" can't repeat the first).
 		var target_id2: String = action.params.get("target_id", "")
 		var heal_target_id: String = action.params.get("heal_target_id", "")
-		if not _is_legal_target(state, target_id2, db):
-			return false
-		if not _is_legal_target(state, heal_target_id, db):
-			return false
+		for hid in [target_id2, heal_target_id]:
+			if not _is_legal_target(state, hid, db) \
+					or not _is_hero_or_ally(state, hid, db):
+				return false
 		if heal_target_id == target_id2:
 			return false
 	return true
@@ -4545,13 +4577,28 @@ static func _combat_damage_type(state: GameState, wielder_id: String, db) -> Str
 # does NOT apply — combat damage is not dealt with an ability.
 static func _combat_replacements(state: GameState, db, source_id: String,
 		amount: int) -> int:
+	return preview_combat_damage_amount(state, db, source_id, amount)
+
+
+# Same thing for the UI, with the weapon named up front: at the attack-targeting
+# cursor the strike hasn't happened yet, so combat_struck_weapons is empty and
+# the damage type has to come from the weapon the player picked "Attack" from.
+# `assume_weapon` "" falls back to the real struck-weapon association, which is
+# what the authoritative conclusion path uses.
+static func preview_combat_damage_amount(state: GameState, db, source_id: String,
+		amount: int, assume_weapon: String = "") -> int:
 	if amount <= 0 or db == null or not _is_hero(state, source_id):
 		return amount
-	var p := {
-		"source": source_id,
-		"amount": amount,
-		"dmg_type": _combat_damage_type(state, source_id, db),
-	}
+	var dmg_type := ""
+	if assume_weapon != "":
+		var w := state.get_card(assume_weapon)
+		if w:
+			var wdef := db.get_def(w.card_def_id) as CardDef
+			if wdef:
+				dmg_type = wdef.dmg_type
+	if dmg_type == "":
+		dmg_type = _combat_damage_type(state, source_id, db)
+	var p := {"source": source_id, "amount": amount, "dmg_type": dmg_type}
 	p["amount"] = _typed_damage_bonus_amount(state, db, p)
 	p["amount"] = _fire_doubled_amount(state, db, p)
 	return int(p["amount"])
@@ -6335,6 +6382,12 @@ static func choose_discard(state: GameState, card_id: String,
 	var events: Array[GameEvent] = []
 	events.append_array(GameLogic.discard_card(state, card_id))
 	state.pending_discard_count -= 1
+	# A discard the player cannot pay is simply not paid: if the hand ran dry the
+	# remaining discards are dropped, exactly as an empty hand opens no discard at
+	# all (see the `_open_discard` guard). Without this the choice point stays
+	# pending forever and hard-blocks can_submit / pass_priority.
+	if state.cards_in_zone(state.pending_discard_player + "_hand").is_empty():
+		state.pending_discard_count = 0
 	if state.pending_discard_count <= 0:
 		state.pending_discard_player = ""
 		state.pending_discard_count  = 0
@@ -6980,6 +7033,14 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	var target_id: String = action.params.get("target_id", "")
 	if not _is_legal_target(state, target_id, db):
 		return false
+	# Taz'dingo: "deals N damage to target hero or ally" — a CHARACTER target.
+	# _is_legal_target alone only asks "is it in play", which let the click land
+	# on an in-play ability (an attachment such as Shadow Word: Pain, an ongoing
+	# ability, a totem's host row card) or equipment — none of which can be dealt
+	# damage.
+	if String(state.pending_enter_play_effect.get("effect", "")).begins_with("deal_damage_to_target") \
+			and not _is_hero_or_ally(state, target_id, db):
+		return false
 	# Effect-specific target restriction (Ghank): only an exhausted ally with
 	# damage on it is a legal target.
 	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_exhausted_damaged_ally" \
@@ -7072,8 +7133,10 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 		return events
 	match parts[0]:
 		"deal_damage_to_target":
-			# Rule 706 re-check: fizzle if the target left play or became Untargetable.
-			if not _is_legal_target(state, target_id, db):
+			# Rule 706 re-check: fizzle if the target left play or became
+			# Untargetable — and it must still be a hero or ally.
+			if not _is_legal_target(state, target_id, db) \
+					or not _is_hero_or_ally(state, target_id, db):
 				return events
 			var amount := int(parts[1]) if parts.size() > 1 else 0
 			events.append_array(defer_packets(state, db, [{

@@ -25,44 +25,45 @@ static func start_game(state: GameState, first_player: String,
 
 
 # Called by the scene once per player when they commit their mulligan decision.
-# When all players have decided, executes mulligans simultaneously and starts turn 1.
+# The player's own mulligan is executed IMMEDIATELY, so they see (and hear) their
+# new hand on their own screen before the seat is handed over. The game itself
+# only starts once every player has decided — see finish_mulligan_if_ready, which
+# the caller runs after the deciding player has acknowledged their new hand.
 static func commit_mulligan(state: GameState, player_id: String,
-		wants_mulligan: bool, db = null) -> Array[GameEvent]:
+		wants_mulligan: bool, _db = null) -> Array[GameEvent]:
 	if state.phase != "mulligan":
 		return []
 	state.mulligan_decided[player_id] = true
 	state.mulligan_wants[player_id]   = wants_mulligan
 	var events: Array[GameEvent] = [GameEvent.mulligan_committed(player_id, wants_mulligan)]
-
-	# Check if all players have decided.
-	var all_decided := true
-	for pid in state.players:
-		if not state.mulligan_decided.get(pid, false):
-			all_decided = false
-			break
-	if not all_decided:
+	if not wants_mulligan:
 		return events
 
-	# Execute all mulligans in two phases separated by mulligan_shuffle_done.
-	# Phase 1: return cards and shuffle decks.
-	var mulligan_pids: Array = []
-	for pid in state.players:
-		if state.mulligan_wants.get(pid, false):
-			var hand := state.cards_in_zone(pid + "_hand").duplicate()
-			for card in hand:
-				events.append_array(GameLogic.move_card(state, card.instance_id, pid + "_deck"))
-			var deck := state.zones.get(pid + "_deck") as Zone
-			if deck:
-				deck.card_ids.shuffle()
-			mulligan_pids.append(pid)
+	# Two phases separated by mulligan_shuffle_done.
+	# Phase 1: return this player's hand and shuffle their deck.
+	var hand := state.cards_in_zone(player_id + "_hand").duplicate()
+	for card in hand:
+		events.append_array(GameLogic.move_card(state, card.instance_id, player_id + "_deck"))
+	var deck := state.zones.get(player_id + "_deck") as Zone
+	if deck:
+		deck.card_ids.shuffle()
 	# Marker: renderer uses this to pause before the draw phase fires.
 	events.append(GameEvent.mulligan_shuffle_done())
 	# Phase 2: always redraw exactly STARTING_HAND_SIZE cards (rule 103.4).
-	for pid in mulligan_pids:
-		for _i in GameManager.STARTING_HAND_SIZE:
-			events.append_array(_draw_one(state, pid))
+	for _i in GameManager.STARTING_HAND_SIZE:
+		events.append_array(_draw_one(state, player_id))
+	return events
 
-	events.append(GameEvent.mulligan_phase_ended())
+
+# Ends the mulligan phase and starts turn 1 — but only once every player has
+# committed. Safe (and a no-op) to call after every commit.
+static func finish_mulligan_if_ready(state: GameState, db = null) -> Array[GameEvent]:
+	if state.phase != "mulligan":
+		return []
+	for pid in state.players:
+		if not state.mulligan_decided.get(pid, false):
+			return []
+	var events: Array[GameEvent] = [GameEvent.mulligan_phase_ended()]
 	events.append_array(_enter_ready(state, db))
 	return events
 

@@ -289,52 +289,9 @@ func handle_card_click(instance_id: String) -> void:
 	var action_type := _action_type_for(instance_id)
 	if action_type == "":
 		return
-	# Abilities/instants with targets: enter targeting mode rather than submitting
-	# directly — targeting is cancellable (Esc) until the target click submits.
-	# X-cost cards (Aimed Shot, "1+X"): pick X first (same dialog as Boris's
-	# pay-X hero power), then confirm_x_value re-enters the targeting flow
-	# with the X riding on the submission.
-	if action_type in ["play_ability", "play_instant"] and _card_cost_x(instance_id) \
-			and (_ability_needs_target(instance_id) if action_type == "play_ability"
-				else _instant_needs_target(instance_id)):
-		_targeting_source = instance_id
-		x_select_requested.emit(instance_id, _max_affordable_x(instance_id))
-		return
-	# Ancestral Spirit: the target is an ally card in your graveyard — open the
-	# graveyard browser instead of board targeting.
-	if action_type == "play_ability" and _ability_uses_graveyard_browser(instance_id):
-		start_ability_graveyard_selection(instance_id)
-		return
-	if action_type == "play_ability" and _ability_needs_target(instance_id):
-		# Sever the Cord's twin at sorcery speed: the sacrificed ally is picked
-		# first, the destroy target second.
-		if _is_play_cost_sacrifice(instance_id):
-			_targeting_first_target = ""
-			start_targeting(instance_id, "play_ability", "sacrifice", 0)
-			return
-		start_targeting(instance_id, "play_ability",
-			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
-		return
-	if action_type == "play_instant" and _instant_needs_target(instance_id):
-		# Modal spell (707.1c): pick the mode first, then target.
-		if _is_modal(instance_id):
-			_open_modal_choice(instance_id)
-			return
-		# Ravenous Bite: sequential picks, the +ATK ally first.
-		if _is_atk_swing(instance_id):
-			_targeting_first_target = ""
-			start_targeting(instance_id, "play_instant", "atk_up", 0)
-			return
-		# Sever the Cord: sequential picks, the sacrificed ally first.
-		if _is_play_cost_sacrifice(instance_id):
-			_targeting_first_target = ""
-			start_targeting(instance_id, "play_instant", "sacrifice", 0)
-			return
-		# Shock and Soothe: sequential picks, the damage target first.
-		if _is_instant_damage_and_heal(instance_id):
-			_targeting_first_target = ""
-		start_targeting(instance_id, "play_instant",
-			_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
+	# A left-click is only a shortcut for the card's usual context-menu entry, so
+	# the pre-submission flows live in ONE place both paths call.
+	if _begin_play_from_hand(instance_id, action_type):
 		return
 	var action := PendingAction.make(action_type, local_player,
 			_params_for(instance_id, action_type))
@@ -344,6 +301,55 @@ func handle_card_click(instance_id: String) -> void:
 	EventBus.emit_events(events)
 	_pass_own_proposal(action)
 	refresh_highlights()
+
+
+# Opens whatever pre-submission flow a hand card needs before it can be played:
+# the X dialog, a modal "Choose one", the graveyard browser, or targeting mode
+# (single or two-phase). Returns true when one was opened — the caller must NOT
+# submit; the flow submits when the player finishes it (and Esc cancels).
+#
+# Left-clicking a card is only a UI shortcut for its context-menu "Play" entry,
+# so BOTH paths go through here — a flow added for one is a flow for the other.
+func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
+	if not (action_type in ["play_ability", "play_instant"]):
+		return false
+	var needs_target := _ability_needs_target(instance_id) \
+		if action_type == "play_ability" else _instant_needs_target(instance_id)
+	# X-cost cards (Aimed Shot, "1+X"; Lightning Storm's divided pool): pick X
+	# first (same dialog as Boris's pay-X hero power), then confirm_x_value
+	# re-enters the targeting flow with the X riding on the submission.
+	if _card_cost_x(instance_id) and needs_target:
+		_targeting_source = instance_id
+		x_select_requested.emit(instance_id, _max_affordable_x(instance_id))
+		return true
+	# Ancestral Spirit: the target is an ally card in your graveyard — open the
+	# graveyard browser instead of board targeting.
+	if action_type == "play_ability" and _ability_uses_graveyard_browser(instance_id):
+		start_ability_graveyard_selection(instance_id)
+		return true
+	if not needs_target:
+		return false
+	# Modal spell (707.1c): pick the mode first, then target.
+	if action_type == "play_instant" and _is_modal(instance_id):
+		_open_modal_choice(instance_id)
+		return true
+	# Ravenous Bite: sequential picks, the +ATK ally first.
+	if action_type == "play_instant" and _is_atk_swing(instance_id):
+		_targeting_first_target = ""
+		start_targeting(instance_id, "play_instant", "atk_up", 0)
+		return true
+	# Sever the Cord (and its sorcery-speed twin): the sacrificed ally is picked
+	# first, the destroy target second.
+	if _is_play_cost_sacrifice(instance_id):
+		_targeting_first_target = ""
+		start_targeting(instance_id, action_type, "sacrifice", 0)
+		return true
+	# Shock and Soothe: sequential picks, the damage target first.
+	if action_type == "play_instant" and _is_instant_damage_and_heal(instance_id):
+		_targeting_first_target = ""
+	start_targeting(instance_id, action_type,
+		_card_dmg_type(instance_id), _card_dmg_amount(instance_id))
+	return true
 
 
 # ── Discard mode ───────────────────────────────────────────────────────────────
@@ -789,8 +795,11 @@ func start_targeting(source_id: String, action_type: String,
 
 
 # Convenience wrapper: look up the attacker's dmg_type / ATK and enter combat targeting.
-func start_attack_targeting(attacker_id: String) -> void:
-	preferred_strike_weapon = ""   # default: prompt at the strike point (weapon menu overrides after)
+# `weapon_id` is set when the player launched the attack off a specific weapon
+# ("Attack" on the weapon's context menu) — the strike is then a foregone
+# conclusion, so the cursor previews the post-strike numbers instead of the bare
+# hero's.
+func start_attack_targeting(attacker_id: String, weapon_id: String = "") -> void:
 	var dmg_type   := ""   # default → crosshair; set only when card has an explicit dmg_type
 	var dmg_amount := 0
 	if db:
@@ -799,13 +808,27 @@ func start_attack_targeting(attacker_id: String) -> void:
 			var def := db.get_def(card.card_def_id) as CardDef
 			if def and def.dmg_type != "":
 				dmg_type = def.dmg_type.to_lower()
+		# The weapon's damage type is the one that will be dealt (303.2b), so it
+		# also picks the cursor icon — a hero has no printed type of its own.
+		var weapon: CardInstance = state.get_card(weapon_id) if weapon_id != "" else null
+		if weapon:
+			var wdef := db.get_def(weapon.card_def_id) as CardDef
+			if wdef and wdef.dmg_type != "":
+				dmg_type = wdef.dmg_type.to_lower()
 	if state:
 		# Preview the ATK this attacker will actually deal once combat is
 		# proposed (rule 601 — it isn't "attacking" yet during target
 		# selection, so plain get_atk would omit "while attacking" bonuses
-		# like Zorm / Rayder / For the Horde! here).
-		dmg_amount = state.get_atk_if_attacking(attacker_id, db)
+		# like Zorm / Rayder / For the Horde! here), including the weapon it is
+		# about to strike with and the typed replacement effects that weapon
+		# turns on (Aspect of the Hawk's ranged +1). ATK auras — Hootie's -1,
+		# Ryn's +2 — are already inside get_atk, netted before its 0 floor.
+		dmg_amount = state.get_atk_if_attacking(attacker_id, db, weapon_id)
+		dmg_amount = StackResolver.preview_combat_damage_amount(
+			state, db, attacker_id, dmg_amount, weapon_id)
+	# Set AFTER the reset in start_targeting so the strike point can auto-strike it.
 	start_targeting(attacker_id, "propose_combat", dmg_type, dmg_amount)
+	preferred_strike_weapon = weapon_id
 
 
 # Convenience wrapper for enters-play targeted effects (e.g. Taz'dingo).
@@ -1949,24 +1972,11 @@ func handle_context_action(action: PendingAction) -> void:
 				muted_ids[mute_id] = true
 			card_mute_changed.emit(mute_id, muted_ids.has(mute_id))
 			return
-		"play_ability":
-			var pa_cid: String = action.params.get("card_id", "")
-			# Ancestral Spirit: graveyard-ally target → open the browser.
-			if _ability_uses_graveyard_browser(pa_cid):
-				start_ability_graveyard_selection(pa_cid)
-				return
-			if _ability_needs_target(pa_cid):
-				start_targeting(pa_cid, "play_ability",
-					_card_dmg_type(pa_cid), _card_dmg_amount(pa_cid))
-				return
-		"play_instant":
-			if _instant_needs_target(action.params.get("card_id", "")):
-				var cid: String = action.params.get("card_id", "")
-				if _is_modal(cid):
-					_open_modal_choice(cid)
-					return
-				start_targeting(cid, "play_instant",
-					_card_dmg_type(cid), _card_dmg_amount(cid))
+		"play_ability", "play_instant":
+			# Same pre-submission flows as a left-click (X dialog, modal choice,
+			# graveyard browser, one- or two-phase targeting) — the menu entry and
+			# the click shortcut must play the card the same way.
+			if _begin_play_from_hand(action.params.get("card_id", ""), action.action_type):
 				return
 		"examine_graveyard":
 			var gy_player: String = action.params.get("graveyard_player", "")
@@ -2013,10 +2023,10 @@ func handle_context_action(action: PendingAction) -> void:
 				return
 		"begin_attack_targeting":
 			if state.priority_player == local_player:
-				start_attack_targeting(action.params.get("attacker_id", ""))
-				# Remember the weapon (if any) to auto-strike at the strike point.
-				# Set AFTER start_attack_targeting, which resets it to "".
-				preferred_strike_weapon = action.params.get("preferred_weapon_id", "")
+				# The weapon (if any) is auto-struck at the strike point, and the
+				# cursor previews the damage including it.
+				start_attack_targeting(action.params.get("attacker_id", ""),
+					action.params.get("preferred_weapon_id", ""))
 			return
 		"begin_power_targeting":
 			if state.priority_player == local_player:

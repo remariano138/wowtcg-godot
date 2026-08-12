@@ -137,8 +137,22 @@ var _mulligan_ready_btn:   Button
 var _mulligan_btn:         Button
 var _mulligan_hint_label:  Label
 var _p1_has_mulliganed:    bool = false
+# True while the panel is showing the "you drew a new hand — Ready to continue"
+# acknowledgement, after this player has already committed a mulligan.
+var _mulligan_awaiting_ack: bool = false
 var _context_menu: PopupMenu
 var _context_actions: Array   # Array of {label, action, enabled}
+# ── Tool windows (turn info / controls) ───────────────────────────────────────
+# The old bottom bar's left and right thirds now live in floating, draggable,
+# closable windows opened from two buttons at the bottom-right. Only the centre
+# section (pass / cancel / status) stays permanently on the bar.
+var _turn_info_window: Panel
+var _controls_window:  Panel
+var _turn_info_btn:    Button
+var _controls_btn:     Button
+# Title bar currently being dragged, and the grab offset within it.
+var _dragging_window:  Panel = null
+var _drag_offset:      Vector2 = Vector2.ZERO
 # ── X-select dialog (Dizdemona-style "put X damage on herself" powers) ─────────
 var _x_dialog:       Panel
 var _x_label:        Label
@@ -439,18 +453,13 @@ func _build_scene() -> void:
 	_skip_btn.pressed.connect(_on_skip_pressed)
 	_hud.add_child(_skip_btn)
 
-	# ── Left section: Turn / Priority / Announcer ──────────────────────────────
-	_phase_label    = _add_label("", Vector2(16, 971), 19, Color(0.9, 0.85, 0.45), true)
-	_priority_label = _add_label("", Vector2(120, 1003), 15, Color(0.9, 0.85, 0.3), true)
+	# ── "Turn info" window (was the bar's left third) ──────────────────────────
+	var info_body := _make_tool_window("Turn info", Vector2(400, 90), Vector2(300, 740))
+	_turn_info_window = info_body.get_parent() as Panel
+	_phase_label    = _add_label("", Vector2(10, 8), 19, Color(0.9, 0.85, 0.45), true, info_body)
+	_priority_label = _add_label("", Vector2(114, 40), 15, Color(0.9, 0.85, 0.3), true, info_body)
 	# _status now lives under the pass button (centre section) instead of here.
-	_add_label("Log [L]", Vector2(16, 1003), 13, Color(0.55, 0.55, 0.6), true)
-
-	# ── VSep 1 ─────────────────────────────────────────────────────────────────
-	var vsep1 := ColorRect.new()
-	vsep1.color    = Color(0.28, 0.33, 0.38)
-	vsep1.position = Vector2(624, 968)
-	vsep1.size     = Vector2(2, 110)
-	_hud.add_child(vsep1)
+	_add_label("Log [L]", Vector2(10, 40), 13, Color(0.55, 0.55, 0.6), true, info_body)
 
 	# ── Centre section: Cancel + Pass ──────────────────────────────────────────
 	_cancel_btn = Button.new()
@@ -491,7 +500,14 @@ func _build_scene() -> void:
 
 	_mulligan_ready_btn = Button.new()
 	_mulligan_ready_btn.text = "Ready  (keep hand)"
-	_mulligan_ready_btn.pressed.connect(func() -> void: _commit_mulligan(false))
+	# Doubles as the post-mulligan acknowledgement ("Ready  (continue)"): once the
+	# player has already committed a mulligan and seen their new hand, the button
+	# only hands the seat over.
+	_mulligan_ready_btn.pressed.connect(func() -> void:
+		if _mulligan_awaiting_ack:
+			_finish_mulligan_decision()
+		else:
+			_commit_mulligan(false))
 	_mulligan_panel.add_child(_mulligan_ready_btn)
 
 	_mulligan_btn = Button.new()
@@ -499,73 +515,71 @@ func _build_scene() -> void:
 	_mulligan_btn.pressed.connect(func() -> void: _commit_mulligan(true))
 	_mulligan_panel.add_child(_mulligan_btn)
 
-	# ── VSep 2 ─────────────────────────────────────────────────────────────────
-	var vsep2 := ColorRect.new()
-	vsep2.color    = Color(0.28, 0.33, 0.38)
-	vsep2.position = Vector2(1296, 968)
-	vsep2.size     = Vector2(2, 110)
-	_hud.add_child(vsep2)
+	# ── "Controls" window (was the bar's right third) ──────────────────────────
+	# Contents keep their former relative layout; the whole block is simply
+	# rebased from screen (1320, 960) to the window body's origin.
+	var ctl_body := _make_tool_window("Controls", Vector2(610, 145), Vector2(1250, 700))
+	_controls_window = ctl_body.get_parent() as Panel
 
-	# ── Right section: Speed Mode selector ─────────────────────────────────────
-	_add_label("SPEED MODE  [T]", Vector2(1330, 971), 10, Color(0.55, 0.55, 0.55), true)
+	# ── Speed Mode selector ────────────────────────────────────────────────────
+	_add_label("SPEED MODE  [T]", Vector2(10, 11), 10, Color(0.55, 0.55, 0.55), true, ctl_body)
 
 	var mode_group := ButtonGroup.new()
 
 	_turbo_btn = Button.new()
 	_turbo_btn.text          = "Turbo"
-	_turbo_btn.position      = Vector2(1330, 987)
+	_turbo_btn.position      = Vector2(10, 27)
 	_turbo_btn.size          = Vector2(110, 36)
 	_turbo_btn.toggle_mode   = true
 	_turbo_btn.button_group  = mode_group
 	_turbo_btn.button_pressed = true
 	_turbo_btn.toggled.connect(func(on: bool) -> void: if on: _set_turbo_mode(true))
-	_hud.add_child(_turbo_btn)
+	ctl_body.add_child(_turbo_btn)
 
 	_tactical_btn = Button.new()
 	_tactical_btn.text         = "Tactical"
-	_tactical_btn.position     = Vector2(1330, 1027)
+	_tactical_btn.position     = Vector2(10, 67)
 	_tactical_btn.size         = Vector2(110, 36)
 	_tactical_btn.toggle_mode  = true
 	_tactical_btn.button_group = mode_group
 	_tactical_btn.toggled.connect(func(on: bool) -> void: if on: _set_turbo_mode(false))
-	_hud.add_child(_tactical_btn)
+	ctl_body.add_child(_tactical_btn)
 
 	_mode_desc_label = _add_label("Auto-pass all 'no legal play'",
-		Vector2(1330, 1067), 10, Color(0.42, 0.52, 0.42), true)
+		Vector2(10, 107), 10, Color(0.42, 0.52, 0.42), true, ctl_body)
 
 	# ── Combat stance selector (next to Speed Mode) ─────────────────────────────
 	# Each player sets THEIR stance while they hold the screen; it governs their
 	# priority windows during the opponent's turn (see _stance docs above).
-	_add_label("COMBAT STANCE", Vector2(1470, 971), 10, Color(0.55, 0.55, 0.55), true)
+	_add_label("COMBAT STANCE", Vector2(150, 11), 10, Color(0.55, 0.55, 0.55), true, ctl_body)
 
 	var stance_group := ButtonGroup.new()
 
 	_stance_ambush_btn = Button.new()
 	_stance_ambush_btn.text           = "Ambush"
-	_stance_ambush_btn.position       = Vector2(1470, 987)
+	_stance_ambush_btn.position       = Vector2(150, 27)
 	_stance_ambush_btn.size           = Vector2(110, 36)
 	_stance_ambush_btn.toggle_mode    = true
 	_stance_ambush_btn.button_group   = stance_group
 	_stance_ambush_btn.button_pressed = true
 	_stance_ambush_btn.toggled.connect(func(on: bool) -> void:
 		if on: _stance[_local_player] = "ambush")
-	_hud.add_child(_stance_ambush_btn)
+	ctl_body.add_child(_stance_ambush_btn)
 
 	_stance_passive_btn = Button.new()
 	_stance_passive_btn.text         = "Passive"
-	_stance_passive_btn.position     = Vector2(1470, 1027)
+	_stance_passive_btn.position     = Vector2(150, 67)
 	_stance_passive_btn.size         = Vector2(110, 36)
 	_stance_passive_btn.toggle_mode  = true
 	_stance_passive_btn.button_group = stance_group
 	_stance_passive_btn.toggled.connect(func(on: bool) -> void:
 		if on: _stance[_local_player] = "passive")
-	_hud.add_child(_stance_passive_btn)
+	ctl_body.add_child(_stance_passive_btn)
 
-	# Control indications: docked at the far right, past the speed slider (in the
-	# extra strip that wide displays reveal — the panel above covers it).
+	# Control indications: docked at the window's far right, past the speed slider.
 	_mulligan_hint_label = _add_label(
 		"Left-click = play/place\nRight-click = options\nEsc = retract\nCtrl+Space/Enter = wrap up / end turn\nF = auto-pass combat windows",
-		Vector2(1788, 963), 10, Color(0.38, 0.38, 0.38), true)
+		Vector2(468, 3), 10, Color(0.38, 0.38, 0.38), true, ctl_body)
 	_mulligan_hint_label.size = Vector2(128, 128)
 	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -573,10 +587,10 @@ func _build_scene() -> void:
 
 	# ── Far right: Animation speed slider (scales every GameTiming pause live) ──
 	# animation_speed: 0 = instant (no pauses), 1 = base timing, up to 3x slower.
-	var speed_lbl := _add_label("Speed", Vector2(1690, 971), 10, Color(0.55, 0.55, 0.55), true)
+	var speed_lbl := _add_label("Speed", Vector2(370, 11), 10, Color(0.55, 0.55, 0.55), true, ctl_body)
 	speed_lbl.size = Vector2(90, 16)
 	_speed_slider = HSlider.new()
-	_speed_slider.position   = Vector2(1690, 995)
+	_speed_slider.position   = Vector2(370, 35)
 	_speed_slider.size       = Vector2(90, 24)
 	_speed_slider.min_value  = 0.0
 	_speed_slider.max_value  = 3.0
@@ -586,11 +600,34 @@ func _build_scene() -> void:
 		GameTiming.animation_speed = v
 		if _speed_value_label:
 			_speed_value_label.text = "%.1fx" % v)
-	_hud.add_child(_speed_slider)
+	ctl_body.add_child(_speed_slider)
 	_speed_value_label = _add_label("%.1fx" % GameTiming.animation_speed,
-		Vector2(1690, 1025), 11, Color(0.6, 0.6, 0.65), true)
+		Vector2(370, 65), 11, Color(0.6, 0.6, 0.65), true, ctl_body)
 	_speed_value_label.size = Vector2(90, 16)
 	_speed_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+	# ── Window toggle buttons (bottom-right of the bar) ────────────────────────
+	_turn_info_btn = Button.new()
+	_turn_info_btn.text        = "Turn info"
+	_turn_info_btn.position    = Vector2(1690, 975)
+	_turn_info_btn.size        = Vector2(210, 40)
+	_turn_info_btn.toggle_mode = true
+	_turn_info_btn.toggled.connect(func(on: bool) -> void:
+		_set_window_open(_turn_info_window, on))
+	_hud.add_child(_turn_info_btn)
+
+	_controls_btn = Button.new()
+	_controls_btn.text        = "Controls"
+	_controls_btn.position    = Vector2(1690, 1023)
+	_controls_btn.size        = Vector2(210, 40)
+	_controls_btn.toggle_mode = true
+	_controls_btn.toggled.connect(func(on: bool) -> void:
+		_set_window_open(_controls_window, on))
+	_hud.add_child(_controls_btn)
+
+	# Both windows start closed; clears any shield left over from a previous game.
+	_update_window_btns()
+	_refresh_card_input_shields()
 
 	_ai_timer = Timer.new()
 	_ai_timer.wait_time = AI_THINK_TIME
@@ -1214,17 +1251,150 @@ func _make_anchor(pos: Vector2) -> Node2D:
 # hud=true parents the label to the _hud CanvasLayer (screen-fixed, never
 # rotated by the board camera); hud=false leaves it in the world (board labels
 # like the deck/graveyard tags, which must travel and turn with the board).
-func _add_label(text: String, pos: Vector2, size: int, color: Color, hud: bool = false) -> Label:
+#
+# `parent` overrides both: the label is added there instead (used by the tool
+# windows, whose contents are positioned relative to the window body).
+func _add_label(text: String, pos: Vector2, size: int, color: Color, hud: bool = false,
+		parent: Node = null) -> Label:
 	var lbl := Label.new()
 	lbl.text = text
 	lbl.position = pos
 	lbl.add_theme_font_size_override("font_size", size)
 	lbl.add_theme_color_override("font_color", color)
-	if hud:
+	if parent:
+		parent.add_child(lbl)
+	elif hud:
 		_hud.add_child(lbl)
 	else:
 		add_child(lbl)
 	return lbl
+
+
+# ── Tool windows ──────────────────────────────────────────────────────────────
+# A floating HUD window: draggable by its title bar, closable by the ✕ in the
+# corner or the Close button at the foot, reopened from its bottom-right toggle
+# button. Contents are added to the returned body Control and positioned
+# relative to it, so a window can be dragged anywhere without touching them.
+#
+# Returns the body Control; the window Panel itself is body.get_parent().
+const TOOL_WINDOW_TITLE_H := 30.0
+const TOOL_WINDOW_FOOT_H  := 42.0
+
+func _make_tool_window(title: String, body_size: Vector2, at: Vector2) -> Control:
+	var win := Panel.new()
+	win.position = at
+	win.size     = Vector2(body_size.x,
+		body_size.y + TOOL_WINDOW_TITLE_H + TOOL_WINDOW_FOOT_H)
+	win.visible  = false
+	# Above the bar and the chain panel, below the modal dialogs (dimmer z 19+).
+	win.z_index  = 12
+	_hud.add_child(win)
+
+	var bar := ColorRect.new()
+	bar.color = Color(0.18, 0.22, 0.28)
+	bar.size  = Vector2(body_size.x, TOOL_WINDOW_TITLE_H)
+	bar.gui_input.connect(func(ev: InputEvent) -> void: _on_window_bar_input(win, ev))
+	win.add_child(bar)
+
+	var title_lbl := Label.new()
+	title_lbl.text     = title
+	title_lbl.position = Vector2(10, 5)
+	title_lbl.add_theme_font_size_override("font_size", 14)
+	title_lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
+	title_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(title_lbl)
+
+	var x_btn := Button.new()
+	x_btn.text     = "✕"
+	x_btn.position = Vector2(body_size.x - 28, 3)
+	x_btn.size     = Vector2(24, 24)
+	x_btn.pressed.connect(func() -> void: _set_window_open(win, false))
+	bar.add_child(x_btn)
+
+	var body := Control.new()
+	body.position = Vector2(0, TOOL_WINDOW_TITLE_H)
+	body.size     = body_size
+	body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	win.add_child(body)
+
+	var close_btn := Button.new()
+	close_btn.text     = "Close"
+	close_btn.position = Vector2(body_size.x - 100,
+		TOOL_WINDOW_TITLE_H + body_size.y + 6)
+	close_btn.size     = Vector2(90, 30)
+	close_btn.pressed.connect(func() -> void: _set_window_open(win, false))
+	win.add_child(close_btn)
+
+	return body
+
+
+func _set_window_open(win: Panel, open: bool) -> void:
+	if not win:
+		return
+	win.visible = open
+	if not open and _dragging_window == win:
+		_dragging_window = null
+	_update_window_btns()
+	_refresh_card_input_shields()
+
+
+# Board cards hit-test the raw pointer themselves (CardNode._input), so a window
+# floating over the board would otherwise let a click pass through to the card
+# underneath. Re-register the open windows' rects whenever one opens, closes or
+# moves.
+func _refresh_card_input_shields() -> void:
+	var rects: Array[Rect2] = []
+	for win in [_turn_info_window, _controls_window]:
+		if win and is_instance_valid(win) and win.visible:
+			rects.append(Rect2(win.position, win.size))
+	CardNode.input_shields = rects
+
+
+# Drag by the title bar. The press/release arrives on the bar; the motion is
+# handled in _process so the window keeps following even when the pointer
+# outruns the bar's own rect.
+func _on_window_bar_input(win: Panel, ev: InputEvent) -> void:
+	if not (ev is InputEventMouseButton):
+		return
+	var mb := ev as InputEventMouseButton
+	if mb.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if mb.pressed:
+		_dragging_window = win
+		_drag_offset     = win.get_global_mouse_position() - win.position
+		# Dragged window comes to the front of the other tool window.
+		win.z_index = 13
+		if win == _turn_info_window and _controls_window:
+			_controls_window.z_index = 12
+		elif win == _controls_window and _turn_info_window:
+			_turn_info_window.z_index = 12
+	else:
+		_dragging_window = null
+
+
+func _drag_tool_window() -> void:
+	if not _dragging_window or not is_instance_valid(_dragging_window):
+		_dragging_window = null
+		return
+	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		_dragging_window = null
+		return
+	var pos: Vector2 = _dragging_window.get_global_mouse_position() - _drag_offset
+	# Keep the title bar reachable — never let a window be dragged fully off.
+	var vp := get_viewport().get_visible_rect().size
+	pos.x = clamp(pos.x, 40.0 - _dragging_window.size.x, vp.x - 40.0)
+	pos.y = clamp(pos.y, 0.0, vp.y - TOOL_WINDOW_TITLE_H)
+	_dragging_window.position = pos
+	_refresh_card_input_shields()
+
+
+# Toggle buttons read "open"/"close" so the pair is self-describing when one of
+# the windows is already up.
+func _update_window_btns() -> void:
+	if _turn_info_btn and _turn_info_window:
+		_turn_info_btn.button_pressed = _turn_info_window.visible
+	if _controls_btn and _controls_window:
+		_controls_btn.button_pressed = _controls_window.visible
 
 
 # Rotate a world-space label 180° about its own centre (so P2's side labels
@@ -1740,6 +1910,11 @@ func _update_pass_btn() -> void:
 
 
 # ── Button handlers ────────────────────────────────────────────────────────────
+
+func _process(_delta: float) -> void:
+	if _dragging_window:
+		_drag_tool_window()
+
 
 func _input(event: InputEvent) -> void:
 	# Handoff overlay owns ALL input except its own confirm button.
@@ -2534,9 +2709,17 @@ func _handle_mulligan_started(payload: Dictionary) -> void:
 			var events := TurnManager.commit_mulligan(_state, pid, wants, _db)
 			_emit_mulligan_events(events)
 
-	if _hotseat:
+	if _mulligan_queue.is_empty():
+		# All-AI table: nobody left to decide, start the game.
+		var start_events := TurnManager.finish_mulligan_if_ready(_state, _db)
+		if not start_events.is_empty():
+			EventBus.emit_events(start_events)
+			_refresh_ui()
+			_schedule_next_turn()
+			_maybe_turbo_pass()
+	elif _hotseat:
 		_advance_mulligan_queue()
-	elif not _mulligan_queue.is_empty():
+	else:
 		# Single human: show the panel directly, no handoff needed.
 		_mulligan_current = _mulligan_queue.pop_front()
 		_show_mulligan_panel()
@@ -2551,26 +2734,55 @@ func _advance_mulligan_queue() -> void:
 
 
 func _show_mulligan_panel() -> void:
-	_pass_btn.visible        = false
-	_mulligan_panel.visible  = true
-	_mulligan_btn.disabled   = false
+	_pass_btn.visible          = false
+	_mulligan_panel.visible    = true
+	_mulligan_awaiting_ack     = false
+	_mulligan_btn.visible      = true
+	_mulligan_btn.disabled     = false
+	_mulligan_ready_btn.text   = "Ready  (keep hand)"
 	_mulligan_order_label.text = \
 		"You go first!" if _mulligan_first == _mulligan_current else "Opponent goes first."
 	_refresh_ui()
 
 
 func _commit_mulligan(wants: bool) -> void:
-	if wants:
-		_p1_has_mulliganed    = true
-		_mulligan_btn.disabled = true
 	var events := TurnManager.commit_mulligan(_state, _mulligan_current, wants, _db)
 	_emit_mulligan_events(events)
 	_refresh_ui()
-	# Hotseat: the next human's decision needs its own handoff. Hide this
-	# player's panel first so it isn't visible behind the overlay.
+	if wants:
+		# The redraw is already on its way (the deck→hand half fires after a short
+		# delay). Keep the panel up with a single "Ready" so this player actually
+		# sees — and hears — their new hand before the seat changes hands.
+		_p1_has_mulliganed       = true
+		_mulligan_awaiting_ack   = true
+		_mulligan_btn.visible    = false
+		_mulligan_ready_btn.text = "Ready  (continue)"
+		return
+	_finish_mulligan_decision()
+
+
+# This player is done: hand over to the next undecided human, or — if everyone
+# has decided — end the mulligan phase and start turn 1.
+func _finish_mulligan_decision() -> void:
+	_mulligan_awaiting_ack  = false
+	_mulligan_panel.visible = false
 	if _hotseat and not _mulligan_queue.is_empty():
-		_mulligan_panel.visible = false
+		# The next human's decision needs its own handoff. The panel is already
+		# hidden so it isn't visible behind the overlay.
 		_advance_mulligan_queue()
+		return
+	if not _mulligan_queue.is_empty():
+		_mulligan_current = _mulligan_queue.pop_front()
+		_show_mulligan_panel()
+		return
+	var events := TurnManager.finish_mulligan_if_ready(_state, _db)
+	if events.is_empty():
+		_mulligan_panel.visible = true   # still waiting on someone else
+		return
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_maybe_turbo_pass()
 
 
 # Emit mulligan events in two phases separated by mulligan_shuffle_done.
@@ -2589,11 +2801,11 @@ func _emit_mulligan_events(events: Array[GameEvent]) -> void:
 	EventBus.emit_events(events.slice(0, split + 1))
 	_refresh_ui()
 	var phase2: Array[GameEvent] = events.slice(split + 1)
+	# Turn 1 is started separately (finish_mulligan_if_ready), so this only has to
+	# land the redrawn hand.
 	get_tree().create_timer(0.45).timeout.connect(func() -> void:
 		EventBus.emit_events(phase2)
-		_refresh_ui()
-		_schedule_next_turn()
-		_maybe_turbo_pass())
+		_refresh_ui())
 
 
 func _on_card_right_clicked(instance_id: String) -> void:
@@ -5100,6 +5312,7 @@ func _on_rematch() -> void:
 	_handoff_pending              = false
 	_handoff_layer                = null   # freed with the other children above
 	_mulligan_queue               = []
+	_mulligan_awaiting_ack        = false
 	_local_player                 = "p1" if _p1_type == "human" \
 			else ("p2" if _p2_type == "human" else "p1")
 	_mulligan_current             = _local_player

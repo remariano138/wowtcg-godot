@@ -449,6 +449,12 @@ static func check_destroyed(state: GameState, card_id: String,
 		# check_destroyed must not move the hero — return empty and let the
 		# resolver emit game_over directly.
 		return []
+	# Only CHARACTERS have health. An attachment (zone "attached"), an ongoing
+	# ability or any other non-ally-row card in play has max HP 0, so without
+	# this guard it would read as "at 0 HP" and be destroyed by a stray damage
+	# packet. Such cards are removed by destroy effects, not by damage.
+	if not zone or zone.zone_type != "ally_row":
+		return []
 	var events: Array[GameEvent] = []
 	_record_ally_destroyed(state, card_id)
 	events.append(GameEvent.card_destroyed(card_id, source_id))

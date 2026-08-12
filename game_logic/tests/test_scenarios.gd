@@ -76,6 +76,7 @@ func _ready() -> void:
 		_test_turn_buff_expires_at_end_of_turn,
 		_test_zorm_bonus_applies_to_real_combat_damage,
 		_test_get_atk_if_attacking_preview,
+		_test_attack_preview_with_assumed_weapon,
 		_test_moorf_buff_applies_to_real_defense_damage,
 		_test_ryn_dreamstrider_buff_target_attacking,
 		_test_chasing_ame_graveyard_to_hand,
@@ -300,6 +301,7 @@ func _ready() -> void:
 		_test_attach_fizzles_when_target_dies,
 		_test_ai_attach_target_choice,
 		_test_burn_away_destroys_ability,
+		_test_damage_cannot_target_abilities,
 		_test_purge_spares_friendly_attachments,
 		_test_shattering_blow_destroys_equipment,
 		_test_randipan_draw_on_hero_combat_damage,
@@ -6609,6 +6611,47 @@ func _test_get_atk_if_attacking_preview() -> void:
 		"sc30-d: plain get_atk is unaffected by the preview call")
 
 
+# The attack cursor, when the player launched the attack off a specific weapon
+# ("Attack" on the weapon's context menu): the strike is a foregone conclusion,
+# so the previewed number must match what the conclusion will actually deal —
+# weapon ATK, typed replacement bonuses, and ATK-subtracting auras included.
+func _test_attack_preview_with_assumed_weapon() -> void:
+	_buf.append("\n-- Attack cursor: previews the weapon strike it is about to make --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_34", 3, HAWK_FX)
+	db.weapon("crow_def", 2, 1, 1, "Ranged", "ranged_weapon")
+	db.ally("hootie_def", 2, 2, [], 2, "opposing_characters_atk_mod:-1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var crow := CardInstance.create("crow", "crow_def", "p1", "p1_hero_row")
+	state.cards["crow"] = crow
+	state.zones["p1_hero_row"].card_ids.append("crow")
+
+	# awp-a: no weapon named (plain click on the hero) — the strike is still an
+	# open question at the strike point, so the cursor shows the bare hero.
+	eq(state.get_atk_if_attacking("p1_hero", db), 0,
+		"awp-a: without a named weapon the preview is the bare hero ATK")
+	# awp-b: named weapon → its ATK counts.
+	eq(state.get_atk_if_attacking("p1_hero", db, "crow"), 1,
+		"awp-b: named weapon's ATK is previewed")
+
+	# awp-c: the Aspect's ranged +1 is a damage replacement, not ATK — it rides
+	# on top via the resolver preview, and only because the weapon is Ranged.
+	_add_form_in_play(state, "hawk", "azeroth_34", "p1")
+	eq(StackResolver.preview_combat_damage_amount(state, db, "p1_hero", 1, "crow"), 2,
+		"awp-c: Aspect's ranged +1 shows in the cursor preview")
+	eq(StackResolver.preview_combat_damage_amount(state, db, "p1_hero", 1, ""), 1,
+		"awp-d: no weapon named → untyped combat damage, no bonus")
+
+	# awp-e: an ATK-subtracting aura nets against the weapon BEFORE the 0 floor,
+	# exactly as it will at the conclusion (1 weapon − 1 Hootie = 0, not 1).
+	_add_ally(state, "hootie", "hootie_def", "p2")
+	eq(state.get_atk_if_attacking("p1_hero", db, "crow"), 0,
+		"awp-e: Hootie's -1 nets against the weapon's ATK")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 31 — Regression: Elder Moorf's buff must land on REAL defense damage
 # when activated by the (non-turn) defending player mid-combat, exactly as in
@@ -7585,6 +7628,24 @@ func _test_mind_damage_discard() -> void:
 	StackResolver.pass_priority(st4, db)
 	eq(st4.pending_discard_player, "p1", "sc40g-k: targeting own ally makes the caster discard")
 	eq(st4.pending_discard_count, 1, "sc40g-l: 1 discard owed by p1")
+
+	# ── Hand runs dry mid-discard: the unpayable remainder is dropped, not stalled ─
+	var st5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st5, "p1", 5)
+	_add_card_to_hand(st5, "mb5", "mind_blast_def", "p1")
+	_add_ally(st5, "grunt5", "grunt_def", "p2")
+	_add_card_to_hand(st5, "solo", "junk_def", "p2")   # p2 owes 2 but holds only 1
+
+	StackResolver.submit_action(st5, PendingAction.make("play_ability", "p1",
+		{"card_id": "mb5", "target_id": "grunt5"}), db)
+	StackResolver.pass_priority(st5, db)
+	StackResolver.pass_priority(st5, db)
+	eq(st5.pending_discard_count, 2, "sc40g-m: 2 discards owed against a 1-card hand")
+	StackResolver.choose_discard(st5, "solo", db)
+	ok(st5.zones["p2_hand"].card_ids.is_empty(), "sc40g-n: p2's hand is now empty")
+	eq(st5.pending_discard_count, 0, "sc40g-o: remaining discard dropped — no stall")
+	eq(st5.pending_discard_player, "", "sc40g-p: discard choice point closed")
+	ok(StackResolver.pass_priority(st5, db).size() > 0, "sc40g-q: priority flows again")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -15614,6 +15675,85 @@ func _test_burn_away_destroys_ability() -> void:
 	var ai := BaseAI.new()
 	var acts := ai._targeted_instant_actions(state2, db, "p1", "burn3", "play_ability")
 	ok(acts.is_empty(), "ba-k: AI skips a target cheaper than the spell (cost 2 < 3)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Regression: "target hero or ally" is a CHARACTER target. An in-play ability
+# (an attachment, an ongoing ability) and equipment are in play, but they have
+# no health and can never be dealt damage — so they must not be offered to, or
+# accepted by, a damage/heal effect, and a stray damage packet must not destroy
+# one. (Reported: a Taz'dingo enter-play ping killed an attached Shadow Word:
+# Pain because the target check only asked "is it in play".)
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_damage_cannot_target_abilities() -> void:
+	_buf.append("\n-- Damage targeting: abilities/equipment are not characters --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("ongo_def", 2, "ongoing")
+	db.instant("mark_def", 2, "ongoing|attach:ally|attached_buff:2:2")
+	db.equipment("robe_def", 2, "equipment:chest:0")
+	db.instant("qs_def", 1, "deal_damage_to_target:2:fire")
+	db.ally("taz_def", 2, 2, [], 3, "on_enter:deal_damage_to_target:1:ranged")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bear := _add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 6)
+
+	var ongo := CardInstance.create("ongo", "ongo_def", "p2", "p2_hero_row")
+	state.cards["ongo"] = ongo
+	state.zones["p2_hero_row"].card_ids.append("ongo")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+	var mark := CardInstance.create("mark", "mark_def", "p2", "attached")
+	state.cards["mark"] = mark
+	state.zones["attached"].card_ids.append("mark")
+	mark.attached_to = "bear"
+	bear.attachments.append("mark")
+
+	_add_card_to_hand(state, "qs", "qs_def", "p1")
+
+	# Instant damage: characters only.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "qs", "target_id": "bear"}), db),
+		"dta-a: an ally is a legal damage target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "qs", "target_id": "p2_hero"}), db),
+		"dta-b: a hero is a legal damage target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "qs", "target_id": "mark"}), db),
+		"dta-c: an attachment is NOT a legal damage target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "qs", "target_id": "ongo"}), db),
+		"dta-d: an ongoing ability is NOT a legal damage target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "qs", "target_id": "robe"}), db),
+		"dta-e: equipment is NOT a legal damage target")
+
+	# Enter-play targeted damage (Taz'dingo) — the reported path.
+	var taz := CardInstance.create("taz", "taz_def", "p1", "p1_hand")
+	state.cards["taz"] = taz
+	state.zones["p1_hand"].card_ids.append("taz")
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "taz"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"dta-f: Taz'dingo's enter-play effect is pending")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "taz", "target_id": "mark"}), db),
+		"dta-g: enter-play damage can't be pointed at an attachment")
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "taz", "target_id": "bear"}), db),
+		"dta-h: enter-play damage can still be pointed at an ally")
+
+	# Even a stray damage packet must not destroy a non-character.
+	GameLogic.deal_damage(state, "p1_hero", "mark", 5, db)
+	GameLogic.check_destroyed(state, "mark", "", db)
+	eq(mark.zone_id, "attached", "dta-i: an attachment isn't destroyed by damage")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

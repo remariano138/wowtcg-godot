@@ -102,6 +102,13 @@ const PLAY_SPREAD_GAP := CardNode.H + 20.0
 const HAND_CARD_SCALE := 1.2
 const HAND_SPREAD_GAP := CardNode.W * HAND_CARD_SCALE + 12.0
 
+# Hero cards are special (rule 200) and render twice table size, centred on the
+# same "_hero_card" anchor as before — CardNode's visual origin is its centre,
+# so scaling keeps it height-centred on its hero row (where equipment goes).
+# Applied in _apply_zone_scale (the one choke point for card scale) and again in
+# register_hero_card, which may run after the card has already been placed.
+const HERO_CARD_SCALE := 2.0
+
 const PLAY_ZONES := ["p1_ally_row", "p2_ally_row",
 	"p1_hero_row", "p2_hero_row",
 	"p1_resource_row", "p2_resource_row"]
@@ -741,8 +748,16 @@ func _apply_zone_scale(card_id: String, zone_id: String) -> void:
 	if not node:
 		return
 	var is_hand := zone_id.ends_with("_hand")
+	if _is_hero_card(card_id):
+		node.scale = Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE)
+		node.z_index = 1   # above the row it sits beside, below hand cards
+		return
 	node.scale = Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if is_hand else Vector2.ONE
 	node.z_index = HAND_Z_INDEX if is_hand else 0
+
+
+func _is_hero_card(card_id: String) -> bool:
+	return card_id != "" and _hero_card_ids.values().has(card_id)
 
 
 func _add_to_zone(card_id: String, zone_id: String) -> void:
@@ -775,6 +790,11 @@ func register_hero_card(player_id: String, instance_id: String) -> void:
 	var anchor := zone_anchors.get(player_id + "_hero_card") as Node2D
 	if node and anchor:
 		node.global_position = anchor.global_position
+	# The card was placed (and scaled) before it was known to be a hero.
+	var card := card_nodes.get(instance_id) as CardNode
+	if card:
+		card.scale = Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE)
+		card.z_index = 1
 
 
 # "" unless zone_id is a hero_row with a registered hero card, in which case
@@ -1225,8 +1245,10 @@ func _clear_hero_power_badge(player_id: String) -> void:
 func _ensure_hero_bar(player_id: String) -> void:
 	if _hero_bars.has(player_id):
 		return
-	const BAR_W := 24.0
-	const BAR_H := CardNode.H
+	# Bar matches the hero card's rendered height (hero cards draw at
+	# HERO_CARD_SCALE), so it reads as part of the card rather than a stub.
+	const BAR_W := 24.0 * HERO_CARD_SCALE
+	const BAR_H := CardNode.H * HERO_CARD_SCALE
 
 	var bg := ColorRect.new()
 	bg.color        = Color(0.35, 0.05, 0.05)
@@ -1269,11 +1291,15 @@ func _update_hero_bar(player_id: String, card_id: String, new_hp: int, max_hp: i
 	var fill: ColorRect = bar["fill"]
 	var lbl:  Label     = bar["label"]
 
-	# Position bar to the right of the hero card node, offset enough to clear
-	# the exhausted footprint (card rotates 90°, right edge reaches H/2 from center).
+	# Bar sits on the hero card's BOARD-FACING side (P1's column is at screen-right,
+	# P2's at screen-left), offset enough to clear the exhausted footprint (the card
+	# rotates 90°, so its edge reaches H/2 * scale from centre). Placing it on the
+	# outer side would push a full-size hero's bar off the 1920px viewport.
 	var cn := card_nodes.get(card_id) as Node2D
 	if cn:
-		bg.position = cn.global_position + Vector2(CardNode.H * 0.5 + 6, -CardNode.H * 0.5)
+		var half := CardNode.H * 0.5 * HERO_CARD_SCALE
+		var dx := -(half + 6.0 + bg.size.x) if player_id == "p1" else half + 6.0
+		bg.position = cn.global_position + Vector2(dx, -half)
 
 	lbl.text = str(new_hp)
 	var ratio: float = float(new_hp) / float(max(max_hp, 1))

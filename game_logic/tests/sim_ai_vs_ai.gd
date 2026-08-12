@@ -64,6 +64,7 @@ func _run_game(db: CardDatabase, deck_id1: String, deck_id2: String) -> String:
 				if not state.mulligan_decided.get(pid, false):
 					TurnManager.commit_mulligan(state, pid,
 							(ais[pid] as BaseAI).wants_mulligan(state, db, pid), db)
+			TurnManager.finish_mulligan_if_ready(state, db)
 			continue
 
 		# Mandatory: enter-play target. Only announce a target when one isn't

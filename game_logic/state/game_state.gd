@@ -368,7 +368,8 @@ func get_attachments(host_instance_id: String) -> Array[CardInstance]:
 # Passing db as a parameter keeps GameState free of Godot node dependencies
 # and allows headless unit testing with a mock database.
 
-func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floor: bool = true) -> int:
+func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floor: bool = true,
+		assume_weapon: String = "") -> int:
 	var inst := get_card(instance_id)
 	if not inst:
 		return 0
@@ -424,6 +425,12 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 	# wielder for the current combat step. Live lookup — never cached.
 	for weapon_id in combat_struck_weapons.get(instance_id, []):
 		atk += get_atk(weapon_id, db)
+	# (3b-preview) A weapon this wielder has not struck with YET (the attack
+	# cursor, after the player picked "Attack" off a specific weapon). Counted
+	# before the floor below so an ATK-subtracting aura (Hootie) nets against the
+	# weapon exactly as it will at the conclusion. DISPLAY ONLY.
+	if assume_weapon != "" and not (assume_weapon in combat_struck_weapons.get(instance_id, [])):
+		atk += get_atk(assume_weapon, db)
 	# (3c) "+N ATK this combat" grants (Berserking). Live lookup — never cached;
 	# cleared with the combat step.
 	atk += int(combat_atk_bonus.get(instance_id, 0))
@@ -466,8 +473,8 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 # "while attacking" bonuses like Zorm/Rayder/For the Horde! during target
 # selection). Never use this for anything but display — it doesn't reflect
 # real game state and must not influence rules decisions.
-func get_atk_if_attacking(instance_id: String, db) -> int:
-	return get_atk(instance_id, db, true)
+func get_atk_if_attacking(instance_id: String, db, assume_weapon: String = "") -> int:
+	return get_atk(instance_id, db, true, true, assume_weapon)
 
 
 # Display helper: the UNCLAMPED ATK total (see the clamp note in get_atk). A

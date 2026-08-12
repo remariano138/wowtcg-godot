@@ -66,6 +66,14 @@ static var input_blocked: bool = false
 # whoever set it (see `_set_board_block` in playtest.gd).
 static var input_allowlist: Array = []
 
+# Viewport-space rectangles that swallow the pointer: while the mouse is inside
+# one, no card responds to hover or clicks. Non-modal HUD panels that float OVER
+# the board register here (the draggable turn-info / controls windows) — unlike
+# `input_blocked` this is positional, so the rest of the board stays live.
+# Kept up to date by whoever owns the panel (see _refresh_card_input_shields in
+# playtest.gd).
+static var input_shields: Array[Rect2] = []
+
 # ── Wiggle state ───────────────────────────────────────────────────────────────
 var _wiggle_tween: Tween = null
 var _wiggle_base: float = 0.0
@@ -527,8 +535,24 @@ func settle_rotation(exhausted: bool) -> void:
 	_wiggle_base = target
 
 
+# True while the pointer is inside a registered HUD shield rect. Shields are in
+# VIEWPORT space (that's where the HUD CanvasLayer lives), so this deliberately
+# uses the raw viewport mouse position rather than the camera-aware world one.
+func _pointer_shielded() -> bool:
+	if input_shields.is_empty():
+		return false
+	var vp := get_viewport()
+	if vp == null:
+		return false
+	var m := vp.get_mouse_position()
+	for r in input_shields:
+		if r.has_point(m):
+			return true
+	return false
+
+
 func _input(event: InputEvent) -> void:
-	if input_blocked and not input_allowlist.has(instance_id):
+	if (input_blocked and not input_allowlist.has(instance_id)) or _pointer_shielded():
 		if _mouse_inside:
 			_mouse_inside = false
 			card_unhovered.emit(instance_id)

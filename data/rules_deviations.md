@@ -80,6 +80,35 @@ engine deviation, which is exactly why this file exists.
 
 ---
 
+## Ryn Dreamstrider (`azeroth_214`)
+
+**Printed text:** "[Activate] -> Target hero or ally has +2 ATK while
+attacking this turn." No "use only on your turn" clause is printed — ally
+activated powers are usable on either player's turn by default (see the
+"No turn_player restriction" convention note in
+`StackResolver._can_use_ally_power`).
+
+**Deviation:** restricted to Ryn's controller's own turn, via the existing
+`on_your_turn` effects segment — the same treatment as Rayder and For the
+Horde! above.
+
+**Why:** identical to Rayder's, with the buff pointed at a single target
+instead of the party. The bonus only applies "while attacking," and in a
+duel only the turn player can attack, so using the power off-turn can
+never do anything — it merely exhausts Ryn (worse against
+destroy-exhausted-ally effects) and forces both Turbo autoskip and the AI
+to keep evaluating a dead action in every non-turn priority window. The
+multiplayer formats where an off-turn ally could be attacking don't exist
+in this digital version.
+
+**Note:** `on_your_turn` is stricter than "your turn" alone — it also
+requires the action phase and an empty chain, so Ryn cannot be activated
+in response to a link even on his controller's turn. That is accepted for
+the same reason: the buff has nothing to affect while a chain is
+resolving.
+
+---
+
 ## Infernal (`azeroth_127`)
 
 **Printed text:** "At the start of your turn, discard a card, or target

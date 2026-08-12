@@ -3280,6 +3280,8 @@ static func _combat_prevention_offers(state: GameState, db) -> Array:
 	if _has_keyword(attacker, "long_range", db, state) \
 			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
+	atk_dmg = _combat_replacements(state, db, attacker_id, atk_dmg)
+	def_dmg = _combat_replacements(state, db, defender_id, def_dmg)
 	var defender_offer := _prevention_offer(state, db, defender_id, atk_dmg, attacker_id,
 		GameLogic.is_damage_unpreventable(state, db, attacker_id, true))
 	if not defender_offer.is_empty():
@@ -3355,8 +3357,8 @@ static func preview_hero_damage_amount(state: GameState, db, player_id: String,
 # World in Flames (azeroth_61): "Ongoing: If your hero would deal fire damage,
 # it deals double that amount of damage instead." Only packets that carry a
 # "dmg_type" field can qualify — packet sites whose source can be a hero pass
-# their printed type along; combat damage has its own conclusion path and no
-# fire-typed combat source exists today. Live scan of the source hero's
+# their printed type along; combat damage comes through _combat_replacements,
+# typed off the weapon the hero struck (303.2b). Live scan of the source hero's
 # controller's in-play cards; doubling applies once per copy (two → ×4).
 static func _fire_doubled_amount(state: GameState, db, p: Dictionary) -> int:
 	var amount := int(p.get("amount", 0))
@@ -3381,8 +3383,10 @@ static func _fire_doubled_amount(state: GameState, db, p: Dictionary) -> int:
 # deals that amount of damage plus 1 instead." The damage-TYPE analogue of
 # Chromatic Cloak's `from_ability` bonus, keyed on the per-packet "dmg_type"
 # field the same way World in Flames' doubling is — so it covers every source
-# the hero can be (abilities, hero powers, attachment burns), but not combat
-# damage (its own conclusion path, and no shadow-typed combat source exists).
+# the hero can be (abilities, hero powers, attachment burns). Combat damage has
+# its own conclusion path and reaches this through _combat_replacements, which
+# builds the packet from the struck weapon's type (Aspect of the Hawk + a Ranged
+# weapon).
 # Live scan of the source hero's controller's in-play cards; +N per copy.
 static func _typed_damage_bonus_amount(state: GameState, db, p: Dictionary) -> int:
 	var amount := int(p.get("amount", 0))
@@ -4514,6 +4518,45 @@ static func _struck_weapon_grants_long_range(state: GameState, wielder_id: Strin
 	return false
 
 
+# Combat damage TYPE for a character (rule 303.2b). A hero's combat damage takes
+# the type of the weapon it struck with this combat (Blackcrow → ranged); with no
+# struck weapon — and for allies, whose printed dmg_type is their own — it is the
+# card's printed type. Only used to feed the typed replacement effects below.
+static func _combat_damage_type(state: GameState, wielder_id: String, db) -> String:
+	if not db or wielder_id == "":
+		return ""
+	for weapon_id in state.combat_struck_weapons.get(wielder_id, []) as Array:
+		var wdef := db.get_def(state.get_card(weapon_id).card_def_id) as CardDef
+		if wdef and wdef.dmg_type != "":
+			return wdef.dmg_type
+	var card := state.get_card(wielder_id)
+	if not card:
+		return ""
+	var def := db.get_def(card.card_def_id) as CardDef
+	return def.dmg_type if def else ""
+
+
+# Aspect of the Hawk / Shadowform / World in Flames on COMBAT damage. These read
+# "if your hero would deal <type> damage" with no ability or non-combat clause,
+# so a hero striking a Ranged weapon under Aspect of the Hawk deals +1 — combat
+# damage simply has its own path instead of defer_packets, so the replacements
+# have to be applied here too. Same fixed order as defer_packets (flat typed
+# bonus, then the doubling); Chromatic Cloak's `from_ability` bonus deliberately
+# does NOT apply — combat damage is not dealt with an ability.
+static func _combat_replacements(state: GameState, db, source_id: String,
+		amount: int) -> int:
+	if amount <= 0 or db == null or not _is_hero(state, source_id):
+		return amount
+	var p := {
+		"source": source_id,
+		"amount": amount,
+		"dmg_type": _combat_damage_type(state, source_id, db),
+	}
+	p["amount"] = _typed_damage_bonus_amount(state, db, p)
+	p["amount"] = _fire_doubled_amount(state, db, p)
+	return int(p["amount"])
+
+
 static func _has_keyword(card: CardInstance, keyword: String, db,
 		state: GameState = null) -> bool:
 	if keyword in card.granted_keywords:
@@ -4981,6 +5024,11 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	if _has_keyword(attacker, "long_range", db, state) \
 			or _struck_weapon_grants_long_range(state, attacker_id, db):
 		def_dmg = 0
+	# Typed replacement effects on combat damage (Aspect of the Hawk's ranged +1
+	# on a struck Blackcrow, Shadowform, World in Flames). Read BEFORE the struck-
+	# weapon associations are cleared below — the damage type comes from them.
+	atk_dmg = _combat_replacements(state, db, attacker_id, atk_dmg)
+	def_dmg = _combat_replacements(state, db, defender_id, def_dmg)
 	# Annihilator: "can't be prevented" is scoped to the weapon the hero STRUCK
 	# with this combat, so both sides must be read before the associations are
 	# cleared below (303.2a).

@@ -325,6 +325,7 @@ func _ready() -> void:
 		_test_shadowform_holy_break,
 		_test_hero_power_damage_is_typed,
 		_test_aspect_of_the_hawk,
+		_test_aspect_of_the_hawk_weapon_strike,
 		_test_aspect_slot_independent_of_form,
 		_test_ai_develops_ongoing_abilities_first,
 		_test_ai_mana_agate_and_arcane_intellect,
@@ -16920,6 +16921,54 @@ func _test_aspect_of_the_hawk() -> void:
 	eq(StackResolver._typed_damage_bonus_amount(state, db,
 		{"source": "p1_hero", "amount": 2, "dmg_type": "ranged"}), 2,
 		"ah-f: bonus gone once the Aspect leaves play")
+
+
+# Aspect of the Hawk on COMBAT damage: a hero striking a Ranged weapon deals
+# ranged damage (303.2b), so the typed +1 applies to the strike too — the card
+# says "if your hero would deal ranged damage", with no ability clause. A Melee
+# weapon in the same board state is untouched.
+func _test_aspect_of_the_hawk_weapon_strike() -> void:
+	_buf.append("\n-- Aspect of the Hawk: boosts a Ranged weapon strike --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_34", 3, HAWK_FX)
+	(db._defs["azeroth_34"] as CardDef).tags = "Beast Mastery"
+	db.weapon("crow_def", 2, 1, 1, "Ranged", "ranged_weapon")
+	db.weapon("krol_def", 3, 3, 1)   # Melee — not a ranged source
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 10)
+	_add_form_in_play(state, "hawk", "azeroth_34", "p1")   # ongoing, hero_row
+	var crow := CardInstance.create("crow", "crow_def", "p1", "p1_hero_row")
+	state.cards["crow"] = crow
+	state.zones["p1_hero_row"].card_ids.append("crow")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.choose_strike(state, "crow", db)
+	eq(state.get_atk("p1_hero", db), 1, "ahw-a: strike modifier is the printed 1 ATK")
+	for _i in 4:
+		StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 2,
+		"ahw-b: 1 ranged combat damage became 2 under the Aspect")
+
+	# Melee strike in the same board state: no bonus.
+	state.get_card("p1_hero").is_exhausted = false
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.choose_strike(state, "krol", db)
+	for _i in 4:
+		StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 5,
+		"ahw-c: melee strike deals its printed 3 — not boosted")
 
 
 # Aspect (1) is its own slot: it doesn't collide with Form (1), a second Aspect

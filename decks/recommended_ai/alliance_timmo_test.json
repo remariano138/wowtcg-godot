@@ -80,8 +80,13 @@
     },
     {
       "card_def_id": "azeroth_187",
-      "count": 2,
+      "count": 1,
       "_card_name": "Hannah the Unstoppable"
+    },
+    {
+      "card_def_id": "azeroth_151",
+      "count": 1,
+      "_card_name": "From the Shadows"
     },
     {
       "card_def_id": "dark_portal_85",
@@ -144,9 +149,9 @@
       "_card_name": "Kena Shadowbrand"
     },
     {
-      "card_def_id": "azeroth_179",
+      "card_def_id": "dark_portal_129",
       "count": 1,
-      "_card_name": "Braxiss the Sleeper"
+      "_card_name": "Escape Artist"
     },
     {
       "card_def_id": "dark_portal_170",

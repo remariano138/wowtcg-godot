@@ -2090,6 +2090,12 @@ func _log_event(event: GameEvent) -> void:
 			var rem_att: String = _log_card(event.payload.get("attacker_id", ""))
 			var rem_src: String = _log_card(event.payload.get("source_id", ""))
 			_log_entry("[color=#a66]%s removed from combat by %s[/color]" % [rem_att, rem_src])
+		"link_interrupted":
+			# Rule 711 (Escape Artist): the link left the chain doing nothing.
+			var int_card: String = _log_card(event.payload.get("card_id", ""))
+			var int_src:  String = _log_card(event.payload.get("source_id", ""))
+			_log_entry("[color=#a66]%s [b]interrupted[/b] by %s — it does nothing[/color]"
+				% [int_card, int_src])
 		"damage_dealt":
 			var src:    String = _log_card(event.payload.get("source", ""))
 			var tgt:    String = _log_card(event.payload.get("target", ""))

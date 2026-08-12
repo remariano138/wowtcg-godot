@@ -82,6 +82,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var flash := instant_protector_action(state, db, player_id)
 	if flash != null:
 		return flash
+	# Escape Artist (BaseAI) — interrupt an ability aimed at our hero, or dodge.
+	var escape := escape_artist_action(state, db, player_id)
+	if escape != null:
+		return escape
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze

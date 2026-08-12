@@ -39,6 +39,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var flash := instant_protector_action(state, db, player_id)
 	if flash != null:
 		return flash
+	# Escape Artist (BaseAI) — deterministic too.
+	var escape := escape_artist_action(state, db, player_id)
+	if escape != null:
+		return escape
 	# Hero disable flip (BaseAI, e.g. Litori Frostburn) — deterministic too.
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:

@@ -496,6 +496,11 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		# Sever the Cord: the sacrificed ally is announced with the play (412.2).
 		if def and not _play_cost_sacrifice_ok(state, def, action):
 			return false
+		if def and is_modal_def(def):
+			# Mode-aware targeting: ONLY the chosen mode's requirement applies,
+			# so Escape Artist's interrupt half announces a chain link while its
+			# remove-attackers half announces nothing at all.
+			return _modal_target_ok(state, def, action, card_id, db)
 		if def and _has_effect_flag_prefix(def, "multi_shot"):
 			if not _can_play_multi_shot(state, action, db): return false
 		elif def and is_divided_damage_def(def):
@@ -614,6 +619,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 					return false
 				rr_seen[rr_id] = true
 			return true
+		# Mode-aware targeting (see the instant path / _modal_target_ok).
+		if def and is_modal_def(def):
+			return _modal_target_ok(state, def, action, card_id, db)
 		if def and _has_effect_flag_prefix(def, "chain_lightning"):
 			if not _can_play_chain_lightning(state, action, db): return false
 		elif def and is_divided_damage_def(def):
@@ -748,6 +756,13 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		var sac_pid := player_id if player_id != "" else state.turn_player
 		if get_play_sacrifice_candidates(state, sac_pid).is_empty():
 			return false
+	# Modal (707.1c): the card is playable while ANY of its modes can be legally
+	# chosen. A mode that announces no target always can (Escape Artist's
+	# remove-attackers half), so the card never goes dark for want of a chain
+	# link to interrupt — playing it into an empty chain is legal and simply
+	# does nothing, exactly as the printed text allows.
+	if is_modal_def(def) and has_targetless_mode(def):
+		return true
 	if not _instant_needs_target(def):
 		return true
 	# Shock and Soothe: needs TWO distinct legal hero-or-ally targets.
@@ -847,8 +862,7 @@ static func _instant_needs_target(def: CardDef) -> bool:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
-				and parts[1] in ["destroy_target", "deal_damage_to_target",
-					"exhaust_target", "heal_target"]:
+				and parts[1] in MODE_TARGETED_EFFECTS:
 			return true
 	return false
 
@@ -860,8 +874,14 @@ static func _instant_needs_target(def: CardDef) -> bool:
 # into modal_modes), like a target — validation and resolution then see ONLY
 # the chosen mode's inner effect, so the engine receives "deal 3" OR "heal 3",
 # never the choice itself.
-# v1 limit: every mode must target a hero or ally (both Natural Selection modes
-# do) — ally-only or targetless modes would need mode-aware target validation.
+#
+# Targeting is MODE-AWARE (Escape Artist): what the play must announce is read
+# off the CHOSEN mode, not off the def, so one card can mix a targeted mode with
+# a targetless one ("interrupt target ability card…" / "…remove all attackers
+# from combat"). MODE_TARGETED_EFFECTS is the registry — a mode whose inner
+# effect isn't listed announces no target at all. The hero-or-ally kinds are
+# validated by the shared _instant_needs_target path; `interrupt_ability` has its
+# own pool (see get_interrupt_candidates), which is what mode_target_kind is for.
 static func modal_modes(def: CardDef) -> Array:
 	var modes: Array = []
 	if not def:
@@ -885,6 +905,153 @@ static func selected_mode(def: CardDef, action: PendingAction) -> String:
 	if idx >= 0 and idx < modes.size():
 		return modes[idx]
 	return ""
+
+
+# Inner effects of a `mode:` segment that announce a target with the play.
+# Anything else is a targetless mode (Escape Artist's remove_attackers half).
+const MODE_TARGETED_EFFECTS: Array = ["destroy_target", "deal_damage_to_target",
+	"exhaust_target", "heal_target", "interrupt_ability"]
+
+
+# The target KIND a single mode's inner effect announces: "" for a targetless
+# mode, "interrupt_ability" for Escape Artist's counterspell half, and
+# "hero_or_ally" for the shipped damage/heal/destroy/exhaust modes (whose
+# validation is the generic _instant_needs_target path).
+static func mode_target_kind(mode_effect: String) -> String:
+	var head := mode_effect.split(":")[0].strip_edges()
+	if head == "interrupt_ability":
+		return "interrupt_ability"
+	if head in MODE_TARGETED_EFFECTS:
+		return "hero_or_ally"
+	return ""
+
+
+# Target validation for a modal play (both the instant and the sorcery-speed
+# path). The chosen mode must be announced (707.1c), and only THAT mode's target
+# requirement is checked — a targetless mode needs nothing, an interrupt mode
+# needs a legal chain link, everything else the shipped hero-or-ally check.
+# Also answers the highlight probes, which pass `_skip_target_check` because
+# they run before any mode has been picked.
+static func _modal_target_ok(state: GameState, def: CardDef,
+		action: PendingAction, card_id: String, db) -> bool:
+	if action.params.get("_skip_target_check", false):
+		return true
+	var mode := selected_mode(def, action)
+	if mode == "":
+		return false
+	match mode_target_kind(mode):
+		"interrupt_ability":
+			return _is_interrupt_target(state, db, action.source_player,
+					action.params.get("target_id", ""), card_id)
+		"hero_or_ally":
+			return _is_legal_target(state, action.params.get("target_id", ""), db)
+	return true   # targetless mode (Escape Artist's remove_attackers half)
+
+
+# Does this def have a mode that can be chosen without announcing a target?
+# Such a mode is always legally choosable (707.1c), which is what keeps Escape
+# Artist playable — and highlighted — with nothing on the chain to interrupt.
+static func has_targetless_mode(def: CardDef) -> bool:
+	for mode in modal_modes(def):
+		if mode_target_kind(mode) == "":
+			return true
+	return false
+
+
+# ── Interrupting links (rule 711 — Escape Artist) ─────────────────────────────
+# "Interrupt target ability card that's targeting your hero." The target is a
+# LINK on the chain, not a card in play, so it gets its own pool rather than
+# going through _is_legal_target (which asks about in-play characters).
+#
+# 711.3: a card can be targeted for interruption only while it's ON the chain,
+# and only if it got there by being PLAYED — a card *placed* on the chain (412.1,
+# a resource) can't be. That falls out of requiring a backing pending_action of
+# a play_* type: place_resource is excluded by construction.
+static func get_interrupt_candidates(state: GameState, db,
+		player_id: String) -> Array:
+	var result: Array = []
+	if not db:
+		return result
+	var ps := state.players.get(player_id) as PlayerState
+	var hero_id: String = ps.hero_instance_id if ps else ""
+	if hero_id == "":
+		return result
+	for link in state.pending_actions:
+		var pa := link as PendingAction
+		if not (pa.action_type in ["play_instant", "play_ability"]):
+			continue
+		var cid: String = pa.params.get("card_id", "")
+		if cid == "":
+			continue
+		var card := state.get_card(cid)
+		if not card:
+			continue
+		var zone := state.zones.get(card.zone_id) as Zone
+		if not zone or zone.zone_type != "chain":
+			continue
+		# "ability card" — a type line of "Ability" or "Instant Ability" (the
+		# Instant prefix is stripped into is_instant), so an Instant Ally on the
+		# chain is not a candidate.
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Ability":
+			continue
+		if not _link_targets_hero(pa, hero_id):
+			continue
+		result.append(cid)
+	return result
+
+
+# Does this link announce `hero_id` in any of its target slots? Every announced
+# target rides the params, so one scan covers single-target spells, the
+# multi-slot ones (Multi-Shot, Ravenous Bite, Shock and Soothe) and the
+# id-list ones (Chain Lightning, Lightning Storm).
+static func _link_targets_hero(pa: PendingAction, hero_id: String) -> bool:
+	for key in ["target_id", "target_id_2", "target_id_3", "heal_target_id"]:
+		if str(pa.params.get(key, "")) == hero_id:
+			return true
+	for tid in pa.params.get("target_ids", []):
+		if str(tid) == hero_id:
+			return true
+	return false
+
+
+# The one predicate behind submission, the highlight probe and the resolution
+# re-check (711/706): is `target_id` a link `player_id` may interrupt right now?
+# `source_card_id` is the interrupting card, excluded because a link can't
+# interrupt itself (711.2).
+static func _is_interrupt_target(state: GameState, db, player_id: String,
+		target_id: String, source_card_id: String) -> bool:
+	if target_id == "" or target_id == source_card_id:
+		return false
+	return target_id in get_interrupt_candidates(state, db, player_id)
+
+
+# Interrupt the link backed by `card_id` (rule 711.1): it leaves the chain
+# without resolving and, being a card, goes to its OWNER's graveyard. 711.2 —
+# the whole text is interrupted (nothing it announced happens) and costs already
+# paid are not refunded, which is why nothing here touches resources or undoes
+# an announcement cost. Priority afterwards is handled by the caller's normal
+# post-resolution path (pass_priority hands it to the turn player).
+static func _interrupt_link(state: GameState, card_id: String,
+		source_card_id: String, db = null) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var idx := -1
+	for i in state.pending_actions.size():
+		var pa := state.pending_actions[i] as PendingAction
+		if str(pa.params.get("card_id", "")) == card_id:
+			idx = i
+			break
+	if idx < 0:
+		return events
+	var link := state.pending_actions[idx] as PendingAction
+	state.pending_actions.remove_at(idx)
+	events.append(GameEvent.link_interrupted(card_id, source_card_id,
+			link.source_player))
+	var card := state.get_card(card_id)
+	if card:
+		events.append_array(GameLogic.move_card(state, card_id,
+				card.owner + "_graveyard"))
+	return events
 
 
 static func _instant_targets_ally_only(def: CardDef) -> bool:
@@ -2438,6 +2605,22 @@ static func _resolve_play_instant(state: GameState,
 									"target": ms_target_id, "amount": ms_amount,
 									"from_ability": true})
 							events.append_array(defer_packets(state, db, ms_packets))
+					"interrupt_ability":
+						# "Interrupt target ability card that's targeting your
+						# hero." (Escape Artist, rule 711.) Re-checked at
+						# resolution like every other target (706 / glossary
+						# 4217): the link may have been interrupted by something
+						# else, or retargeted off our hero, in which case this
+						# fizzles. Costs the interrupted link paid are NOT
+						# refunded (711.2).
+						if _is_interrupt_target(state, db, action.source_player,
+								target_id, card_id):
+							events.append_array(_interrupt_link(state, target_id,
+									card_id, db))
+						else:
+							events.append(GameEvent.make("action_fizzled", {
+								"card_id": card_id, "reason": "interrupt_target_gone",
+							}))
 					"remove_attackers":
 						# "If your hero is defending, remove all attackers from combat."
 						# (Blink). Condition token (parts[1]) picks WHO must be

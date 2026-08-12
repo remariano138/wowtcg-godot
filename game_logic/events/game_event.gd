@@ -448,6 +448,15 @@ static func attacker_removed_from_combat(attacker_id: String, source_id: String)
 		"attacker_id": attacker_id, "source_id": source_id,
 	})
 
+# A link was interrupted (rule 711 — Escape Artist): it left the chain without
+# resolving and, being a card, went to its owner's graveyard. `card_id` is the
+# interrupted card, `source_id` the card that interrupted it.
+static func link_interrupted(card_id: String, source_id: String,
+		player_id: String) -> GameEvent:
+	return make("link_interrupted", {
+		"card_id": card_id, "source_id": source_id, "player": player_id,
+	})
+
 static func card_removed_from_game(card_id: String, player_id: String) -> GameEvent:
 	return make("card_removed_from_game", {
 		"card_id": card_id, "player": player_id,

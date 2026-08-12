@@ -937,6 +937,10 @@ func _modal_mode_label(mode_effect: String) -> String:
 		"heal_target":
 			if parts.size() > 1:
 				return "Heal %s damage" % parts[1]
+		"interrupt_ability":
+			return "Interrupt an ability targeting your hero"
+		"remove_attackers":
+			return "Remove all attackers from combat"
 	return mode_effect
 
 
@@ -951,6 +955,21 @@ func choose_modal_mode(mode_index: int) -> void:
 	if mode_index < 0 or mode_index >= modes.size():
 		return
 	_targeting_mode = mode_index
+	# Mode-aware targeting (Escape Artist): a mode that announces no target
+	# ("…remove all attackers from combat") has nothing to point at, so the mode
+	# button IS the submission — entering targeting mode would strand the player
+	# with no legal click.
+	if StackResolver.mode_target_kind(modes[mode_index]) == "":
+		var act := PendingAction.make(_action_type_for(card_id), local_player,
+			{"card_id": card_id, "mode": mode_index})
+		_targeting_mode = -1
+		var events := StackResolver.submit_action(state, act, db)
+		if events.is_empty():
+			return
+		EventBus.emit_events(events)
+		_pass_own_proposal(act)
+		refresh_highlights()
+		return
 	var parts := (modes[mode_index] as String).split(":")
 	var dmg_type := ""
 	var amount := 0
@@ -962,6 +981,22 @@ func choose_modal_mode(mode_index: int) -> void:
 			dmg_type = "heal"
 			amount   = int(parts[1]) if parts.size() > 1 else 0
 	start_targeting(card_id, "play_instant", dmg_type, amount)
+
+
+# Is the active targeting flow a modal interrupt mode (Escape Artist)? The mode
+# index rides _targeting_mode, so this is the one thing that distinguishes a
+# chain-link pick from an ordinary hero-or-ally pick.
+func _is_interrupt_mode() -> bool:
+	if _targeting_mode < 0 or _targeting_source == "" or not db:
+		return false
+	var card := state.get_card(_targeting_source)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return false
+	var modes := StackResolver.modal_modes(def)
+	if _targeting_mode >= modes.size():
+		return false
+	return StackResolver.mode_target_kind(modes[_targeting_mode]) == "interrupt_ability"
 
 
 func cancel_modal_choice() -> void:
@@ -2286,6 +2321,17 @@ func _get_divided_targets(card_id: String) -> Array:
 
 
 func _get_instant_targets(card_id: String) -> Array:
+	# Escape Artist's interrupt mode targets a LINK on the chain, not a hero or
+	# ally — the pool comes from the resolver, filtered through can_submit like
+	# every other targeting mode.
+	if _is_interrupt_mode():
+		var i_result: Array = []
+		for cid in StackResolver.get_interrupt_candidates(state, db, local_player):
+			var i_act := PendingAction.make("play_instant", local_player,
+				_instant_params(card_id, cid))
+			if StackResolver.can_submit(state, i_act, db):
+				i_result.append(cid)
+		return i_result
 	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
 	if _is_divided_damage(card_id):

@@ -77,6 +77,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 	"azeroth_44":  "combat_instant_atk_swing",   # Ravenous Bite — +3 ATK / -3 ATK on two allies (see atk_swing_action)
 	"azeroth_152": "combat_instant_save_elusive", # Sneak — target ally has elusive this turn (see elusive_save_action)
+	"dark_portal_129": "combat_instant_escape",   # Escape Artist — modal: interrupt an ability targeting our hero, or remove attackers (see escape_artist_action)
 }
 
 
@@ -87,6 +88,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ambush := combat_instant_action(state, db, player_id)
 	if ambush != null:
 		return ambush
+	var escape := escape_artist_action(state, db, player_id)
+	if escape != null:
+		return escape
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
@@ -536,6 +540,116 @@ static func _exhausts_heroes(def: CardDef) -> bool:
 		if parts[0] == "exhaust_target" and parts.size() > 1 \
 				and parts[1] == "hero_or_ally":
 			return true
+	return false
+
+
+# ── Escape Artist (dark_portal_129 / combat_instant_escape) ───────────────────
+# "Choose one: Interrupt target ability card that's targeting your hero; or if
+# your hero is defending, remove all attackers from combat." Held like every
+# combat instant and never blind-played — both halves are answers.
+#
+# Mode priority is the card's whole policy:
+#   • INTERRUPT whenever an opposing ability on the chain targets our hero, with
+#     no value bar at all. An ability aimed at a hero is a discard, a lasting
+#     debuff or a burn that never trades — reliably worth a 1-cost card, and
+#     unlike a damage answer there is nothing to compute. Never our own link.
+#   • REMOVE ATTACKERS only in the defend window with our hero defending, and
+#     only when the hit is worth a card: the attacker is an ALLY costing 3 or
+#     more, or the forecast incoming damage is 4+ (which is what catches a cheap
+#     ally that has been pumped into a real threat).
+func escape_artist_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return null
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_escape":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var modes := StackResolver.modal_modes(def)
+		var i_mode := _mode_index(modes, "interrupt_ability")
+		if i_mode >= 0:
+			var victim := _best_interrupt_target(state, db, player_id)
+			if victim != "":
+				var act := PendingAction.make(_action_type_for(card, db), player_id, {
+					"card_id": card.instance_id, "target_id": victim, "mode": i_mode,
+				})
+				if StackResolver.can_submit(state, act, db):
+					return act
+		var r_mode := _mode_index(modes, "remove_attackers")
+		if r_mode >= 0 and _escape_dodge_worth_it(state, db, player_id):
+			var dodge_act := PendingAction.make(_action_type_for(card, db), player_id, {
+				"card_id": card.instance_id, "mode": r_mode,
+			})
+			if StackResolver.can_submit(state, dodge_act, db):
+				return dodge_act
+	return null
+
+
+# Index of the mode whose inner effect starts with `head`; -1 when absent.
+static func _mode_index(modes: Array, head: String) -> int:
+	for i in modes.size():
+		if (modes[i] as String).begins_with(head):
+			return i
+	return -1
+
+
+# The link Escape Artist should interrupt: the most expensive OPPOSING ability on
+# the chain that targets our hero, "" when there is none. Printed cost is the
+# value proxy used everywhere else in the AI. Our own abilities are never
+# candidates — the printed text allows it, but interrupting our own play is
+# strictly self-harm.
+func _best_interrupt_target(state: GameState, db, player_id: String) -> String:
+	var best := ""
+	var best_cost := -1
+	for cid in StackResolver.get_interrupt_candidates(state, db, player_id):
+		var owner_player := ""
+		for link in state.pending_actions:
+			if str((link as PendingAction).params.get("card_id", "")) == cid:
+				owner_player = (link as PendingAction).source_player
+				break
+		if owner_player == player_id:
+			continue
+		var card := state.get_card(cid)
+		var def := db.get_def(card.card_def_id) as CardDef if card else null
+		var cost := StackResolver.printed_cost(def) if def else 0
+		if cost > best_cost:
+			best_cost = cost
+			best = cid
+	return best
+
+
+# Is the remove-attackers half worth the card? Our hero must actually be
+# defending (602.3 — the defend window, not the attack window, where the clause
+# would no-op), and the incoming hit must clear one of the two bars described on
+# escape_artist_action.
+func _escape_dodge_worth_it(state: GameState, db, player_id: String) -> bool:
+	if not state.combat_defend_window:
+		return false
+	if not state.pending_actions.is_empty():
+		return false   # respond on the window floor
+	var attacker_id := state.combat_attacker
+	var defender_id := state.combat_defender
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return false
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or defender_id != ps.hero_instance_id:
+		return false   # only when OUR HERO is the defender
+	var incoming := state.get_atk(attacker_id, db)
+	if incoming <= 0:
+		return false   # nothing to dodge
+	if incoming >= 4:
+		return true
+	# A cheap body hitting for little isn't worth a card; a real ally is.
+	if StackResolver._is_ally(state, attacker_id):
+		var a_card := state.get_card(attacker_id)
+		var a_def := db.get_def(a_card.card_def_id) as CardDef if a_card else null
+		return a_def != null and StackResolver.printed_cost(a_def) >= 3
 	return false
 
 

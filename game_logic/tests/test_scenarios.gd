@@ -201,6 +201,9 @@ func _ready() -> void:
 		_test_withdraw_bounce_and_spell_fizzle,
 		_test_ai_withdraw_save,
 		_test_fall_back_friendly_only,
+	_test_escape_artist_interrupts_ability,
+	_test_escape_artist_remove_attackers_mode,
+	_test_ai_escape_artist,
 	_test_blink_removes_attacker,
 	_test_combat_cancelled_event,
 	_test_ai_blink_evasion,
@@ -10909,6 +10912,246 @@ func _test_ai_blink_evasion() -> void:
 			ok(act != null and act.params.get("card_id", "") == "blink", setup["label"])
 		else:
 			ok(act == null or act.params.get("card_id", "") != "blink", setup["label"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Escape Artist (dark_portal_129, 1, Instant Ability, Alliance, Gnome Hero
+# Required): "Choose one: Interrupt target ability card that's targeting your
+# hero; or if your hero is defending, remove all attackers from combat."
+# First interrupt (rule 711) and first modal card mixing a targeted mode with a
+# targetless one, which is what made modal targeting mode-aware.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_escape_artist_interrupts_ability() -> void:
+	_buf.append("\n-- Escape Artist: interrupt an ability targeting your hero (711) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("raider_def", 4, 4, [], 3)
+	db.instant("dark_portal_129", 1,
+		"mode:interrupt_ability|mode:remove_attackers:hero_defending")
+	db.instant("burn_def", 3, "deal_damage_to_target:5:fire")
+
+	# ea-a: p1 aims a 5-damage instant at p2's hero; p2 interrupts it.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	_add_card_to_hand(state, "burn", "burn_def", "p1")
+	_add_card_to_hand(state, "escape", "dark_portal_129", "p2")
+	_add_resources(state, "p1", 3)
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "burn", "target_id": "p2_hero"}), db)
+	eq(state.get_card("burn").zone_id, "chain", "ea-a0: the burn is on the chain")
+	var cands := StackResolver.get_interrupt_candidates(state, db, "p2")
+	ok("burn" in cands, "ea-a1: the link targeting p2's hero is an interrupt candidate")
+	ok(StackResolver.get_interrupt_candidates(state, db, "p1").is_empty(),
+		"ea-a2: p1's own hero isn't targeted — nothing for p1 to interrupt")
+	StackResolver.pass_priority(state, db)   # proposer passes → p2 gets priority
+	var submitted := StackResolver.submit_action(state, PendingAction.make(
+		"play_instant", "p2",
+		{"card_id": "escape", "target_id": "burn", "mode": 0}), db)
+	ok(not submitted.is_empty(), "ea-a3: interrupt announcement accepted")
+	StackResolver.pass_priority(state, db)
+	var ev := StackResolver.pass_priority(state, db)   # Escape Artist resolves
+	var saw := false
+	for e in ev:
+		if e.event_type == "link_interrupted" and e.payload.get("card_id", "") == "burn":
+			saw = true
+	ok(saw, "ea-a4: link_interrupted emitted")
+	eq(state.get_card("burn").zone_id, "p1_graveyard",
+		"ea-a5: the interrupted card went to its owner's graveyard (711.1)")
+	eq(state.get_card("escape").zone_id, "p2_graveyard", "ea-a6: Escape Artist in graveyard")
+	ok(state.pending_actions.is_empty(), "ea-a7: the interrupted link left the chain")
+	# 711.2: the whole text is interrupted — the damage never happens — and the
+	# cost p1 paid is NOT refunded.
+	eq(state.get_card("p2_hero").damage_taken, 0, "ea-a8: no damage dealt")
+	eq(state.get_available_resources("p1"), 0, "ea-a9: p1's paid cost is not refunded")
+
+	# ea-b: an ability targeting something OTHER than our hero can't be interrupted.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p1"
+	state2.priority_player = "p1"
+	var mine := _add_ally(state2, "mine", "raider_def", "p2")
+	mine.just_summoned = false
+	_add_card_to_hand(state2, "burn2", "burn_def", "p1")
+	_add_card_to_hand(state2, "escape2", "dark_portal_129", "p2")
+	_add_resources(state2, "p1", 3)
+	_add_resources(state2, "p2", 1)
+	state2.players["p1"].resource_placed_this_turn = true
+	state2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state2, PendingAction.make("play_instant", "p1",
+		{"card_id": "burn2", "target_id": "mine"}), db)
+	ok(StackResolver.get_interrupt_candidates(state2, db, "p2").is_empty(),
+		"ea-b: an ability aimed at our ALLY is not a legal interrupt target")
+	StackResolver.pass_priority(state2, db)
+	ok(StackResolver.submit_action(state2, PendingAction.make("play_instant", "p2",
+		{"card_id": "escape2", "target_id": "burn2", "mode": 0}), db).is_empty(),
+		"ea-b2: the interrupt announcement is rejected")
+
+	# ea-c: the target is re-checked at resolution (706 / 4217) — two Escape
+	# Artists aimed at one link, the second fizzles rather than double-dipping.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	state3.turn_player     = "p1"
+	state3.priority_player = "p1"
+	_add_card_to_hand(state3, "burn3", "burn_def", "p1")
+	_add_card_to_hand(state3, "ea1", "dark_portal_129", "p2")
+	_add_card_to_hand(state3, "ea2", "dark_portal_129", "p2")
+	_add_resources(state3, "p1", 3)
+	_add_resources(state3, "p2", 2)
+	state3.players["p1"].resource_placed_this_turn = true
+	state3.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state3, PendingAction.make("play_instant", "p1",
+		{"card_id": "burn3", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.submit_action(state3, PendingAction.make("play_instant", "p2",
+		{"card_id": "ea1", "target_id": "burn3", "mode": 0}), db)
+	StackResolver.submit_action(state3, PendingAction.make("play_instant", "p2",
+		{"card_id": "ea2", "target_id": "burn3", "mode": 0}), db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # ea2 resolves — interrupts the burn
+	eq(state3.get_card("burn3").zone_id, "p1_graveyard",
+		"ea-c: the first copy to resolve interrupted the burn")
+	StackResolver.pass_priority(state3, db)
+	var ev3 := StackResolver.pass_priority(state3, db)   # ea1 resolves — fizzles
+	var fizzled := false
+	for e in ev3:
+		if e.event_type == "action_fizzled" \
+				and e.payload.get("reason", "") == "interrupt_target_gone":
+			fizzled = true
+	ok(fizzled, "ea-c2: second copy fizzles — its target already left the chain")
+	eq(state3.get_card("ea1").zone_id, "p2_graveyard", "ea-c3: fizzled copy still in graveyard")
+
+
+func _test_escape_artist_remove_attackers_mode() -> void:
+	_buf.append("\n-- Escape Artist: targetless mode dodges; placed cards can't be interrupted --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("raider_def", 4, 4, [], 3)
+	db.instant("dark_portal_129", 1,
+		"mode:interrupt_ability|mode:remove_attackers:hero_defending")
+
+	# ea-d: mode index 1 announces NO target and dodges the attack (Blink's clause).
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	var raider := _add_ally(state, "raider", "raider_def", "p1")
+	raider.just_summoned = false
+	_add_card_to_hand(state, "escape", "dark_portal_129", "p2")
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "raider", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window
+	ok(state.combat_defend_window, "ea-d0: defend window open")
+	StackResolver.pass_priority(state, db)   # p1 passes → p2
+	ok(not StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "escape", "mode": 1}), db).is_empty(),
+		"ea-d1: the targetless mode is accepted with no target_id")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+	eq(state.combat_attacker, "", "ea-d2: attacker removed from combat")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion, 603.1b
+	eq(state.get_card("p2_hero").damage_taken, 0, "ea-d3: no damage — the attack was dodged")
+
+	# ea-e: with nothing on the chain the card is STILL playable (the targetless
+	# mode is always choosable, 707.1c) — the highlight probe must not go dark.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p2"
+	state2.priority_player = "p2"
+	state2.phase = "action"
+	_add_card_to_hand(state2, "escape2", "dark_portal_129", "p2")
+	_add_resources(state2, "p2", 1)
+	ok(StackResolver.can_play_instant_no_target_check(state2, "escape2", "p2", db),
+		"ea-e: playable with an empty chain (targetless mode)")
+	ok(StackResolver.get_interrupt_candidates(state2, db, "p2").is_empty(),
+		"ea-e2: but nothing to interrupt")
+
+	# ea-f: 711.3 — a card PLACED on the chain (a resource) can't be interrupted.
+	var state3 := _base_state(db, "p1_hero", "p2_hero")
+	state3.turn_player     = "p1"
+	state3.priority_player = "p1"
+	_add_card_to_hand(state3, "res", "raider_def", "p1")
+	StackResolver.submit_action(state3, PendingAction.make("place_resource", "p1",
+		{"card_id": "res"}), db)
+	eq(state3.get_card("res").zone_id, "chain", "ea-f0: the resource is on the chain")
+	ok(StackResolver.get_interrupt_candidates(state3, db, "p2").is_empty(),
+		"ea-f: a placed resource is never an interrupt candidate (711.3)")
+
+
+func _test_ai_escape_artist() -> void:
+	_buf.append("\n-- AI Escape Artist: always interrupt; dodge only real threats --")
+	var ai := GenericAI.new()
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("big_def",   4, 4, [], 3)   # cost 3 → worth dodging
+	db.ally("small_def", 2, 2, [], 1)   # cost 1, 2 ATK → not worth a card
+	db.instant("dark_portal_129", 1,
+		"mode:interrupt_ability|mode:remove_attackers:hero_defending")
+	db.instant("pain_def", 2, "deal_damage_to_target:1:shadow|discard_per_damage:1")
+
+	# ea-g: an ability targeting our hero → interrupt, whatever it is.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	_add_card_to_hand(state, "pain", "pain_def", "p1")
+	_add_card_to_hand(state, "escape", "dark_portal_129", "p2")
+	_add_resources(state, "p1", 2)
+	_add_resources(state, "p2", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "pain", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)   # p2 gets priority
+	var act := ai.decide_action(state, db, "p2")
+	ok(act != null and act.params.get("card_id", "") == "escape" \
+			and int(act.params.get("mode", -1)) == 0 \
+			and act.params.get("target_id", "") == "pain",
+		"ea-g: AI interrupts the ability aimed at its hero")
+
+	# ea-h/i: combat dodge thresholds — cost-3 ally yes, cheap 2-ATK ally no.
+	var setups := [
+		{"atk": "big_def",   "plays": true,
+			"label": "ea-h: attacked by a cost-3 ally → AI dodges"},
+		{"atk": "small_def", "plays": false,
+			"label": "ea-i: attacked by a cost-1 ally for 2 → AI holds"},
+	]
+	for setup in setups:
+		var st := _base_state(db, "p1_hero", "p2_hero")
+		st.turn_player     = "p1"
+		st.priority_player = "p1"
+		var att := _add_ally(st, "att", setup["atk"], "p1")
+		att.just_summoned = false
+		_add_card_to_hand(st, "esc", "dark_portal_129", "p2")
+		_add_resources(st, "p2", 1)
+		st.players["p1"].resource_placed_this_turn = true
+		st.players["p2"].resource_placed_this_turn = true
+		StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+			{"attacker_id": "att", "defender_id": "p2_hero"}), db)
+		StackResolver.pass_priority(st, db)
+		StackResolver.pass_priority(st, db)   # attack window
+		var early := ai.decide_action(st, db, "p2")
+		ok(early == null or early.params.get("card_id", "") != "esc",
+			str(setup["label"]) + " (held in the attack window — hero not defending yet)")
+		StackResolver.pass_priority(st, db)
+		StackResolver.pass_priority(st, db)   # defend window
+		StackResolver.pass_priority(st, db)   # p1 passes → p2
+		var a := ai.decide_action(st, db, "p2")
+		if setup["plays"]:
+			ok(a != null and a.params.get("card_id", "") == "esc" \
+					and int(a.params.get("mode", -1)) == 1, setup["label"])
+		else:
+			ok(a == null or a.params.get("card_id", "") != "esc", setup["label"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

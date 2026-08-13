@@ -1198,9 +1198,10 @@ func _enter_ambush_mode(pid: String) -> void:
 	_router.setup(_state, _db, pid)
 	_router.set_highlight_color(AMBUSH_HIGHLIGHT)
 	_router.refresh_highlights()
+	# No prompt: the yellow highlights on their playable cards and their own pass
+	# button turning yellow ("Skip window") already say whose window this is, and
+	# the seated player's button reads "Waiting for <them>" (see _update_pass_btn).
 	_update_opponent_pass_btn(pid)   # their own button becomes the skip
-	_set_status("⚡ %s may respond — hover a yellow card to peek, or press their Pass button to skip"
-			% _ambush_player.to_upper())
 
 
 func _exit_ambush_mode() -> void:
@@ -1213,7 +1214,6 @@ func _exit_ambush_mode() -> void:
 	_router.setup(_state, _db, _local_player)
 	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
 	_router.refresh_highlights()
-	_set_status("")
 
 
 # ── Mandatory-choice routing ───────────────────────────────────────────────────
@@ -2591,7 +2591,11 @@ func _update_pass_btn() -> void:
 		_pass_btn.text     = "Skip target  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not my_turn:
-		_pass_btn.text     = "Pass Priority  [Space]"
+		# The button is disabled anyway, so say WHY rather than showing a dead
+		# copy of the action: priority is with the other player. Together with
+		# their button lighting up (yellow "Skip window" during an ambush stop)
+		# this is the whole "they may respond" indication — no prompt needed.
+		_pass_btn.text     = "Waiting for %s" % _player_name(_state.priority_player)
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
 	elif not has_plays:
 		# Wrap-up / end-turn passes require Ctrl+Space (plain Space can't end your

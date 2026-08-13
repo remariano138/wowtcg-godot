@@ -2105,7 +2105,38 @@ func _describe_pending_action(action: PendingAction) -> String:
 		"use_quest":            return "Quest: %s" % name
 		"use_ally_power":       return "%s (power)" % name
 		"activate_power":       return "%s (hero power)" % name
+		"choose_enter_play_target":
+			# "Bhenn Checks-the-Sky (exhaust target ally)" — the raw action type
+			# tells a player nothing about what is about to happen to their board.
+			return "%s (%s)" % [name, _enter_play_effect_text(action)]
 		_:                      return "%s (%s)" % [name, action.action_type]
+
+
+# The printed effect of a "when this enters play" trigger link, in plain words.
+# Shared by every such ally (Taz'dingo, Ghank, Bhenn, Karkas, Sister Rot, …) —
+# the key rides on the chain link itself (params._effect_dict), set when the
+# trigger is announced with its target.
+func _enter_play_effect_text(action: PendingAction) -> String:
+	var eff_dict: Variant = action.params.get("_effect_dict", {})
+	var key := ""
+	if eff_dict is Dictionary:
+		key = String((eff_dict as Dictionary).get("effect", ""))
+	var parts := key.split(":")
+	match parts[0]:
+		"deal_damage_to_target":
+			var amount := parts[1] if parts.size() > 1 else "0"
+			var dmg_type := parts[2] if parts.size() > 2 else ""
+			return "deals %s %s damage to target hero or ally" % [amount, dmg_type] \
+				if dmg_type != "" else "deals %s damage to target hero or ally" % amount
+		"destroy_exhausted_damaged_ally":
+			return "destroy target exhausted, damaged ally"
+		"destroy_armor":            return "destroy target armor"
+		"destroy_armor_or_weapon":  return "destroy target armor or weapon"
+		"destroy_ability":          return "destroy target ability"
+		"return_to_hand_ally":      return "return target ally to its owner's hand"
+		"exhaust_ally":             return "exhaust target ally"
+		"":                         return "enters play"
+		_:                          return key
 
 
 func _pending_action_card_name(action: PendingAction) -> String:
@@ -2114,6 +2145,10 @@ func _pending_action_card_name(action: PendingAction) -> String:
 		card_id = action.params.get("quest_id", "")
 	if card_id == "":
 		card_id = action.params.get("hero_id", "")
+	# Enter-play trigger links name their ally in source_card_id — without this
+	# the chain printed the bare action type instead of the card.
+	if card_id == "":
+		card_id = action.params.get("source_card_id", "")
 	if card_id == "" or not _db:
 		return action.action_type
 	var card := _state.get_card(card_id)
@@ -2239,6 +2274,11 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 		"use_quest":
 			caption = "quest"
 			tex = _chain_action_texture(action)
+		"choose_enter_play_target":
+			# Text rect on purpose: the point of this link is WHAT the trigger
+			# does ("Bhenn Checks-the-Sky (exhaust target ally)"), which the card
+			# art at 90px can't convey.
+			caption = "enters play"
 		_:
 			caption = action.action_type
 			tex = _chain_action_texture(action)
@@ -2256,6 +2296,7 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 	else:
 		var txt := Label.new()
 		txt.text = _describe_pending_action(action)
+		txt.tooltip_text = txt.text
 		txt.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_KEEP_SIZE, 4)
 		txt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -2331,6 +2372,10 @@ func _chain_action_targets(action: PendingAction) -> String:
 	var sac: String = action.params.get("sacrifice_id", "")
 	if sac != "":
 		out += ("  " if out != "" else "") + "sac: " + _log_card(sac)
+	# An enter-play trigger always announces a target where it has one, so an
+	# empty line here is information: say so rather than leaving a blank row.
+	if out == "" and action.action_type == "choose_enter_play_target":
+		out = "target: none"
 	return out
 
 

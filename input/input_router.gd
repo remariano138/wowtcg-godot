@@ -338,6 +338,12 @@ func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 		_targeting_first_target = ""
 		start_targeting(instance_id, "play_instant", "atk_up", 0)
 		return true
+	# Skewer: the ally that will deal the damage is CHOSEN first (your party
+	# only), the ally it hits second.
+	if _is_ally_atk_damage(instance_id):
+		_targeting_first_target = ""
+		start_targeting(instance_id, action_type, "skewer_source", 0)
+		return true
 	# Sever the Cord (and its sorcery-speed twin): the sacrificed ally is picked
 	# first, the destroy target second.
 	if _is_play_cost_sacrifice(instance_id):
@@ -1336,6 +1342,22 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		targeting_started.emit(_targeting_source, "atk_down", 0)
 		refresh_highlights()
 		return
+	# Skewer: phase 1 CHOOSES the source ally (own party only), phase 2 targets
+	# the ally it damages. Phase 2's cursor shows that ally's live ATK, which is
+	# the damage it will deal (read again at resolution).
+	if _is_ally_atk_damage(_targeting_source) and _targeting_first_target == "":
+		if instance_id == _targeting_source:
+			cancel_targeting()
+			return
+		var sk_probe := PendingAction.make(_action_type_for(_targeting_source),
+			local_player, _instant_params(_targeting_source, instance_id))
+		if not StackResolver.can_submit(state, sk_probe, db):
+			return
+		_targeting_first_target = instance_id
+		targeting_started.emit(_targeting_source,
+			_skewer_source_dmg_type(instance_id), state.get_atk(instance_id, db))
+		refresh_highlights()
+		return
 	# Sever the Cord: phase 1 picks the ally sacrificed as an additional cost
 	# (own party only), phase 2 the destroy target.
 	if _is_play_cost_sacrifice(_targeting_source) and _targeting_first_target == "":
@@ -1387,6 +1409,13 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		if _is_atk_swing(_targeting_source) and _targeting_first_target != "":
 			_targeting_first_target = ""
 			targeting_started.emit(_targeting_source, "atk_up", 0)
+			refresh_highlights()
+			return
+		# Skewer phase 2: clicking the spell again steps back to the source
+		# pick. Nothing has been announced yet, so this is free.
+		if _is_ally_atk_damage(_targeting_source) and _targeting_first_target != "":
+			_targeting_first_target = ""
+			targeting_started.emit(_targeting_source, "skewer_source", 0)
 			refresh_highlights()
 			return
 		# Sever the Cord phase 2: clicking the spell again steps back to the
@@ -2447,6 +2476,20 @@ func _instant_params(card_id: String, target_id: String) -> Dictionary:
 			params["sacrifice_id"] = target_id
 		else:
 			params["sacrifice_id"] = _targeting_first_target
+	# Skewer: the chosen source ally rides the same submission as the target.
+	# During phase 1 (no pick yet) the clicked ally fills BOTH slots, so
+	# can_submit answers "is this a legal source?" on its own — an ally may be
+	# told to skewer itself, so only own allies pass the probe.
+	if _is_ally_atk_damage(card_id):
+		if _targeting_first_target == "":
+			params["source_id"] = target_id
+			# The source is CHOSEN, not targeted, so an Untargetable ally of our
+			# own is a legal choice — probing it against itself would wrongly
+			# reject it. Pair it with some legal victim instead, so can_submit
+			# answers "is this a legal source?" alone.
+			params["target_id"] = _any_valid_skewer_target(card_id, target_id)
+		else:
+			params["source_id"] = _targeting_first_target
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
 	if _targeting_x_value > 0:
@@ -2464,6 +2507,42 @@ func _is_play_cost_sacrifice(card_id: String) -> bool:
 	var card := state.get_card(card_id)
 	var def := db.get_def(card.card_def_id) as CardDef if card else null
 	return StackResolver.play_cost_sacrifices_ally(def)
+
+
+# Some legal victim to pair with `source` while probing Skewer's phase 1 ("" if
+# none — the card then has no legal play at all). Builds the params by hand to
+# avoid recursing through _instant_params.
+func _any_valid_skewer_target(card_id: String, source: String) -> String:
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			var probe := PendingAction.make(_action_type_for(card_id), local_player, {
+				"card_id": card_id, "source_id": source,
+				"target_id": card.instance_id,
+			})
+			if StackResolver.can_submit(state, probe, db):
+				return card.instance_id
+	return ""
+
+
+# True for Skewer (`ally_atk_damage:ally`): "Choose an ally in your party. It
+# deals damage equal to its ATK to target ally." The chosen source is picked
+# first, the damaged ally second — Sever the Cord's two-phase flow, except the
+# first pick is a CHOICE (not a target, so Untargetable doesn't restrict it) and
+# it costs nothing, so backing out is free right up to submission.
+func _is_ally_atk_damage(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.is_ally_atk_damage_def(def)
+
+
+# The damage type Skewer's chosen source deals — its own printed type (the card
+# names no type of its own). Drives the phase-2 targeting cursor icon.
+func _skewer_source_dmg_type(source_id: String) -> String:
+	var card := state.get_card(source_id)
+	var def := db.get_def(card.card_def_id) as CardDef if (card and db) else null
+	return def.dmg_type.to_lower() if def else ""
 
 
 # True for a two-target damage+heal spell played from hand (Shock and Soothe,

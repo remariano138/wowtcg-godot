@@ -184,6 +184,8 @@ func _ready() -> void:
 		_test_sever_the_cord_sacrifice_cost,
 		_test_sever_the_cord_paid_at_announcement,
 		_test_ai_sever_the_cord,
+		_test_skewer_ally_atk_damage,
+		_test_skewer_attacking_bonus_and_ai,
 		_test_cannibalize,
 		_test_cannibalize_empty_and_fizzle,
 		_test_ai_cannibalize,
@@ -228,6 +230,8 @@ func _ready() -> void:
 		_test_devilsaur_leggings,
 		_test_cold_blood_hero_damage_destroys_ally,
 		_test_cold_blood_scope_and_expiry,
+		_test_bestial_wrath_buff_and_shield,
+		_test_bestial_wrath_targeting_and_ai,
 		_test_skorn_reflects_ally_damage,
 		_test_skorn_combat_scope_and_gates,
 		_test_recombobulation_fetch_on_opposing_ally_death,
@@ -21042,3 +21046,350 @@ func _test_skorn_combat_scope_and_gates() -> void:
 
 	eq(s4.get_card("p2_hero").damage_taken, 0,
 		"sk-n: no Skorn in play → no reflect")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Bestial Wrath (azeroth_35) — 1, Instant Ability — Beast Mastery Talent, Hunter:
+# "Target Pet has +3 ATK this turn. Prevent all damage that would be dealt to it
+# this turn." Recipe: buff_atk_target:pet:3|prevent_all_damage_this_turn.
+#
+# Two firsts: the `pet` target kind (a narrowing of the ally-only branch, like
+# Coup de Grâce's exhausted check) and an instance-scoped, source-agnostic,
+# this-turn "prevent all damage" shield applied in GameLogic.prevent.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _bestial_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.pet("wolf_def", 2, 2, [], 2)      # 2/2 Pet
+	db.ally("grunt_def", 4, 4, [], 3)    # not a Pet
+	db.instant("azeroth_35", 1,
+		"buff_atk_target:pet:3|prevent_all_damage_this_turn", "Beast Mastery Talent")
+	db.instant("bolt5_def", 1, "deal_damage_to_target:5:frost")
+	db.instant("vanquish_def", 2, "destroy_target:ally")
+	return db
+
+
+func _test_bestial_wrath_buff_and_shield() -> void:
+	_buf.append("\n-- Bestial Wrath: +3 ATK and a total damage shield on a Pet --")
+	var db := _bestial_db()
+
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	var wolf := _add_ally(s1, "wolf", "wolf_def", "p1")
+	wolf.just_summoned = false
+	_add_card_to_hand(s1, "wrath", "azeroth_35", "p1")
+
+	eq(s1.get_atk("wolf", db), 2, "bw-a: Pet starts at 2 ATK")
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "wrath", "target_id": "wolf"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	eq(s1.get_atk("wolf", db), 5, "bw-b: +3 ATK this turn")
+	eq(s1.get_card("wrath").zone_id, "p1_graveyard", "bw-c: the spell is in the graveyard")
+
+	# The shield eats damage from ANY source — here a 5-point bolt that would
+	# comfortably kill the 2/2 twice over.
+	_add_card_to_hand(s1, "bolt", "bolt5_def", "p2")
+	_add_resources(s1, "p2", 4)
+	s1.turn_player = "p2"
+	s1.priority_player = "p2"
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p2",
+		{"card_id": "bolt", "target_id": "wolf"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+
+	ok(s1.is_in_play("wolf"), "bw-d: shielded Pet survives 5 damage")
+	eq(s1.get_card("wolf").damage_taken, 0, "bw-e: no damage was placed at all")
+
+	# The shield does NOT stop a destroy effect — it prevents damage only.
+	_add_card_to_hand(s1, "van", "vanquish_def", "p2")
+	StackResolver.submit_action(s1, PendingAction.make("play_ability", "p2",
+		{"card_id": "van", "target_id": "wolf"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	ok(not s1.is_in_play("wolf"), "bw-f: a destroy effect ignores the damage shield")
+
+	# ── The shield expires with the turn (Buff duration turns:1).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	var wolf2 := _add_ally(s2, "wolf2", "wolf_def", "p1")
+	wolf2.just_summoned = false
+	_add_card_to_hand(s2, "wrath2", "azeroth_35", "p1")
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "wrath2", "target_id": "wolf2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+
+	_drive_turns(s2, db, BaseAI.new(), BaseAI.new(), 2)
+	eq(s2.get_atk("wolf2", db), 2, "bw-g: the +3 ATK expired at end of turn")
+	var post: Array[GameEvent] = GameLogic.deal_damage(s2, "p2_hero", "wolf2", 1, db)
+	var landed := 0
+	for e in post:
+		if e.event_type == "damage_dealt":
+			landed += int(e.payload.get("amount", 0))
+	eq(landed, 1, "bw-h: the shield expired too — damage lands again")
+
+
+func _test_bestial_wrath_targeting_and_ai() -> void:
+	_buf.append("\n-- Bestial Wrath: pet-only targeting, and the AI's three uses --")
+	var db := _bestial_db()
+
+	# ── "Target Pet": a non-Pet ally is not a legal target, and with no Pet in
+	# play at all the card goes dark (highlight probe).
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	_add_ally(s1, "grunt", "grunt_def", "p1")
+	_add_card_to_hand(s1, "wrath", "azeroth_35", "p1")
+
+	ok(not StackResolver.can_submit(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "wrath", "target_id": "grunt"}), db),
+		"bw-i: a non-Pet ally is not a legal target")
+	ok(not StackResolver.can_submit(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "wrath", "target_id": "p2_hero"}), db),
+		"bw-j: a hero is not a legal target")
+	ok(not StackResolver.can_play_instant_no_target_check(s1, "wrath", "p1", db),
+		"bw-k: goes dark with no Pet in play")
+
+	# Either party's Pet is legal (the printed text says simply "target Pet")…
+	_add_ally(s1, "theirs", "wolf_def", "p2")
+	ok(StackResolver.can_submit(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "wrath", "target_id": "theirs"}), db),
+		"bw-l: the opponent's Pet is a legal target for a human")
+
+	# …but the AI never buffs the opponent's Pet: with only THEIR Pet on the
+	# board and their attack incoming, it finds nothing to do.
+	var ai := BaseAI.new()
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_card_to_hand(s2, "wrath2", "azeroth_35", "p1")
+	var att := _add_ally(s2, "att", "grunt_def", "p2")   # 4/4 attacker
+	att.just_summoned = false
+	_add_ally(s2, "theirpet", "wolf_def", "p2")
+	s2.turn_player = "p2"
+	s2.priority_player = "p1"
+	s2.pending_actions.append(PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "att", "defender_id": "p1_hero"}))
+	ok(ai.bestial_wrath_action(s2, db, "p1") == null,
+		"bw-m: never cast on the opponent's Pet")
+
+	# ── AI use 1: our Pet is defending an attack that would kill it.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	_add_card_to_hand(s3, "wrath3", "azeroth_35", "p1")
+	var wolf3 := _add_ally(s3, "wolf3", "wolf_def", "p1")   # 2/2
+	wolf3.just_summoned = false
+	var att3 := _add_ally(s3, "att3", "grunt_def", "p2")    # 4/4 — lethal
+	att3.just_summoned = false
+	s3.turn_player = "p2"
+	s3.priority_player = "p1"
+	s3.pending_actions.append(PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "att3", "defender_id": "wolf3"}))
+
+	var act3 := ai.bestial_wrath_action(s3, db, "p1")
+	ok(act3 != null, "bw-n: AI saves its own Pet from a lethal attack")
+	eq(act3.params.get("target_id", "") if act3 else "", "wolf3",
+		"bw-o: aimed at our own Pet")
+
+	# ── AI use 3: our Pet attacks into lethal retaliation.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s4, "p1", 4)
+	_add_card_to_hand(s4, "wrath4", "azeroth_35", "p1")
+	var wolf4 := _add_ally(s4, "wolf4", "wolf_def", "p1")
+	wolf4.just_summoned = false
+	var big := _add_ally(s4, "big", "grunt_def", "p2")
+	big.just_summoned = false
+	s4.turn_player = "p1"
+	s4.priority_player = "p1"
+	s4.pending_actions.append(PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "wolf4", "defender_id": "big"}))
+
+	var act4 := ai.bestial_wrath_action(s4, db, "p1")
+	ok(act4 != null, "bw-p: AI shields its own attacking Pet from lethal retaliation")
+	eq(act4.params.get("target_id", "") if act4 else "", "wolf4",
+		"bw-q: aimed at the attacking Pet")
+
+	# ── Gate: an attack aimed elsewhere is not worth the card.
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s5, "p1", 4)
+	_add_card_to_hand(s5, "wrath5", "azeroth_35", "p1")
+	var wolf5 := _add_ally(s5, "wolf5", "wolf_def", "p1")
+	wolf5.just_summoned = false
+	var weak := _add_ally(s5, "weak", "wolf_def", "p2")
+	weak.just_summoned = false
+	s5.turn_player = "p2"
+	s5.priority_player = "p1"
+	s5.pending_actions.append(PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "weak", "defender_id": "p1_hero"}))
+	ok(ai.bestial_wrath_action(s5, db, "p1") == null,
+		"bw-r: held when our Pet isn't the one under threat")
+
+
+# ── Skewer (azeroth_155) ──────────────────────────────────────────────────────
+# "Choose an ally in your party. It deals damage equal to its ATK to target
+# ally." Two picks of two different kinds: a CHOSEN source (source_id, your
+# party, not a target) and a TARGET ally (target_id, either party).
+const SKEWER_EFFECTS := "ally_atk_damage:ally"
+
+
+func _skewer_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("weak_def", 1, 1, [], 1)
+	db.ally("strong_def", 3, 3, [], 3)
+	db.ally("victim_def", 0, 4, [], 3)
+	db.instant("azeroth_155", 4, SKEWER_EFFECTS)
+	return db
+
+
+func _test_skewer_ally_atk_damage() -> void:
+	_buf.append("
+-- Skewer: chosen ally deals its ATK to target ally --")
+	var db := _skewer_db()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "skewer", "azeroth_155", "p1")
+	var weak := _add_ally(state, "weak", "weak_def", "p1")
+	weak.just_summoned = false
+	var strong := _add_ally(state, "strong", "strong_def", "p1")
+	strong.just_summoned = false
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+
+	# sk-a: the source must be announced with the play.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "skewer", "target_id": "victim"}), db),
+		"sk-a: no source announced -> illegal")
+
+	# sk-b: only an ally in YOUR OWN party can be chosen as the source.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "skewer", "target_id": "victim", "source_id": "victim"}), db),
+		"sk-b: an opposing ally can't be the source")
+
+	# sk-c: the victim is a target ALLY — never a hero.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+			{"card_id": "skewer", "target_id": "p2_hero", "source_id": "strong"}), db),
+		"sk-c: a hero is not a legal target")
+
+	# sk-d: a legal announcement — our 3-ATK ally hits their 4-health ally.
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": "skewer", "target_id": "victim", "source_id": "strong"})
+	ok(StackResolver.can_submit(state, act, db), "sk-d: legal announcement")
+	StackResolver.submit_action(state, act, db)
+	ok(state.is_in_play("strong"), "sk-d2: choosing the source costs nothing")
+	ok(not strong.is_exhausted, "sk-d3: the source does not exhaust")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(victim.damage_taken, 3, "sk-e: victim took damage equal to the source's ATK")
+	ok(state.is_in_play("victim"), "sk-e2: 4-health victim survived 3 damage")
+	ok("skewer" in state.zones["p1_graveyard"].card_ids,
+		"sk-e3: the spell resolved to its owner's graveyard")
+
+	# sk-f: the source is re-checked at resolution — killed in response, nothing
+	# deals the damage at all (709.2c).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 6)
+	s2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s2, "sk2", "azeroth_155", "p1")
+	var src2 := _add_ally(s2, "src2", "strong_def", "p1")
+	src2.just_summoned = false
+	var vic2 := _add_ally(s2, "vic2", "victim_def", "p2")
+	vic2.just_summoned = false
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "sk2", "target_id": "vic2", "source_id": "src2"}), db)
+	GameLogic.destroy_card(s2, "src2")
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	eq(vic2.damage_taken, 0, "sk-f: source gone -> no damage dealt")
+
+	# sk-g: with no ally in our party the card goes dark (nothing to choose).
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 6)
+	_add_card_to_hand(s3, "sk3", "azeroth_155", "p1")
+	var lone := _add_ally(s3, "lone", "victim_def", "p2")
+	lone.just_summoned = false
+	var sk_def := db.get_def("azeroth_155") as CardDef
+	ok(not StackResolver._targeted_play_has_legal_target(s3, sk_def, db, "p1"),
+		"sk-g: goes dark with no ally of our own to choose")
+
+
+func _test_skewer_attacking_bonus_and_ai() -> void:
+	_buf.append("
+-- Skewer: attacking ATK bonus + AI source choice --")
+	var db := _skewer_db()
+	# Zorm Stonefury: "Allies in your party have +1 ATK while attacking."
+	db.ally("zorm_def", 1, 1, [], 2, "party_atk_while_attacking:1")
+
+	# Cast while OUR ally is already attacking (602.1 — a proposed attacker
+	# becomes an attacker as the combat step starts, i.e. from the attack window
+	# on), so Zorm's while-attacking bonus counts: 3 ATK becomes 4.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "skewer", "azeroth_155", "p1")
+	var zorm := _add_ally(state, "zorm", "zorm_def", "p1")
+	zorm.just_summoned = false
+	var claw := _add_ally(state, "claw", "strong_def", "p1")
+	claw.just_summoned = false
+	# A 5-health victim, so the boosted 4 damage is readable on the card rather
+	# than wiped by the 400.6a reset a destroyed ally would get.
+	db.ally("tank_def", 0, 5, [], 3)
+	var victim := _add_ally(state, "victim", "tank_def", "p2")
+	victim.just_summoned = false
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "claw", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.combat_attack_window, "skb-a: attack window is open")
+	eq(state.get_atk("claw", db), 4, "skb-b: attacker is at 4 ATK while attacking")
+
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": "skewer", "target_id": "victim", "source_id": "claw"})
+	ok(StackResolver.can_submit(state, act, db),
+		"skb-c: instant speed — legal inside the attack window")
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(victim.damage_taken, 4,
+		"skb-d: dealt the BOOSTED attacking ATK, not the printed 3")
+
+	# ── AI: values the card at its best ally's ATK and announces that ally ──
+	var ai := BaseAI.new()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.turn_player     = "p2"
+	st.priority_player = "p1"
+	_add_resources(st, "p1", 6)
+	_add_card_to_hand(st, "ai_skewer", "azeroth_155", "p1")
+	_add_ally(st, "ai_weak",   "weak_def",   "p1")
+	_add_ally(st, "ai_strong", "strong_def", "p1")
+	# A cost-5 attacker with 3 health: worth spending a 4-cost card on (the AI
+	# never trades a combat instant for a cheaper bait) and killable by our
+	# best ally's 3 ATK.
+	db.ally("ai_atk_def", 4, 3, [], 5)
+	var attacker := _add_ally(st, "ai_atk", "ai_atk_def", "p2")
+	attacker.just_summoned = false
+	st.combat_attack_window = true
+	st.combat_attacker = "ai_atk"
+	st.combat_defender = "p1_hero"
+
+	var ai_act := ai.combat_instant_action(st, db, "p1")
+	ok(ai_act != null and ai_act.params.get("card_id") == "ai_skewer",
+		"skb-e: AI ambushes the 3-HP attacker with Skewer")
+	if ai_act != null:
+		eq(str(ai_act.params.get("source_id", "")), "ai_strong",
+			"skb-f: AI chooses its HIGHEST-ATK ally as the source")
+		eq(str(ai_act.params.get("target_id", "")), "ai_atk",
+			"skb-f2: aimed at the attacker")
+
+	# skb-g: an attacking HERO can't be skewered (the card targets an ally), so
+	# the AI holds the card rather than announcing an illegal play.
+	st.combat_attacker = "p2_hero"
+	ok(ai.combat_instant_action(st, db, "p1") == null,
+		"skb-g: hero attacker -> Skewer held")

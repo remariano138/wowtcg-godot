@@ -99,6 +99,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var sneak := elusive_save_action(state, db, player_id)
 	if sneak != null:
 		return sneak
+	var wrath := bestial_wrath_action(state, db, player_id)
+	if wrath != null:
+		return wrath
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector

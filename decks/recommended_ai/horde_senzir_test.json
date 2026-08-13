@@ -25,13 +25,8 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 3,
+      "count": 4,
       "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
-      "card_def_id": "azeroth_351",
-      "count": 1,
-      "_card_name": "A Donation of Wool"
     },
     {
       "card_def_id": "azeroth_358",
@@ -79,9 +74,9 @@
       "_card_name": "Windseer Tarus"
     },
     {
-      "card_def_id": "azeroth_165",
+      "card_def_id": "azeroth_155",
       "count": 1,
-      "_card_name": "Quick Strike"
+      "_card_name": "Skewer"
     },
     {
       "card_def_id": "azeroth_168",
@@ -149,9 +144,9 @@
       "_card_name": "Bala Silentblade"
     },
     {
-      "card_def_id": "dark_portal_39",
+      "card_def_id": "azeroth_35",
       "count": 1,
-      "_card_name": "Spirit Bond"
+      "_card_name": "Bestial Wrath"
     },
     {
       "card_def_id": "azeroth_154",

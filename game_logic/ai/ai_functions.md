@@ -246,6 +246,16 @@ Current tags:
   cost 3, 2 melee). The card's value is the *surprise* during an opponent's
   combat, not tempo damage on your own turn.
 
+- `"combat_instant_ally_atk"` — **Skewer** (`azeroth_155`, cost 4): the damage
+  is not printed on the card, it is the ATK of an ally *chosen* from your own
+  party at announcement. The AI therefore values the card at
+  `_best_ally_atk_source`'s live ATK and **always announces that ally** as
+  `source_id` — the choice is free (no cost, no exhaust, it need only be in
+  play), so naming a weaker ally is never right. Same kill math as
+  `combat_instant_dmg`, with one restriction the printed target kind forces:
+  the victim must be a target **ally**, so this can only ever answer an
+  attacking ally, never an attacking hero.
+
 `combat_instant_action` implements when to spring the ambush. It returns a
 `play_instant` action with `target_id = state.combat_attacker` announced at
 submission, or `null`. Gates:
@@ -398,6 +408,43 @@ there), but the AI only ever sees its own — as with Into the Fray's ferocity,
 handing the opponent a keyword is never what it wants.
 
 Tests: `_test_ai_sneak_elusive_save`, `_test_sneak_elusive_fizzles_proposal`.
+
+## `BaseAI.bestial_wrath_action(state, db, player_id) -> PendingAction`
+
+**Bestial Wrath pet shield** (`azeroth_35`, tagged `"combat_instant_pet_shield"`
+— held, never blind-played). "Target Pet has +3 ATK this turn. Prevent all
+damage that would be dealt to it this turn." Blind-played the card is a wasted
++3; the shield is only worth a card against damage that is actually coming, so
+every branch is anchored on a threat already on the chain.
+
+Three uses, in priority order:
+
+1. **Defence.** Our Pet is the proposed defender of an opposing `propose_combat`
+   and the attacker's forecast ATK would kill it. The shield zeroes the damage,
+   so the Pet survives *and* retaliates at +3 — frequently killing the attacker,
+   which makes this stronger than the Sneak save (that one only blanks the
+   attack; this one can win the combat).
+2. **Lethal damage on the chain** aimed at one of our Pets —
+   `_chain_threatened_ally(..., damage_only = true)`. The `damage_only` flag is
+   the important part: a prevention shield stops damage but **not** a destroy
+   effect, so Vanquish-style removal must not trigger this branch (it would burn
+   the card for nothing). That flag is why the shared threat detector gained a
+   parameter rather than a copy.
+3. **Offence.** Our own Pet is the proposed attacker and the defender's
+   retaliation would kill it. The shield makes the swing free. **Long-Range**
+   attackers are skipped: they take no retaliation, so there is nothing to save
+   and only the +3 would apply — not worth a card on its own.
+
+Targeting is deliberately narrower than the printed card: "target Pet" legally
+includes the **opponent's** Pets (a human may cast it there), but the AI only
+ever sees its own (`_is_own_pet`) — buffing and shielding an enemy Pet is never
+wanted. Wired into all three AIs' `decide_action`, right after
+`elusive_save_action`.
+
+Not modeled: using the +3 purely to push damage through on an attack the Pet
+would survive anyway, and holding the card when a cheaper answer exists.
+
+Tests: `_test_bestial_wrath_buff_and_shield`, `_test_bestial_wrath_targeting_and_ai`.
 
 ## Into the Fray targeting (`_targeted_instant_actions`, `grant_keyword_target`)
 

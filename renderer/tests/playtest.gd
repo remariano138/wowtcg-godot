@@ -4557,6 +4557,11 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	# effect's target — say so, or the player can't tell the two picks apart.
 	elif dmg_type == "sacrifice":
 		_set_status("☠ %s — select an ally to sacrifice%s" % [name_str, cancel_hint])
+	# Skewer's phase 1: the ally that will DEAL the damage (a choice, not a
+	# target) — phase 2 then uses that ally's damage type and live ATK.
+	elif dmg_type == "skewer_source":
+		_set_status("⚔ %s — choose the ally in your party that deals the damage%s"
+			% [name_str, cancel_hint])
 	# Ravenous Bite's two sequential ally picks (see InputRouter._is_atk_swing).
 	elif dmg_type in ["atk_up", "atk_down"]:
 		var swing: Array = StackResolver.atk_swing_amounts(def)

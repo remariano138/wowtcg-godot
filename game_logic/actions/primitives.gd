@@ -298,6 +298,17 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 		events.append(GameEvent.damage_prevented(target_id, amount, 0))
 		return {"amount": 0, "events": events}
 
+	# (a2) Instance-scoped prevention shields granted by an effect (Bestial
+	# Wrath: "Prevent all damage that would be dealt to it this turn"). Unlike
+	# Rhone's shield this is not printed on the target's def but granted as a
+	# Buff on the target INSTANCE, and it is source-agnostic and duration-bound:
+	# every source, combat or not, attacker or not, until the end-of-turn buff
+	# sweep clears it. Like every shield it is skipped entirely for
+	# unpreventable damage, which returned above without consuming anything.
+	if _has_prevent_all_shield(target):
+		events.append(GameEvent.damage_prevented(target_id, amount, 0))
+		return {"amount": 0, "events": events}
+
 	# (b) Rule 717.2c: exhausted armor prevents damage dealt to the controller's
 	# HERO. The pool (PlayerState.damage_prevention) was built at the prevention
 	# point (StackResolver.choose_prevention) opened right before this packet.
@@ -311,6 +322,20 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 			target_id, absorbed, target_ps.damage_prevention))
 
 	return {"amount": amount, "events": events}
+
+
+# A "prevent all damage dealt to this character" grant sitting on the instance
+# (Bestial Wrath's `prevent_all_damage` Buff). Read live off active_buffs, so it
+# expires with the normal end-of-turn sweep and is cleared by leaving play
+# (400.6a) with no bookkeeping of its own. Not a def flag — a future card with
+# the same clause reuses the same buff stat and needs no code here.
+static func _has_prevent_all_shield(target: CardInstance) -> bool:
+	if target == null:
+		return false
+	for buff in target.active_buffs:
+		if (buff as Buff).stat == "prevent_all_damage":
+			return true
+	return false
 
 
 # True when a character-side shield would prevent ALL of the combat damage

@@ -77,6 +77,8 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"dark_portal_141": "combat_instant_destroy_protector",  # First to Fall — destroy target protecting ally
 	"azeroth_44":  "combat_instant_atk_swing",   # Ravenous Bite — +3 ATK / -3 ATK on two allies (see atk_swing_action)
 	"azeroth_152": "combat_instant_save_elusive", # Sneak — target ally has elusive this turn (see elusive_save_action)
+	"azeroth_35":  "combat_instant_pet_shield", # Bestial Wrath -- target Pet +3 ATK and takes no damage this turn (see bestial_wrath_action)
+	"azeroth_155": "combat_instant_ally_atk",  # Skewer — a chosen friendly ally deals its ATK to target ally
 	"dark_portal_129": "combat_instant_escape",   # Escape Artist — modal: interrupt an ability targeting our hero, or remove attackers (see escape_artist_action)
 }
 
@@ -103,6 +105,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var sneak := elusive_save_action(state, db, player_id)
 	if sneak != null:
 		return sneak
+	var wrath := bestial_wrath_action(state, db, player_id)
+	if wrath != null:
+		return wrath
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -185,12 +190,29 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 	var attacker_cost: int = atk_def.cost if atk_def else 0
 
 	for card in state.cards_in_zone(player_id + "_hand"):
-		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+		var tag: String = COMBAT_INSTANT_TAGS.get(card.card_def_id, "")
+		if tag != "combat_instant_dmg" and tag != "combat_instant_ally_atk":
 			continue
 		var def := db.get_def(card.card_def_id) as CardDef
 		if not def:
 			continue
-		var dmg := _combat_instant_dmg(def)
+		# Skewer (`combat_instant_ally_atk`): the damage isn't printed on the
+		# card — it is the ATK of an ally we CHOOSE from our own party, so the
+		# AI values the card at its best ally's ATK and always announces that
+		# ally (the choice is free: no cost, no exhaust, it just has to be in
+		# play). The victim is a target ALLY, so unlike a damage instant this
+		# can only ever answer an attacking ALLY, never an attacking hero.
+		var skewer_source := ""
+		var dmg := 0
+		if tag == "combat_instant_ally_atk":
+			if not _is_ally_in_play(state, attacker_id):
+				continue
+			skewer_source = _best_ally_atk_source(state, db, player_id)
+			if skewer_source == "":
+				continue
+			dmg = state.get_atk(skewer_source, db)
+		else:
+			dmg = _combat_instant_dmg(def)
 		if dmg <= 0:
 			continue
 		if attacker_cost < def.cost:
@@ -204,6 +226,9 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 		if not play:
 			continue
 		var params := {"card_id": card.instance_id, "target_id": attacker_id}
+		# Skewer: the chosen source rides the play as its own param.
+		if skewer_source != "":
+			params["source_id"] = skewer_source
 		# Modal card (Natural Selection): announce the damage mode with the play.
 		var dmg_mode := _modal_dmg_mode_index(def)
 		if dmg_mode >= 0:
@@ -214,6 +239,30 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
+
+
+# The ally in `player_id`'s party with the highest CURRENT ATK — the source
+# Skewer should always choose, since the card deals damage equal to whatever
+# ally is named and choosing costs nothing. Read live (get_atk), so buffs,
+# auras and a "+N while attacking" bonus on an ally of ours that is itself
+# attacking are all counted.
+static func _best_ally_atk_source(state: GameState, db, player_id: String) -> String:
+	var best_id := ""
+	var best_atk := 0
+	for ally: CardInstance in state.cards_in_zone(player_id + "_ally_row"):
+		var atk := state.get_atk(ally.instance_id, db)
+		if atk > best_atk:
+			best_atk = atk
+			best_id = ally.instance_id
+	return best_id
+
+
+static func _is_ally_in_play(state: GameState, instance_id: String) -> bool:
+	var card := state.get_card(instance_id)
+	if not card:
+		return false
+	var zone := state.zones.get(card.zone_id) as Zone
+	return zone != null and zone.zone_type == "ally_row"
 
 
 # ── Instant protector (e.g. Tristan Rapidstrike) ──────────────────────────────
@@ -517,6 +566,83 @@ func elusive_save_action(state: GameState, db, player_id: String) -> PendingActi
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
+
+
+# ── Bestial Wrath (azeroth_35) ────────────────────────────────────────────────
+# "Target Pet has +3 ATK this turn. Prevent all damage that would be dealt to it
+# this turn." Held (combat_instant_pet_shield), never blind-played: the +3 alone
+# is not worth a card, and the shield is only worth anything against damage that
+# is actually coming.
+#
+# The card is legal on ANY Pet in play, the opponent's included, but the AI only
+# ever targets its OWN -- buffing and shielding an enemy Pet is never wanted.
+#
+# Three uses, in priority order:
+#   1. DEFENCE. Our Pet is the proposed defender of an opposing attack that would
+#      kill it. The shield zeroes the damage, so the Pet survives AND retaliates
+#      at +3 -- often killing the attacker outright.
+#   2. LETHAL DAMAGE ON THE CHAIN aimed at our Pet (_chain_threatened_ally with
+#      damage_only, since a shield stops damage but NOT a destroy effect).
+#   3. OFFENCE. Our own Pet is the proposed attacker and would die to the
+#      defender's retaliation. The shield makes the attack free; the +3 may also
+#      turn a bounce into a kill. Long-Range attackers take no retaliation at
+#      all, so there is nothing to save there and only the +3 would apply --
+#      not worth a card on its own, so those are skipped.
+func bestial_wrath_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var target_id := ""
+
+	if not state.pending_actions.is_empty():
+		var top: PendingAction = state.pending_actions.back()
+		if top.action_type == "propose_combat":
+			var attacker_id: String = top.params.get("attacker_id", "")
+			var defender_id: String = top.params.get("defender_id", "")
+			if state.is_in_play(attacker_id) and state.is_in_play(defender_id):
+				var attacker := state.get_card(attacker_id)
+				var defender := state.get_card(defender_id)
+				if top.source_player != player_id \
+						and defender and defender.controller == player_id \
+						and _is_own_pet(state, db, defender_id, player_id):
+					# (1) Our Pet defends and would die to the hit.
+					if state.get_atk(attacker_id, db, true) \
+							>= state.get_current_hp(defender_id, db):
+						target_id = defender_id
+				elif top.source_player == player_id \
+						and attacker and attacker.controller == player_id \
+						and _is_own_pet(state, db, attacker_id, player_id):
+					# (3) Our Pet attacks into lethal retaliation.
+					var retaliation := state.get_atk(defender_id, db)
+					if retaliation >= state.get_current_hp(attacker_id, db) \
+							and not StackResolver._has_keyword(
+								attacker, "long_range", db, state):
+						target_id = attacker_id
+
+	# (2) Lethal targeted DAMAGE on the chain aimed at one of our Pets.
+	if target_id == "":
+		var threatened := _chain_threatened_ally(state, db, player_id, true)
+		if threatened != "" and _is_own_pet(state, db, threatened, player_id):
+			target_id = threatened
+
+	if target_id == "":
+		return null
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_pet_shield":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id, "target_id": target_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# An in-play Pet this player controls. The engine's own _is_pet answers the
+# subtype question; the controller check is the AI-side policy that keeps
+# Bestial Wrath off the opponent's Pets.
+func _is_own_pet(state: GameState, db, card_id: String, player_id: String) -> bool:
+	var card := state.get_card(card_id)
+	return card != null and card.controller == player_id \
+		and StackResolver._is_pet(state, card_id, db)
 
 
 # True when the card mass-exhausts every opposing character with no target
@@ -1017,7 +1143,8 @@ func save_bounce_action(state: GameState, db, player_id: String) -> PendingActio
 # ally's remaining health (deal_damage_to_target instants incl. modal damage
 # modes, and ally-power damage). Shared by save_bounce_action (Withdraw) and
 # doomed_sacrifice_action (Kavai the Wanderer).
-func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
+func _chain_threatened_ally(state: GameState, db, player_id: String,
+		damage_only: bool = false) -> String:
 	if not db or state.pending_actions.is_empty():
 		return ""
 	var top: PendingAction = state.pending_actions.back()
@@ -1044,7 +1171,7 @@ func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
 		var ap := StackResolver._ally_activated_power(threat_def)
 		match ap.get("effect", ""):
 			"destroy_ally":
-				lethal = true
+				lethal = lethal or not damage_only
 			"deal_damage_to_target":
 				lethal = int(ap.get("amount", 0)) >= v_hp
 	else:
@@ -1056,9 +1183,12 @@ func _chain_threatened_ally(state: GameState, db, player_id: String) -> String:
 			var parts := (seg as String).strip_edges().split(":")
 			match parts[0].strip_edges():
 				"destroy_target":
-					lethal = lethal or parts.size() < 2 or parts[1] == "ally" \
-							or (parts[1] == "protecting_ally" \
-								and target_id == state.combat_protector)
+					# Skipped for damage_only callers (Bestial Wrath): a
+					# prevention shield stops damage, not destruction.
+					lethal = lethal or (not damage_only \
+							and (parts.size() < 2 or parts[1] == "ally" \
+								or (parts[1] == "protecting_ally" \
+									and target_id == state.combat_protector)))
 				"deal_damage_to_target":
 					var amt := int(parts[1]) if parts.size() > 1 else 0
 					lethal = lethal or amt >= v_hp

@@ -513,6 +513,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		# Sever the Cord: the sacrificed ally is announced with the play (412.2).
 		if def and not _play_cost_sacrifice_ok(state, def, action):
 			return false
+		# Skewer: the CHOSEN source ally rides the play as `source_id`.
+		if def and not _ally_atk_source_ok(state, def, action):
+			return false
 		if def and is_modal_def(def):
 			# Mode-aware targeting: ONLY the chosen mode's requirement applies,
 			# so Escape Artist's interrupt half announces a chain link while its
@@ -547,6 +550,9 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 				# Coup de Grâce: target ally must be exhausted.
 				if _destroy_requires_exhausted(def) \
 						and not state.get_card(target_id).is_exhausted:
+					return false
+				# Bestial Wrath: "target Pet" -- an ally, and a Pet specifically.
+				if _instant_targets_pet_only(def) and not _is_pet(state, target_id, db):
 					return false
 				# Trophy Kill / Prey on the Weak: printed-cost band.
 				if not _destroy_cost_band_ok(state, def, target_id, db):
@@ -604,6 +610,10 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		# (Here for the sorcery-speed twin of the instant path above; a future
 		# non-instant card with the same cost gets it for free.)
 		if def and not _play_cost_sacrifice_ok(state, def, action):
+			return false
+		# Skewer: the CHOSEN source ally rides the play as `source_id` (here for
+		# the sorcery-speed twin of the instant path above).
+		if def and not _ally_atk_source_ok(state, def, action):
 			return false
 		# Graveyard-reanimate ability (Ancestral Spirit): the target is an ally
 		# CARD in the caster's graveyard, announced with the play — cost gated
@@ -670,6 +680,9 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 						return false
 					# Coup de Grâce: target ally must be exhausted.
 					if _destroy_requires_exhausted(def) and not t_card.is_exhausted:
+						return false
+					# Bestial Wrath: "target Pet" -- an ally, and a Pet specifically.
+					if _instant_targets_pet_only(def) and not _is_pet(state, target_id, db):
 						return false
 					# Trophy Kill / Prey on the Weak: printed-cost band.
 					if not _destroy_cost_band_ok(state, def, target_id, db):
@@ -780,6 +793,12 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		var sac_pid := player_id if player_id != "" else state.turn_player
 		if get_play_sacrifice_candidates(state, sac_pid).is_empty():
 			return false
+	# Skewer: "Choose an ally in your party" is not a cost, but it is equally
+	# unsatisfiable with an empty party — the card goes dark.
+	if is_ally_atk_damage_def(def):
+		var src_pid := player_id if player_id != "" else state.turn_player
+		if get_ally_atk_source_candidates(state, src_pid).is_empty():
+			return false
 	# Modal (707.1c): the card is playable while ANY of its modes can be legally
 	# chosen. A mode that announces no target always can (Escape Artist's
 	# remove-attackers half), so the card never goes dark for want of a chain
@@ -801,6 +820,7 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		if _instant_targets_friendly_ally_only(def) and player_id != "":
 			scan = [player_id]
 		var need_exhausted := _destroy_requires_exhausted(def)
+		var need_pet := _instant_targets_pet_only(def)
 		for pid in scan:
 			var zone := state.zones.get(pid + "_ally_row") as Zone
 			if zone:
@@ -809,6 +829,9 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 						continue
 					# Coup de Grâce: only exhausted allies qualify.
 					if need_exhausted and not state.get_card(cid).is_exhausted:
+						continue
+					# Bestial Wrath goes dark when no Pet is in play at all.
+					if need_pet and not _is_pet(state, cid, db):
 						continue
 					# Trophy Kill / Prey on the Weak go dark when no ally in play
 					# falls inside the printed-cost band.
@@ -882,7 +905,8 @@ static func _instant_needs_target(def: CardDef) -> bool:
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
 				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
-				"grant_keyword_target", "divided_damage"]:
+				"grant_keyword_target", "divided_damage", "buff_atk_target",
+				"ally_atk_damage"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -1083,8 +1107,9 @@ static func _instant_targets_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "exhaust_target", "return_to_hand", "attach",
-				"grant_keyword_target"] \
-				and parts.size() > 1 and parts[1] in ["ally", "friendly_ally", "exhausted_ally"]:
+				"grant_keyword_target", "buff_atk_target", "ally_atk_damage"] \
+				and parts.size() > 1 \
+				and parts[1] in ["ally", "friendly_ally", "exhausted_ally", "pet"]:
 			return true
 		# Ravenous Bite: BOTH announced targets are allies (parts[1..] are the
 		# signed amounts, not a target kind).
@@ -1304,6 +1329,57 @@ static func _play_cost_sacrifice_ok(state: GameState, def: CardDef,
 	return action.params.get("sacrifice_id", "") in cands
 
 
+# ── Skewer (azeroth_155) — `ally_atk_damage:ally` ─────────────────────────────
+# "Choose an ally in your party. It deals damage equal to its ATK to target
+# ally."
+#
+# Two picks, of two DIFFERENT kinds:
+#   * the SOURCE ally is *chosen*, not targeted ("choose an ally in your
+#     party") — so Untargetable (706) does not restrict it, and it rides the
+#     play as its own `source_id` param, never target_id (Sever the Cord's
+#     sacrifice_id shape).
+#   * the VICTIM is a real target ("target ally"), either party's, so all the
+#     ally-only machinery (_instant_needs_target / _instant_targets_ally_only /
+#     the highlight probe / the router's can_submit-filtered target list)
+#     covers it with no new code.
+#
+# The amount is the source's ATK read LIVE at RESOLUTION (709.2b — nothing here
+# is locked in at announcement but the two picks), which is the card's whole
+# trick: announced while your ally is already attacking (602.1 — a proposed
+# attacker becomes an attacker and starts attacking as the combat step starts,
+# i.e. from the attack window onward), a "+N ATK while attacking" aura (Zorm
+# Stonefury) is counted, and an aura that dies in the response window is not.
+# The damage is dealt by the ALLY, not by your hero — so it is NOT tagged
+# `from_ability` (Chromatic Cloak boosts hero ability damage only) and its type
+# is the source's own printed damage type.
+static func is_ally_atk_damage_def(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "ally_atk_damage")
+
+
+# Allies that may be chosen as the damage source — any card in the caster's own
+# ally_row, ready or exhausted, totems included (305.3a), and the announced
+# target itself if the player insists (an ally can be told to skewer itself:
+# both picks are legal separately and the card never says "another").
+static func get_ally_atk_source_candidates(state: GameState, player_id: String) -> Array:
+	var result: Array = []
+	for ally: CardInstance in state.cards_in_zone(player_id + "_ally_row"):
+		result.append(ally.instance_id)
+	return result
+
+
+# Submission gate for the chosen source. The highlight probe
+# (`_skip_target_check`) only asks that SOME ally could be chosen — with an
+# empty party the card is unplayable (there is nothing to choose).
+static func _ally_atk_source_ok(state: GameState, def: CardDef,
+		action: PendingAction) -> bool:
+	if not is_ally_atk_damage_def(def):
+		return true
+	var cands := get_ally_atk_source_candidates(state, action.source_player)
+	if action.params.get("_skip_target_check", false):
+		return not cands.is_empty()
+	return action.params.get("source_id", "") in cands
+
+
 # ── Cost-banded destroy (Trophy Kill / Prey on the Weak) ──────────────────────
 # `target_cost_min:N` / `target_cost_max:N` are RIDERS on an existing
 # `destroy_target:ally` segment, not a new target kind — the target is an
@@ -1368,6 +1444,35 @@ static func _instant_targets_friendly_ally_only(def: CardDef) -> bool:
 				and parts.size() > 1 and parts[1] == "friendly_ally":
 			return true
 	return false
+
+
+# Bestial Wrath (`buff_atk_target:pet:3`): "Target Pet …". A subset of the
+# ally-only restriction — a Pet is an ally_row card whose def's card_subtype is
+# "Pet" (the same read the 414.3b pet-uniqueness check uses), so this narrows
+# the ally-only branch the way Coup de Grâce's exhausted check does rather than
+# forming a target kind of its own. Either party's Pets qualify: the printed
+# text says simply "target Pet".
+static func _instant_targets_pet_only(def: CardDef) -> bool:
+	if def == null:
+		return false
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() > 1 and parts[1].strip_edges() == "pet" \
+				and parts[0] in ["destroy_target", "exhaust_target", "return_to_hand",
+					"attach", "grant_keyword_target", "buff_atk_target"]:
+			return true
+	return false
+
+
+# True when `card_id` is an in-play Pet (rule 414.3b subtype).
+static func _is_pet(state: GameState, card_id: String, db) -> bool:
+	if db == null or not _is_ally(state, card_id):
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	return def != null and def.card_subtype == "Pet"
 
 
 # Arcane Intellect: `attach:hero` — the attachment may only target a hero.
@@ -2471,6 +2576,41 @@ static func _resolve_play_instant(state: GameState,
 										"grant_" + gk_word, 1, "turns", 1))
 								events.append(GameEvent.keyword_granted(
 									target_id, gk_word, card_id))
+					"buff_atk_target":
+						# Bestial Wrath: "Target Pet has +3 ATK this turn.
+						# Prevent all damage that would be dealt to it this turn."
+						# Both clauses hang off the ONE announced target ("it"),
+						# so the shield rides here as a rider flag rather than as
+						# its own segment with its own target.
+						#
+						# Re-check at resolution (706 / glossary 4217): fizzles
+						# whole if the target left play, became Untargetable or
+						# stopped being a Pet. Both grants are Buffs with
+						# duration turns:1, so the end-of-turn sweep gives "this
+						# turn" for free (correct even when cast on the
+						# opponent's turn) and leaving play clears them.
+						if _is_legal_target(state, target_id, db) 								and _is_pet(state, target_id, db):
+							var bw_amount := int(parts[2]) if parts.size() > 2 else 0
+							var bw_target := state.get_card(target_id)
+							if bw_amount != 0:
+								bw_target.active_buffs.append(
+									Buff.make("buff_atk_target", card_id,
+										"atk", bw_amount, "turns", 1))
+								events.append(GameEvent.make("atk_buffed",
+									{"card_id": target_id, "amount": bw_amount,
+									 "source_id": card_id}))
+							# "Prevent all damage that would be dealt to it this
+							# turn." Enforced in GameLogic.prevent, which reads
+							# this buff off the TARGET (Brother Rhone's shield
+							# slot, but instance-scoped and source-agnostic).
+							# Unpreventable damage (Lionheart Helm, Annihilator)
+							# still lands: 717 short-circuits before any shield.
+							if _has_effect_flag(def, "prevent_all_damage_this_turn"):
+								bw_target.active_buffs.append(
+									Buff.make("prevent_all_damage", card_id,
+										"prevent_all_damage", 1, "turns", 1))
+								events.append(GameEvent.make("damage_shield_granted",
+									{"card_id": target_id, "source_id": card_id}))
 					"return_to_hand":
 						# "Put target ally into its owner's hand." (Withdraw), or
 						# "...from your party" friendly-only (Fall Back).
@@ -2533,6 +2673,35 @@ static func _resolve_play_instant(state: GameState,
 								"riders": parts[3] if parts.size() > 3 else "",
 								"from_ability": true,
 							}]))
+					"ally_atk_damage":
+						# Skewer: "Choose an ally in your party. It deals damage
+						# equal to its ATK to target ally." The chosen source
+						# (source_id) and the announced target (target_id) are
+						# BOTH re-checked here: the source must still be an ally
+						# in the caster's party (it deals the damage — gone, no
+						# damage happens at all, 709.2c), the target per 706 /
+						# glossary 4217. The ATK is read LIVE, which is the card's
+						# trick: a "while attacking" bonus (Zorm Stonefury) counts
+						# exactly while the source is attacking (602.1 — from the
+						# attack window onward), and an aura killed in the response
+						# window no longer does. The ALLY deals the damage, not
+						# your hero, so the packet is NOT `from_ability` and
+						# carries the source's own printed damage type.
+						var sk_source: String = action.params.get("source_id", "")
+						var sk_src := state.get_card(sk_source)
+						var sk_src_ok := sk_src != null \
+								and _is_ally(state, sk_source) \
+								and sk_src.controller == action.source_player
+						if sk_src_ok and _is_legal_target(state, target_id, db) \
+								and _is_ally(state, target_id):
+							var sk_amount := state.get_atk(sk_source, db)
+							var sk_def := db.get_def(sk_src.card_def_id) as CardDef
+							if sk_amount > 0:
+								events.append_array(defer_packets(state, db, [{
+									"source": sk_source, "target": target_id,
+									"amount": sk_amount,
+									"dmg_type": sk_def.dmg_type.to_lower() if sk_def else "",
+								}]))
 					"deal_damage_and_heal":
 						# Shock and Soothe: "Your hero deals N <type> damage to
 						# target hero or ally and heals M damage from another
@@ -3326,6 +3495,8 @@ static func _prevention_offer(state: GameState, db, target_id: String,
 	var card := state.get_card(target_id)
 	if not card:
 		return {}
+	if GameLogic._has_prevent_all_shield(card):
+		return {}   # already fully shielded: never offer a point that can't help
 	var ps := state.players.get(card.controller) as PlayerState
 	if not ps or ps.hero_instance_id != target_id:
 		return {}   # only heroes are shielders (717.2c)

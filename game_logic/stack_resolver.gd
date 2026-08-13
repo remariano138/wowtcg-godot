@@ -73,6 +73,13 @@ static func submit_action(state: GameState, action: PendingAction,
 		"place_resource":
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":
+				# The card is placed face down as it goes ON the chain (412.1a),
+				# not when it resolves: it is hidden information from the moment
+				# it leaves the hand, and a UI that renders the chain link from
+				# state would otherwise show its face to both players.
+				var res_card := state.get_card(card_id)
+				if res_card:
+					res_card.face_down = not bool(action.params.get("face_up", false))
 				events.append_array(GameLogic.move_card(state, card_id, "chain"))
 			var ps := state.players.get(action.source_player) as PlayerState
 			if ps:
@@ -6661,6 +6668,12 @@ static func retract_last(state: GameState, player_id: String,
 		if top.action_type in ["play_ally", "play_instant", "play_ability",
 			"play_equipment", "place_resource"] else ""
 	if card_id != "":
+		# A retracted resource placement is face-up in hand again (its owner may
+		# now play it normally) — undo the face-down set on chain entry.
+		if top.action_type == "place_resource":
+			var back_card := state.get_card(card_id)
+			if back_card:
+				back_card.face_down = false
 		events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
 
 	# Refund resources exhausted at submission time (rule 412.2 costs are paid on

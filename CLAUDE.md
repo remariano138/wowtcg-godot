@@ -556,11 +556,14 @@ human can also sit in the p2 seat vs an AI).
   and shows a fullscreen confirm overlay. Confirming runs `_set_local_player` then resumes.
 - **Mulligan:** humans decide sequentially, each behind their own handoff
   (`_mulligan_queue` / `_advance_mulligan_queue`; `_mulligan_current` owns the panel).
-- **Combat stance (per-player, set while seated; toggle next to Speed Mode):**
-  `"passive"` — the off-screen player's priority windows auto-pass, driven by
-  the same paths that drive AI (`_do_ai_turn` null-AI branch, `_drain_passes` hotseat
-  branch). `"ambush"` (default) — a window STOPS when the off-screen player has a legal instant
-  response (`_offscreen_has_play` probes the router with `local_player` swapped):
+- **Ambush (always on — there is no stance selector):** a priority window STOPS
+  when the off-screen player has a legal instant
+  response (`_offscreen_has_play` probes the router with `local_player` swapped);
+  with no legal response it auto-passes through the same paths that drive AI
+  (`_do_ai_turn` null-AI branch, `_drain_passes` hotseat branch). The old
+  per-player Passive/Ambush stance is gone: Passive existed to skip these windows
+  back when instants were rare, and now that they are common, auto-passing a real
+  decision point is simply wrong.
   `_enter_ambush_mode` points the InputRouter at them (rules make only instant-speed
   plays legal off-turn) with YELLOW highlights (`AMBUSH_HIGHLIGHT`), while the renderer
   perspective stays with the seat — their hand stays face-down, a playable card's front
@@ -571,11 +574,13 @@ human can also sit in the p2 seat vs an AI).
   submission's own event emission, so `InputRouter._pass_own_proposal` also checks
   `action.source_player != local_player` — without it the proposer's auto-pass fires
   through the re-pointed router, spends the responder's priority, and resolves the
-  proposal unanswered. The top-right **Skip button**
-  (visible only during the stop) passes for them without revealing anything. Windows
-  with no legal response still auto-skip. Mode exits when priority leaves the ambusher
+  proposal unanswered. To skip without revealing anything the ambusher presses
+  **their OWN pass button** — the mirrored one above the line, which
+  `_update_opponent_pass_btn` arms ("Skip window", yellow) for the duration of the
+  stop and leaves inert as a status light the rest of the time (this replaced a
+  free-floating top-right Skip button). Mode exits when priority leaves the ambusher
   (`_refresh_ui` guard) or on Skip; `_drain_passes`/`_schedule_next_turn` freeze while
-  `_in_ambush_mode`. `_stance` survives rematches.
+  `_in_ambush_mode`.
 - **Mandatory-choice routing (`_route_choice`) — the one funnel:** the engine
   already addresses every pending choice to a specific player
   (`pending_*_player`, and `pending_reveal_pick_chooser` where the decider differs

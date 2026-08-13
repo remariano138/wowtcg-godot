@@ -11,6 +11,12 @@ extends Node
 #   set_input_router(router)           — wire card clicks to InputRouter
 #   set_perspective(player_id)         — "" = show all (test/spectator); set = hide opponent hand
 
+# Cards on the TABLE (everything that isn't a hand card or a hero card) render
+# at this scale. It is the one knob for board card size: every slot, gap and row
+# position below — and every row anchor in playtest.gd — is derived from it, so
+# changing it rescales the whole board rather than making cards overlap.
+const TABLE_CARD_SCALE := 1.25
+
 # instance_id (String) -> Node2D representing that card visually
 var card_nodes: Dictionary = {}
 
@@ -32,8 +38,8 @@ var _attachment_hosts: Dictionary = {}
 
 # How far an attachment peeks out past its host (toward the opponent side, so
 # it reads as tucked underneath from the controller's seat). 1/5 card height.
-const ATTACH_PEEK := 21.0
-const ATTACH_STACK_GAP := 26.0   # extra peek per additional attachment
+const ATTACH_PEEK := 21.0 * TABLE_CARD_SCALE
+const ATTACH_STACK_GAP := 26.0 * TABLE_CARD_SCALE   # extra peek per additional attachment
 
 
 # card_id -> Tween of an in-flight death overlay fade. card_moved defers the
@@ -97,7 +103,7 @@ const SPREAD_ZONES := ["chain",
 # makes the drawn zone grids line up exactly with the cards in them (ready cards
 # touch the top/bottom lines, exhausted ones the left/right).
 # Hand/chain cards are never rotated, so CardNode.W + ~12px margin is fine there.
-const CARD_SLOT       := CardNode.H
+const CARD_SLOT       := CardNode.H * TABLE_CARD_SCALE
 const PLAY_SPREAD_GAP := CARD_SLOT
 # Padding used between rows and against the screen edge. Derived from card size
 # so the whole board layout rescales when the cards do.
@@ -689,6 +695,14 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	# the Wild during our turn).
 	elif cn and (to_zone.ends_with("_graveyard") or to_zone == "attached"):
 		cn.show_card_front()
+	# A resource placement goes on the chain ALREADY face down (412.1a — the
+	# engine sets it on chain entry), and the chain is a shared, visible zone. Its
+	# owner's own card would otherwise travel face-up across the table and hand
+	# the other player its identity before it is ever placed.
+	elif cn and to_zone == "chain" and _stack_state != null:
+		var moving = _stack_state.get_card(card_id)
+		if moving != null and moving.face_down:
+			cn.show_card_back()
 	# Re-face the card if it changed sides (e.g. control change moves it to the
 	# other player's row). Moving cards are ready in practice; the reconcile
 	# tick reasserts the exhausted angle if not.
@@ -812,7 +826,8 @@ func _apply_zone_scale(card_id: String, zone_id: String) -> void:
 		_write_scale(node, Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE))
 		node.z_index = 1   # above the row it sits beside, below hand cards
 		return
-	_write_scale(node, Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if is_hand else Vector2.ONE)
+	_write_scale(node, Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if is_hand
+		else Vector2(TABLE_CARD_SCALE, TABLE_CARD_SCALE))
 	node.z_index = HAND_Z_INDEX if is_hand else 0
 
 
@@ -847,7 +862,10 @@ func _remove_from_zone(card_id: String, zone_id: String) -> void:
 
 
 func _spread_gap(zone_id: String) -> float:
-	return PLAY_SPREAD_GAP if zone_id in PLAY_ZONES else HAND_SPREAD_GAP
+	# Hand cards are the only ones at HAND_CARD_SCALE; every other spread zone
+	# (play rows AND the chain) now holds TABLE_CARD_SCALE cards, so it needs the
+	# full table slot or the cards overlap.
+	return HAND_SPREAD_GAP if zone_id in HAND_ZONES else PLAY_SPREAD_GAP
 
 
 # Tell the renderer which card is a player's hero, so hero_row layout can pin it
@@ -902,9 +920,16 @@ static func _spread_order(zone_id: String, ids: Array) -> Array:
 # neighbour in either orientation, and it makes the drawn grid lines touch the
 # card edges exactly (ready cards touch top/bottom, exhausted ones left/right).
 #
-# Cards fill left-to-right then top-to-bottom FROM THEIR OWNER'S SEAT: the list
-# is put through _spread_order (which reverses for p2) and the p2 camera's 180°
-# rotation flips both axes back, so each player reads their own grid the same way.
+# Cards fill left-to-right then BOTTOM-TO-TOP from their owner's seat — the two
+# grids are therefore point-symmetric about the board, so each player reads their
+# own the same way. Bottom-left is the corner farthest from everything that can
+# cover it: the bottom row is farthest from the combat/pass block that sits on the
+# mirror line, and the left column is farthest from that player's hand and rows.
+#
+# The seat mirror is done GEOMETRICALLY here (both axes negated for p2), not by
+# reversing the card list as the other zones do: a reversed list only mirrors the
+# grid correctly when it is completely full, and a partly-filled p2 grid then
+# filled from the wrong corner.
 const RESOURCE_ZONES  := ["p1_resource_row", "p2_resource_row"]
 const RES_GRID_COLS   := 4
 const RES_GRID_ROWS   := 3
@@ -966,7 +991,9 @@ func _res_stack_key(card_id: String) -> String:
 # Returns {"slots": {card_id: slot_idx}, "slot_count": int,
 #          "stack": {card_id: pile size for the pile's representative, else 0}}.
 func _res_layout(zone_id: String) -> Dictionary:
-	var ids: Array = _spread_cards(zone_id)
+	# Engine order, NOT _spread_cards: the seat mirror lives in _slot_offset for
+	# these zones, so reversing the list here would undo it.
+	var ids: Array = _zone_cards.get(zone_id, [])
 	var slots: Dictionary = {}
 	var stack: Dictionary = {}
 	var key_slot: Dictionary = {}   # stack key -> slot idx
@@ -993,11 +1020,15 @@ func _slot_offset(zone_id: String, idx: int, count: int) -> Vector2:
 		var rows: int = max(RES_GRID_ROWS,
 			int(ceil(float(count) / float(RES_GRID_COLS))))
 		var col: int = idx % RES_GRID_COLS
-		var row: int = idx / RES_GRID_COLS
+		# Rows count up from the BOTTOM of the owner's grid (see the section note).
+		var row: int = rows - 1 - (idx / RES_GRID_COLS)
 		# Anchor is the grid's centre, like every other zone anchor.
-		return Vector2(
+		var off := Vector2(
 			(col - (RES_GRID_COLS - 1) * 0.5) * RES_CELL,
 			(row - (rows - 1) * 0.5) * RES_CELL)
+		# p2's grid is the point mirror of p1's; their camera's 180° turn puts the
+		# first card back in their own bottom-left.
+		return -off if zone_id.begins_with("p2_") else off
 	if zone_id in HAND_ZONES:
 		var off: Vector2 = fan_slot(idx, count, HAND_FAN_WIDTH, HAND_FAN_RADIUS)["offset"]
 		# The fan is built in the OWNER's frame (bulging up, toward their board).
@@ -1570,19 +1601,37 @@ func _update_hero_bar(player_id: String, card_id: String, new_hp: int, max_hp: i
 
 # ── Deck count labels ──────────────────────────────────────────────────────────
 
+# The count rides ON the deck's card back as a corner badge, in the same style as
+# a card's stat badges — the loose label that used to float beside the deck read
+# as board furniture. It keeps the SMALL badge diameter while the resource-pile
+# badge is double size (CardNode.STACK_BADGE_D), so a deck and a pile of
+# resources can never be confused for one another at a glance.
 func _create_deck_label(zone_id: String, _anchor: Node2D) -> void:
 	_deck_counts[zone_id] = 0
+	var d := CardNode.SMALL_BADGE_D
+	var bg := Panel.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.2, 0.22, 0.28, 0.95)
+	style.set_corner_radius_all(int(d * 0.5))
+	style.set_border_width_all(1)
+	style.border_color = Color(0.8, 0.8, 0.85)
+	bg.add_theme_stylebox_override("panel", style)
+	bg.size         = Vector2(d, d)
+	bg.pivot_offset = Vector2(d, d) * 0.5
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg.z_index      = 5
+	add_child(bg)
+
 	var lbl := Label.new()
-	lbl.add_theme_font_size_override("font_size", 14)
+	lbl.add_theme_font_size_override("font_size", 13)
 	lbl.add_theme_color_override("font_color", Color.WHITE)
-	lbl.add_theme_constant_override("outline_size", 2)
-	lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	lbl.size         = Vector2(d, d)
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.size         = Vector2(CardNode.W, 20)
+	lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	lbl.z_index      = 5
-	add_child(lbl)
-	_deck_labels[zone_id] = lbl
+	bg.add_child(lbl)
+
+	_deck_labels[zone_id] = bg
 	_refresh_deck_label(zone_id)
 
 
@@ -1593,23 +1642,27 @@ func init_deck_count(zone_id: String, count: int) -> void:
 
 
 func _refresh_deck_label(zone_id: String) -> void:
-	var lbl := _deck_labels.get(zone_id) as Label
-	if not lbl:
+	var bg := _deck_labels.get(zone_id) as Panel
+	if not bg:
 		return
+	var d := CardNode.SMALL_BADGE_D
 	var anchor := zone_anchors.get(zone_id) as Node2D
 	if anchor:
 		# The deck sits half off-board (see the anchor comments in playtest.gd), so
-		# the count goes on the INNER side of the card — the half that stays visible.
+		# the badge goes on the INNER top corner — the half that stays visible, and
+		# the same corner of the card the pile badge uses in its owner's frame.
 		if zone_id.begins_with("p2"):
 			# Rotated 180° so the count reads upright for P2.
-			lbl.pivot_offset      = Vector2(CardNode.W * 0.5, 10)
-			lbl.rotation_degrees  = 180
-			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, CardNode.H * 0.5 + 6)
+			bg.rotation_degrees = 180
+			bg.global_position  = anchor.global_position \
+				+ Vector2(CardNode.W * 0.5 - d - 2, CardNode.H * 0.5 - d - 2)
 		else:
-			lbl.pivot_offset      = Vector2.ZERO
-			lbl.rotation_degrees  = 0
-			lbl.global_position   = anchor.global_position + Vector2(-CardNode.W * 0.5, -(CardNode.H * 0.5 + 20))
-	lbl.text = str(_deck_counts.get(zone_id, 0))
+			bg.rotation_degrees = 0
+			bg.global_position  = anchor.global_position \
+				+ Vector2(-CardNode.W * 0.5 + 2, -CardNode.H * 0.5 + 2)
+	var lbl := bg.get_child(0) as Label
+	if lbl:
+		lbl.text = str(_deck_counts.get(zone_id, 0))
 
 
 # ── Damage popup ───────────────────────────────────────────────────────────────

@@ -100,19 +100,21 @@ var _camera_tween: Tween = null
 # they were just handed the screen for (playing instants with leftover resources).
 var _stop_for_end_window: bool = false
 
-# ── Combat stance / ambush (off-screen hotseat player reactions) ──────────────
-# Per-player stance, set by each player while they hold the screen:
-#   "passive" — priority windows during the opponent's turn auto-pass (default).
-#   "ambush"  — a window STOPS when this player has a legal instant response:
-#     their playable instants highlight YELLOW in their face-down hand (front
-#     shown only while hovered), the InputRouter temporarily acts for them so
-#     they can play, and the top-right Skip button passes without revealing
-#     anything. Windows with no legal response still auto-skip (nothing would
-#     be playable, and stopping would only leak "no response" the slow way).
+# ── Ambush (off-screen hotseat player reactions) ──────────────────────────────
+# A priority window during the opponent's turn STOPS when the off-screen player
+# has a legal instant response: their playable instants highlight YELLOW in their
+# face-down hand (front shown only while hovered), the InputRouter temporarily
+# acts for them so they can play, and THEIR OWN pass button (the mirrored one
+# above the line) becomes the skip — passing without revealing anything. Windows
+# with no legal response still auto-skip (nothing would be playable, and stopping
+# would only leak "no response" the slow way).
+#
+# This used to be one of two selectable stances, the other ("Passive") auto-
+# passing every such window to speed the game up back when instants were rare.
+# Instant-speed plays are common enough now that skipping a real decision point
+# is simply wrong, so ambush is the only behaviour.
 const AMBUSH_HIGHLIGHT := Color(1.0, 0.9, 0.2)
 const HOVER_MAGNIFY := 1.2   # local player's own hand cards magnify on hover
-# Ambush is the default; a player switches to Passive when they know they won't react.
-var _stance: Dictionary = {"p1": "ambush", "p2": "ambush"}
 var _in_ambush_mode: bool = false
 var _ambush_player: String = ""
 # Choice peek: in hotseat, when a mandatory choice is owed by the OFF-SCREEN
@@ -124,9 +126,6 @@ var _ambush_player: String = ""
 var _in_choice_peek: bool = false
 var _choice_peek_player: String = ""
 var _choice_peek_hides_hand: bool = false
-var _skip_btn: Button
-var _stance_passive_btn: Button
-var _stance_ambush_btn: Button
 
 # ── Menu ───────────────────────────────────────────────────────────────────────
 var _menu_layer:  CanvasLayer
@@ -151,7 +150,7 @@ var _chain_panel: Control   # visual chain display (bottom-left, above the contr
 var _pass_btn:   Button
 var _cancel_btn: Button
 # Per-player resource readout beside each resource zone (world-space, mirrored):
-# "Available X / Total Y" plus the can-place line. pid -> {avail, place} Labels.
+# "Available X / Total Y · N can be placed" on one line. pid -> RichTextLabel.
 var _res_info_labels: Dictionary = {}
 # Unrotated (camera-at-p1) top-left of every readout label, keyed by the Label:
 # _orient_res_info_labels re-derives the rotated placement from these.
@@ -162,13 +161,16 @@ var _res_info_size: Vector2 = Vector2.ZERO
 # current step is bolded on the ACTIVE player's side only.
 var _turn_steps_bottom: RichTextLabel
 var _turn_steps_top:    RichTextLabel
-# The opponent's pass button. Deliberately never clickable: every opponent input
-# path already exists (AI resolves itself; a hotseat human takes the seat at the
-# handoff, at which point the BOTTOM button is theirs; the ambush stop has its
-# own Skip). It is the status light the mirrored design called for — lit while
-# they hold priority, greyed otherwise.
+# The opponent's pass button: a status light most of the time — lit while they
+# hold priority, greyed otherwise — because every other opponent input path
+# already exists (an AI resolves itself; a hotseat human takes the seat at the
+# handoff, at which point the BOTTOM button is theirs).
+#
+# The ONE case where it is a real control is the ambush stop: the off-screen
+# player has been handed the window, so the button on THEIR side of the mirror
+# line is where "skip it" belongs (see _update_opponent_pass_btn / _on_skip_pressed).
 var _opp_pass_btn: Button
-var _mulligan_panel:       VBoxContainer
+var _mulligan_panel:       Panel   # lives in the prompt pocket (PROMPT_WINDOW_POS)
 var _mulligan_order_label: Label
 var _mulligan_ready_btn:   Button
 var _mulligan_btn:         Button
@@ -179,11 +181,30 @@ var _p1_has_mulliganed:    bool = false
 var _mulligan_awaiting_ack: bool = false
 var _context_menu: PopupMenu
 var _context_actions: Array   # Array of {label, action, enabled}
+
+# ── Player display names ──────────────────────────────────────────────────────
+# What the UI calls each seat. Hardcoded for now; the intent is that these become
+# editable (typed in by the player, an AI's given name, or the hero's name), so
+# every user-facing mention of a player goes through _player_name() rather than
+# printing the engine's player_id — swapping the source is then a one-place edit.
+var _p1_name: String = "P1"
+var _p2_name: String = "P2"
+
+# ── Round badge ───────────────────────────────────────────────────────────────
+# "T<round>" on the mirror line: T1 while BOTH players take their first turn, T2
+# for their second, and so on. The engine's turn_number counts each player's turn
+# separately (P1=1, P2=2, P1=3 …), so the badge is the round, not that number —
+# see _turn_label, which already halves it the same way.
+var _turn_badge: Label
+const TURN_BADGE_H     := 40.0
+# Grey, deliberately: the round number is orientation, not something to act on.
+const TURN_BADGE_COLOR := Color(0.62, 0.64, 0.68)
 # ── Tool windows (turn info / controls) ───────────────────────────────────────
 # The old bottom bar's left and right thirds now live in floating, draggable,
 # closable windows opened from two buttons at the bottom-right. Only the centre
 # section (pass / cancel / status) stays permanently on the bar.
 var _turn_info_window: Panel
+var _prompt_body:      Control   # the prompt window's body, resized per prompt
 var _controls_window:  Panel
 # The chain display's window. Draggable but not closable; auto-shown whenever
 # the chain is non-empty. Stays centred until the player drags it, after which
@@ -393,27 +414,10 @@ func _build_scene() -> void:
 	_log.visible         = _log_visible
 	_hud.add_child(_log)
 
-	# ── Side column labels ─────────────────────────────────────────────────────
-	# Symmetric board: each player's hero column sits on THEIR right-hand side —
-	# P1 (facing up) on screen-right, P2 (facing down) on screen-left.
-	# P2's labels are rotated 180° so they read upright from P2's seat (TTS-style).
-	# World-space, so they carry BOARD_Y_OFFSET like the anchors they label. P2's
-	# are the mirror of P1's (and rotated 180°, so they read upright from P2's
-	# seat), same as every zone anchor.
-	var lbl_y: float = DECK_ROW_Y - SLOT_HALF_H - 16.0
-	var GRAVE_LBL_BASE := Vector2(1592, lbl_y)
-	var DECK_LBL_BASE  := Vector2(1774, lbl_y)
-	_add_label("P1 grave", _board_pos(GRAVE_LBL_BASE.x, GRAVE_LBL_BASE.y),
-		11, Color(0.4, 0.5, 0.4))
-	_add_label("P1 deck",  _board_pos(DECK_LBL_BASE.x, DECK_LBL_BASE.y),
-		11, Color(0.4, 0.4, 0.5))
-	var p2_grave_lbl := _mirror(GRAVE_LBL_BASE)
-	var p2_deck_lbl  := _mirror(DECK_LBL_BASE)
-	_rotate_label_180(_add_label("P2 grave", _board_pos(p2_grave_lbl.x, p2_grave_lbl.y),
-		11, Color(0.5, 0.4, 0.4)))
-	_rotate_label_180(_add_label("P2 deck",  _board_pos(p2_deck_lbl.x, p2_deck_lbl.y),
-		11, Color(0.4, 0.4, 0.5)))
-
+	# The four "P1 deck / P1 grave / P2 deck / P2 grave" side-column labels are
+	# gone: they were placeholders for an empty board, and with the columns
+	# populated (card backs, hero, graveyard contents, the deck's count badge)
+	# they only added clutter.
 
 	# Renderer
 	_renderer = BoardRenderer.new()
@@ -515,16 +519,9 @@ func _build_scene() -> void:
 
 	_build_combat_window()
 
-	# ── Skip button (top-right, free since P2's column moved screen-left) ──────
-	# The OFF-SCREEN player's pass during an ambush stop: skips the window
-	# without revealing their hand. Only visible while an ambush stop is active.
-	_skip_btn = Button.new()
-	_skip_btn.text     = "Skip window  (opponent)"
-	_skip_btn.position = Vector2(1650, 15)
-	_skip_btn.size     = Vector2(250, 44)
-	_skip_btn.visible  = false
-	_skip_btn.pressed.connect(_on_skip_pressed)
-	_hud.add_child(_skip_btn)
+	# The stray top-right "Skip window (opponent)" button is gone: now that each
+	# player has their own pass button, the ambusher's skip belongs on THEIRS —
+	# see _update_opponent_pass_btn.
 
 	# ── Prompt window (the old "Turn info" panel, now prompts only) ────────────
 	# Turn/phase/priority all read off the two turn strips now, so the panel lost
@@ -534,11 +531,19 @@ func _build_scene() -> void:
 	# It shows itself when there is a prompt and hides when there isn't (see
 	# _set_status), which is the dedicated prompt popup, away from the pass
 	# button, that was always the intent.
-	var info_body := _make_tool_window("Prompt", Vector2(400, 60),
-		Vector2(1240, BOARD_MID_Y - 262))
-	_turn_info_window = info_body.get_parent() as Panel
-	_status = _add_label("", Vector2(10, 8), 14, Color(0.5, 0.8, 0.5), true, info_body)
-	_status.size = Vector2(380, 50)
+	# It lives in the pocket BELOW the pass block and INSIDE the seated player's
+	# graveyard/deck column — the one rectangle of the bottom-right quadrant no
+	# zone reaches into, so a prompt never covers a card. That pocket is narrow,
+	# hence the fixed narrow width plus _wrap_text/_resize_prompt_window: the
+	# window grows downward by whole lines instead of clipping a long prompt.
+	_prompt_body = _make_tool_window("Prompt", Vector2(PROMPT_BODY_W, PROMPT_LINE_H),
+		PROMPT_WINDOW_POS)
+	_turn_info_window = _prompt_body.get_parent() as Panel
+	_status = _add_label("", Vector2(PROMPT_TEXT_PAD, 6), 14, Color(0.5, 0.8, 0.5),
+		true, _prompt_body)
+	_status.size = Vector2(PROMPT_BODY_W - PROMPT_TEXT_PAD * 2.0, PROMPT_LINE_H)
+	# Belt and braces: _wrap_text has already broken the prompt into lines, but a
+	# single unbreakable token longer than the body would still overflow.
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD
 
 	# ── Pass bars: one per player, straddling the mirror line ─────────────────
@@ -576,23 +581,53 @@ func _build_scene() -> void:
 	_opp_pass_btn.text     = "Pass Priority"
 	_opp_pass_btn.position = Vector2(btn_x, BOARD_MID_Y - PASS_BTN_DY - 40.0)
 	_opp_pass_btn.size     = Vector2(230, 40)
+	# Inert status light by default; _update_opponent_pass_btn arms it (and this
+	# handler) for the ambush stop, which is the only time it is theirs to press.
 	_opp_pass_btn.disabled = true
+	_opp_pass_btn.pressed.connect(_on_skip_pressed)
 	_hud.add_child(_opp_pass_btn)
 	_turn_steps_top = _make_turn_step_strip(
 		Vector2(strip_x, BOARD_MID_Y - PASS_STRIP_DY - 26.0))
 
-	# ── Mulligan panel (replaces pass area during mulligan phase) ──────────────
-	_mulligan_panel = VBoxContainer.new()
-	_mulligan_panel.position = Vector2(760, 420)
-	_mulligan_panel.custom_minimum_size = Vector2(400, 110)
+	# Round badge ("T3"), on the mirror line in the empty slot left of the two pass
+	# buttons — the one spot in the block that belongs to NEITHER player, which is
+	# right for a counter both share. Left-aligned on strip_x so it sits in the same
+	# column as the "(1)"/"(2)" seat markers instead of drifting into the buttons.
+	_turn_badge = Label.new()
+	_turn_badge.position = Vector2(strip_x, BOARD_MID_Y - TURN_BADGE_H * 0.5)
+	_turn_badge.size     = Vector2(btn_x - strip_x - 8.0, TURN_BADGE_H)
+	_turn_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_turn_badge.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	_turn_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_turn_badge.add_theme_font_size_override("font_size", 30)
+	_turn_badge.add_theme_color_override("font_color", TURN_BADGE_COLOR)
+	_hud.add_child(_turn_badge)
+
+	# ── Mulligan prompt ────────────────────────────────────────────────────────
+	# It asks the seated player a question, so it belongs in the same pocket as
+	# every other prompt (PROMPT_WINDOW_POS) rather than floating over the middle
+	# of the board, where it covered the ally rows it was asking them to plan for.
+	# Same width as the prompt window so the two read as one channel; it is its
+	# own panel because it carries buttons, which _set_status' label cannot.
+	_mulligan_panel = Panel.new()
+	_mulligan_panel.position = PROMPT_WINDOW_POS
+	_mulligan_panel.size     = Vector2(PROMPT_BODY_W, 112)
 	_mulligan_panel.visible  = false
+	_mulligan_panel.z_index  = 12
 	_hud.add_child(_mulligan_panel)
+
+	var mull_box := VBoxContainer.new()
+	mull_box.position = Vector2(PROMPT_TEXT_PAD, 8)
+	mull_box.size     = Vector2(PROMPT_BODY_W - PROMPT_TEXT_PAD * 2.0, 96)
+	_mulligan_panel.add_child(mull_box)
 
 	_mulligan_order_label = Label.new()
 	_mulligan_order_label.add_theme_font_size_override("font_size", 14)
 	_mulligan_order_label.add_theme_color_override("font_color", Color(0.9, 0.78, 0.35))
 	_mulligan_order_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_mulligan_panel.add_child(_mulligan_order_label)
+	_mulligan_order_label.custom_minimum_size = Vector2(
+		PROMPT_BODY_W - PROMPT_TEXT_PAD * 2.0, 22)
+	mull_box.add_child(_mulligan_order_label)
 
 	_mulligan_ready_btn = Button.new()
 	_mulligan_ready_btn.text = "Ready  (keep hand)"
@@ -604,12 +639,12 @@ func _build_scene() -> void:
 			_finish_mulligan_decision()
 		else:
 			_commit_mulligan(false))
-	_mulligan_panel.add_child(_mulligan_ready_btn)
+	mull_box.add_child(_mulligan_ready_btn)
 
 	_mulligan_btn = Button.new()
 	_mulligan_btn.text = "Mulligan  (shuffle & redraw)"
 	_mulligan_btn.pressed.connect(func() -> void: _commit_mulligan(true))
-	_mulligan_panel.add_child(_mulligan_btn)
+	mull_box.add_child(_mulligan_btn)
 
 	# ── "Controls" window (was the bar's right third) ──────────────────────────
 	# Contents keep their former relative layout; the whole block is simply
@@ -652,33 +687,8 @@ func _build_scene() -> void:
 	_mode_desc_label = _add_label("Manual control — all phases",
 		Vector2(10, 107), 10, Color(0.52, 0.42, 0.42), true, ctl_body)
 
-	# ── Combat stance selector (next to Speed Mode) ─────────────────────────────
-	# Each player sets THEIR stance while they hold the screen; it governs their
-	# priority windows during the opponent's turn (see _stance docs above).
-	_add_label("COMBAT STANCE", Vector2(150, 11), 10, Color(0.55, 0.55, 0.55), true, ctl_body)
-
-	var stance_group := ButtonGroup.new()
-
-	_stance_ambush_btn = Button.new()
-	_stance_ambush_btn.text           = "Ambush"
-	_stance_ambush_btn.position       = Vector2(150, 27)
-	_stance_ambush_btn.size           = Vector2(110, 36)
-	_stance_ambush_btn.toggle_mode    = true
-	_stance_ambush_btn.button_group   = stance_group
-	_stance_ambush_btn.button_pressed = true
-	_stance_ambush_btn.toggled.connect(func(on: bool) -> void:
-		if on: _stance[_local_player] = "ambush")
-	ctl_body.add_child(_stance_ambush_btn)
-
-	_stance_passive_btn = Button.new()
-	_stance_passive_btn.text         = "Passive"
-	_stance_passive_btn.position     = Vector2(150, 67)
-	_stance_passive_btn.size         = Vector2(110, 36)
-	_stance_passive_btn.toggle_mode  = true
-	_stance_passive_btn.button_group = stance_group
-	_stance_passive_btn.toggled.connect(func(on: bool) -> void:
-		if on: _stance[_local_player] = "passive")
-	ctl_body.add_child(_stance_passive_btn)
+	# The Ambush/Passive stance selector that sat here is gone — ambush is now the
+	# only behaviour (see the ambush section at the top of this file).
 
 	# Control indications: docked at the window's far right, past the speed slider.
 	_mulligan_hint_label = _add_label(
@@ -1129,11 +1139,6 @@ func _set_local_player(pid: String) -> void:
 	_renderer.set_perspective(pid)
 	_renderer.refresh_hand_visibility()
 	_orient_camera(pid, false)   # no-op if _begin_handoff already turned it
-	# Stance toggle shows the seated player's own stance.
-	if _stance_passive_btn and _stance_ambush_btn:
-		var ambush: bool = _stance.get(pid, "ambush") == "ambush"
-		_stance_ambush_btn.set_pressed_no_signal(ambush)
-		_stance_passive_btn.set_pressed_no_signal(not ambush)
 
 
 # Turn the board camera to `pid`'s side of the table (TTS-style). The camera
@@ -1193,8 +1198,8 @@ func _enter_ambush_mode(pid: String) -> void:
 	_router.setup(_state, _db, pid)
 	_router.set_highlight_color(AMBUSH_HIGHLIGHT)
 	_router.refresh_highlights()
-	_skip_btn.visible = true
-	_set_status("⚡ %s may respond — hover a yellow card to peek, Skip to pass"
+	_update_opponent_pass_btn(pid)   # their own button becomes the skip
+	_set_status("⚡ %s may respond — hover a yellow card to peek, or press their Pass button to skip"
 			% _ambush_player.to_upper())
 
 
@@ -1203,7 +1208,7 @@ func _exit_ambush_mode() -> void:
 		return
 	_in_ambush_mode = false
 	_ambush_player = ""
-	_skip_btn.visible = false
+	_update_opponent_pass_btn("p2" if _local_player == "p1" else "p1")
 	_router.set_highlight_color(Color(0.2, 1.0, 0.3))
 	_router.setup(_state, _db, _local_player)
 	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
@@ -1328,8 +1333,11 @@ func _add_deck_back_sprite(pos: Vector2, facing: float = 0.0) -> void:
 	tex.texture      = back
 	tex.stretch_mode = TextureRect.STRETCH_SCALE
 	tex.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
-	tex.size         = Vector2(CardNode.W, CardNode.H)
-	tex.position     = pos - Vector2(CardNode.W * 0.5, CardNode.H * 0.5)
+	# The deck back stands in for a card sitting on the table, so it takes the
+	# same scale as one (see BoardRenderer.TABLE_CARD_SCALE).
+	var s: float = BoardRenderer.TABLE_CARD_SCALE
+	tex.size         = Vector2(CardNode.W * s, CardNode.H * s)
+	tex.position     = pos - tex.size * 0.5
 	tex.pivot_offset = tex.size * 0.5
 	tex.rotation_degrees = facing
 	tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1584,21 +1592,9 @@ func _draw_zone_grid(base_centre: Vector2, cols: int, rows: int, color: Color) -
 	frame.add_theme_stylebox_override("panel", sb)
 	add_child(frame)
 
-	# Interior cell lines only — the frame already draws the outer edges.
-	for col in range(1, cols):
-		_add_grid_line(origin + Vector2(col * cell, 0), Vector2(1, size.y), color)
-	for row in range(1, rows):
-		_add_grid_line(origin + Vector2(0, row * cell), Vector2(size.x, 1), color)
-
-
-func _add_grid_line(pos: Vector2, size: Vector2, color: Color) -> void:
-	var line := ColorRect.new()
-	line.color        = color
-	line.position     = pos
-	line.size         = size
-	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	line.z_index      = -2
-	add_child(line)
+	# No interior cell lines: a zone reads as ONE rectangle. The per-slot grid was
+	# drawing attention to the empty cells rather than to the cards, and the slots
+	# are implicit in where cards land anyway (cols/rows still size the frame).
 
 
 # Reflect a base board position through BOARD_MIRROR — P2's side of the table.
@@ -1686,6 +1682,13 @@ const FREE_BAND_RIGHT := 1920.0 - (BoardRenderer.CARD_PAD
 # half the mirror image of the other. Reading top to bottom:
 #   opponent strip · opponent pass button │ pass button · turn strip
 # The block is anchored on BOARD_MID_Y and grows symmetrically from it.
+# Prompt window: the free pocket under the pass block, stopping clear of the
+# seated player's graveyard column (x 1640) on the right. Width is fixed and the
+# HEIGHT grows with the wrapped text — see _resize_prompt_window.
+const PROMPT_BODY_W     := 320.0
+const PROMPT_TEXT_PAD   := 10.0
+const PROMPT_LINE_H     := 20.0
+const PROMPT_WINDOW_POS := Vector2(1268.0, BOARD_MID_Y + 152.0)
 const PASS_HALF_H       := 92.0
 const PASS_BLOCK_W      := 460.0
 const PASS_BLOCK_RECT   := Rect2(BLOCK_RIGHT_EDGE - PASS_BLOCK_W,
@@ -1830,14 +1833,6 @@ func _drag_tool_window() -> void:
 func _update_window_btns() -> void:
 	# The toggle buttons are gone (turn info is on the strips, Controls is on Esc).
 	# Kept as a no-op hook so _set_window_open still has one place to notify.
-	return
-
-
-# Rotate a world-space label 180° about its own centre (so P2's side labels
-# read upright from P2's seat). Deferred so the Label has auto-sized first.
-func _rotate_label_180(lbl: Label) -> void:
-	lbl.call_deferred("set", "pivot_offset", lbl.size * 0.5)
-	lbl.rotation_degrees = 180
 	return
 
 
@@ -2069,7 +2064,8 @@ func _update_phase_label() -> void:
 	}
 	var phase_str: String = names.get(_state.phase, _state.phase)
 	_phase_label.text = "Turn %s  ·  %s  ·  %s's turn" % [
-		_turn_label(_state.turn_number), phase_str, _state.turn_player]
+		_turn_label(_state.turn_number), phase_str,
+		_player_name(_state.turn_player)]
 
 
 func _update_priority_label() -> void:
@@ -2093,6 +2089,12 @@ func _describe_pending_action(action: PendingAction) -> String:
 			_log_card(action.params.get("attacker_id", "")),
 			_log_card(action.params.get("defender_id", "")),
 		]
+	# A face-down resource placement is hidden information (412.1a): name it and
+	# the chain readout leaks what the opponent just buried, which no player at a
+	# real table could see. "a card", like a draw.
+	if action.action_type == "place_resource" \
+			and not bool(action.params.get("face_up", false)):
+		return "Resource: a card (face down)"
 	var name := _pending_action_card_name(action)
 	match action.action_type:
 		"play_ally":            return "Play %s" % name
@@ -2219,8 +2221,15 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 			# No card face — combat proposal rectangle: attacker + proposed defender.
 			pass
 		"place_resource":
-			# Resources enter play face down — never show the card face here.
-			caption = "resource"
+			# Resources enter play face down (412.1a) — show the CARD BACK, never
+			# the face, and caption it so the link still reads as a real action.
+			# The text fallback would print the card's name, which is the leak.
+			if bool(action.params.get("face_up", false)):
+				caption = "resource"
+				tex = _chain_action_texture(action)
+			else:
+				caption = "placed face down"
+				tex = load(CardNode.CARD_BACK_PATH) as Texture2D
 		"play_ally", "play_instant", "play_ability", "play_equipment":
 			caption = "played"
 			tex = _chain_action_texture(action)
@@ -2356,30 +2365,32 @@ func _update_cancel_btn() -> void:
 
 func _build_resource_info_labels() -> void:
 	var zone_size: Vector2 = BoardRenderer.res_grid_size(0)
-	# P1's two lines sit just above their zone; P2's are the mirror image, so each
-	# readout always hugs its own player's resource grid.
-	var line1 := Vector2(RES_ZONE_CENTRE.x - zone_size.x * 0.5,
-		RES_ZONE_CENTRE.y - zone_size.y * 0.5 - 48.0)
-	var line2 := line1 + Vector2(0, 22)
-	var lbl_size := Vector2(zone_size.x, 18)
+	# ONE line per player, hugging the near edge of that player's resource grid.
+	# It used to be two stacked lines sitting well clear of the zone; with the
+	# bigger cards that stack reached the pass block for the top player, so both
+	# readouts share a single row that stays inside the zone's own gutter.
+	var line := Vector2(RES_ZONE_CENTRE.x - zone_size.x * 0.5,
+		RES_ZONE_CENTRE.y - zone_size.y * 0.5 - 24.0)
+	var lbl_size := Vector2(zone_size.x, 20)
 	_res_info_size = lbl_size
 	for pid in ["p1", "p2"]:
-		var l1 := _add_label("", Vector2.ZERO, 14, Color(0.85, 0.85, 0.9))
-		var l2 := _add_label("", Vector2.ZERO, 14, Color(1.0, 0.3, 0.3))
-		for l in [l1, l2]:
-			(l as Label).size = lbl_size
-			(l as Label).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		# RichTextLabel, not Label: the two halves keep their own colours (the
+		# placement half turns red/green) while sharing one centred line.
+		var rtl := RichTextLabel.new()
+		rtl.bbcode_enabled = true
+		rtl.scroll_active  = false
+		rtl.size           = lbl_size
+		rtl.mouse_filter   = Control.MOUSE_FILTER_IGNORE
+		rtl.add_theme_font_size_override("normal_font_size", 14)
+		add_child(rtl)
 		if pid == "p1":
-			_res_info_base[l1] = _board_pos(line1.x, line1.y)
-			_res_info_base[l2] = _board_pos(line2.x, line2.y)
+			_res_info_base[rtl] = _board_pos(line.x, line.y)
 		else:
 			# Mirrored POSITION (a rect's mirror image has its top-left at the
 			# mirror of its bottom-right).
-			var m1 := _mirror(line1 + lbl_size)
-			var m2 := _mirror(line2 + lbl_size)
-			_res_info_base[l1] = _board_pos(m1.x, m1.y)
-			_res_info_base[l2] = _board_pos(m2.x, m2.y)
-		_res_info_labels[pid] = {"avail": l1, "place": l2}
+			var m := _mirror(line + lbl_size)
+			_res_info_base[rtl] = _board_pos(m.x, m.y)
+		_res_info_labels[pid] = rtl
 	_orient_res_info_labels()
 
 
@@ -2396,7 +2407,7 @@ func _orient_res_info_labels(pid: String = "") -> void:
 		return
 	var flipped := (pid if pid != "" else _local_player) == "p2"
 	for lbl in _res_info_base:
-		var l := lbl as Label
+		var l := lbl as Control
 		var base: Vector2 = _res_info_base[lbl]
 		l.rotation_degrees = 180.0 if flipped else 0.0
 		l.position = (base + _res_info_size) if flipped else base
@@ -2406,25 +2417,51 @@ func _update_resource_info() -> void:
 	if _res_info_labels.is_empty() or not _state:
 		return
 	for pid in _res_info_labels:
-		var d: Dictionary = _res_info_labels[pid]
+		var rtl := _res_info_labels[pid] as RichTextLabel
 		var avail := _state.get_available_resources(pid)
 		var total := _state.get_total_resources(pid)
-		(d["avail"] as Label).text = "Available %d  /  Total %d" % [avail, total]
 		var ps: PlayerState = _state.players.get(pid)
 		var can_place: int = 1 if (_state.turn_player == pid \
 			and ps and not ps.resource_placed_this_turn) else 0
-		var pl := d["place"] as Label
-		pl.text = "%d can be placed" % can_place
 		# Red = a placement is still owed this turn; green = done (or not
 		# this player's turn, so nothing can be placed anyway).
-		pl.add_theme_color_override("font_color",
-			Color(1.0, 0.3, 0.3) if can_place > 0 else Color(0.3, 1.0, 0.35))
+		var place_col := "#ff4d4d" if can_place > 0 else "#4dff59"
+		rtl.text = "[center][color=#d9d9e6]Available %d  /  Total %d[/color]" \
+			% [avail, total] \
+			+ "  [color=#8a8a99]·[/color]  " \
+			+ "[color=%s]%d can be placed[/color][/center]" % [place_col, can_place]
 
 
 # ── Turn-step strips (Ready · Draw · Action · End) ────────────────────────────
 
 const TURN_STEPS := [["ready", "Ready"], ["draw", "Draw"],
 	["action", "Action Phase"], ["end", "End"]]
+
+# The seat's display name. Every user-facing mention of a player should go
+# through here, so making names editable later touches only _p1_name/_p2_name.
+func _player_name(pid: String) -> String:
+	return _p1_name if pid == "p1" else _p2_name
+
+
+# "(1)" for the player who took the first turn this game, "(2)" for the other.
+# Read live off state.first_player, which TurnManager sets at start_game — so a
+# rematch that flips who starts flips these with no extra bookkeeping.
+func _play_order_marker(pid: String) -> String:
+	if not _state or _state.first_player == "":
+		return ""
+	return "(1)" if pid == _state.first_player else "(2)"
+
+
+# "T<round>" — see the badge's declaration for why this is the round rather than
+# state.turn_number. Blank before the first turn starts (mulligan).
+func _update_turn_badge() -> void:
+	if not _turn_badge:
+		return
+	if not _state or _state.turn_number < 1:
+		_turn_badge.text = ""
+		return
+	_turn_badge.text = "T%d" % ((_state.turn_number + 1) / 2)
+
 
 func _make_turn_step_strip(at: Vector2) -> RichTextLabel:
 	var rtl := RichTextLabel.new()
@@ -2449,6 +2486,7 @@ func _update_turn_steps() -> void:
 	var opp := "p2" if _local_player == "p1" else "p1"
 	_turn_steps_bottom.text = _turn_step_bbcode(_local_player)
 	_turn_steps_top.text    = _turn_step_bbcode(opp)
+	_update_turn_badge()
 	_update_opponent_pass_btn(opp)
 
 
@@ -2459,8 +2497,13 @@ func _update_turn_steps() -> void:
 func _turn_step_bbcode(pid: String) -> String:
 	var mine := _state.turn_player == pid
 	var parts: Array[String] = []
+	# Marker is empty until start_game picks who goes first — don't leave the
+	# stray leading space that "%s %s" would.
+	var mark: String = _play_order_marker(pid)
+	var who: String = _player_name(pid) if mark == "" \
+		else "%s %s" % [mark, _player_name(pid)]
 	parts.append(("[b][color=#ffd24a]%s's turn[/color][/b]" if mine
-		else "[color=#71717e]%s's turn[/color]") % pid.to_upper())
+		else "[color=#71717e]%s's turn[/color]") % who)
 	for step in TURN_STEPS:
 		if mine and _state.phase == step[0]:
 			parts.append("[b][color=#ffd24a]%s[/color][/b]" % step[1])
@@ -2470,15 +2513,25 @@ func _turn_step_bbcode(pid: String) -> String:
 
 
 # Status light: lit while the opponent holds priority (the moment the seated
-# player is waiting on them), greyed otherwise. Stays disabled — it is not a
-# control the seated player may press.
+# player is waiting on them), greyed otherwise — EXCEPT during an ambush stop,
+# where the window has been handed to that off-screen player and this button is
+# their skip. It replaces the old free-floating top-right "Skip window" button:
+# with one pass button per player, the ambusher's action belongs on theirs.
 func _update_opponent_pass_btn(opp: String) -> void:
 	if not _opp_pass_btn:
 		return
 	if _in_mulligan_ui():
+		_opp_pass_btn.disabled = true
 		_opp_pass_btn.text     = MULLIGAN_BTN_TEXT
 		_opp_pass_btn.modulate = MULLIGAN_BTN_COLOR
 		return
+	if _in_ambush_mode and _ambush_player == opp:
+		_opp_pass_btn.disabled = false
+		_opp_pass_btn.text     = "Skip window"
+		_opp_pass_btn.modulate = AMBUSH_HIGHLIGHT
+		_centre_in_pass_block(_opp_pass_btn)
+		return
+	_opp_pass_btn.disabled = true
 	var theirs := _state.priority_player == opp
 	_opp_pass_btn.text     = "Priority" if theirs else "Waiting"
 	_opp_pass_btn.modulate = Color(1.0, 0.78, 0.3) if theirs \
@@ -2848,7 +2901,7 @@ func _log_card(id: String) -> String:
 
 
 func _log_player(pid: String) -> String:
-	return "P1" if pid == "p1" else "P2"
+	return _player_name(pid)
 
 
 # Human wording for a form_broken payload. The reason is engine-generated:
@@ -3126,11 +3179,11 @@ func _do_ai_turn() -> void:
 	if ai == null:
 		# Hotseat: the OFF-SCREEN human's priority windows auto-pass (their hand
 		# is hidden; protect/strike points are handled separately and still stop)
-		# — unless their stance is Ambush and they have a legal instant response,
-		# in which case the window stops for them (yellow highlights + Skip).
+		# — unless they have a legal instant response, in which case the window
+		# stops for them (yellow highlights + their own pass button as the skip).
 		if not (_hotseat and pid != _local_player):
 			return   # local human's turn — wait for input
-		if _stance.get(pid, "ambush") == "ambush" and _offscreen_has_play(pid):
+		if _offscreen_has_play(pid):
 			_enter_ambush_mode(pid)
 			return
 		events = StackResolver.pass_priority(_state, _db)
@@ -3452,6 +3505,9 @@ func _show_mulligan_panel() -> void:
 	# passing priority yet, and hiding one of the pair left the board lopsided.
 	_pass_btn.visible          = true
 	_mulligan_panel.visible    = true
+	# Shares the prompt pocket — never both at once (see _set_status).
+	if _turn_info_window and is_instance_valid(_turn_info_window):
+		_set_window_open(_turn_info_window, false)
 	_mulligan_awaiting_ack     = false
 	_mulligan_btn.visible      = true
 	_mulligan_btn.disabled     = false
@@ -6016,7 +6072,7 @@ func _on_rematch() -> void:
 	_played_this_action_phase     = {}
 	_stop_for_end_window          = false
 	_camera_tween                 = null   # camera is rebuilt by _build_scene
-	_in_ambush_mode               = false  # _stance survives the rematch (player pref)
+	_in_ambush_mode               = false
 	_ambush_player                = ""
 	_in_choice_peek              = false
 	_choice_peek_player          = ""
@@ -6187,9 +6243,9 @@ func _drain_passes() -> void:
 		var pid_type := _p1_type if pid == "p1" else _p2_type
 		var events: Array[GameEvent] = []
 		if pid_type == "human" and _hotseat and pid != _local_player:
-			# Hotseat off-screen human: auto-pass (hand hidden), unless Ambush
-			# stance + a legal instant response — then stop the window for them.
-			if _stance.get(pid, "ambush") == "ambush" and _offscreen_has_play(pid):
+			# Hotseat off-screen human: auto-pass (hand hidden), unless they have
+			# a legal instant response — then stop the window for them.
+			if _offscreen_has_play(pid):
 				_enter_ambush_mode(pid)
 				break
 			events = StackResolver.pass_priority(_state, _db)
@@ -6501,11 +6557,59 @@ func _do_turbo_pass() -> void:
 
 func _set_status(text: String) -> void:
 	if _status:
-		_status.text = text
+		var wrapped := _wrap_text(text, _status, PROMPT_BODY_W - PROMPT_TEXT_PAD * 2.0)
+		_status.text = wrapped
+		_resize_prompt_window(wrapped.count("\n") + 1)
 	# The prompt window has no toggle button — a prompt IS the reason to show it,
-	# and an empty one is just a panel over the board.
+	# and an empty one is just a panel over the board. The mulligan prompt shares
+	# the pocket, so it wins while it is up.
 	if _turn_info_window and is_instance_valid(_turn_info_window):
-		_set_window_open(_turn_info_window, text != "")
+		_set_window_open(_turn_info_window, text != "" and not _in_mulligan_ui())
+
+
+# Break `text` into lines no wider than `max_w` as measured in `probe`'s own
+# font, returning it with newlines inserted. Godot's autowrap alone would do the
+# wrapping, but it does it at DRAW time — the caller can't learn how many lines
+# it produced, and the prompt window has to know that to size itself. Words too
+# long to fit at all get their own line (autowrap then breaks them).
+func _wrap_text(text: String, probe: Label, max_w: float) -> String:
+	if text == "":
+		return ""
+	var font := probe.get_theme_font("font")
+	var fsize := probe.get_theme_font_size("font_size")
+	if font == null or max_w <= 0.0:
+		return text
+	var out: PackedStringArray = []
+	# Honour newlines the caller put in; wrap each paragraph independently.
+	for para in text.split("\n"):
+		var line := ""
+		for word in (para as String).split(" ", false):
+			var candidate: String = word if line == "" else line + " " + word
+			if font.get_string_size(candidate, HORIZONTAL_ALIGNMENT_LEFT, -1,
+					fsize).x <= max_w or line == "":
+				line = candidate
+			else:
+				out.append(line)
+				line = word
+		out.append(line)
+	return "\n".join(out)
+
+
+# Grow the prompt window downward to fit `lines` of text. The Close button is a
+# direct child positioned at build time, so it has to be moved with the body.
+func _resize_prompt_window(lines: int) -> void:
+	if not _turn_info_window or not is_instance_valid(_turn_info_window) or not _status:
+		return
+	var body_h: float = max(1, lines) * PROMPT_LINE_H + 12.0
+	_status.size = Vector2(PROMPT_BODY_W - PROMPT_TEXT_PAD * 2.0, body_h)
+	if _prompt_body:
+		_prompt_body.size = Vector2(PROMPT_BODY_W, body_h)
+	_resize_tool_window(_turn_info_window, Vector2(PROMPT_BODY_W, body_h),
+		TOOL_WINDOW_FOOT_H)
+	for child in _turn_info_window.get_children():
+		if child is Button and (child as Button).text == "Close":
+			(child as Button).position = Vector2(PROMPT_BODY_W - 100,
+				TOOL_WINDOW_TITLE_H + body_h + 6)
 
 
 # ── Mock card helper ───────────────────────────────────────────────────────────

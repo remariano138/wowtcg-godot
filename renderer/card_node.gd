@@ -15,6 +15,12 @@ const H := 105.0
 
 const CARD_BACK_PATH := "res://assets/card_backs/wowTCGdefaultback.jpg"
 
+# Corner-badge diameters. SMALL is the one every stat badge uses (and the one
+# BoardRenderer's deck-count badge borrows); the resource-pile badge is double
+# that so a pile can't be mistaken for a lone card — see the stack badge below.
+const SMALL_BADGE_D := 22.0
+const STACK_BADGE_D := SMALL_BADGE_D * 2.0
+
 # ATK badge colours — green when the card's ATK is above its printed value,
 # red when it's below (Hootie's -1 aura and friends). See update_atk.
 const BADGE_BUFF_COLOR   := Color(0.15, 0.75, 0.2)
@@ -238,24 +244,31 @@ static func create(inst_id: String, card_name: String,
 	# resources render as one pile, and the pile's representative card wears the
 	# number of cards in it. Hidden while the count is 0 or 1 (a pile of one is
 	# just a card).
+	#
+	# Twice the diameter of every other badge, deliberately: at badge size a pile
+	# read as just another stat corner, and "this is several cards" is the one
+	# thing a glance at the resource zone has to convey. The DECK count badge
+	# (BoardRenderer._create_deck_label) keeps the small size so a deck and a pile
+	# never look like the same thing.
+	var stk_d := STACK_BADGE_D
 	var stk_bg := Panel.new()
 	var stk_style := StyleBoxFlat.new()
 	stk_style.bg_color = Color(0.2, 0.22, 0.28, 0.95)
-	stk_style.set_corner_radius_all(int(BADGE_D * 0.5))
+	stk_style.set_corner_radius_all(int(stk_d * 0.5))
 	stk_style.set_border_width_all(1)
 	stk_style.border_color = Color(0.8, 0.8, 0.85)
 	stk_bg.add_theme_stylebox_override("panel", stk_style)
-	stk_bg.size     = Vector2(BADGE_D, BADGE_D)
-	stk_bg.position = Vector2(W * 0.5 - BADGE_D - 2, -H * 0.5 + 2)
+	stk_bg.size     = Vector2(stk_d, stk_d)
+	stk_bg.position = Vector2(W * 0.5 - stk_d - 2, -H * 0.5 + 2)
 	stk_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stk_bg.visible  = false
 	node.add_child(stk_bg)
 	node._stack_badge_bg = stk_bg
 
 	var stk_lbl := Label.new()
-	stk_lbl.add_theme_font_size_override("font_size", 13)
+	stk_lbl.add_theme_font_size_override("font_size", 24)
 	stk_lbl.add_theme_color_override("font_color", Color.WHITE)
-	stk_lbl.size     = Vector2(BADGE_D, BADGE_D)
+	stk_lbl.size     = Vector2(stk_d, stk_d)
 	stk_lbl.position = stk_bg.position
 	stk_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	stk_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER

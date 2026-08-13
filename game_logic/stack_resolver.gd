@@ -199,9 +199,9 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_form_return() before priority can move.
 	if state.pending_form_return_player != "":
 		return []
-	# A pending Totem start-of-turn target choice (Searing Totem) must be resolved
-	# via choose_totem_target() before priority can move.
-	if state.pending_totem_target_player != "":
+	# A pending start-of-turn trigger target choice (Searing Totem) must be
+	# resolved via choose_trigger_target() before priority can move.
+	if state.pending_trigger_target_player != "":
 		return []
 	# A pending death-triggered target choice (Boneshanks) must be resolved via
 	# choose_death_target() before priority can move.
@@ -248,6 +248,16 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 					return events
 				events.append_array(_do_combat_conclusion(state, db))
 				return events
+			# Rule 500.2 / 708.1: start-of-turn triggered effects are drained one
+			# at a time. The chain is empty and everyone has passed, so the link
+			# that was on it has fully resolved — announce the next trigger and
+			# keep the ready step open rather than advancing the phase.
+			if not state.pending_turn_start_triggers.is_empty():
+				var next_trigger := advance_turn_start_triggers(state, db)
+				if not next_trigger.is_empty():
+					events.append_array(next_trigger)
+					return events
+
 			# Rule 410.4b: chain empty → window closes, phase advances.
 			_clear_damage_prevention(state)   # window over — unspent block expires
 			events.append(GameEvent.make("priority_window_closed", {
@@ -352,9 +362,9 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_whelp_bounce_player != "":
 		return false
 
-	# Ongoing Totem start-of-turn target choice blocks everything until resolved
-	# via choose_totem_target().
-	if state.pending_totem_target_player != "":
+	# Start-of-turn trigger target choice blocks everything until resolved via
+	# choose_trigger_target().
+	if state.pending_trigger_target_player != "":
 		return false
 
 	# Death-triggered target choice (Boneshanks) blocks everything until resolved
@@ -1716,8 +1726,8 @@ static func _resolve(state: GameState, action: PendingAction,
 			return _resolve_use_ally_power(state, action, db)
 		"choose_enter_play_target":
 			return _resolve_choose_enter_play_target(state, action, db)
-		"resolve_totem_trigger":
-			return _resolve_totem_trigger(state, action, db)
+		"resolve_turn_start_trigger":
+			return _resolve_turn_start_trigger(state, action, db)
 
 	# Unknown action type — should not happen if can_submit gate is correct.
 	return [GameEvent.make("action_fizzled", {
@@ -3576,9 +3586,6 @@ static func _apply_packet_group(state: GameState, db,
 	# Operation Recombobulation: any opposing non-token ally that died in this
 	# group (including to Cold Blood just above) offers its owner a fetch.
 	events.append_array(_fire_recombobulation(state, db))
-	match group.get("after", ""):
-		"totem_next":
-			events.append_array(_open_next_totem_trigger(state, db))
 	return events
 
 
@@ -5022,9 +5029,9 @@ static func choose_attack_exhaust(state: GameState, target_id: String,
 
 # Legal targets for the attack-exhaust trigger: every hero and ally in play
 # ("target hero or ally"), subject to standard targeting restrictions — the
-# same set as a totem trigger.
+# same set as a start-of-turn trigger.
 static func get_attack_exhaust_targets(state: GameState, db) -> Array[String]:
-	return get_totem_targets(state, db)
+	return get_turn_start_trigger_targets(state, db)
 
 
 # Entry point for the protect-point decision (NOT chain-based — called directly
@@ -7208,108 +7215,254 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 	return events
 
 
-# ── Ongoing Totem "start of each turn" targeted damage (Searing Totem) ──────────
-# Rule 501.1a / 410: the triggered ability is put on the CHAIN during the ready
-# step with its target chosen up front, and a priority window opens before it
-# resolves — so either player may respond with an instant (heal the target, use
-# its activated power) before the damage lands. The target choice itself is still
-# a direct-call mandatory point (choose_totem_target); once picked, the trigger
-# becomes a `resolve_totem_trigger` chain link that the normal pass/resolve
-# machinery drains. See _resolve_totem_trigger.
+# ── "At the start of [this] turn" triggered effects (rule 500.2 / 501.1a) ─────
+# Every start-of-turn trigger goes through here — Searing Totem's ping,
+# Infernal's discard-or-control, party heals, Fireball's attached burn, Spirit
+# Bond, Tooga's self-removal, plain self-heals. There are no inline start-of-turn
+# effects any more: a triggered power does NOT resolve as the step's automatic
+# actions run (501.1a: "None of this uses the chain" covers those actions, not
+# the effects they trigger). Per 500.2 / 708.1 the effect is added to the chain
+# during PPP, so a normal priority window opens before it resolves and either
+# player may respond.
+#
+# The queue is built by TurnManager._collect_turn_start_triggers and drained ONE
+# AT A TIME:
+#
+#   advance_turn_start_triggers → front trigger needs a target?
+#       yes → pending_trigger_target_player set, trigger_target_required emitted;
+#             the controller answers via choose_trigger_target (direct call)
+#       no  → announced straight onto the chain
+#     → `resolve_turn_start_trigger` link + priority window (turn player first)
+#     → link resolves (_resolve_turn_start_trigger)
+#     → chain empties, both players pass → pass_priority calls back in here for
+#       the next trigger, and only closes the window once the queue is empty.
+#
+# Sequential draining (rather than 708.1a's "add every waiting trigger in one
+# PPP") is deliberate — see data/rules_deviations.md "Start-of-turn trigger
+# order". It lets each target be chosen with the previous trigger's outcome
+# already known, which is strictly friendlier and never changes a legal line.
+#
+# 707.1 is the complete list of what is chosen at ANNOUNCEMENT: X, modes and
+# targets. Nothing else. Infernal's "discard a card, or…" is therefore NOT
+# decided here — it is a 709.2b resolution choice, made as the link resolves,
+# which is why an instant that draws in response can still save an empty hand.
 
-# Peek the front pending totem trigger, skipping any whose source left play
-# (711.1), and mark its controller as the player who must pick a target. Returns
-# the totem_target_required event, or [] (and clears the pending marker) when the
-# queue is empty. Called by turn-start collection and after each resolution.
-static func _open_next_totem_trigger(state: GameState, db) -> Array[GameEvent]:
-	while not state.pending_ongoing_triggers.is_empty():
-		var trigger: Dictionary = state.pending_ongoing_triggers[0]
+# Trigger keys that announce a target (707.1d). Everything else goes on the chain
+# with no announcement choices at all.
+const TARGETED_TURN_START_TRIGGERS := ["ongoing_damage_each_turn"]
+
+
+# Announce the next queued trigger. Skips any whose source has left play (707.1:
+# the effect is created by a power on a card in play; a source that is gone never
+# triggers in the first place) and any targeted trigger with no legal target
+# (707.1d — the link can't be added). Returns the choice event when a target is
+# needed, the announcement events when it isn't, or [] once the queue is empty.
+static func advance_turn_start_triggers(state: GameState, db) -> Array[GameEvent]:
+	while not state.pending_turn_start_triggers.is_empty():
+		var trigger: Dictionary = state.pending_turn_start_triggers[0]
 		var source_id: String = trigger.get("card_id", "")
-		var source := state.get_card(source_id)
-		if not source or not state.is_in_play(source_id):
-			state.pending_ongoing_triggers.pop_front()
+		if not state.is_in_play(source_id):
+			state.pending_turn_start_triggers.pop_front()
 			continue
-		state.pending_totem_target_player = source.controller
-		return [GameEvent.totem_target_required(
-			source_id, source.controller,
-			trigger.get("dmg_type", ""), int(trigger.get("amount", 0)))]
-	state.pending_totem_target_player = ""
+		var key: String = trigger.get("key", "")
+		if TARGETED_TURN_START_TRIGGERS.has(key):
+			# 707.1d: no legal target → the link can't be added at all.
+			if get_turn_start_trigger_targets(state, db).is_empty():
+				state.pending_turn_start_triggers.pop_front()
+				continue
+			state.pending_trigger_target_player = String(trigger.get("controller", ""))
+			# The choice belongs to the trigger's controller, who may not be the
+			# turn player (an opposing Searing Totem also fires now).
+			state.priority_player = state.pending_trigger_target_player
+			return [GameEvent.trigger_target_required(
+				source_id, state.pending_trigger_target_player, key,
+				trigger.get("args", []))]
+		# Targetless — straight onto the chain.
+		state.pending_turn_start_triggers.pop_front()
+		return _announce_turn_start_trigger(state, trigger, "", db)
+	state.pending_trigger_target_player = ""
 	return []
 
 
-# Announce the active totem trigger's target: put the trigger on the chain as a
-# `resolve_totem_trigger` link (target baked in) and open a priority window. The
-# turn player gets priority first (rule 410). target_id must be a legal hero or
-# ally in play — 706 is re-checked here (at announcement) and again at resolution
-# (709.2a) so a target that leaves play / becomes Untargetable in the window
-# fizzles. Direct call for the CHOICE; the damage itself resolves off the chain.
-static func choose_totem_target(state: GameState, target_id: String, db) -> Array[GameEvent]:
-	if state.pending_totem_target_player == "" or state.pending_ongoing_triggers.is_empty():
+# Answer the active trigger's target choice (Searing Totem). 706 is checked here
+# (at announcement) and again at resolution (709.2a), so a target that leaves
+# play or becomes Untargetable inside the window fizzles the link.
+static func choose_trigger_target(state: GameState, target_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_trigger_target_player == "" \
+			or state.pending_turn_start_triggers.is_empty():
 		return []
-	var trigger: Dictionary = state.pending_ongoing_triggers.pop_front()
-	state.pending_totem_target_player = ""
+	if not _is_legal_target(state, target_id, db):
+		return []
+	var trigger: Dictionary = state.pending_turn_start_triggers.pop_front()
+	state.pending_trigger_target_player = ""
+	return _announce_turn_start_trigger(state, trigger, target_id, db)
+
+
+# Put a trigger on the chain as a `resolve_turn_start_trigger` link and open the
+# priority window (rule 410: the turn player gets priority first).
+static func _announce_turn_start_trigger(state: GameState, trigger: Dictionary,
+		target_id: String, _db) -> Array[GameEvent]:
 	var source_id: String = trigger.get("card_id", "")
-	var amount := int(trigger.get("amount", 0))
+	var controller: String = trigger.get("controller", "")
+	var params := {
+		"card_id":   source_id,
+		"target_id": target_id,
+		"key":       trigger.get("key", ""),
+		"args":      trigger.get("args", []),
+	}
+	# 709.2d: information a link needs that isn't locked in at announcement is
+	# read from the source's LAST KNOWN state if the source has moved by the time
+	# it resolves. Fireball's "attached character" is the rulebook's own example
+	# (bounce Fireball in response — the burn still hits what it was attached
+	# to), so the host is captured here rather than re-read at resolution.
 	var source := state.get_card(source_id)
-	var events: Array[GameEvent] = []
-	# 706 re-check at announcement: the source must still be in play and the
-	# target legal. If so, the trigger goes on the chain and a window opens.
-	if source and state.is_in_play(source_id) and amount > 0 \
-			and _is_legal_target(state, target_id, db):
-		var link := PendingAction.make("resolve_totem_trigger", source.controller, {
-			"card_id":  source_id,
-			"target_id": target_id,
-			"amount":   amount,
-		})
-		state.pending_actions.push_back(link)
-		state.consecutive_passes = 0
-		state.priority_player    = state.turn_player   # rule 410: turn player first
-		events.append(GameEvent.make("action_proposed", {
-			"action_type": "resolve_totem_trigger",
-			"player":      source.controller,
-			"card_id":     source_id,
-		}))
-		return events
-	# Fizzled at announcement — open the next queued totem trigger, if any.
-	events.append_array(_open_next_totem_trigger(state, db))
-	return events
+	if source:
+		params["host_id"] = source.attached_to
+	var link := PendingAction.make("resolve_turn_start_trigger", controller, params)
+	state.pending_actions.push_back(link)
+	state.consecutive_passes = 0
+	state.priority_player    = state.turn_player   # rule 410
+	return [GameEvent.make("action_proposed", {
+		"action_type": "resolve_turn_start_trigger",
+		"player":      controller,
+		"card_id":     source_id,
+	})]
 
 
-# Resolve a totem trigger's damage after its priority window closed. Re-checks the
-# TARGET at resolution (709.2a — it may have left play or become Untargetable in
-# the window), then hands the packet to the prevention machinery (717.2c — an
-# armored hero target gets the point first). The "totem_next" after-hook opens the
-# next queued trigger once the packet lands.
+# Resolve a start-of-turn trigger. One dispatch for every start-of-turn effect in
+# the game.
 #
-# The SOURCE is deliberately NOT re-checked: once the trigger is announced onto
-# the chain it is independent of the totem that produced it (711.1 only gates
-# announcement, in _open_next_totem_trigger), so destroying Searing Totem in the
-# response window is too late — the ping still resolves. deal_damage and the
-# prevention offer only use source_id for reporting, so a graveyard source is safe.
-static func _resolve_totem_trigger(state: GameState, action: PendingAction,
+# The SOURCE is deliberately not required to still be in play: 707.3 — "once an
+# effect has been created, it exists independently of its source. Removing or
+# modifying the source won't interrupt the effect." Killing the Searing Totem in
+# the response window is too late; the ping still lands. Where a specific clause
+# is genuinely impossible without the source (Infernal's control change — a card
+# in a graveyard has no controller to give), 709.2c applies instead: the link
+# still resolves, and only as much as possible is performed.
+static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 		db = null) -> Array[GameEvent]:
 	var source_id: String = action.params.get("card_id", "")
 	var target_id: String = action.params.get("target_id", "")
-	var amount := int(action.params.get("amount", 0))
+	var key: String       = action.params.get("key", "")
+	var args: Array       = action.params.get("args", [])
+	var source := state.get_card(source_id)
+	var controller: String = action.source_player
 	var events: Array[GameEvent] = []
-	if state.is_in_play(target_id) and amount > 0 \
-			and _is_legal_target(state, target_id, db):
-		events.append_array(defer_packets(state, db,
-			[{"source": source_id, "target": target_id, "amount": amount}],
-			"totem_next"))
-		return events
-	# Fizzled (source/target gone or now Untargetable) — still open the next
-	# queued totem trigger so the chain of start-of-turn triggers drains.
-	events.append(GameEvent.make("action_fizzled", {
-		"action_type": "resolve_totem_trigger", "reason": "target_gone",
-	}))
-	events.append_array(_open_next_totem_trigger(state, db))
+
+	match key:
+		# Searing Totem: "the totem's controller deals AMOUNT damage to target
+		# hero or ally." 709.2a re-check — a target that left play or became
+		# Untargetable in the window makes the link fizzle.
+		"ongoing_damage_each_turn":
+			var amount := int(args[0]) if args.size() > 0 else 0
+			var dmg_type: String = String(args[1]).to_lower() if args.size() > 1 else ""
+			if amount <= 0 or not state.is_in_play(target_id) \
+					or not _is_legal_target(state, target_id, db):
+				events.append(GameEvent.make("action_fizzled", {
+					"action_type": "resolve_turn_start_trigger",
+					"reason": "target_gone",
+				}))
+				return events
+			events.append_array(defer_packets(state, db, [{
+				"source": source_id, "target": target_id,
+				"amount": amount, "dmg_type": dmg_type,
+			}]))
+
+		# Healing Stream Totem / Wazzuli Wildmender: heal AMOUNT from the
+		# controller's hero and every ally in their party. The party is read at
+		# RESOLUTION, so an ally that arrived in the window is healed too.
+		"heal_party_each_turn", "heal_party_at_turn_start":
+			var heal_amt := int(args[0]) if args.size() > 0 else 1
+			for ally in state.cards_in_zone(controller + "_ally_row"):
+				events.append_array(GameLogic.heal(
+					state, ally.instance_id, heal_amt, db, source_id))
+			var party_hero := state.get_hero(controller)
+			if party_hero:
+				events.append_array(GameLogic.heal(
+					state, party_hero.instance_id, heal_amt, db, source_id))
+
+		# Plain self-heal ("[this] heals N damage from itself").
+		"heal_at_turn_start", "heal_at_each_turn_start":
+			var self_amt := int(args[0]) if args.size() > 0 else 1
+			if source:
+				events.append_array(GameLogic.heal(
+					state, source_id, self_amt, db, source_id))
+
+		# Fireball: "your hero deals N fire damage to attached character." The
+		# host was locked in at announcement (709.2d).
+		"attached_damage_turn_start":
+			var burn_amt := int(args[0]) if args.size() > 0 else 1
+			var burn_type: String = String(args[1]).to_lower() if args.size() > 1 else ""
+			var host_id: String = action.params.get("host_id", "")
+			var caster_hero := state.get_hero(controller)
+			if caster_hero and host_id != "" and state.is_in_play(host_id):
+				events.append_array(defer_packets(state, db, [{
+					"source": caster_hero.instance_id, "target": host_id,
+					"amount": burn_amt, "dmg_type": burn_type,
+					"from_ability": true,
+				}]))
+
+		# Spirit Bond: "if you have a Pet, your hero heals N damage from itself
+		# and each of your Pets." The Pet condition is a 709.2d read at
+		# resolution — losing your last Pet in the window turns it off.
+		"turn_start_heal_hero_and_pets":
+			var pet_heal := int(args[0]) if args.size() > 0 else 2
+			var pets: Array = []
+			for ally in state.cards_in_zone(controller + "_ally_row"):
+				var adef := db.get_def(ally.card_def_id) as CardDef if db else null
+				if adef and adef.card_subtype == "Pet":
+					pets.append(ally)
+			if not pets.is_empty():
+				var sb_hero := state.get_hero(controller)
+				if sb_hero:
+					events.append_array(GameLogic.heal(
+						state, sb_hero.instance_id, pet_heal, db, source_id))
+				for pet in pets:
+					events.append_array(GameLogic.heal(
+						state, pet.instance_id, pet_heal, db, source_id))
+
+		# Tooga: "remove [this] from the game. If you do, draw N cards." The
+		# source must still be in play for the removal to happen — and the draw
+		# is the "if you do" rider, so it only happens because the removal did.
+		# Killing Tooga in the response window denies the draw (709.2c: only as
+		# much as possible is performed).
+		"rfg_self_next_turn":
+			if source and state.is_in_play(source_id) \
+					and state.turn_number > source.created_on_turn:
+				events.append_array(GameLogic.move_card(
+					state, source_id, source.owner + "_rfg"))
+				events.append(GameEvent.card_removed_from_game(source_id, controller))
+				var rider: String = String(args[0]) if args.size() > 0 else ""
+				if rider == "draw":
+					var draw_n := int(args[1]) if args.size() > 1 else 1
+					for _i in draw_n:
+						events.append_array(GameLogic.draw_one(state, controller))
+
+		# Infernal: "discard a card, or target opponent gains control of [this]."
+		# 709.2b: the choice is made HERE, as the link resolves — not at
+		# announcement (707.1 locks in only X, modes and targets, and a discard
+		# is none of those). So a player who drew in response has the card
+		# available to discard, and an empty hand at announcement is not yet a
+		# lost Infernal.
+		#
+		# If the source has left play the control clause is impossible; 709.2c
+		# performs only as much as possible, which here is nothing at all — so
+		# sacrificing the Infernal in response escapes it entirely, and there is
+		# no reason to open the choice.
+		"turn_start_discard_or_give_control":
+			if source and state.is_in_play(source_id):
+				state.pending_control_discard_player = controller
+				state.pending_control_discard_ids.append(source_id)
+				events.append(GameEvent.control_discard_choice_opened(
+					controller, source_id))
+
 	return events
 
 
-# Legal targets for a totem trigger: every hero and ally in play (rule: "target
-# hero or ally"), subject to the standard targeting restrictions (untargetable).
-static func get_totem_targets(state: GameState, db) -> Array[String]:
+# Legal targets for a targeted start-of-turn trigger: every hero and ally in play
+# ("target hero or ally"), subject to the standard targeting restrictions (706).
+static func get_turn_start_trigger_targets(state: GameState, db) -> Array[String]:
 	var result: Array[String] = []
 	for pid in state.players:
 		var ps := state.players.get(pid) as PlayerState

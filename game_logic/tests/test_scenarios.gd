@@ -147,6 +147,10 @@ func _ready() -> void:
 		_test_multi_shot,
 		_test_untargetable_keyword,
 		_test_infernal_discard_keeps_control,
+		_test_turn_start_trigger_is_respondable,
+		_test_infernal_sacrificed_in_response,
+		_test_totem_ping_survives_totem_death,
+		_test_turn_start_triggers_drain_sequentially,
 		_test_infernal_decline_gives_control,
 		_test_infernal_decline_pet_uniqueness,
 		_test_infernal_end_of_turn_damage,
@@ -871,14 +875,14 @@ func _test_spirit_bond_turn_start_heal() -> void:
 	st.get_card("p1_hero").damage_taken = 4
 
 	# p1 action → end → p2's turn start: NOT p1's turn, no heal.
-	TurnManager.advance_phase(st, db)
-	TurnManager.advance_phase(st, db)
+	_advance_phase(st, db)
+	_advance_phase(st, db)
 	eq(st.turn_player, "p2", "sb-a: now p2's turn")
 	eq(st.get_card("p1_hero").damage_taken, 4, "sb-a2: no heal on opponent's turn")
 
 	# Drive to p1's next turn start: hero and the Pet heal 2, non-Pet doesn't.
 	while not (st.turn_player == "p1" and st.phase == "ready"):
-		TurnManager.advance_phase(st, db)
+		_advance_phase(st, db)
 	eq(st.get_card("p1_hero").damage_taken, 2, "sb-b: hero healed 2")
 	eq(wolf.damage_taken, 1, "sb-b2: Pet healed 2")
 	eq(bear.damage_taken, 2, "sb-b3: non-Pet ally not healed")
@@ -890,9 +894,9 @@ func _test_spirit_bond_turn_start_heal() -> void:
 	st2.zones["p1_hero_row"].card_ids.append("sbond")
 	st2.get_card("p1_hero").damage_taken = 4
 	while not (st2.turn_player == "p2"):
-		TurnManager.advance_phase(st2, db)
+		_advance_phase(st2, db)
 	while not (st2.turn_player == "p1" and st2.phase == "ready"):
-		TurnManager.advance_phase(st2, db)
+		_advance_phase(st2, db)
 	eq(st2.get_card("p1_hero").damage_taken, 4, "sb-c: no Pet — no heal")
 
 
@@ -1224,7 +1228,7 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int,
 
 		for e in step_events:
 			if e.event_type == "priority_window_closed":
-				var adv := TurnManager.advance_phase(state, db)
+				var adv := _advance_phase(state, db)
 				all_events.append_array(adv)
 				for ae in adv:
 					if ae.event_type == "game_over":
@@ -1233,8 +1237,8 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int,
 						all_events.append_array(_headless_discard(state, ae, db))
 					elif ae.event_type == "control_discard_choice_opened":
 						all_events.append_array(_headless_control_discard(state, db))
-					elif ae.event_type == "totem_target_required":
-						var t_ev := _headless_totem_target(state, db)
+					elif ae.event_type == "trigger_target_required":
+						var t_ev := _headless_trigger_target(state, db)
 						all_events.append_array(t_ev)
 						for te in t_ev:
 							if te.event_type == "game_over":
@@ -1249,8 +1253,8 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int,
 				all_events.append_array(_headless_equipment_sacrifice(state, e, db))
 			elif e.event_type == "enter_play_target_required":
 				all_events.append_array(_headless_enter_play_target(state, e, db))
-			elif e.event_type == "totem_target_required":
-				var t_ev := _headless_totem_target(state, db)
+			elif e.event_type == "trigger_target_required":
+				var t_ev := _headless_trigger_target(state, db)
 				all_events.append_array(t_ev)
 				for te in t_ev:
 					if te.event_type == "game_over":
@@ -1279,7 +1283,7 @@ func _headless_discard(state: GameState, event: GameEvent, db) -> Array[GameEven
 		for i in range(mini(cnt, hand.size())):
 			events.append_array(
 				GameLogic.move_card(state, hand[i].instance_id, dp + "_graveyard"))
-		var adv2 := TurnManager.advance_phase(state, db)
+		var adv2 := _advance_phase(state, db)
 		events.append_array(adv2)
 		for ae2 in adv2:
 			if ae2.event_type == "discard_choice_opened":
@@ -1362,19 +1366,75 @@ func _headless_equipment_sacrifice(state: GameState, event: GameEvent, db) -> Ar
 	return events
 
 
+# ── Headless ready-step driver ───────────────────────────────────────────────
+# TurnManager._enter_ready no longer RESOLVES start-of-turn effects — per rule
+# 500.2 / 708.1 it only queues them, and each goes on the chain during PPP with
+# a priority window before it resolves. This drives that queue to completion
+# (picking targets via _headless_trigger_target, then passing priority) so a
+# test can assert on the effects the way it could when they fired inline.
+# It deliberately stops WITHOUT closing the ready window, so the phase doesn't
+# advance under the test's feet, and stops on a choice it can't answer
+# (Infernal's discard) so the test can drive that itself.
+# Phase advance + start-of-turn trigger drain. Entering a ready step only
+# QUEUES the turn's triggered effects now (rule 500.2); this drives them onto
+# the chain and through their priority windows so a test can assert on their
+# result. A no-op when nothing is queued, so it is safe on any advance.
+func _advance_phase(state: GameState, db) -> Array[GameEvent]:
+	var events := TurnManager.advance_phase(state, db)
+	events.append_array(_drain_turn_start_triggers(state, db))
+	return events
+
+
+func _ready_step(state: GameState, db) -> Array[GameEvent]:
+	var events := TurnManager._enter_ready(state, db)
+	events.append_array(_drain_turn_start_triggers(state, db))
+	return events
+
+
+func _drain_turn_start_triggers(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var guard := 64
+	while guard > 0:
+		guard -= 1
+		if state.pending_trigger_target_player != "":
+			events.append_array(_headless_trigger_target(state, db))
+			continue
+		# Only ever drive OUR links: a chain link put there by something else
+		# (a test mid-action-phase) must not be resolved by this helper.
+		var has_link := false
+		for a in state.pending_actions:
+			if a.action_type == "resolve_turn_start_trigger":
+				has_link = true
+				break
+		# Nothing queued and no trigger on the chain — done, window left open.
+		if state.pending_turn_start_triggers.is_empty() and not has_link:
+			break
+		# A choice this helper can't answer (Infernal's discard, an armor
+		# prevention point) — hand back so the test drives it.
+		if state.pending_control_discard_player != "":
+			break
+		if state.pending_prevention_player != "":
+			break
+		var sub := StackResolver.pass_priority(state, db)
+		if sub.is_empty() and not has_link:
+			break
+		events.append_array(sub)
+	return events
+
+
 # ── Headless Totem start-of-turn target helper (Searing Totem) ───────────────
 # Resolves each queued totem trigger. If _totem_target_pref is set and legal it
 # is used; otherwise the acting player's opposing hero is targeted.
 var _totem_target_pref: String = ""
 
-func _headless_totem_target(state: GameState, db) -> Array[GameEvent]:
+func _headless_trigger_target(state: GameState, db) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	var guard := 8
-	while state.pending_totem_target_player != "" and guard > 0:
+	while state.pending_trigger_target_player != "" and guard > 0:
 		guard -= 1
-		var ctrl := state.pending_totem_target_player
+		var ctrl := state.pending_trigger_target_player
 		var opp := "p2" if ctrl == "p1" else "p1"
-		var legal := StackResolver.get_totem_targets(state, db)
+		var legal := StackResolver.get_turn_start_trigger_targets(state, db)
 		var target := ""
 		if _totem_target_pref != "" and _totem_target_pref in legal:
 			target = _totem_target_pref
@@ -1384,7 +1444,7 @@ func _headless_totem_target(state: GameState, db) -> Array[GameEvent]:
 				target = ps_opp.hero_instance_id
 			elif not legal.is_empty():
 				target = legal[0]
-		events.append_array(StackResolver.choose_totem_target(state, target, db))
+		events.append_array(StackResolver.choose_trigger_target(state, target, db))
 	return events
 
 
@@ -2797,10 +2857,10 @@ func _test_prevention_noncombat_sources() -> void:
 	var pads1 := CardInstance.create("pads_inst", "pads_def", "p1", "p1_hero_row")
 	s1.cards["pads_inst"] = pads1
 	s1.zones["p1_hero_row"].card_ids.append("pads_inst")
-	s1.pending_ongoing_triggers = [
-		{"card_id": "totem_inst", "amount": 1, "dmg_type": "fire"}]
-	s1.pending_totem_target_player = "p2"
-	StackResolver.choose_totem_target(s1, "p1_hero", db)
+	s1.pending_turn_start_triggers = [
+		{"card_id": "totem_inst", "controller": "p2", "key": "ongoing_damage_each_turn", "args": ["1", "fire"]}]
+	s1.pending_trigger_target_player = "p2"
+	StackResolver.choose_trigger_target(s1, "p1_hero", db)
 	# 501.1a / 410: the trigger is now a chain link — its damage (and so the
 	# prevention point) lands only after the priority window closes (both pass).
 	eq(s1.pending_prevention_player, "", "nc-a0: no damage until the totem link resolves")
@@ -2809,7 +2869,7 @@ func _test_prevention_noncombat_sources() -> void:
 	eq(s1.pending_prevention_player, "p1", "nc-a: totem packet opens the prevention point")
 	StackResolver.choose_prevention(s1, "pads_inst", db)
 	eq(s1.get_card("p1_hero").damage_taken, 0, "nc-b: totem's 1 fire fully prevented")
-	eq(s1.pending_totem_target_player, "", "nc-b2: totem queue drained after the point")
+	eq(s1.pending_trigger_target_player, "", "nc-b2: totem queue drained after the point")
 
 	# Case 2: Infernal end-of-turn burn — the opposing hero's packet is
 	# preventable; the ally packets in the same group land regardless.
@@ -2827,7 +2887,7 @@ func _test_prevention_noncombat_sources() -> void:
 	s2.zones["p2_hero_row"].card_ids.append("pads2")
 	s2.phase       = "action"
 	s2.turn_player = "p1"
-	TurnManager.advance_phase(s2, db2)   # → end phase, burn fires
+	_advance_phase(s2, db2)   # → end phase, burn fires
 	eq(s2.pending_prevention_player, "p2", "nc-c: EOT burn opens the point for p2")
 	eq(s2.get_card("tough_inst").damage_taken, 0, "nc-c2: whole group held, ally not hit yet")
 	StackResolver.choose_prevention(s2, "pads2", db2)
@@ -4999,8 +5059,8 @@ func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
 		"sc26c-g: quest flipped face-down after completion")
 
 	# Flag resets at the start of a new turn (action -> end -> next turn's ready).
-	TurnManager.advance_phase(state, db)
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
+	_advance_phase(state, db)
 	ok(state.turn_events.is_empty(),
 		"sc26c-h: turn event log resets at next turn start")
 
@@ -6208,7 +6268,7 @@ func _test_deacon_johanna_once_per_turn() -> void:
 	# and into p1's next action phase (action->end->[next_turn/ready]->draw->action,
 	# twice) — avoids relying on how many priority-pass steps that takes.
 	for _i in 8:
-		TurnManager.advance_phase(state, db)
+		_advance_phase(state, db)
 	eq(state.turn_player, "p1", "dj-e-setup: back to p1's turn")
 	eq(state.phase, "action", "dj-e-setup: in p1's action phase")
 
@@ -8673,7 +8733,137 @@ func _infernal_db() -> MockDB:
 func _infernal_start_p1_turn(state: GameState, db) -> Array[GameEvent]:
 	state.phase       = "end"
 	state.turn_player = "p2"
+	return _advance_phase(state, db)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO 39d–g — start-of-turn triggers are chain links (rule 500.2 / 708.1)
+# Every "at the start of your turn" power now announces onto the chain with a
+# real priority window before it resolves. These cover what that window buys.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Drive p2's end phase into p1's ready step WITHOUT draining, so the first
+# start-of-turn trigger is left sitting on the chain awaiting responses.
+func _start_p1_turn_undrained(state: GameState, db) -> Array[GameEvent]:
+	state.phase       = "end"
+	state.turn_player = "p2"
 	return TurnManager.advance_phase(state, db)
+
+
+func _test_turn_start_trigger_is_respondable() -> void:
+	_buf.append("
+-- Scenario 39d: Infernal's trigger is a chain link; the discard choice is made at RESOLUTION --")
+	var db := _infernal_db()
+	db.instant("draw_def", 0, "draw:1")
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "infernal_inst", "infernal_def", "p1")
+	# p1's HAND holds only the draw instant — no card to discard yet.
+	_add_hand_card(state, "draw_inst", "draw_def", "p1")
+	var deck_card := CardInstance.create("deck_inst", "junk_def", "p1", "p1_deck")
+	state.cards["deck_inst"] = deck_card
+	state.zones["p1_deck"].card_ids.append("deck_inst")
+
+	var adv := _start_p1_turn_undrained(state, db)
+	var proposed := adv.any(func(e: GameEvent) -> bool:
+		return e.event_type == "action_proposed" 			and e.payload.get("action_type", "") == "resolve_turn_start_trigger")
+	ok(proposed, "sc39d-a: the trigger went on the chain instead of resolving inline")
+	eq(state.pending_actions.size(), 1, "sc39d-b: exactly one link on the chain")
+	eq(state.pending_control_discard_player, "",
+		"sc39d-c: no discard choice yet — 707.1 locks in only X/modes/targets")
+
+	# 409.1: p1 has priority and may respond with an instant.
+	var play := PendingAction.make("play_instant", "p1", {"card_id": "draw_inst"})
+	ok(StackResolver.can_submit(state, play, db),
+		"sc39d-d: an instant is playable in the trigger's window")
+	StackResolver.submit_action(state, play, db)
+	_drain_turn_start_triggers(state, db)
+
+	# The draw resolved first, then the trigger — so 709.2b's resolution choice
+	# sees the card that was drawn in response.
+	eq(state.get_card("deck_inst").zone_id, "p1_hand", "sc39d-e: the response drew a card")
+	eq(state.pending_control_discard_player, "p1",
+		"sc39d-f: the discard choice opened as the link RESOLVED")
+	StackResolver.choose_control_discard(state, "deck_inst", db)
+	eq(state.get_card("deck_inst").zone_id, "p1_graveyard", "sc39d-g: drew it, then discarded it")
+	eq(state.get_card("infernal_inst").controller, "p1",
+		"sc39d-h: an empty hand at announcement did NOT cost p1 the Infernal")
+
+
+func _test_infernal_sacrificed_in_response() -> void:
+	_buf.append("
+-- Scenario 39e: killing the Infernal in response escapes the trigger entirely (709.2c) --")
+	var db := _infernal_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "infernal_inst", "infernal_def", "p1")
+	_add_hand_card(state, "junk_inst", "junk_def", "p1")
+
+	_start_p1_turn_undrained(state, db)
+	eq(state.pending_actions.size(), 1, "sc39e-a: trigger is on the chain")
+
+	# Destroy the source while its own trigger waits to resolve.
+	GameLogic.destroy_card(state, "infernal_inst")
+	_drain_turn_start_triggers(state, db)
+
+	# 707.3: the link is NOT interrupted by losing its source — it resolves.
+	# 709.2c: but the control change is impossible, so nothing happens, and
+	# there is no reason to make the player discard either.
+	eq(state.pending_control_discard_player, "",
+		"sc39e-b: no discard choice — the whole clause was impossible")
+	eq(state.get_card("junk_inst").zone_id, "p1_hand", "sc39e-c: nothing discarded")
+	eq(state.get_card("infernal_inst").zone_id, "p1_graveyard",
+		"sc39e-d: Infernal is in the graveyard, not under p2's control")
+
+
+func _test_totem_ping_survives_totem_death() -> void:
+	_buf.append("
+-- Scenario 39f: destroying a totem in its trigger's window does NOT stop the ping (707.3) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("searing_def", 1, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	db.ally("grunt_def", 2, 4, [], 2)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "searing", "searing_def", "p1")
+	var victim := _add_ally(state, "victim", "grunt_def", "p2")
+
+	state.phase       = "end"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)
+	# The target is announced with the link (707.1d).
+	eq(state.pending_trigger_target_player, "p1", "sc39f-a: p1 must announce a target")
+	StackResolver.choose_trigger_target(state, "victim", db)
+	eq(state.pending_actions.size(), 1, "sc39f-b: trigger is on the chain, target locked in")
+
+	# Kill the totem in response — too late.
+	GameLogic.destroy_card(state, "searing")
+	_drain_turn_start_triggers(state, db)
+	eq(victim.damage_taken, 1, "sc39f-c: the ping still landed after its source died")
+
+
+func _test_turn_start_triggers_drain_sequentially() -> void:
+	_buf.append("
+-- Scenario 39g: multiple start-of-turn triggers drain one window at a time --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("stream_def", 1, "ongoing|totem:water|heal_party_each_turn:1")
+	db.ally("grunt_def", 2, 4, [], 2)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "stream_a", "stream_def", "p1")
+	_add_ally(state, "stream_b", "stream_def", "p1")
+	var mine := _add_ally(state, "mine", "grunt_def", "p1")
+	mine.damage_taken = 3
+
+	state.phase       = "end"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)
+	eq(state.pending_actions.size(), 1, "sc39g-a: only the FIRST trigger is on the chain")
+	eq(state.pending_turn_start_triggers.size(), 1, "sc39g-b: the second is still queued")
+
+	_drain_turn_start_triggers(state, db)
+	eq(state.pending_turn_start_triggers.size(), 0, "sc39g-c: queue drained")
+	eq(mine.damage_taken, 1, "sc39g-d: both heals resolved (3 - 1 - 1)")
+	eq(state.phase, "ready", "sc39g-e: the ready step did NOT advance while triggers remained")
 
 
 func _test_infernal_discard_keeps_control() -> void:
@@ -8758,7 +8948,7 @@ func _test_infernal_end_of_turn_damage() -> void:
 	# Advance p1's action phase into the end phase — end-of-turn triggers fire.
 	state.phase       = "action"
 	state.turn_player = "p1"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p2_hero", db), 29, "sc39d-a: opposing hero took 1 fire damage")
 	eq(state.get_card("tough_inst").damage_taken, 1, "sc39d-b: opposing ally took 1 damage")
@@ -8788,7 +8978,7 @@ func _test_thysta_burns_idle_turn() -> void:
 	# p1's own turn ends with nothing having happened → p1's OWN hero takes 3.
 	state.phase       = "action"
 	state.turn_player = "p1"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p1_hero", db), 27, "thy-a: controller's own hero took 3 on their idle turn")
 	eq(state.get_current_hp("p2_hero", db), 30, "thy-b: opposing hero untouched")
@@ -8798,7 +8988,7 @@ func _test_thysta_burns_idle_turn() -> void:
 	state.turn_events.clear()
 	state.phase       = "action"
 	state.turn_player = "p2"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p2_hero", db), 27, "thy-c: fires on the opponent's turn too, hitting their hero")
 	eq(state.get_current_hp("p1_hero", db), 27, "thy-d: controller's hero not hit a second time")
@@ -8824,13 +9014,13 @@ func _test_thysta_silent_after_damage() -> void:
 	ok(state.has_turn_event("damage_dealt"), "thy-e: ally damage is recorded in the turn log")
 
 	state.phase = "action"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p1_hero", db), 30, "thy-f: no burn — damage was dealt this turn")
 
 	# The flag clears at the next turn start, so the following idle turn burns.
 	state.phase = "end"
-	TurnManager.advance_phase(state, db)   # end → next turn (ready)
+	_advance_phase(state, db)   # end → next turn (ready)
 	ok(not state.has_turn_event("damage_dealt"), "thy-g: turn log resets at turn start")
 
 
@@ -8856,7 +9046,7 @@ func _test_thysta_prevented_damage_still_counts_as_none() -> void:
 	ok(not state.has_turn_event("damage_dealt"), "thy-i: prevented damage was NOT recorded")
 
 	state.phase = "action"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p1_hero", db), 27, "thy-j: Thysta still fires for 3")
 
@@ -8879,7 +9069,7 @@ func _test_thysta_stacks_and_sees_earlier_damage() -> void:
 	_add_ally(state, "thysta_b", "thysta_def", "p2")
 	state.phase       = "action"
 	state.turn_player = "p1"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p1_hero", db), 24, "thy-k: both copies fired (3 + 3) at the turn player's hero")
 
@@ -8892,7 +9082,7 @@ func _test_thysta_stacks_and_sees_earlier_damage() -> void:
 	late.just_summoned = true
 
 	state.phase = "action"
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.get_current_hp("p2_hero", db), 30,
 		"thy-l: no copy fires — damage was dealt before the late arrival entered play")
@@ -10154,7 +10344,7 @@ func _test_gouge_exhaust_and_ready_lock() -> void:
 	# gg-d: p2's next ready step skips it (stays exhausted) and consumes the flag.
 	state.turn_player = "p1"
 	state.phase       = "end"
-	TurnManager.advance_phase(state, db)   # → _next_turn → p2 ready step
+	_advance_phase(state, db)   # → _next_turn → p2 ready step
 	eq(state.turn_player, "p2", "gg-d0: turn passed to p2")
 	ok(state.get_card("tgt").is_exhausted,
 		"gg-d: target NOT readied during its controller's ready step")
@@ -10381,7 +10571,7 @@ func _test_ravenous_bite_atk_swing() -> void:
 	# every swing, on both players' cards.
 	state.turn_player = "p1"
 	state.phase       = "action"
-	TurnManager.advance_phase(state, db)   # → end phase → sweep
+	_advance_phase(state, db)   # → end phase → sweep
 	eq(state.phase, "end", "rb-l0: reached the end phase")
 	eq(state.get_atk("mine", db),   2, "rb-l: pump gone after the turn ends")
 	eq(state.get_atk("theirs", db), 4, "rb-m: shrink gone after the turn ends")
@@ -11992,7 +12182,7 @@ func _test_cold_blood_scope_and_expiry() -> void:
 
 	# The grant lasts exactly the turn it was gained in.
 	st.phase = "end"
-	TurnManager.advance_phase(st, db)   # end -> next turn (ready)
+	_advance_phase(st, db)   # end -> next turn (ready)
 	eq(st.players["p1"].cold_blood_from_index, -1, "cb-h: grant cleared at turn start")
 
 
@@ -12041,7 +12231,7 @@ func _test_iceblade_hacker() -> void:
 	s1.get_card("tank").is_exhausted = true
 	s1.turn_player = "p2"
 	s1.priority_player = "p2"
-	TurnManager._enter_ready(s1, db)
+	_ready_step(s1, db)
 	ok(s1.get_card("tank").is_exhausted, "ih-a4: ally stayed exhausted through its ready step")
 	ok(not s1.get_card("tank").counters.has("gouge_skip_ready"),
 		"ih-a5: lock counter consumed after that ready step")
@@ -12190,7 +12380,7 @@ func _test_elendril_ranged_bonus() -> void:
 	state.players["p1"].ranged_weapon_atk_bonus = 3   # pretend still up
 	var guard := 0
 	while state.turn_player == "p1" and guard < 20:
-		TurnManager.advance_phase(state, db)
+		_advance_phase(state, db)
 		guard += 1
 	eq(state.players["p1"].ranged_weapon_atk_bonus, 0,
 		"el-d: bonus cleared at the start of the next turn")
@@ -12453,7 +12643,7 @@ func _test_natures_swiftness_discount() -> void:
 	StackResolver.pass_priority(state, db)
 	state.players["p1"].next_card_cost_mod = -5
 	state.phase = "end"
-	TurnManager.advance_phase(state, db)   # end -> next turn (ready)
+	_advance_phase(state, db)   # end -> next turn (ready)
 	eq(state.players["p1"].next_card_cost_mod, 0, "ns-f: grant cleared at turn start")
 
 
@@ -13375,14 +13565,14 @@ func _test_searing_totem_fires_each_turn() -> void:
 
 	var fired := 0
 	for e in all_events:
-		if e.event_type == "totem_target_required":
+		if e.event_type == "trigger_target_required":
 			fired += 1
 	ok(fired >= 2, "st2-a: Totem fired on multiple turn starts (%d)" % fired)
 	ok(state.get_card("p2_hero").damage_taken == fired,
 		"st2-b: opposing hero took 1 damage per firing (%d)" % state.get_card("p2_hero").damage_taken)
 	ok(state.get_card("p1_hero").damage_taken == 0,
 		"st2-c: controller's own hero untouched (targets opponent)")
-	ok(state.pending_totem_target_player == "",
+	ok(state.pending_trigger_target_player == "",
 		"st2-d: no lingering pending totem choice")
 
 
@@ -13406,17 +13596,17 @@ func _test_searing_totem_priority_window() -> void:
 	var victim := _add_ally(state, "victim", "victim_def", "p2")
 
 	# Simulate the ready-step collection: queue the trigger and open the choice.
-	state.pending_ongoing_triggers = [
-		{"card_id": "searing", "amount": 1, "dmg_type": "fire"}]
-	StackResolver._open_next_totem_trigger(state, db)
-	eq(state.pending_totem_target_player, "p1", "stw-a: p1 must pick the totem target")
+	state.pending_turn_start_triggers = [
+		{"card_id": "searing", "controller": "p1", "key": "ongoing_damage_each_turn", "args": ["1", "fire"]}]
+	StackResolver.advance_turn_start_triggers(state, db)
+	eq(state.pending_trigger_target_player, "p1", "stw-a: p1 must pick the totem target")
 
 	# p1 aims at the opposing 0/1 ally.
-	StackResolver.choose_totem_target(state, "victim", db)
-	eq(state.pending_totem_target_player, "", "stw-b: target choice consumed")
+	StackResolver.choose_trigger_target(state, "victim", db)
+	eq(state.pending_trigger_target_player, "", "stw-b: target choice consumed")
 	eq(state.pending_actions.size(), 1, "stw-c: trigger is now a chain link")
-	eq(state.pending_actions[0].action_type, "resolve_totem_trigger",
-		"stw-d: link is a resolve_totem_trigger")
+	eq(state.pending_actions[0].action_type, "resolve_turn_start_trigger",
+		"stw-d: link is a resolve_turn_start_trigger")
 	eq(state.priority_player, "p1", "stw-e: turn player gets priority first (410)")
 	eq(victim.damage_taken, 0, "stw-f: no damage yet — window is open")
 
@@ -13450,10 +13640,10 @@ func _test_searing_totem_source_killed_in_window() -> void:
 	_add_ally(state, "searing", "searing_def", "p1")
 	var victim := _add_ally(state, "victim", "victim_def", "p2")
 
-	state.pending_ongoing_triggers = [
-		{"card_id": "searing", "amount": 1, "dmg_type": "fire"}]
-	StackResolver._open_next_totem_trigger(state, db)
-	StackResolver.choose_totem_target(state, "victim", db)
+	state.pending_turn_start_triggers = [
+		{"card_id": "searing", "controller": "p1", "key": "ongoing_damage_each_turn", "args": ["1", "fire"]}]
+	StackResolver.advance_turn_start_triggers(state, db)
+	StackResolver.choose_trigger_target(state, "victim", db)
 	eq(state.pending_actions.size(), 1, "stk-a: trigger is on the chain")
 
 	# p2 answers by destroying the totem while the trigger sits on the chain.
@@ -13471,10 +13661,10 @@ func _test_searing_totem_source_killed_in_window() -> void:
 	state2.phase = "ready"
 	_add_ally(state2, "searing", "searing_def", "p1")
 	_add_ally(state2, "victim", "victim_def", "p2")
-	state2.pending_ongoing_triggers = [
-		{"card_id": "searing", "amount": 1, "dmg_type": "fire"}]
-	StackResolver._open_next_totem_trigger(state2, db)
-	StackResolver.choose_totem_target(state2, "victim", db)
+	state2.pending_turn_start_triggers = [
+		{"card_id": "searing", "controller": "p1", "key": "ongoing_damage_each_turn", "args": ["1", "fire"]}]
+	StackResolver.advance_turn_start_triggers(state2, db)
+	StackResolver.choose_trigger_target(state2, "victim", db)
 	GameLogic.move_card(state2, "victim", "p2_hand")
 	StackResolver.pass_priority(state2, db)
 	var fizz_events := StackResolver.pass_priority(state2, db)
@@ -13506,7 +13696,7 @@ func _test_searing_totem_can_be_attacked() -> void:
 
 	var defenders := StackResolver.get_legal_defenders(state, "atk", db)
 	ok("searing" in defenders, "st3-a: Totem is a legal defender (can be attacked)")
-	ok("searing" in StackResolver.get_totem_targets(state, db),
+	ok("searing" in StackResolver.get_turn_start_trigger_targets(state, db),
 		"st3-b: Totem is a legal target for targeted effects")
 
 	# Combat: the 2-ATK attacker kills the 0/1 Totem.
@@ -13585,21 +13775,21 @@ func _test_earthbind_totem_ready_lock() -> void:
 
 	# p2's ready step: the ally stays exhausted, the hero readies normally.
 	state.turn_player = "p2"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	ok(enemy.is_exhausted, "eb-c: opposing ally did NOT ready")
 	ok(not state.get_card("p2_hero").is_exhausted, "eb-d: opposing hero readied (allies only)")
 	ok(not enemy.just_summoned, "eb-e: summoning sickness still cleared")
 
 	# p1's ready step: their own exhausted ally readies (aura is opposing-only).
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	ok(not mine.is_exhausted, "eb-f: controller's own ally readied normally")
 
 	# Totem leaves play → the lock lifts.
 	GameLogic.move_card(state, "earthbind", "p1_graveyard")
 	enemy.is_exhausted = true
 	state.turn_player = "p2"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	ok(not enemy.is_exhausted, "eb-g: ally readies again once the totem is gone")
 
 
@@ -13628,7 +13818,7 @@ func _test_healing_stream_totem_heals_party() -> void:
 
 	# Controller's turn start: own hero + ally heal 1, opponent's party untouched.
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(mine.damage_taken, 2, "hs-a: controller's ally healed 1")
 	eq(state.get_card("p1_hero").damage_taken, 1, "hs-b: controller's hero healed 1")
 	eq(theirs.damage_taken, 3, "hs-c: opposing ally NOT healed")
@@ -13636,7 +13826,7 @@ func _test_healing_stream_totem_heals_party() -> void:
 
 	# Opponent's turn start: "each turn" — fires again for the controller's party.
 	state.turn_player = "p2"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(mine.damage_taken, 1, "hs-e: fires on the OPPONENT's turn too")
 	eq(state.get_card("p1_hero").damage_taken, 0, "hs-f: hero healed again")
 	eq(theirs.damage_taken, 3, "hs-g: opposing party still untouched")
@@ -13644,7 +13834,7 @@ func _test_healing_stream_totem_heals_party() -> void:
 	# Totem leaves play → no more healing.
 	GameLogic.move_card(state, "stream", "p1_graveyard")
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(mine.damage_taken, 1, "hs-h: no heal once the totem is gone")
 
 
@@ -13839,12 +14029,12 @@ func _test_stone_guard_rashun_totems_and_tokens() -> void:
 	# readies normally at its controller's next ready step. Nothing about the
 	# exhaust persists — it is not a Gouge-style ready lock.
 	var token_id: String = (tokens[0] as CardInstance).instance_id
-	TurnManager.advance_phase(state, db)   # action → end
-	TurnManager.advance_phase(state, db)   # end → p1's turn (ready)
-	TurnManager.advance_phase(state, db)   # p1 ready → draw
-	TurnManager.advance_phase(state, db)   # p1 draw → action
-	TurnManager.advance_phase(state, db)   # p1 action → end
-	TurnManager.advance_phase(state, db)   # end → p2's turn (ready step runs)
+	_advance_phase(state, db)   # action → end
+	_advance_phase(state, db)   # end → p1's turn (ready)
+	_advance_phase(state, db)   # p1 ready → draw
+	_advance_phase(state, db)   # p1 draw → action
+	_advance_phase(state, db)   # p1 action → end
+	_advance_phase(state, db)   # end → p2's turn (ready step runs)
 	eq(state.turn_player, "p2", "sgr-k: back on the totem controller's turn")
 	ok(not state.get_card("searing").is_exhausted,
 		"sgr-l: the exhausted TOTEM readies at its controller's ready step")
@@ -13884,7 +14074,7 @@ func _test_wazzuli_party_heal() -> void:
 	enemy.damage_taken = 2
 
 	# Advance from p2's end phase → p1's ready step (fires the start-of-turn heal).
-	TurnManager.advance_phase(state, db)
+	_advance_phase(state, db)
 
 	eq(state.turn_player, "p1", "wz-pre: it is now p1's turn")
 	eq(state.get_card("p1_hero").damage_taken, 2, "wz-a: your hero healed 1")
@@ -14306,8 +14496,8 @@ func _test_rapid_fire_repeat_ranged_strikes() -> void:
 		StackResolver.pass_priority(state, db)
 
 	# "This turn" — the grant expires at the start of the next turn.
-	TurnManager.advance_phase(state, db)   # action -> end
-	TurnManager.advance_phase(state, db)   # -> next turn's ready step
+	_advance_phase(state, db)   # action -> end
+	_advance_phase(state, db)   # -> next turn's ready step
 	eq((state.players["p1"] as PlayerState).rapid_fire_ready_cost, -1,
 		"rf-j: grant cleared on a later turn")
 
@@ -15353,7 +15543,7 @@ func _test_entangling_roots_ready_lock() -> void:
 
 	# p2's ready step: the rooted ally stays exhausted, everything else readies.
 	state.turn_player = "p2"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	ok(victim.is_exhausted,     "er-e: rooted ally did NOT ready at the ready step")
 	ok(not other.is_exhausted,  "er-f: other exhausted ally readied normally")
 	ok(not victim.just_summoned, "er-g: summoning sickness still cleared")
@@ -16409,11 +16599,11 @@ func _test_fireball_attach_and_burn() -> void:
 
 	# Start of the CONTROLLER's turn: hero deals 1 to the attached character.
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(tank.damage_taken, 5, "fbl-f: turn-start burn dealt 1 (5 total)")
 
 	# Next turn start is lethal — host dies, Fireball follows it (400.5).
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(tank.zone_id, "p2_graveyard", "fbl-g: burn killed the host")
 	eq(state.get_card("fb").zone_id, "p1_graveyard", "fbl-h: Fireball died with its host")
 
@@ -16451,7 +16641,7 @@ func _test_flame_shock_attach_and_burn() -> void:
 
 	# Start of the CONTROLLER's turn: hero deals 1 to the attached character.
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(tank.damage_taken, 3, "fsh-f: turn-start burn dealt 1 (3 total)")
 
 
@@ -16534,7 +16724,7 @@ func _test_world_in_flames_doubles_fire() -> void:
 	StackResolver.pass_priority(state, db)
 	eq(state.get_card("p2_hero").damage_taken, 15, "wif-f: Fireball attach 4→8 (15 total)")
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(state.get_card("p2_hero").damage_taken, 17, "wif-g: turn-start burn 1→2 (17 total)")
 
 
@@ -16603,7 +16793,7 @@ func _test_chromatic_cloak_ability_bonus() -> void:
 	StackResolver.pass_priority(state, db)
 	eq(state.get_card("p2_hero").damage_taken, 19, "cc-g: Fireball attach (4+1)*2 (19 total)")
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(state.get_card("p2_hero").damage_taken, 23, "cc-h: turn-start burn (1+1)*2 (23 total)")
 
 
@@ -16798,7 +16988,7 @@ func _test_shadow_word_pain_attach() -> void:
 
 	# Start of the CONTROLLER's (caster's) turn: 1 shadow to the attached character.
 	state.turn_player = "p1"
-	TurnManager._enter_ready(state, db)
+	_ready_step(state, db)
 	eq(tank.damage_taken, 1, "swp-h: turn-start burn dealt 1 shadow")
 
 	# Attaching to our OWN character makes US discard (the rider follows the host).
@@ -18193,13 +18383,13 @@ func _test_toogas_quest() -> void:
 	# tok-h: nothing happens on the opponent's turn.
 	var hand_before := state.cards_in_zone("p1_hand").size()
 	while state.turn_player != "p2":
-		TurnManager.advance_phase(state, db)
+		_advance_phase(state, db)
 	ok(state.is_in_play(tooga.instance_id), "tok-h1: Tooga survives the opponent's turn start")
 	eq(state.cards_in_zone("p1_hand").size(), hand_before, "tok-h2: no draw on the opponent's turn")
 
 	# ...and it fires at the start of the controller's next turn.
 	while not (state.turn_player == "p1" and state.phase == "ready"):
-		TurnManager.advance_phase(state, db)
+		_advance_phase(state, db)
 	eq(state.get_card(tooga.instance_id).zone_id, "p1_rfg",
 		"tok-h3: Tooga removed from the game on its controller's next turn")
 	eq(state.cards_in_zone("p1_graveyard").size(), 0,
@@ -18232,9 +18422,9 @@ func _test_tooga_killed_before_trigger() -> void:
 
 	var hand_before := state.cards_in_zone("p1_hand").size()
 	while state.turn_player != "p2":
-		TurnManager.advance_phase(state, db)
+		_advance_phase(state, db)
 	while not (state.turn_player == "p1" and state.phase == "ready"):
-		TurnManager.advance_phase(state, db)
+		_advance_phase(state, db)
 	eq(state.cards_in_zone("p1_hand").size(), hand_before,
 		"tok-i2: no bonus draw â€” the removal never happened")
 

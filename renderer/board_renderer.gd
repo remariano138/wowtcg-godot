@@ -73,9 +73,9 @@ var _deck_labels: Dictionary = {}
 # zone_id -> int, maintained separately because deck cards have no visual nodes.
 var _deck_counts: Dictionary = {}
 
-# ── Wiggle tracking ────────────────────────────────────────────────────────────
-# instance_id of the card currently in a continuous targeting wiggle ("" = none).
-var _wiggling_id: String = ""
+# ── Pulse tracking ─────────────────────────────────────────────────────────────
+# instance_id of the card currently in a continuous targeting pulse ("" = none).
+var _pulsing_id: String = ""
 
 # ── Position tween registry ────────────────────────────────────────────────────
 # Tracks the active movement/layout tween per card so that a new tween can
@@ -229,6 +229,31 @@ func _zone_of_card(instance_id: String) -> String:
 		if instance_id in (_zone_cards[zone_id] as Array):
 			return zone_id
 	return ""
+
+
+# Show the inspector for a SPECIFIC card, anchored beside the card's node on
+# the board rather than the mouse — used by the Combat window's name labels
+# (Alt+hover a combatant's written name examines the card it points at, which
+# disambiguates same-named allies: the magnified card appears next to the real
+# one). Camera-aware: the node position is taken through the canvas transform,
+# so the P2 seat's rotated view anchors correctly too.
+func show_inspector_for(card_id: String) -> void:
+	var cn := card_nodes.get(card_id) as CardNode
+	if not cn or not cn._tex_rect or not cn._tex_rect.texture:
+		return
+	_inspector.texture = cn._tex_rect.texture
+	var screen_pos: Vector2 = cn.get_global_transform_with_canvas().origin
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	var sz:      Vector2 = _inspector.size
+	_inspector.position = Vector2(
+		clamp(screen_pos.x + CardNode.W, 0.0, vp_size.x - sz.x),
+		clamp(screen_pos.y - sz.y * 0.5, 0.0, vp_size.y - sz.y))
+	_inspector.visible = true
+
+
+func hide_inspector() -> void:
+	if _inspector:
+		_inspector.visible = false
 
 
 func _try_show_inspector() -> void:
@@ -472,44 +497,38 @@ func _on_game_event(event: GameEvent) -> void:
 			if hcn:
 				if hcn.has_method("set_power_used"):
 					hcn.set_power_used(true)
-				# If we were wiggling this card (targeted hero power), transition to 2-sec
-				# post-resolution wiggle; otherwise start a fresh 2-sec wiggle (AoE / instant).
-				if _wiggling_id == hero_id:
-					hcn.stop_wiggle(2.0)
-					_wiggling_id = ""
+				# If we were pulsing this card (targeted hero power), transition to a 2-sec
+				# post-resolution pulse; otherwise start a fresh 2-sec one (AoE / instant).
+				if _pulsing_id == hero_id:
+					hcn.stop_pulse(2.0)
+					_pulsing_id = ""
 				else:
-					hcn.wiggle_for(2.0)
+					hcn.pulse_for(2.0)
 		"ally_power_used":
 			var ally_id: String = event.payload.get("ally_id", "")
 			var acn := card_nodes.get(ally_id) as CardNode
 			if acn:
-				if _wiggling_id == ally_id:
-					_wiggling_id = ""
-					# Kill the continuous wiggle immediately so it doesn't fight the
-					# exhaust rotation tween (0.2 s). snap to _wiggle_base; the exhaust
-					# tween will override it to 90° before our 0.22 s timer fires.
-					acn.stop_wiggle(0.0)
-				# Delay until after the exhaust rotation tween (0.2 s) so wiggle_for
-				# captures the correct exhausted/ready angle as its new base.
-				var captured := acn
-				get_tree().create_timer(0.22).timeout.connect(
-					func() -> void:
-						if is_instance_valid(captured):
-							captured.wiggle_for(2.0))
+				# The cue animates scale, so it can start immediately — it no longer
+				# has to wait out (or fight) the exhaust rotation tween.
+				if _pulsing_id == ally_id:
+					_pulsing_id = ""
+					acn.stop_pulse(2.0)
+				else:
+					acn.pulse_for(2.0)
 		"action_proposed":
 			if event.payload.get("action_type") == "place_resource" \
 					and not event.payload.get("face_up", true):
 				var cn := card_nodes.get(event.payload.get("card_id", "")) as CardNode
 				if cn:
 					cn.show_card_back()
-			# Start a continuous wiggle on the source card when a non-targeted ally
-			# power enters the stack (targeted powers start wiggling at targeting_started).
-			if event.payload.get("action_type") == "use_ally_power" and _wiggling_id == "":
+			# Start a continuous pulse on the source card when a non-targeted ally
+			# power enters the stack (targeted powers start pulsing at targeting_started).
+			if event.payload.get("action_type") == "use_ally_power" and _pulsing_id == "":
 				var ap_id: String = event.payload.get("card_id", "")
 				var apcn := card_nodes.get(ap_id) as CardNode
 				if apcn:
-					_wiggling_id = ap_id
-					apcn.start_wiggle()
+					_pulsing_id = ap_id
+					apcn.start_pulse()
 		"combat_concluded":
 			var attacker_id: String = event.payload.get("attacker_id", "")
 			if event.payload.get("cancelled", false):
@@ -589,6 +608,12 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	_add_to_zone(card_id, to_zone)
 	_apply_zone_scale(card_id, to_zone)
 
+	# Coming back off the chain (resolved, countered, retracted): the node was
+	# hidden while the Chain window stood in for it — show it again so it can fly
+	# to its destination.
+	if from_zone == "chain":
+		card_node.visible = true
+
 	# Leaving an attachment relationship (host died / attachment destroyed):
 	# drop the host link and restore the host's z-order if it's now bare.
 	if from_zone == "attached" and _attachment_hosts.has(card_id):
@@ -618,8 +643,7 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	# tick reasserts the exhausted angle if not.
 	if cn and cn.facing_degrees != _facing_for_zone(to_zone):
 		cn.facing_degrees = _facing_for_zone(to_zone)
-		if not cn.is_wiggling():
-			cn.rotation_degrees = cn.facing_degrees
+		cn.rotation_degrees = cn.facing_degrees
 
 	# Re-centre source zone (closes the gap).
 	_relayout_zone(from_zone)
@@ -632,8 +656,20 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 			_kill_pos_tween(card_id)
 			var tween := create_tween()
 			tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-			tween.tween_property(card_node, "global_position", anchor.global_position, 0.3)
+			tween.tween_property(card_node, "global_position", anchor.global_position, GameTiming.anim(0.3))
 			_pos_tweens[card_id] = tween
+
+	# The Chain window (playtest's _update_chain_panel) now shows every link, so
+	# the card itself no longer sits in the middle of the board on top of the
+	# rows. It still FLIES to the chain anchor — that motion, and its sound, are
+	# the cue that something was played — and then simply vanishes into the
+	# window. The node stays alive (hidden), so resolving/retracting can fly it
+	# back out from the same spot.
+	if to_zone == "chain":
+		await get_tree().create_timer(GameTiming.anim(0.22)).timeout   # the 0.2s layout tween
+		if _zone_of_card(card_id) == "chain" and is_instance_valid(card_node):
+			card_node.visible = false
+		return
 
 	# RFG is not rendered — the card leaves the board entirely.
 	if to_zone.ends_with("_rfg"):
@@ -645,7 +681,7 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 	# Deck cards have no persistent node — destroy the node after the move tween
 	# so it's cleanly gone before the next draw spawns a fresh one.
 	if to_zone.ends_with("_deck"):
-		await get_tree().create_timer(0.3).timeout
+		await get_tree().create_timer(GameTiming.anim(0.3)).timeout
 		var still_in_deck: Array = _zone_cards.get(to_zone, [])
 		if card_id in still_in_deck:
 			_remove_from_zone(card_id, to_zone)
@@ -659,7 +695,7 @@ func _animate_exhaust(card_id: String) -> void:
 		return
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(card_node, "rotation_degrees", card_node.facing_degrees + 90.0, 0.2)
+	tween.tween_property(card_node, "rotation_degrees", card_node.facing_degrees + 90.0, GameTiming.anim(0.2))
 
 
 func _animate_ready(card_id: String) -> void:
@@ -671,7 +707,7 @@ func _animate_ready(card_id: String) -> void:
 		card_node.hide_sick_badge()
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(card_node, "rotation_degrees", card_node.facing_degrees, 0.2)
+	tween.tween_property(card_node, "rotation_degrees", card_node.facing_degrees, GameTiming.anim(0.2))
 
 
 func _animate_attack(attacker_id: String, defender_id: String) -> void:
@@ -692,8 +728,8 @@ func _animate_attack(attacker_id: String, defender_id: String) -> void:
 	var punch     := start + direction * distance * 0.5
 	var tween := create_tween()
 	tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-	tween.tween_property(atk_node, "global_position", punch, 0.12)
-	tween.tween_property(atk_node, "global_position", start, 0.10)
+	tween.tween_property(atk_node, "global_position", punch, GameTiming.anim(0.12))
+	tween.tween_property(atk_node, "global_position", start, GameTiming.anim(0.10))
 	_pos_tweens[attacker_id] = tween  # tracked so _kill_pos_tween can cancel mid-lunge
 	await tween.finished
 	_pos_tweens.erase(attacker_id)
@@ -716,11 +752,21 @@ func _apply_zone_scale(card_id: String, zone_id: String) -> void:
 		(node as CardNode).set_stack_count(0)
 	var is_hand := zone_id.ends_with("_hand")
 	if _is_hero_card(card_id):
-		node.scale = Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE)
+		_write_scale(node, Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE))
 		node.z_index = 1   # above the row it sits beside, below hand cards
 		return
-	node.scale = Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if is_hand else Vector2.ONE
+	_write_scale(node, Vector2(HAND_CARD_SCALE, HAND_CARD_SCALE) if is_hand else Vector2.ONE)
 	node.z_index = HAND_Z_INDEX if is_hand else 0
+
+
+# Card scale is also what the pulse cue animates, so a zone change must set the
+# card's RESTING scale (set_base_scale) rather than stomp the live value — the
+# pulse then keeps beating around the new size.
+func _write_scale(node: Node2D, v: Vector2) -> void:
+	if node is CardNode:
+		(node as CardNode).set_base_scale(v)
+	else:
+		node.scale = v
 
 
 func _is_hero_card(card_id: String) -> bool:
@@ -760,7 +806,7 @@ func register_hero_card(player_id: String, instance_id: String) -> void:
 	# The card was placed (and scaled) before it was known to be a hero.
 	var card := card_nodes.get(instance_id) as CardNode
 	if card:
-		card.scale = Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE)
+		card.set_base_scale(Vector2(HERO_CARD_SCALE, HERO_CARD_SCALE))
 		card.z_index = 1
 
 
@@ -1035,7 +1081,7 @@ func _relayout_zone(zone_id: String) -> void:
 		_kill_pos_tween(cid)
 		var tween  := create_tween()
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-		tween.tween_property(node, "global_position", target, 0.2)
+		tween.tween_property(node, "global_position", target, GameTiming.anim(0.2))
 		_pos_tweens[cid] = tween
 		_move_attachments_with_host(cid, target)
 
@@ -1048,7 +1094,7 @@ func _relayout_zone(zone_id: String) -> void:
 				_kill_pos_tween(hero_id)
 				var htween := create_tween()
 				htween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
-				htween.tween_property(hnode, "global_position", hero_anchor.global_position, 0.2)
+				htween.tween_property(hnode, "global_position", hero_anchor.global_position, GameTiming.anim(0.2))
 				_pos_tweens[hero_id] = htween
 
 
@@ -1065,8 +1111,14 @@ func _attachments_of(host_id: String) -> Array:
 # Where the index-th attachment of a host sits, given the host's (target)
 # position. The peek offset composes with the host's facing so it always
 # points toward the opponent's side of the board.
-func _attachment_target_pos(host_cn: CardNode, host_pos: Vector2, index: int) -> Vector2:
-	var peek := ATTACH_PEEK + index * ATTACH_STACK_GAP
+func _attachment_target_pos(host_cn: CardNode, host_pos: Vector2, index: int,
+		att_cn: CardNode = null) -> Vector2:
+	# The visible sliver is measured from the HOST'S EDGE, not from its center —
+	# a hero renders at HERO_CARD_SCALE, so a fixed center offset tuned for a
+	# normal ally would leave the attachment entirely buried under it.
+	var host_half := CardNode.H * 0.5 * host_cn.scale.y
+	var att_half  := CardNode.H * 0.5 * (att_cn.scale.y if att_cn else 1.0)
+	var peek := (host_half - att_half) + ATTACH_PEEK + index * ATTACH_STACK_GAP
 	return host_pos + Vector2(0.0, -peek).rotated(deg_to_rad(host_cn.facing_degrees))
 
 
@@ -1078,14 +1130,14 @@ func _move_attachments_with_host(host_id: String, host_target: Vector2) -> void:
 		return
 	var atts := _attachments_of(host_id)
 	for i in atts.size():
-		var node := card_nodes.get(atts[i]) as Node2D
+		var node := card_nodes.get(atts[i]) as CardNode
 		if not node:
 			continue
 		_kill_pos_tween(atts[i])
 		var tween := create_tween()
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
 		tween.tween_property(node, "global_position",
-			_attachment_target_pos(host_cn, host_target, i), 0.2)
+			_attachment_target_pos(host_cn, host_target, i, node), GameTiming.anim(0.2))
 		_pos_tweens[atts[i]] = tween
 
 
@@ -1121,11 +1173,12 @@ func _has_live_pos_tween(card_id: String) -> bool:
 
 
 # Self-healing pass: snap each card's orientation to authoritative GameState.
-# Event-driven animations (wiggle, exhaust/ready swings) can leave a card at a
-# crooked resting angle if tweens race; this reasserts truth once motion settles.
+# Event-driven animations (exhaust/ready swings) can leave a card at a crooked
+# resting angle if tweens race; this reasserts truth once motion settles.
 # Visual-only, read-only on state, and idempotent (a no-op when already correct).
-# Skips cards mid-animation: a live position tween (_pos_tweens) or an active
-# wiggle (CardNode.is_wiggling) — so it never fights in-flight motion.
+# Skips cards with a live position tween (_pos_tweens) so it never fights motion.
+# The pulse cue does NOT block it — that cue animates scale, not rotation, so
+# ready/exhaust can be reasserted at any time while a card is pulsing.
 func reconcile_from_state(state, force := false) -> void:
 	if state == null:
 		return
@@ -1135,15 +1188,10 @@ func reconcile_from_state(state, force := false) -> void:
 		var cn := card_nodes.get(card_id) as CardNode
 		if not cn or not is_instance_valid(cn):
 			continue
-		if cn.is_wiggling():
-			# Effect cue mid-swing — normally reasserts on the next pass. A forced
-			# pass (turn change) kills the wiggle first so a card left wiggling at a
-			# stale rest angle (e.g. a power/attack whose exhaust didn't register on
-			# the wiggle base) is snapped to truth instead of skipped indefinitely.
-			if force:
-				cn.stop_wiggle(0.0)
-			else:
-				continue
+		# A forced pass (turn change) also ends any lingering cue, so no card is
+		# left mid-pulse across a turn boundary.
+		if force and cn.is_pulsing():
+			cn.stop_pulse(0.0)
 		var card = state.get_card(card_id)
 		if card == null:
 			continue
@@ -1161,9 +1209,15 @@ func reconcile_from_state(state, force := false) -> void:
 				if not _has_live_pos_tween(card.attached_to):
 					var idx := _attachments_of(card.attached_to).find(card_id)
 					cn.global_position = _attachment_target_pos(
-						host_cn, host_cn.global_position, max(idx, 0))
+						host_cn, host_cn.global_position, max(idx, 0), cn)
 			continue
 		cn.is_attachment = false
+		# Self-heal chain visibility: a card on the chain is represented by the
+		# Chain window, never on the board. Cards mid-flight are skipped above
+		# (live pos tween), so this never cuts an animation short.
+		var on_chain: bool = card.zone_id == "chain"
+		if cn.visible == on_chain:
+			cn.visible = not on_chain
 		cn.facing_degrees = _facing_for_zone(card.zone_id)
 		cn.settle_rotation(card.is_exhausted)
 
@@ -1232,11 +1286,11 @@ func _on_conditional_highlights_updated(orange_ids: Array) -> void:
 func _on_targeting_started(source_id: String, dmg_type: String, dmg_amount: int) -> void:
 	_targeting_active    = true
 	_targeting_source_id = source_id
-	# Wiggle the source card while the player is picking a target.
-	_wiggling_id = source_id
+	# Pulse the source card while the player is picking a target.
+	_pulsing_id = source_id
 	var wcn := card_nodes.get(source_id) as CardNode
 	if wcn:
-		wcn.start_wiggle()
+		wcn.start_pulse()
 	if _targeting_line:
 		var cn := card_nodes.get(source_id) as Node2D
 		var src := cn.global_position if cn else _world_mouse()
@@ -1255,12 +1309,12 @@ func _on_targeting_cancelled() -> void:
 	if _targeting_cursor:
 		_targeting_cursor.visible = false
 	Input.set_default_cursor_shape(Input.CURSOR_ARROW)
-	# Targeting cancelled — stop wiggle immediately.
-	if _wiggling_id != "":
-		var wcn := card_nodes.get(_wiggling_id) as CardNode
+	# Targeting cancelled — stop the pulse immediately.
+	if _pulsing_id != "":
+		var wcn := card_nodes.get(_pulsing_id) as CardNode
 		if wcn:
-			wcn.stop_wiggle(0.0)
-		_wiggling_id = ""
+			wcn.stop_pulse(0.0)
+		_pulsing_id = ""
 
 
 # Build the cursor overlay: damage-type icon (if any) with the amount below it.
@@ -1464,8 +1518,8 @@ func _show_heal_number(card_id: String, amount: int) -> void:
 	get_tree().root.add_child(label)
 	var tween := create_tween()
 	tween.tween_property(label, "global_position",
-			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), 0.9)
-	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.9)
+			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), GameTiming.anim(0.9))
+	tween.parallel().tween_property(label, "modulate:a", 0.0, GameTiming.anim(0.9))
 	await tween.finished
 	label.queue_free()
 
@@ -1500,7 +1554,7 @@ func _show_damage_number(card_id: String, amount: int) -> void:
 	get_tree().root.add_child(label)
 	var tween := create_tween()
 	tween.tween_property(label, "global_position",
-			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), 0.9)
-	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.9)
+			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), GameTiming.anim(0.9))
+	tween.parallel().tween_property(label, "modulate:a", 0.0, GameTiming.anim(0.9))
 	await tween.finished
 	label.queue_free()

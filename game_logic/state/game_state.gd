@@ -222,15 +222,28 @@ var pending_reveal_pick_all: Array[String] = []   # every revealed card, in top�
 # a private "look at" rather than a public reveal — the opponent sees nothing.
 var pending_reveal_pick_to_top: bool = false
 var pending_reveal_pick_private: bool = false
-# Ongoing Totem "at the start of each turn" targeted-damage triggers (Searing
-# Totem) waiting to fire this ready step. Each entry is a dict
-# {card_id, amount, dmg_type}. They are drained one at a time: index 0 is the
-# ACTIVE trigger while pending_totem_target_player is non-empty, resolved by that
-# player via StackResolver.choose_totem_target() (a direct call, like the strike
-# and reveal-pick choices — NOT a chain action). Turn player's totems fire first
-# (rule 501.1a). pass_priority / can_submit hard-block while a totem choice is open.
-var pending_ongoing_triggers: Array = []
-var pending_totem_target_player: String = ""  # controller who must pick a target; "" = none
+# ── "At the start of [this] turn" triggered effects (rule 501.1a / 500.2) ─────
+# Every start-of-turn trigger on every in-play card — Searing Totem's ping,
+# Infernal's discard-or-control, Healing Stream Totem's party heal, Fireball's
+# attached burn, Spirit Bond, Tooga's self-removal, plain self-heals — is
+# collected into this ONE queue as the ready step's automatic actions finish
+# (TurnManager._collect_turn_start_triggers), in rule-708.1a order: the turn
+# player's triggers first, then the opponent's.
+#
+# Each entry is a dict {card_id, controller, key, args}. `key` is the effects
+# segment name and `args` its remaining colon-separated fields, so the queue
+# carries no per-card special cases — the dispatch lives in one place
+# (StackResolver._resolve_turn_start_trigger).
+#
+# They are drained ONE AT A TIME by StackResolver.advance_turn_start_triggers:
+# the front trigger announces its targets (707.1d — a direct-call choice while
+# pending_trigger_target_player is non-empty), goes on the chain as a
+# `resolve_turn_start_trigger` link, and a normal priority window opens before
+# it resolves. Only once the chain is empty again does the next trigger fire —
+# see pass_priority's window-close branch. Non-target choices are NOT made here;
+# per 709.2b they are made as the link resolves (Infernal's discard).
+var pending_turn_start_triggers: Array = []
+var pending_trigger_target_player: String = ""  # must pick a target for triggers[0]; "" = none
 
 # ── Quest reward "Choose one … you may choose both" (Hidden Enemies / A New
 # Plague / Thwarting Kolkar Aggression / Crown of the Earth) ──────────────────

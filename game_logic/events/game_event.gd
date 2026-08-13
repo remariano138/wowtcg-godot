@@ -396,15 +396,18 @@ static func enter_play_target_required(card_id: String, dmg_type: String, amount
 		"card_id": card_id, "dmg_type": dmg_type, "amount": amount,
 	})
 
-# An ongoing Totem "at the start of each turn" trigger (Searing Totem) must pick
-# a target hero or ally. Mandatory choice resolved by the totem's controller via
-# StackResolver.choose_totem_target() — a direct call, like the strike / reveal
-# choices, NOT a chain action.
-static func totem_target_required(card_id: String, player_id: String,
-		dmg_type: String, amount: int) -> GameEvent:
-	return make("totem_target_required", {
+# A start-of-turn triggered effect that announces a target (Searing Totem's
+# "deals AMOUNT damage to target hero or ally") needs that target chosen before
+# it can go on the chain (707.1d). Mandatory choice resolved by the trigger's
+# controller via StackResolver.choose_trigger_target() — a direct call, like the
+# strike / reveal choices, NOT a chain action.
+static func trigger_target_required(card_id: String, player_id: String,
+		key: String, args: Array) -> GameEvent:
+	return make("trigger_target_required", {
 		"card_id": card_id, "player": player_id,
-		"dmg_type": dmg_type, "amount": amount,
+		"key": key, "args": args,
+		"amount": int(args[0]) if args.size() > 0 else 0,
+		"dmg_type": String(args[1]) if args.size() > 1 else "",
 	})
 
 # A death-triggered "destroy target ally" effect (Boneshanks) must pick an ally

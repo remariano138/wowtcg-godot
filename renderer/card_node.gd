@@ -76,9 +76,13 @@ static var input_allowlist: Array = []
 # playtest.gd).
 static var input_shields: Array[Rect2] = []
 
-# ── Wiggle state ───────────────────────────────────────────────────────────────
-var _wiggle_tween: Tween = null
-var _wiggle_base: float = 0.0
+# ── Pulse state ────────────────────────────────────────────────────────────────
+# The "this card is doing something" cue. It used to be a rotation wiggle, which
+# fought the exhaust/ready rotation (90° / 0°) and left cards resting crooked;
+# it now scales the card instead, so the cue is completely independent of the
+# ready/exhaust orientation and can play from either resting angle.
+var _pulse_tween: Tween = null
+var _pulse_base: Vector2 = Vector2.ONE
 
 
 static func create(inst_id: String, card_name: String,
@@ -524,60 +528,93 @@ func hide_sick_badge() -> void:
 		_sick_badge.visible = false
 
 
-# ── Wiggle ─────────────────────────────────────────────────────────────────────
+# ── Pulse ──────────────────────────────────────────────────────────────────────
+#
+# The cue scales the card up and back down around whatever scale it currently
+# rests at (hand cards are smaller, heroes bigger), so it composes with every
+# zone scale, and it never touches `rotation_degrees` — the exhaust/ready swing
+# and the 180° P2 facing are left entirely alone.
 
-# Continuous wiggle loop (targeting in progress).
-func start_wiggle() -> void:
-	if _wiggle_tween:
-		_wiggle_tween.kill()
-	_wiggle_base = rotation_degrees
-	_wiggle_tween = create_tween().set_loops()
-	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base + 6.0, 0.09)
-	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base - 6.0, 0.09)
-	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base,       0.09)
+const PULSE_UP    := 1.2    # magnified peak, relative to the card's resting scale
+const PULSE_DOWN  := 0.9    # shrunk trough
+const PULSE_HALF  := 0.18   # seconds per half-beat, before GameTiming scaling
+
+# Continuous pulse loop (targeting in progress).
+func start_pulse() -> void:
+	if _pulse_tween:
+		_pulse_tween.kill()   # already pulsing: keep the established resting scale
+		_pulse_tween = null
+	else:
+		_pulse_base = scale
+	scale = _pulse_base
+	var half := GameTiming.anim(PULSE_HALF)
+	if half <= 0.0:   # speed 0 (headless) — nothing to animate
+		return
+	_pulse_tween = create_tween().set_loops()
+	_pulse_tween.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
+	_pulse_tween.tween_property(self, "scale", _pulse_base * PULSE_UP,   half)
+	_pulse_tween.tween_property(self, "scale", _pulse_base * PULSE_DOWN, half)
+	_pulse_tween.tween_property(self, "scale", _pulse_base,              half)
 
 
-# Wiggle for a fixed duration then snap back (post-resolution effect cue).
-func wiggle_for(duration: float) -> void:
-	if _wiggle_tween:
-		_wiggle_tween.kill()
-	_wiggle_base = rotation_degrees
-	_wiggle_tween = create_tween()
+# Pulse for a fixed duration then settle back (post-resolution effect cue).
+# `duration` is in unscaled seconds — the speed slider stretches it here, so
+# callers keep passing the cue length they mean.
+func pulse_for(duration: float) -> void:
+	if _pulse_tween:
+		_pulse_tween.kill()   # already pulsing: keep the established resting scale
+		_pulse_tween = null
+	else:
+		_pulse_base = scale
+	scale = _pulse_base
+	var half  := GameTiming.anim(PULSE_HALF)
+	var total := GameTiming.anim(duration)
+	if half <= 0.0 or total <= 0.0:   # speed 0 (headless) — nothing to animate
+		_pulse_tween = null
+		scale = _pulse_base
+		return
+	_pulse_tween = create_tween()
+	_pulse_tween.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
 	var t := 0.0
-	while t < duration:
-		_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base + 6.0, 0.09)
-		_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base - 6.0, 0.09)
-		_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base,       0.09)
-		t += 0.27
-	_wiggle_tween.tween_property(self, "rotation_degrees", _wiggle_base, 0.15)
-	_wiggle_tween.tween_callback(func() -> void: _wiggle_tween = null)
+	while t < total:
+		_pulse_tween.tween_property(self, "scale", _pulse_base * PULSE_UP,   half)
+		_pulse_tween.tween_property(self, "scale", _pulse_base * PULSE_DOWN, half)
+		_pulse_tween.tween_property(self, "scale", _pulse_base,              half)
+		t += half * 3.0
+	_pulse_tween.tween_callback(func() -> void: _pulse_tween = null)
 
 
-# Stop an in-progress continuous wiggle; optionally keep going for `more_seconds`.
-func stop_wiggle(more_seconds: float = 0.0) -> void:
-	if _wiggle_tween:
-		_wiggle_tween.kill()
-		_wiggle_tween = null
-	rotation_degrees = _wiggle_base
+# Stop an in-progress pulse; optionally keep going for `more_seconds`.
+func stop_pulse(more_seconds: float = 0.0) -> void:
+	if _pulse_tween:
+		_pulse_tween.kill()
+		_pulse_tween = null
+	scale = _pulse_base
 	if more_seconds > 0.0:
-		wiggle_for(more_seconds)
+		pulse_for(more_seconds)
 
 
-# True while a wiggle tween is animating this card's rotation. Reconcile passes
-# skip wiggling cards so they don't fight the effect cue mid-swing.
-func is_wiggling() -> bool:
-	return _wiggle_tween != null
+# True while the pulse cue is animating this card's scale.
+func is_pulsing() -> bool:
+	return _pulse_tween != null
+
+
+# The scale the card rests at, i.e. what a zone-scale change must write. While a
+# pulse is running the live `scale` is mid-beat, so callers set the base through
+# here and the pulse keeps beating around the new value.
+func set_base_scale(v: Vector2) -> void:
+	_pulse_base = v
+	if _pulse_tween:
+		start_pulse()   # re-base the loop around the new resting scale
+	else:
+		scale = v
 
 
 # Snap rotation to match authoritative state (facing + 90° when exhausted).
-# No-op while wiggling. Also re-bases the wiggle so a later stop_wiggle() snaps
-# to the correct orientation instead of a stale/crooked angle. Visual-only.
+# Safe to call at any time: the pulse cue animates `scale`, never rotation, so
+# there is no in-flight rotation to fight. Visual-only.
 func settle_rotation(exhausted: bool) -> void:
-	if _wiggle_tween != null:
-		return
-	var target := facing_degrees + (90.0 if exhausted else 0.0)
-	rotation_degrees = target
-	_wiggle_base = target
+	rotation_degrees = facing_degrees + (90.0 if exhausted else 0.0)
 
 
 # True while the pointer is inside a registered HUD shield rect. Shields are in
@@ -597,7 +634,11 @@ func _pointer_shielded() -> bool:
 
 
 func _input(event: InputEvent) -> void:
-	if (input_blocked and not input_allowlist.has(instance_id)) or _pointer_shielded():
+	# Clicks are detected from the raw pointer, not from the scene tree, so a
+	# hidden node (a card on the chain — the Chain window stands in for it) would
+	# otherwise still answer clicks and hovers from where it used to be.
+	if (input_blocked and not input_allowlist.has(instance_id)) \
+			or not visible or _pointer_shielded():
 		if _mouse_inside:
 			_mouse_inside = false
 			card_unhovered.emit(instance_id)

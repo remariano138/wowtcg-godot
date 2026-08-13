@@ -27,7 +27,7 @@ signal modal_choice_opened(card_id: String, mode_labels: Array)
 signal modal_choice_cancelled()
 # Emitted after a human resolves an ongoing Totem start-of-turn target choice
 # (Searing Totem) so the scene can resume driving the turn.
-signal totem_target_resolved()
+signal trigger_target_resolved()
 # Emitted after a human resolves a death-triggered "destroy target ally" choice
 # (Boneshanks) so the scene can resume driving the turn.
 signal death_target_resolved()
@@ -837,8 +837,8 @@ func start_enter_play_targeting(card_id: String, dmg_type: String, dmg_amount: i
 
 
 # Convenience wrapper for an ongoing Totem start-of-turn target choice (Searing Totem).
-func start_totem_targeting(card_id: String, dmg_type: String, dmg_amount: int) -> void:
-	start_targeting(card_id, "choose_totem_target", dmg_type, dmg_amount)
+func start_trigger_targeting(card_id: String, dmg_type: String, dmg_amount: int) -> void:
+	start_targeting(card_id, "choose_trigger_target", dmg_type, dmg_amount)
 
 
 # Convenience wrapper for a death-triggered "destroy target ally" choice (Boneshanks).
@@ -911,6 +911,26 @@ func _handle_quest_facedown_click(instance_id: String) -> void:
 # cancels, which the scene resolves as a decline.
 func start_attack_exhaust_targeting(card_id: String) -> void:
 	start_targeting(card_id, "choose_attack_exhaust", "", 0)
+
+
+func targeting_action_type() -> String:
+	return _targeting_action_type
+
+
+# True when the targeting flow currently open CANNOT be backed out of — the
+# effect is mandatory, so Esc / right-click only restarts the same pick (see
+# playtest `_on_targeting_cancelled`). The prompt says "[mandatory]" instead of
+# offering a cancel that doesn't exist.
+func targeting_is_mandatory() -> bool:
+	match _targeting_action_type:
+		"choose_trigger_target", "choose_death_target", "choose_quest_ferocity":
+			return true
+		"choose_enter_play_target":
+			# Optional enter-play triggers (Ghank, Karkas, Sister Rot, Bhenn) can
+			# be declined; Taz'dingo's "deals damage to target" cannot.
+			return state != null and not state.pending_enter_play_effect.is_empty() \
+				and not state.pending_enter_play_effect.get("optional", false)
+	return false
 
 
 # Abort targeting — called by Escape key or scene logic.
@@ -1033,7 +1053,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"activate_power":            _handle_power_targeting_click(instance_id)
 		"activate_power_x":          _handle_x_power_targeting_click(instance_id)
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
-		"choose_totem_target":       _handle_totem_targeting_click(instance_id)
+		"choose_trigger_target":       _handle_trigger_targeting_click(instance_id)
 		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
 		"choose_quest_ferocity":     _handle_quest_ferocity_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
@@ -1076,17 +1096,17 @@ func _handle_enter_play_targeting_click(instance_id: String) -> void:
 		cancel_targeting()
 
 
-func _handle_totem_targeting_click(instance_id: String) -> void:
+func _handle_trigger_targeting_click(instance_id: String) -> void:
 	# Ongoing Totem start-of-turn damage (Searing Totem). The TARGET choice is a
-	# mandatory direct-call point; choose_totem_target then puts the trigger on the
+	# mandatory direct-call point; choose_trigger_target then puts the trigger on the
 	# chain and opens a priority window (the emitted action_proposed drives the
 	# scene's _drain_passes) before the damage resolves (rule 501.1a / 410).
-	if instance_id in StackResolver.get_totem_targets(state, db):
-		var events := StackResolver.choose_totem_target(state, instance_id, db)
+	if instance_id in StackResolver.get_turn_start_trigger_targets(state, db):
+		var events := StackResolver.choose_trigger_target(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
 		# The scene resumes driving the turn (and handles any next queued totem).
-		totem_target_resolved.emit()
+		trigger_target_resolved.emit()
 
 
 func _handle_death_target_targeting_click(instance_id: String) -> void:
@@ -1609,8 +1629,8 @@ func get_playable_card_ids() -> Array:
 				return _get_x_power_targets(_targeting_source)
 			"choose_enter_play_target":
 				return _get_enter_play_targets(_targeting_source)
-			"choose_totem_target":
-				return StackResolver.get_totem_targets(state, db)
+			"choose_trigger_target":
+				return StackResolver.get_turn_start_trigger_targets(state, db)
 			"choose_death_target":
 				return StackResolver.get_death_target_targets(state, db)
 			"choose_quest_ferocity":
@@ -2017,8 +2037,12 @@ func handle_context_action(action: PendingAction) -> void:
 					ap_dmg_type = "destroy"   # Kavai — same cursor as Vanquish/Burn Away
 				else:
 					ap_dmg_type = (ally_ap.get("dmg_type", "") as String).to_lower() if ally_ap else ""
+					# A damage power whose recipe prints no damage type (Rod of the
+					# Ogre Magi: "deals 1 damage to target hero or ally") is still
+					# DAMAGE — default to melee so the cursor/prompt read as damage
+					# rather than falling through to the heal wording.
 					if ap_dmg_type == "":
-						ap_dmg_type = "heal"
+						ap_dmg_type = "melee"
 				start_targeting(cid, "use_ally_power", ap_dmg_type, int(ally_ap.get("amount", 0)))
 				return
 		"begin_attack_targeting":

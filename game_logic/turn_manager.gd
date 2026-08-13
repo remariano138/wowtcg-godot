@@ -157,13 +157,11 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			# (Windfury Weapon).
 			card.counters.erase("windfury_struck_this_turn")
 
-	# Triggered effects: "at the start of each turn" (all players' in-play chars).
-	for pid in state.players:
-		for card in state.cards_in_play(pid):
-			events.append_array(_apply_start_of_turn_effects(state, card, pid, db, true))
-	# Triggered effects: "at the start of your turn" (only the turn player's chars).
-	for card in state.cards_in_play(state.turn_player):
-		events.append_array(_apply_start_of_turn_effects(state, card, state.turn_player, db, false))
+	# Rule 500.2 / 501.1a: start-of-turn powers TRIGGER here, but a triggered
+	# effect is not resolved here — it is added to the chain during PPP (410.5 /
+	# 708.1), so every one of them is respondable. Collect them all into one
+	# ordered queue; nothing fires yet.
+	_collect_turn_start_triggers(state, db)
 
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "ready", "turn_player": state.turn_player,
@@ -171,13 +169,11 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	}))
 	_open_window(state)
 
-	# Ongoing Totem "at the start of each turn" targeted damage (Searing Totem).
-	# Collected AFTER the window opens so the pending targeting choice sits on top
-	# of a normal ready window; the scene resolves the target choice
-	# (choose_totem_target), which puts the trigger on the chain and opens a
-	# priority window before the damage resolves (rule 501.1a / 410). Turn player's
-	# totems fire first (501.1a).
-	events.append_array(_collect_ongoing_turn_triggers(state, db))
+	# PPP: announce the first queued trigger onto the chain (picking its targets
+	# first, 707.1d). The rest wait — each one fires only once the chain has
+	# emptied again, from pass_priority's window-close branch. See
+	# StackResolver.advance_turn_start_triggers.
+	events.append_array(StackResolver.advance_turn_start_triggers(state, db))
 	return events
 
 
@@ -317,157 +313,62 @@ static func _open_window(state: GameState) -> void:
 	state.consecutive_passes = 0
 
 
-# Parse the effects string and fire any start-of-turn triggers.
-# each_turn=true  → only fire "heal_at_each_turn_start" entries (any player's turn)
-# each_turn=false → only fire "heal_at_turn_start" entries (controller's turn only)
-static func _apply_start_of_turn_effects(state: GameState, card: CardInstance,
-		_player_id: String, db, each_turn: bool) -> Array[GameEvent]:
-	if not db:
-		return []
-	var def := db.get_def(card.card_def_id) as CardDef
-	if not def or def.effects == "":
-		return []
-	var events: Array[GameEvent] = []
-	var trigger_key := "heal_at_each_turn_start" if each_turn else "heal_at_turn_start"
-	for entry in def.effects.split("|"):
-		var parts := entry.strip_edges().split(":")
-		var key := parts[0].strip_edges()
-		# Infernal: "At the start of your turn, discard a card, or target opponent
-		# gains control of [this]." Opens a pending choice the scene must resolve
-		# via StackResolver.choose_control_discard / decline_control_discard.
-		# Resolved immediately with no priority window — see data/rules_deviations.md
-		# "Infernal" for why this deviates from rule 501.1a's chain-based trigger.
-		# Wazzuli Wildmender: "At the start of your turn, [this] heals AMOUNT damage
-		# from each hero and ally in your party."
-		# Healing Stream Totem: "Ongoing: At the start of each turn, [this] heals
-		# AMOUNT damage from each hero and ally in your party." Fires on BOTH
-		# players' turns; only the controller's party is healed.
-		if each_turn and key == "heal_party_each_turn":
-			var stream_amt := int(parts[1]) if parts.size() > 1 else 1
-			var stream_pid := card.controller
-			for stream_ally in state.cards_in_zone(stream_pid + "_ally_row"):
-				events.append_array(GameLogic.heal(state, stream_ally.instance_id, stream_amt, db, card.instance_id))
-			var stream_hero := state.get_hero(stream_pid)
-			if stream_hero:
-				events.append_array(GameLogic.heal(state, stream_hero.instance_id, stream_amt, db, card.instance_id))
-			continue
-		if not each_turn and key == "heal_party_at_turn_start":
-			var heal_amt := int(parts[1]) if parts.size() > 1 else 1
-			var pid := card.controller
-			for ally in state.cards_in_zone(pid + "_ally_row"):
-				events.append_array(GameLogic.heal(state, ally.instance_id, heal_amt, db, card.instance_id))
-			var party_hero := state.get_hero(pid)
-			if party_hero:
-				events.append_array(GameLogic.heal(state, party_hero.instance_id, heal_amt, db, card.instance_id))
-			continue
-		# Fireball: "Ongoing: At the start of your turn, your hero deals 1 fire
-		# damage to attached character." No choice — the target is the host, so
-		# the trigger fires inline (packet pipeline: armor-preventable, and
-		# fire-typed so World in Flames doubling applies).
-		if not each_turn and key == "attached_damage_turn_start":
-			var burn_amt := int(parts[1]) if parts.size() > 1 else 1
-			var burn_type := parts[2].to_lower().strip_edges() if parts.size() > 2 else ""
-			var caster_hero := state.get_hero(card.controller)
-			if caster_hero and card.attached_to != "" \
-					and state.is_in_play(card.attached_to):
-				events.append_array(StackResolver.defer_packets(state, db, [{
-					"source": caster_hero.instance_id, "target": card.attached_to,
-					"amount": burn_amt, "dmg_type": burn_type,
-					"from_ability": true,
-				}]))
-			continue
-		# Spirit Bond: "Ongoing: At the start of your turn, if you have a Pet,
-		# your hero heals 2 damage from itself and each of your Pets." The Pet
-		# condition is checked at fire time; no Pet in play → the trigger does
-		# nothing this turn.
-		if not each_turn and key == "turn_start_heal_hero_and_pets":
-			var pet_heal := int(parts[1]) if parts.size() > 1 else 2
-			var sb_pid := card.controller
-			var pets: Array = []
-			for ally in state.cards_in_zone(sb_pid + "_ally_row"):
-				var adef := db.get_def(ally.card_def_id) as CardDef
-				if adef and adef.card_subtype == "Pet":
-					pets.append(ally)
-			if not pets.is_empty():
-				var sb_hero := state.get_hero(sb_pid)
-				if sb_hero:
-					events.append_array(GameLogic.heal(state, sb_hero.instance_id, pet_heal, db, card.instance_id))
-				for pet in pets:
-					events.append_array(GameLogic.heal(state, pet.instance_id, pet_heal, db, card.instance_id))
-			continue
-		# Tooga (token, from Tooga's Quest): "At the start of your next turn,
-		# remove Tooga from the game. If you do, draw two cards." A delayed
-		# trigger carried by the token itself, so nothing has to remember it —
-		# if the token was destroyed first it simply isn't in play to be scanned,
-		# no removal and no draw. `created_on_turn` keeps it from firing on the
-		# turn the token was created (the card says "your NEXT turn").
-		#
-		# "Remove from the game" is not a destroy: the token goes straight to RFG
-		# with no card_destroyed event, so no destruction triggers see it. An
-		# opponent killing it instead is a normal destroy (which then voids the
-		# token in move_card) — the two paths stay distinct.
-		if not each_turn and key == "rfg_self_next_turn":
-			if state.turn_number <= card.created_on_turn:
-				continue
-			var rfg_pid := card.controller
-			events.append_array(GameLogic.move_card(
-				state, card.instance_id, card.owner + "_rfg"))
-			events.append(GameEvent.card_removed_from_game(card.instance_id, rfg_pid))
-			# "If you do" — the rider only happens because the removal did.
-			var rider := parts[1].strip_edges() if parts.size() > 1 else ""
-			if rider == "draw":
-				var draw_n := int(parts[2]) if parts.size() > 2 else 1
-				for _i in draw_n:
-					events.append_array(_draw_one(state, rfg_pid))
-			continue
-		if not each_turn and key == "turn_start_discard_or_give_control":
-			state.pending_control_discard_player = card.controller
-			state.pending_control_discard_ids.append(card.instance_id)
-			events.append(GameEvent.control_discard_choice_opened(
-				card.controller, card.instance_id))
-			continue
-		if parts.size() < 2 or key != trigger_key:
-			continue
-		var amount := int(parts[1])
-		events.append_array(GameLogic.heal(state, card.instance_id, amount, db, card.instance_id))
-	return events
+# ── Start-of-turn trigger collection (rule 501.1a / 500.2 / 708.1a) ───────────
+# Effects segments that trigger "at the start of EACH player's turn" — collected
+# from every player's in-play cards, on every turn.
+const EACH_TURN_TRIGGERS := [
+	"heal_party_each_turn",        # Healing Stream Totem
+	"heal_at_each_turn_start",     # plain self-heal, either turn
+	"ongoing_damage_each_turn",    # Searing Totem
+]
+# Effects segments that trigger "at the start of YOUR turn" — collected only
+# from the turn player's in-play cards.
+const YOUR_TURN_TRIGGERS := [
+	"heal_party_at_turn_start",         # Wazzuli Wildmender
+	"heal_at_turn_start",               # plain self-heal
+	"attached_damage_turn_start",       # Fireball
+	"turn_start_heal_hero_and_pets",    # Spirit Bond
+	"rfg_self_next_turn",               # Tooga
+	"turn_start_discard_or_give_control",  # Infernal
+]
 
 
-# Scan every in-play card for ongoing "at the start of each turn" targeted-damage
-# triggers (Totems). Build the queue in rule-501.1a order (turn player's totems
-# first), then open the first one (emits totem_target_required); the rest wait in
-# state.pending_ongoing_triggers.
-# The target choice is a mandatory direct-call point; once picked, the trigger
-# goes on the chain with a priority window before its damage resolves (rule
-# 501.1a / 410 — see StackResolver.choose_totem_target).
-static func _collect_ongoing_turn_triggers(state: GameState, db) -> Array[GameEvent]:
+# Build the ordered queue of this ready step's triggered effects. Nothing fires
+# and nothing goes on the chain here — 500.2: the powers trigger as the step
+# starts, but the effects are added to the chain during PPP. Order is 708.1a:
+# the turn player's triggers first, then the opponent's; within a player, board
+# order (which stands in for "that player chooses the order" — see
+# data/rules_deviations.md "Start-of-turn trigger order").
+static func _collect_turn_start_triggers(state: GameState, db) -> void:
+	state.pending_turn_start_triggers.clear()
 	if not db:
-		return []
-	state.pending_ongoing_triggers.clear()
-	# Order: turn player first, then the other player(s).
+		return
 	var ordered_pids: Array = [state.turn_player]
 	for pid in state.players:
 		if pid != state.turn_player:
 			ordered_pids.append(pid)
 	for pid in ordered_pids:
+		var is_turn_player: bool = (pid == state.turn_player)
 		for card in state.cards_in_play(pid):
 			var def := db.get_def(card.card_def_id) as CardDef
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
 				var parts := entry.strip_edges().split(":")
-				if parts[0].strip_edges() != "ongoing_damage_each_turn":
+				var key := parts[0].strip_edges()
+				var fires := EACH_TURN_TRIGGERS.has(key) \
+					or (is_turn_player and YOUR_TURN_TRIGGERS.has(key))
+				if not fires:
 					continue
-				var amount := int(parts[1]) if parts.size() > 1 else 0
-				var dmg_type := parts[2].to_lower().strip_edges() if parts.size() > 2 else ""
-				if amount <= 0:
-					continue
-				state.pending_ongoing_triggers.append({
-					"card_id": card.instance_id,
-					"amount": amount,
-					"dmg_type": dmg_type,
+				var args: Array = []
+				for i in range(1, parts.size()):
+					args.append(parts[i].strip_edges())
+				state.pending_turn_start_triggers.append({
+					"card_id":    card.instance_id,
+					"controller": card.controller,
+					"key":        key,
+					"args":       args,
 				})
-	return StackResolver._open_next_totem_trigger(state, db)
 
 
 # Parse the effects string and fire any end-of-turn triggers.

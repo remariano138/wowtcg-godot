@@ -109,87 +109,79 @@ resolving.
 
 ---
 
-## Infernal (`azeroth_127`)
+## Start-of-turn triggered effects — drained one at a time
 
-**Printed text:** "At the start of your turn, discard a card, or target
-opponent gains control of Infernal."
+**Rules:** 500.2 — "when a turn, phase, or step starts, any powers or modifiers
+that trigger at the start of that turn, phase, or step trigger. Triggered
+effects are added to the chain during PPP (410.5)." 501.1a's "None of this uses
+the chain" covers the ready step's *automatic actions* (expiries, readying,
+modifier creation) — **not** the effects those actions trigger. 708.1a: if
+multiple triggered effects are waiting, the turn player chooses the order his go
+on the chain, then the next player clockwise, and they all go on in that one
+PPP, under a single priority window.
 
-**Rule 501.1a:** "at the start of [this turn]" triggers fire during the
-ready step, and the ready step's priority window must close (with nothing
-left to resolve) before the draw step begins. In paper play, a start-of-turn
-trigger like this one is added to the chain like any other triggered
-ability — players get a priority window in which to respond with instants
-*before* the triggered effect resolves and the discard-or-give-control
-choice is actually made.
+**Engine:** `TurnManager._collect_turn_start_triggers` builds one ordered queue
+of every start-of-turn trigger on the board as the ready step's automatic
+actions finish (turn player's first, then the opponent's — 708.1a). Nothing
+resolves inline. `StackResolver.advance_turn_start_triggers` then drains the
+queue **one trigger at a time**: the front trigger announces its targets
+(707.1d, a direct-call choice via `choose_trigger_target`), goes on the chain as
+a `resolve_turn_start_trigger` link, and a normal priority window opens before
+it resolves. Only once the chain is empty again does the next trigger fire —
+see the queue check in `pass_priority`'s window-close branch. Every
+start-of-turn effect in the game goes through this one path: Searing Totem's
+ping, Infernal's discard-or-control, Healing Stream Totem's party heal,
+Fireball's attached burn, Spirit Bond, Tooga's self-removal, plain self-heals.
 
-**Deviation:** the engine resolves the trigger immediately, with no
-priority window before the choice is made — `TurnManager._enter_ready` sets
-`pending_control_discard_player`/`_ids` and the choice must be resolved via
-`StackResolver.choose_control_discard` / `decline_control_discard` before
-anything else can happen (mirrors the pet-sacrifice and enter-play-target
-immediate-choice pattern, see `can_submit`'s blocking guard and `CLAUDE.md`
-§ "Mandatory immediate-resolution choices"). What's preserved from the
-rules: the choice itself still resolves before the ready step's window
-closes, so the draw step correctly cannot start until it's made.
+**Deviation:** paper adds *all* waiting triggers to the chain in one PPP under a
+single window; the engine gives each trigger its own announcement and its own
+window, in sequence.
 
-**Why:** none of the currently implemented cards can interact with a
-start-of-turn trigger before it resolves (no "in response to a trigger"
-instants exist yet), so a full chain-based implementation would add
-complexity with no observable difference in play. This matches the same
-immediate-resolution shortcut already taken for pet uniqueness and
-equipment slot uniqueness — both are also start-of-play-action mandatory
-choices with no printed response window that matters yet.
+**Why:** with everything stacked at once, every target must be chosen before any
+of them resolves — you would pick Searing Totem's target without knowing what
+the other trigger did. Sequential draining lets each choice be made with the
+previous outcome known, which is strictly friendlier and offers *more*
+interaction points rather than fewer. It cannot make a legal line illegal: the
+501.1a/708.1a firing order (turn player first) is preserved, and each link still
+gets a real window. The one thing it changes is that a player cannot respond to
+trigger B *before* trigger A resolves — which matters only for a card that keys
+off two simultaneous triggers, of which none exist.
 
-**How to apply this pattern to future cards:** if a future card's
-start-of-turn (or other) trigger is meant to be respondable — e.g. an
-instant that says "in response to a triggered ability" — the immediate-
-resolution shortcut here and in the pet/equipment-sacrifice flows will need
-to be revisited to actually add the trigger to the chain instead of
-resolving it inline.
+**What is NOT deviating any more** (both were previously listed here as
+deviations and are now rules-correct):
 
----
+- **Infernal's trigger is respondable and its choice is made at resolution.**
+  707.1 locks in only X, modes and targets at announcement; a discard is none of
+  those, so per 709.2b the discard-or-give-control choice is made as the link
+  resolves. Playing an instant that draws in response therefore *can* save an
+  empty hand. The rulebook's own 709.2b example (Last Stand: "destroy Last Stand
+  unless you discard two cards") is the same shape.
+- **Killing the source in the response window does not stop the effect.** 707.3:
+  an effect exists independently of its source. Destroying Searing Totem after
+  its ping is announced is too late — the damage still lands. Where a clause is
+  genuinely impossible without the source (Infernal's control change: a card in
+  a graveyard has no controller to give), 709.2c applies instead — the link
+  resolves and only as much as possible is performed, so sacrificing the
+  Infernal in response escapes it entirely without any "fizzle" special case.
+- **Fireball's attached host is locked in at announcement** (709.2d), so
+  bouncing Fireball in response still burns what it was attached to — the
+  rulebook's Kryton Barleybeard example.
 
-## Searing Totem (`azeroth_116`)
+**Remaining minor deviation — AI doesn't respond in these windows.** Per the AI
+convention the non-turn AI passes every priority window
+(`get_reasonable_actions` returns nothing for the non-turn player), so an AI
+opponent won't heal or save an ally that the turn player's totem targets. A
+HUMAN opponent gets the full window. Extending the window AI to defensive
+instant plays is the same open item noted for combat windows.
 
-**Printed text:** "Ongoing: At the start of each turn, Searing Totem deals 1
-fire damage to target hero or ally."
-
-**Rule 501.1a / 410:** a paper "at the start of each turn" triggered ability is
-added to the chain during the ready step, with its target chosen and a priority
-window before it resolves.
-
-**Now chain-based (respondable):** `TurnManager._collect_ongoing_turn_triggers`
-(called from `_enter_ready`) queues each in-play Totem's trigger (turn player's
-first — 501.1a) and opens a mandatory target choice resolved via
-`StackResolver.choose_totem_target()`. The target choice is still a direct-call
-point (`pending_totem_target_player` hard-blocks `can_submit` / `pass_priority`
-while open — the target is chosen as the trigger goes on the chain, 410). Once
-picked, the trigger becomes a `resolve_totem_trigger` **chain link** and a normal
-priority window opens (turn player first); either player may respond with an
-instant (heal the target, use its activated power) before the damage lands.
-`_resolve_totem_trigger` re-checks the target (709.2a) and deals the damage
-through the prevention pipeline (717.2c); the `totem_next` after-hook then opens
-the next queued trigger, so triggers drain one window at a time.
-
-**Remaining minor deviations:**
-
-1. **Sequential windows, not one shared window.** Paper puts ALL simultaneous
-   start-of-turn triggers on the chain at once (turn player orders theirs), then a
-   single priority window. The engine chooses each trigger's target, opens a
-   window, resolves it, then moves to the next — a window *after each* trigger
-   rather than one window over all of them. Observably this only differs with
-   multiple simultaneous totems and gives *more* interaction points, not fewer;
-   501.1a firing order (turn player first) is preserved.
-
-2. **AI doesn't respond in the window.** Per the AI convention, the non-turn AI
-   passes every priority window (`get_reasonable_actions` returns nothing for the
-   non-turn player), so an AI opponent won't heal/save an ally its opponent's
-   totem targets. A HUMAN opponent gets the full window. Extending the window AI
-   to defensive instant plays is the same open item noted for combat windows.
-
-**How to apply this pattern to future cards:** an ongoing "start of each turn"
-targeted-damage Totem uses the `ongoing|totem[:element]|ongoing_damage_each_turn:AMOUNT:TYPE`
-recipe and is respondable for free via the chain path above.
+**How to apply this pattern to future cards:** add the effects-segment key to
+`TurnManager.EACH_TURN_TRIGGERS` (fires on every player's turn) or
+`YOUR_TURN_TRIGGERS` (controller's turn only), and a `match` arm in
+`StackResolver._resolve_turn_start_trigger`. It is respondable, armor-
+preventable and 707.3-correct for free. If the trigger announces a target, add
+its key to `TARGETED_TURN_START_TRIGGERS` as well. Do **not** resolve a
+start-of-turn effect inline in `TurnManager` — that is the bug this framework
+replaced.
 
 ---
 
@@ -626,27 +618,25 @@ DESTINATION: `GameLogic.destroy_card` still emits `card_destroyed` before the
 move, so `on_destroyed` triggers and every "when an ally is destroyed" watcher
 fire on a token exactly as on a real card.
 
-## Tooga — delayed self-removal fires inline, not on the chain
+## Tooga — the delayed self-removal is carried by the token
 
 **Card:** Tooga's Quest (`azeroth_359`) → the Tooga token (`token_tooga`)
-**Enforcement site:** `TurnManager._apply_start_of_turn_effects`
-(the `rfg_self_next_turn` branch)
+**Enforcement site:** `StackResolver._resolve_turn_start_trigger`
+(the `rfg_self_next_turn` arm)
 
+Not a deviation any more — kept here because the mechanism is worth recording.
 "At the start of your next turn, remove Tooga from the game. If you do, draw
-two cards" is a delayed triggered effect, which by rule 501.1a would go on the
-chain with a priority window before it resolves. The engine resolves it inline
-during the ready step instead — the same deviation (and for the same reason)
-as every other start-of-turn trigger here: there is no cost, no choice and no
-target, so nothing an opponent could respond to changes the outcome. The one
-observable difference is that an opponent cannot kill Tooga *in response to the
-trigger* to deny the two cards; killing it any time before the ready step works
-normally.
+two cards" goes on the chain like every other start-of-turn trigger (see
+"Start-of-turn triggered effects" above), so an opponent CAN kill Tooga in
+response to the trigger to deny the two cards: 709.2c performs only as much as
+possible, and with the token gone there is no removal and — "if you do" — no
+draw.
 
 The trigger is carried by the token itself rather than remembered by the quest,
-which is what makes the fizzle free: a Tooga that is already gone is not in
-play to be scanned, so there is no removal and — "if you do" — no draw. The
-removal is a plain move to RFG with no `card_destroyed` event, so it correctly
-triggers nothing, unlike an opponent destroying the token.
+which is what makes the fizzle free: a Tooga that is already gone is never
+collected into the turn-start queue at all. The removal is a plain move to RFG
+with no `card_destroyed` event, so it correctly triggers nothing, unlike an
+opponent destroying the token.
 
 ---
 

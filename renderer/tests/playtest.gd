@@ -8,7 +8,8 @@ extends Node2D
 # CONTROLS:
 #   Click a green card in your hand  → plays it
 #   Spacebar / Enter                 → pass priority
-#   Escape                           → retract last chain entry
+#   Escape                           → open/close the Controls panel
+#   Right-click (while targeting)    → cancel targeting
 #
 # WHAT THIS PROVES:
 #   Phases cycle correctly (ready→draw→action→end→next player).
@@ -149,7 +150,20 @@ var _phase_label:    Label
 var _chain_panel: Control   # visual chain display (bottom-left, above the control panel)
 var _pass_btn:   Button
 var _cancel_btn: Button
-var _resource_label: Label
+# Per-player resource readout beside each resource zone (world-space, mirrored):
+# "Available X / Total Y" plus the can-place line. pid -> {avail, place} Labels.
+var _res_info_labels: Dictionary = {}
+# Turn-step strips (Ready · Draw · Action · End), one per pass block: the local
+# seat's under the pass button, the opponent's in the mirrored block. The
+# current step is bolded on the ACTIVE player's side only.
+var _turn_steps_bottom: RichTextLabel
+var _turn_steps_top:    RichTextLabel
+# The opponent's pass button. Deliberately never clickable: every opponent input
+# path already exists (AI resolves itself; a hotseat human takes the seat at the
+# handoff, at which point the BOTTOM button is theirs; the ambush stop has its
+# own Skip). It is the status light the mirrored design called for — lit while
+# they hold priority, greyed otherwise.
+var _opp_pass_btn: Button
 var _mulligan_panel:       VBoxContainer
 var _mulligan_order_label: Label
 var _mulligan_ready_btn:   Button
@@ -172,8 +186,23 @@ var _controls_window:  Panel
 # their placement is kept (see _chain_window_moved).
 var _chain_window:       Panel
 var _chain_window_moved: bool = false
-var _turn_info_btn:    Button
-var _controls_btn:     Button
+# Combat window: the step readout (proposition / attack window / protect point /
+# defend window), who is attacking whom, and the protect point's own buttons.
+# Auto-shown for the duration of a combat, like the chain window, and likewise
+# draggable but not closable.
+var _combat_window:  Panel
+var _combat_body:    Control
+var _combat_steps_rtl: RichTextLabel   # the full 602 sequence, current step bolded
+var _combat_atk_lbl:   Label
+var _combat_def_lbl:   Label
+var _combat_prompt_lbl: Label
+var _combat_btn_row:   Control
+# Combatant ids behind the two name labels, for Alt+hover examination.
+var _combat_atk_id: String = ""
+var _combat_def_id: String = ""
+# Which combatant name the pointer is over ("" = none); polled in _process so
+# pressing Alt while already hovering works too.
+var _combat_name_hover_id: String = ""
 # Title bar currently being dragged, and the grab offset within it.
 var _dragging_window:  Panel = null
 var _drag_offset:      Vector2 = Vector2.ZERO
@@ -224,7 +253,13 @@ var _log_in_mulligan: bool = false
 var _pending_exhaust: Dictionary = {}  # player_id -> count of resources exhausted, not yet logged
 
 # ── Control panel ──────────────────────────────────────────────────────────────
-var _turbo_mode: bool = true
+# Tactical is the DEFAULT: a human stops at every priority window that has new
+# information (a fresh opponent chain link — a hero power announcement included —
+# or a combat window transition), even with no legal response, so nothing the
+# opponent announces resolves off-screen. Turbo ([T]) is opt-in and skips those
+# "no legal play" windows. AI players are unaffected either way — they always
+# respond/pass immediately.
+var _turbo_mode: bool = false
 # One-shot "auto-pass this combat" toggle (set by pressing F during a combat
 # window). Auto-passes the human's attack/defend windows until the opponent
 # responds (adds a link to the chain), then clears so the human can react.
@@ -413,6 +448,7 @@ func _build_scene() -> void:
 	_renderer.register_zone("chain", _make_anchor(BOARD_MIRROR))
 
 	_draw_zone_grids()
+	_build_resource_info_labels()
 
 	# ── Deck slot card-back sprites ────────────────────────────────────────────────
 	for deck_zone in ["p1_deck", "p2_deck"]:
@@ -429,7 +465,7 @@ func _build_scene() -> void:
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
 	_router.modal_choice_opened.connect(_on_modal_choice_opened)
 	_router.modal_choice_cancelled.connect(_on_modal_choice_cancelled)
-	_router.totem_target_resolved.connect(_on_totem_target_resolved)
+	_router.trigger_target_resolved.connect(_on_trigger_target_resolved)
 	_router.death_target_resolved.connect(_on_death_target_resolved)
 	_router.quest_flow_resolved.connect(_on_quest_flow_resolved)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
@@ -460,11 +496,6 @@ func _build_scene() -> void:
 	pass_panel.size     = PASS_BLOCK_RECT.size
 	_hud.add_child(pass_panel)
 
-	var win_panel := Panel.new()
-	win_panel.position = WINDOW_BLOCK_RECT.position
-	win_panel.size     = WINDOW_BLOCK_RECT.size
-	_hud.add_child(win_panel)
-
 	# ── Visual chain (centred, draggable, shown only while the chain is live) ──
 	# One card-sized entry per link, stacked bottom-up (LIFO — the topmost entry
 	# is the top of the chain, the one that resolves next). Rebuilt from
@@ -473,10 +504,12 @@ func _build_scene() -> void:
 	# Deliberately centre-screen rather than tucked in a corner: a live chain is
 	# the thing the player must react to. It can be dragged aside to peek at what
 	# it covers, but not closed.
-	_chain_panel = _make_tool_window("Chain  ·  top first",
-		Vector2(CHAIN_PANEL_W, 100), Vector2(860, 380), false)
+	_chain_panel = _make_tool_window("Chain  ·  resolves right to left",
+		Vector2(CHAIN_PANEL_MIN_W, 100), Vector2(860, 380), false)
 	_chain_window = _chain_panel.get_parent() as Panel
 	_chain_window.visible = false
+
+	_build_combat_window()
 
 	# ── Skip button (top-right, free since P2's column moved screen-left) ──────
 	# The OFF-SCREEN player's pass during an ambush stop: skips the window
@@ -489,51 +522,60 @@ func _build_scene() -> void:
 	_skip_btn.pressed.connect(_on_skip_pressed)
 	_hud.add_child(_skip_btn)
 
-	# ── "Turn info" window (was the bar's left third) ──────────────────────────
-	# Opens left of its toggle button, on the button's own side of the mirror line.
-	var info_body := _make_tool_window("Turn info", Vector2(400, 140),
+	# ── Prompt window (the old "Turn info" panel, now prompts only) ────────────
+	# Turn/phase/priority all read off the two turn strips now, so the panel lost
+	# its reason to be a toggled panel — and with it its button. What is left is
+	# the PROMPT-ONLY channel ("select a target", "press Ctrl+Space to…"): every
+	# "what just happened" report goes to the game log instead (see _log_event).
+	# It shows itself when there is a prompt and hides when there isn't (see
+	# _set_status), which is the dedicated prompt popup, away from the pass
+	# button, that was always the intent.
+	var info_body := _make_tool_window("Prompt", Vector2(400, 60),
 		Vector2(1240, BOARD_MID_Y - 262))
 	_turn_info_window = info_body.get_parent() as Panel
-	_phase_label    = _add_label("", Vector2(10, 8), 19, Color(0.9, 0.85, 0.45), true, info_body)
-	_priority_label = _add_label("", Vector2(114, 40), 15, Color(0.9, 0.85, 0.3), true, info_body)
-	_add_label("Log [L]", Vector2(10, 40), 13, Color(0.55, 0.55, 0.6), true, info_body)
-
-	# Prompt line. It used to sit under the pass button, where a stale message
-	# ("Window closed (phase: mulligan)") read as an instruction about the button.
-	# It is now a PROMPT-ONLY channel — every "what just happened" report goes to
-	# the game log instead (see _log_event) — parked in this window until prompts
-	# get a popup of their own.
-	_status = _add_label("", Vector2(10, 84), 14, Color(0.5, 0.8, 0.5), true, info_body)
+	_status = _add_label("", Vector2(10, 8), 14, Color(0.5, 0.8, 0.5), true, info_body)
 	_status.size = Vector2(380, 50)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD
 
-	# ── Pass bar: resource indicator · pass · cancel ───────────────────────────
-	# Laid out relative to PASS_BLOCK_RECT so moving the bar is a one-constant
-	# change (it is about to be mirrored for the top player).
-	var pass_at: Vector2 = PASS_BLOCK_RECT.position
+	# ── Pass bars: one per player, straddling the mirror line ─────────────────
+	# Laid out relative to PASS_BLOCK_RECT and BOARD_MID_Y, so moving the whole
+	# thing is a one-constant change.
+	var pass_x: float = PASS_BLOCK_RECT.position.x
+	var btn_x: float  = pass_x + 214.0
+	var strip_x: float = pass_x + 16.0
 
 	_cancel_btn = Button.new()
-	_cancel_btn.text     = "Cancel  [Esc]"
-	# Directly under the pass button, outside the bar: it only appears while
-	# targeting, so giving it a permanent slot inside the bar just left a hole.
-	_cancel_btn.position = pass_at + Vector2(214, 74)
+	# Esc now opens the Controls panel, so retracting is this button's job alone.
+	_cancel_btn.text     = "Retract last"
+	# Just below the block: it only appears while targeting, so giving it a
+	# permanent slot inside a bar would leave a hole the rest of the time.
+	_cancel_btn.position = Vector2(btn_x, PASS_BLOCK_RECT.end.y + 8.0)
 	_cancel_btn.size     = Vector2(160, 40)
 	_cancel_btn.visible  = false
 	_cancel_btn.pressed.connect(_on_cancel_btn_pressed)
 	_hud.add_child(_cancel_btn)
 
+	# Seated player's bar, below the line: pass button then turn strip.
 	_pass_btn = Button.new()
 	_pass_btn.text     = "Pass Priority  [Space]"
-	_pass_btn.position = pass_at + Vector2(214, 13)
+	_pass_btn.position = Vector2(btn_x, BOARD_MID_Y + PASS_BTN_DY)
 	_pass_btn.size     = Vector2(230, 40)
 	_pass_btn.pressed.connect(_on_pass_btn_pressed)
 	_hud.add_child(_pass_btn)
+	_turn_steps_bottom = _make_turn_step_strip(
+		Vector2(strip_x, BOARD_MID_Y + PASS_STRIP_DY))
 
-	# Resource-placement indicator (aligned with the pass button, to its left).
-	_resource_label = _add_label("", pass_at + Vector2(16, 13), 15, Color(1.0, 0.3, 0.3), true)
-	_resource_label.size = Vector2(190, 40)
-	_resource_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_resource_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	# Opponent's bar, mirrored above the line: their turn strip is outermost, so
+	# the two strips end up adjacent around the two buttons. Their pass button is
+	# a STATUS light, not a control — see _update_opponent_pass_btn.
+	_opp_pass_btn = Button.new()
+	_opp_pass_btn.text     = "Pass Priority"
+	_opp_pass_btn.position = Vector2(btn_x, BOARD_MID_Y - PASS_BTN_DY - 40.0)
+	_opp_pass_btn.size     = Vector2(230, 40)
+	_opp_pass_btn.disabled = true
+	_hud.add_child(_opp_pass_btn)
+	_turn_steps_top = _make_turn_step_strip(
+		Vector2(strip_x, BOARD_MID_Y - PASS_STRIP_DY - 26.0))
 
 	# ── Mulligan panel (replaces pass area during mulligan phase) ──────────────
 	_mulligan_panel = VBoxContainer.new()
@@ -568,9 +610,15 @@ func _build_scene() -> void:
 	# ── "Controls" window (was the bar's right third) ──────────────────────────
 	# Contents keep their former relative layout; the whole block is simply
 	# rebased from screen (1320, 960) to the window body's origin.
-	var ctl_body := _make_tool_window("Controls", Vector2(610, 145),
+	var ctl_body := _make_tool_window("Controls  [Esc]", Vector2(610, 205),
 		Vector2(1040, BOARD_MID_Y + 66))
 	_controls_window = ctl_body.get_parent() as Panel
+
+	# Turn/phase/priority readouts and the log hint moved here from the old turn
+	# info panel — reference material, not something to watch, so behind Esc.
+	_phase_label    = _add_label("", Vector2(10, 152), 15, Color(0.9, 0.85, 0.45), true, ctl_body)
+	_priority_label = _add_label("", Vector2(10, 172), 13, Color(0.9, 0.85, 0.3), true, ctl_body)
+	_add_label("Game log  [L]", Vector2(370, 152), 12, Color(0.55, 0.55, 0.6), true, ctl_body)
 
 	# ── Speed Mode selector ────────────────────────────────────────────────────
 	_add_label("SPEED MODE  [T]", Vector2(10, 11), 10, Color(0.55, 0.55, 0.55), true, ctl_body)
@@ -583,7 +631,6 @@ func _build_scene() -> void:
 	_turbo_btn.size          = Vector2(110, 36)
 	_turbo_btn.toggle_mode   = true
 	_turbo_btn.button_group  = mode_group
-	_turbo_btn.button_pressed = true
 	_turbo_btn.toggled.connect(func(on: bool) -> void: if on: _set_turbo_mode(true))
 	ctl_body.add_child(_turbo_btn)
 
@@ -593,11 +640,13 @@ func _build_scene() -> void:
 	_tactical_btn.size         = Vector2(110, 36)
 	_tactical_btn.toggle_mode  = true
 	_tactical_btn.button_group = mode_group
+	_tactical_btn.button_pressed = true
 	_tactical_btn.toggled.connect(func(on: bool) -> void: if on: _set_turbo_mode(false))
 	ctl_body.add_child(_tactical_btn)
 
-	_mode_desc_label = _add_label("Auto-pass all 'no legal play'",
-		Vector2(10, 107), 10, Color(0.42, 0.52, 0.42), true, ctl_body)
+	# Matches _set_turbo_mode's Tactical branch — the default (see _turbo_mode).
+	_mode_desc_label = _add_label("Manual control — all phases",
+		Vector2(10, 107), 10, Color(0.52, 0.42, 0.42), true, ctl_body)
 
 	# ── Combat stance selector (next to Speed Mode) ─────────────────────────────
 	# Each player sets THEIR stance while they hold the screen; it governs their
@@ -629,15 +678,17 @@ func _build_scene() -> void:
 
 	# Control indications: docked at the window's far right, past the speed slider.
 	_mulligan_hint_label = _add_label(
-		"Left-click = play/place\nRight-click = options\nEsc = retract\nCtrl+Space/Enter = wrap up / end turn\nF = auto-pass combat windows",
+		"Left-click = play/place\nRight-click = options / cancel targeting\nEsc = this panel\nCtrl+Space/Enter = wrap up / end turn\nF = auto-pass combat windows\nL = game log",
 		Vector2(468, 3), 10, Color(0.38, 0.38, 0.38), true, ctl_body)
 	_mulligan_hint_label.size = Vector2(128, 128)
 	_mulligan_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_mulligan_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	_mulligan_hint_label.visible = false
 
-	# ── Far right: Animation speed slider (scales every GameTiming pause live) ──
-	# animation_speed: 0 = instant (no pauses), 1 = base timing, up to 3x slower.
+	# ── Far right: Animation speed slider (scales every GameTiming pause AND every
+	# renderer tween live — see GameTiming.anim) ──
+	# animation_speed: 0 = instant (no pauses/tweens), 1 = base timing,
+	# up to 3x slower. Cards already animate at GameTiming.DURATION_SCALE.
 	var speed_lbl := _add_label("Speed", Vector2(370, 11), 10, Color(0.55, 0.55, 0.55), true, ctl_body)
 	speed_lbl.size = Vector2(90, 16)
 	_speed_slider = HSlider.new()
@@ -657,29 +708,10 @@ func _build_scene() -> void:
 	_speed_value_label.size = Vector2(90, 16)
 	_speed_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	# ── Window toggle buttons (right of the pass bar, straddling the mirror line)
-	var win_at: Vector2 = WINDOW_BLOCK_RECT.position
-
-	_turn_info_btn = Button.new()
-	_turn_info_btn.text        = "Turn info"
-	_turn_info_btn.position    = win_at + Vector2(12, 8)     # above the line
-	_turn_info_btn.size        = Vector2(110, 40)
-	_turn_info_btn.toggle_mode = true
-	_turn_info_btn.toggled.connect(func(on: bool) -> void:
-		_set_window_open(_turn_info_window, on))
-	_hud.add_child(_turn_info_btn)
-
-	_controls_btn = Button.new()
-	_controls_btn.text        = "Controls"
-	_controls_btn.position    = win_at + Vector2(12, 58)     # below the line
-	_controls_btn.size        = Vector2(110, 40)
-	_controls_btn.toggle_mode = true
-	_controls_btn.toggled.connect(func(on: bool) -> void:
-		_set_window_open(_controls_window, on))
-	_hud.add_child(_controls_btn)
-
+	# No toggle buttons any more: the turn info they used to open is on the two
+	# turn strips, and the Controls panel is bound to Esc (see _input). That frees
+	# the whole band between the ally rows.
 	# Both windows start closed; clears any shield left over from a previous game.
-	_update_window_btns()
 	_refresh_card_input_shields()
 
 	_ai_timer = Timer.new()
@@ -1258,7 +1290,7 @@ func _on_card_hover_scene(instance_id: String) -> void:
 		cn.show_card_front()
 	# The local player's own hand magnifies on hover.
 	if card.zone_id == _local_player + "_hand":
-		cn.scale = Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY)
+		cn.set_base_scale(Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY))
 		cn.z_index = BoardRenderer.HAND_Z_INDEX + 1
 
 
@@ -1274,7 +1306,7 @@ func _on_card_unhover_scene(instance_id: String) -> void:
 	if _in_choice_peek and _choice_peek_hides_hand and card.zone_id == _choice_peek_player + "_hand":
 		cn.show_card_back()
 	if card.zone_id.ends_with("_hand"):
-		cn.scale = Vector2.ONE * BoardRenderer.HAND_CARD_SCALE
+		cn.set_base_scale(Vector2.ONE * BoardRenderer.HAND_CARD_SCALE)
 		cn.z_index = BoardRenderer.HAND_Z_INDEX
 
 
@@ -1353,6 +1385,161 @@ const RES_ZONE_CENTRE := Vector2(
 const RES_ZONE_LINE := Color(1.0, 1.0, 1.0, 0.55)
 const HERO_ROW_LINE := Color(0.78, 0.35, 1.0, 0.75)   # abilities / equipment
 const ALLY_ROW_LINE := Color(1.0, 0.9, 0.2, 0.75)     # allies
+
+# ── Combat window ─────────────────────────────────────────────────────────────
+# Everything about the combat in progress, in one place: which step of rule 602
+# we are in, who is attacking whom, and — when it is open — the protect point's
+# prompt and buttons. It used to be a bare inline row over the pass button with
+# no context beyond "X is attacking Y".
+#
+# Parked in the free band on the left, between the top player's column and the
+# bottom player's resource zone, so it never covers either ally row: the protect
+# point stays clickable on the board (a legal protector can be picked by
+# clicking the card itself, not just its button).
+const COMBAT_WINDOW_AT   := Vector2(30, 380)
+const COMBAT_BODY_SIZE   := Vector2(560, 250)
+const COMBAT_BTN_H       := 36.0
+const COMBAT_BTN_GAP     := 8.0
+
+func _build_combat_window() -> void:
+	_combat_body = _make_tool_window("Combat", COMBAT_BODY_SIZE, COMBAT_WINDOW_AT, false)
+	_combat_window = _combat_body.get_parent() as Panel
+	_combat_window.visible = false
+
+	# The whole 602 sequence, always visible, current step bolded — so the
+	# players can see where in the process the combat is, not just its name.
+	_combat_steps_rtl = RichTextLabel.new()
+	_combat_steps_rtl.bbcode_enabled = true
+	_combat_steps_rtl.scroll_active  = false
+	_combat_steps_rtl.fit_content    = true
+	_combat_steps_rtl.position       = Vector2(12, 10)
+	_combat_steps_rtl.size           = Vector2(COMBAT_BODY_SIZE.x - 24, 26)
+	_combat_steps_rtl.mouse_filter   = Control.MOUSE_FILTER_IGNORE
+	_combat_steps_rtl.add_theme_font_size_override("normal_font_size", 14)
+	_combat_steps_rtl.add_theme_font_size_override("bold_font_size", 14)
+	_combat_body.add_child(_combat_steps_rtl)
+
+	_combat_atk_lbl  = _add_label("", Vector2(12, 46), 15,
+		Color(0.92, 0.92, 0.95), true, _combat_body)
+	_combat_def_lbl  = _add_label("", Vector2(12, 70), 15,
+		Color(0.92, 0.92, 0.95), true, _combat_body)
+	# Alt+hover a combatant's NAME to examine the card it names — the magnified
+	# card appears beside the actual board card, which points out WHICH ally is
+	# meant when several share a name. Hover state is polled in _process so
+	# pressing Alt after the pointer is already on the name works too.
+	_wire_combat_name_hover(_combat_atk_lbl, true)
+	_wire_combat_name_hover(_combat_def_lbl, false)
+	_combat_prompt_lbl = _add_label("", Vector2(12, 104), 15,
+		Color(0.9, 0.5, 0.2), true, _combat_body)
+	_combat_prompt_lbl.size = Vector2(COMBAT_BODY_SIZE.x - 24, 40)
+	_combat_prompt_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
+
+	# Buttons (protect point) are rebuilt per prompt; this just reserves the row.
+	_combat_btn_row = Control.new()
+	_combat_btn_row.position     = Vector2(12, 150)
+	_combat_btn_row.size         = Vector2(COMBAT_BODY_SIZE.x - 24, COMBAT_BTN_H)
+	_combat_btn_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_combat_body.add_child(_combat_btn_row)
+
+
+# The full rule-602 sequence, always displayed; the live step is bolded.
+const COMBAT_STEPS := [
+	["proposition", "Proposition"], ["attack", "Atk wind."],
+	["protect", "Protection"], ["defend", "Def wind."],
+	["conclusion", "Conclusion"]]
+
+# Which step of rule 602 the combat is in, or "" when no combat is live.
+func _combat_step_key() -> String:
+	if not _state:
+		return ""
+	if _state.in_protect_point:
+		return "protect"
+	if _state.combat_defend_window:
+		return "defend"
+	if _state.combat_attack_window:
+		return "attack"
+	# Attacker committed, no window open and the protect point passed: damage is
+	# being dealt / the step is wrapping up.
+	if _state.combat_attacker != "":
+		return "conclusion"
+	for pa in _state.pending_actions:
+		if (pa as PendingAction).action_type == "propose_combat":
+			return "proposition"
+	return ""
+
+
+func _combat_steps_bbcode(current: String) -> String:
+	var parts: Array[String] = []
+	for step in COMBAT_STEPS:
+		if step[0] == current:
+			parts.append("[b][color=#ff9e40]%s[/color][/b]" % step[1])
+		else:
+			parts.append("[color=#71717e]%s[/color]" % step[1])
+	return "  ·  ".join(parts)
+
+
+# Alt+hover on a combatant NAME examines that card, anchored beside the real
+# card on the board. Labels ignore the mouse by default, so opt this one in.
+func _wire_combat_name_hover(lbl: Label, is_attacker: bool) -> void:
+	lbl.mouse_filter = Control.MOUSE_FILTER_STOP
+	lbl.mouse_entered.connect(func() -> void:
+		_combat_name_hover_id = _combat_atk_id if is_attacker else _combat_def_id)
+	lbl.mouse_exited.connect(func() -> void:
+		_combat_name_hover_id = "")
+
+
+# The combatants: taken from the live combat once it has started, and from the
+# pending proposal while it is still on the chain (nothing is committed yet, so
+# GameState.combat_attacker is still empty then).
+func _combat_participants() -> Array:
+	if _state.combat_attacker != "":
+		return [_state.combat_attacker, _state.combat_defender]
+	for pa in _state.pending_actions:
+		var a := pa as PendingAction
+		if a.action_type == "propose_combat":
+			return [a.params.get("attacker_id", ""), a.params.get("defender_id", "")]
+	return ["", ""]
+
+
+# Refreshed from _refresh_ui, so the readout tracks every step change without
+# each combat event handler having to remember to update it.
+func _update_combat_window() -> void:
+	if not _combat_window:
+		return
+	var step := _combat_step_key()
+	if step == "":
+		_combat_atk_id = ""
+		_combat_def_id = ""
+		_combat_name_hover_id = ""
+		if _combat_window.visible:
+			_combat_window.visible = false
+			_refresh_card_input_shields()
+		return
+
+	var who := _combat_participants()
+	_combat_atk_id = who[0]
+	_combat_def_id = who[1]
+	_combat_steps_rtl.text = _combat_steps_bbcode(step)
+	# Nothing is committed until the proposal resolves (601.3 can still fizzle
+	# it), so the combatants are "proposed" only during that first step.
+	var proposed := step == "proposition"
+	_combat_atk_lbl.text = ("Proposed attacker:  %s" if proposed
+		else "Attacker:  %s") % _log_card(who[0])
+	_combat_def_lbl.text = ("Proposed defender:  %s" if proposed
+		else "Defender:  %s") % _log_card(who[1])
+	if not _combat_window.visible:
+		_combat_window.visible = true
+		_refresh_card_input_shields()
+
+
+func _clear_combat_buttons() -> void:
+	if not _combat_btn_row:
+		return
+	for c in _combat_btn_row.get_children():
+		c.queue_free()
+	if _combat_prompt_lbl:
+		_combat_prompt_lbl.text = ""
+
 
 const ROW_GRID_COLS := 7   # slots outlined per ally / hero row
 
@@ -1478,9 +1665,28 @@ const BOARD_MID_Y := 450.0 + BOARD_Y_OFFSET
 # Both are also permanent card-input shields: cards hit-test the raw pointer
 # themselves, so anything underneath a block must not answer clicks.
 const BLOCK_RIGHT_EDGE  := 1900.0
-const WINDOW_BLOCK_RECT := Rect2(BLOCK_RIGHT_EDGE - 134.0, BOARD_MID_Y - 53.0, 134, 106)
-const PASS_BLOCK_RECT   := Rect2(WINDOW_BLOCK_RECT.position.x - 10.0 - 460.0,
-	BOARD_MID_Y, 460, 66)
+# Left edge of the TOP player's resource zone: the pass block may not reach any
+# closer to the centre than this, so the whole band between the ally rows stays
+# free. P1's zone spans CARD_PAD .. CARD_PAD + cols*cell from the left edge, and
+# P2's is its mirror image, so its left edge is 1920 minus P1's right edge.
+const FREE_BAND_RIGHT := 1920.0 - (BoardRenderer.CARD_PAD
+	+ BoardRenderer.RES_GRID_COLS * BoardRenderer.RES_CELL)
+# The pass block now holds BOTH players' bars, straddling the mirror line: the
+# opponent's turn strip and pass button above it, the seated player's below, each
+# half the mirror image of the other. Reading top to bottom:
+#   opponent strip · opponent pass button │ pass button · turn strip
+# The block is anchored on BOARD_MID_Y and grows symmetrically from it.
+const PASS_HALF_H       := 92.0
+const PASS_BLOCK_W      := 460.0
+const PASS_BLOCK_RECT   := Rect2(BLOCK_RIGHT_EDGE - PASS_BLOCK_W,
+	BOARD_MID_Y - PASS_HALF_H, PASS_BLOCK_W, PASS_HALF_H * 2.0)
+# Offsets from the mirror line for the seated player's half; the opponent's are
+# these negated (button and strip swap order, so their strip ends up outermost).
+const PASS_BTN_DY       := 13.0
+const PASS_STRIP_DY     := 56.0
+# Pass buttons size themselves to their label and re-centre (_centre_in_pass_block).
+const PASS_BTN_MIN_W    := 230.0
+const PASS_BTN_TEXT_PAD := 28.0
 
 #
 # `closable = false` drops both the ✕ and the Close button (the chain window:
@@ -1498,6 +1704,7 @@ func _make_tool_window(title: String, body_size: Vector2, at: Vector2,
 	_hud.add_child(win)
 
 	var bar := ColorRect.new()
+	bar.name  = "TitleBar"   # _resize_tool_window looks it up by name
 	bar.color = Color(0.18, 0.22, 0.28)
 	bar.size  = Vector2(body_size.x, TOOL_WINDOW_TITLE_H)
 	bar.gui_input.connect(func(ev: InputEvent) -> void: _on_window_bar_input(win, ev))
@@ -1537,6 +1744,18 @@ func _make_tool_window(title: String, body_size: Vector2, at: Vector2,
 	return body
 
 
+# Re-size a window whose body changes shape at runtime (the chain grows a slot
+# per link). The title bar is a plain child sized at build time, so it has to be
+# stretched to match or it leaves a gap on a widened window.
+func _resize_tool_window(win: Panel, body_size: Vector2, foot: float) -> void:
+	if not win:
+		return
+	win.size = Vector2(body_size.x, body_size.y + TOOL_WINDOW_TITLE_H + foot)
+	var bar := win.get_node_or_null("TitleBar") as ColorRect
+	if bar:
+		bar.size.x = body_size.x
+
+
 func _set_window_open(win: Panel, open: bool) -> void:
 	if not win:
 		return
@@ -1552,7 +1771,7 @@ func _set_window_open(win: Panel, open: bool) -> void:
 # underneath. Re-register the open windows' rects whenever one opens, closes or
 # moves.
 func _refresh_card_input_shields() -> void:
-	var rects: Array[Rect2] = [PASS_BLOCK_RECT, WINDOW_BLOCK_RECT]
+	var rects: Array[Rect2] = [PASS_BLOCK_RECT]
 	for win in [_turn_info_window, _controls_window, _chain_window]:
 		if win and is_instance_valid(win) and win.visible:
 			rects.append(Rect2(win.position, win.size))
@@ -1598,13 +1817,10 @@ func _drag_tool_window() -> void:
 	_refresh_card_input_shields()
 
 
-# Toggle buttons read "open"/"close" so the pair is self-describing when one of
-# the windows is already up.
 func _update_window_btns() -> void:
-	if _turn_info_btn and _turn_info_window:
-		_turn_info_btn.button_pressed = _turn_info_window.visible
-	if _controls_btn and _controls_window:
-		_controls_btn.button_pressed = _controls_window.visible
+	# The toggle buttons are gone (turn info is on the strips, Controls is on Esc).
+	# Kept as a no-op hook so _set_window_open still has one place to notify.
+	return
 
 
 # Rotate a world-space label 180° about its own centre (so P2's side labels
@@ -1798,6 +2014,7 @@ func _refresh_ui() -> void:
 		_exit_ambush_mode()
 	_update_priority_label()
 	_update_chain_panel()
+	_update_combat_window()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_strike_ready_mode and not _in_whelp_bounce_mode:
@@ -1900,16 +2117,27 @@ func _pending_action_card_name(action: PendingAction) -> String:
 # ("played" / "power" / …); links with no public card face (combat proposals,
 # face-down resources) show a card-sized text rectangle instead.
 #
+# Laid out HORIZONTALLY in play order: oldest link on the left, newest on the
+# right. Resolution therefore reads right-to-left — the rightmost link is the
+# top of the chain and resolves first, unless another link is added, which
+# appears to its right and takes over.
+#
 # Lives in its own draggable window (_chain_window), which this function sizes
 # to the current link count and shows/hides — an empty chain shows nothing.
 
 const CHAIN_CARD_W       := 90.0
 const CHAIN_CARD_H       := 126.0
 const CHAIN_CAPTION_H    := 18.0
+# Second caption line: the targets announced WITH the link (707.1 — targets are
+# chosen at announcement, not at resolution), so a responder can see what is
+# aimed at what while the window is still open. Reserved only when at least one
+# link on the chain actually has targets.
+const CHAIN_TARGET_H     := 16.0
 const CHAIN_ENTRY_GAP    := 8.0
 const CHAIN_PANEL_PAD    := 8.0
-# Wider than an entry so the window title fits; entries are centred in it.
-const CHAIN_PANEL_W      := 200.0
+# Floor on the body width so the window title always fits; a body narrower than
+# this (one or two links) centres its entries instead.
+const CHAIN_PANEL_MIN_W  := 250.0
 
 func _update_chain_panel() -> void:
 	if not _chain_panel or not _chain_window:
@@ -1923,21 +2151,31 @@ func _update_chain_panel() -> void:
 		return
 
 	var count := _state.pending_actions.size()
-	var step := CHAIN_CARD_H + CHAIN_CAPTION_H + CHAIN_ENTRY_GAP
-	var body_h: float = count * step - CHAIN_ENTRY_GAP + CHAIN_PANEL_PAD * 2.0
-	var entry_x: float = (CHAIN_PANEL_W - CHAIN_CARD_W) * 0.5
+	var step := CHAIN_CARD_W + CHAIN_ENTRY_GAP
+	# Only reserve the target row when some link on the chain has targets to show.
+	var target_h := 0.0
+	for a in _state.pending_actions:
+		if _chain_action_targets(a as PendingAction) != "":
+			target_h = CHAIN_TARGET_H
+			break
+	var body_h: float = CHAIN_CARD_H + CHAIN_CAPTION_H + target_h + CHAIN_PANEL_PAD * 2.0
+	var strip_w: float = count * step - CHAIN_ENTRY_GAP
+	var body_w: float = maxf(CHAIN_PANEL_MIN_W, strip_w + CHAIN_PANEL_PAD * 2.0)
+	# Centre the strip when the title's minimum width is the wider of the two.
+	var x0: float = (body_w - strip_w) * 0.5
 
 	for i in count:
 		var action := _state.pending_actions[i] as PendingAction
 		var is_top := (i == count - 1)
-		# index 0 (bottom of the chain) sits lowest; each later link stacks above,
-		# so the LAST index — the one that resolves next — is at the top.
-		var y: float = CHAIN_PANEL_PAD + (count - 1 - i) * step
+		# Play order, left to right: index 0 (the oldest link, bottom of the
+		# chain) sits leftmost, so the LAST index — the one that resolves next —
+		# ends up on the right.
+		var x: float = x0 + i * step
 		_chain_panel.add_child(
-			_make_chain_entry(action, Vector2(entry_x, y), is_top))
+			_make_chain_entry(action, Vector2(x, CHAIN_PANEL_PAD), is_top))
 
-	_chain_panel.size = Vector2(CHAIN_PANEL_W, body_h)
-	_chain_window.size = Vector2(CHAIN_PANEL_W, body_h + TOOL_WINDOW_TITLE_H + 8.0)
+	_chain_panel.size = Vector2(body_w, body_h)
+	_resize_tool_window(_chain_window, Vector2(body_w, body_h), 8.0)
 	# Re-centre only until the player has dragged it — after that their placement
 	# is theirs to keep, even as links are added and removed.
 	if not _chain_window_moved:
@@ -2019,7 +2257,62 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 				Color(1.0, 0.9, 0.3) if is_top else Color(0.7, 0.72, 0.78))
 		cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		entry.add_child(cap)
+
+	# Targets are locked in at announcement (707.1), so the opponent must be able
+	# to read them off the chain while the response window is open.
+	var targets := _chain_action_targets(action)
+	if targets != "":
+		var tgt := Label.new()
+		tgt.text = targets
+		tgt.position = Vector2(0, CHAIN_CARD_H + CHAIN_CAPTION_H)
+		tgt.size = Vector2(CHAIN_CARD_W, CHAIN_TARGET_H)
+		tgt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		tgt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		tgt.clip_text = true
+		tgt.tooltip_text = targets
+		tgt.add_theme_font_size_override("font_size", 11)
+		tgt.add_theme_color_override("font_color", Color(0.62, 0.86, 1.0))
+		tgt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		entry.add_child(tgt)
 	return entry
+
+
+# The targets announced with a pending action, for the chain entry's second
+# caption line ("→ Grimdron", "→ Ta'zo, sac: Voss Treebender"). Empty when the
+# link announces nothing to point at (combat proposals describe themselves in
+# the text rect; resources and untargeted powers have no target at all).
+func _chain_action_targets(action: PendingAction) -> String:
+	if action == null or action.action_type == "propose_combat":
+		return ""
+	var ids: Array[String] = []
+	for key in ["target_id", "target_id_2", "target_id_3", "heal_target_id"]:
+		var tid: String = action.params.get(key, "")
+		if tid != "" and not ids.has(tid):
+			ids.append(tid)
+	# Divided damage (Lightning Storm) announces one id per point, repeats and all.
+	var list: Variant = action.params.get("target_ids", [])
+	if list is Array:
+		for raw in list:
+			var tid := str(raw)
+			if tid != "" and not ids.has(tid):
+				ids.append(tid)
+	var parts: Array[String] = []
+	for tid in ids:
+		var n := 0
+		if list is Array:
+			for raw in list:
+				if str(raw) == tid:
+					n += 1
+		parts.append("%s x%d" % [_log_card(tid), n] if n > 1 else _log_card(tid))
+	var out := ""
+	if not parts.is_empty():
+		out = "→ " + ", ".join(parts)
+	# Additional-cost sacrifice (Sever the Cord, Gertha) — not a target, but the
+	# opponent should see which ally is being spent before responding.
+	var sac: String = action.params.get("sacrifice_id", "")
+	if sac != "":
+		out += ("  " if out != "" else "") + "sac: " + _log_card(sac)
+	return out
 
 
 # The public card face for a pending action, or null (falls back to the text rect).
@@ -2049,24 +2342,120 @@ func _update_cancel_btn() -> void:
 	_cancel_btn.visible = StackResolver.can_retract(_state, _local_player)
 
 
-func _update_resource_label() -> void:
-	if not _resource_label:
+# ── Resource readouts (beside each resource zone) ────────────────────────────
+
+func _build_resource_info_labels() -> void:
+	var zone_size: Vector2 = BoardRenderer.res_grid_size(0)
+	# P1's two lines sit just above their zone; P2's are the mirror image (and
+	# rotated 180° so they read upright from P2's seat, like every board label).
+	var line1 := Vector2(RES_ZONE_CENTRE.x - zone_size.x * 0.5,
+		RES_ZONE_CENTRE.y - zone_size.y * 0.5 - 48.0)
+	var line2 := line1 + Vector2(0, 22)
+	var lbl_size := Vector2(zone_size.x, 18)
+	for pid in ["p1", "p2"]:
+		var l1 := _add_label("", Vector2.ZERO, 14, Color(0.85, 0.85, 0.9))
+		var l2 := _add_label("", Vector2.ZERO, 14, Color(1.0, 0.3, 0.3))
+		for l in [l1, l2]:
+			(l as Label).size = lbl_size
+			(l as Label).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		if pid == "p1":
+			l1.position = _board_pos(line1.x, line1.y)
+			l2.position = _board_pos(line2.x, line2.y)
+		else:
+			# Mirrored POSITION (a rect's mirror image has its top-left at the
+			# mirror of its bottom-right) but NOT rotated: the upside-down cards
+			# emulate a real opponent across the table, while UI text exists only
+			# for whoever is looking at the screen and must stay readable. The
+			# deck/graveyard tags are board-space labels and do still flip.
+			var m1 := _mirror(line1 + lbl_size)
+			var m2 := _mirror(line2 + lbl_size)
+			l1.position = _board_pos(m1.x, m1.y)
+			l2.position = _board_pos(m2.x, m2.y)
+		_res_info_labels[pid] = {"avail": l1, "place": l2}
+
+
+func _update_resource_info() -> void:
+	if _res_info_labels.is_empty() or not _state:
 		return
-	if _state.turn_player != _local_player:
-		_resource_label.text = "not my turn"
-		_resource_label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
+	for pid in _res_info_labels:
+		var d: Dictionary = _res_info_labels[pid]
+		var avail := _state.get_available_resources(pid)
+		var total := _state.get_total_resources(pid)
+		(d["avail"] as Label).text = "Available %d  /  Total %d" % [avail, total]
+		var ps: PlayerState = _state.players.get(pid)
+		var can_place: int = 1 if (_state.turn_player == pid \
+			and ps and not ps.resource_placed_this_turn) else 0
+		var pl := d["place"] as Label
+		pl.text = "%d can be placed" % can_place
+		# Red = a placement is still owed this turn; green = done (or not
+		# this player's turn, so nothing can be placed anyway).
+		pl.add_theme_color_override("font_color",
+			Color(1.0, 0.3, 0.3) if can_place > 0 else Color(0.3, 1.0, 0.35))
+
+
+# ── Turn-step strips (Ready · Draw · Action · End) ────────────────────────────
+
+const TURN_STEPS := [["ready", "Ready"], ["draw", "Draw"],
+	["action", "Action Phase"], ["end", "End"]]
+
+func _make_turn_step_strip(at: Vector2) -> RichTextLabel:
+	var rtl := RichTextLabel.new()
+	rtl.bbcode_enabled = true
+	rtl.scroll_active  = false
+	rtl.fit_content    = true
+	rtl.position       = at
+	rtl.size           = Vector2(428, 26)
+	rtl.mouse_filter   = Control.MOUSE_FILTER_IGNORE
+	rtl.add_theme_font_size_override("normal_font_size", 13)
+	rtl.add_theme_font_size_override("bold_font_size", 13)
+	_hud.add_child(rtl)
+	return rtl
+
+
+# Both strips show all four steps; the current one is bolded ONLY on the strip
+# belonging to the turn player, so exactly one step is highlighted at any time
+# — on the active player's side. (During mulligan neither side bolds.)
+func _update_turn_steps() -> void:
+	if not _turn_steps_bottom or not _state:
 		return
-	var ps: PlayerState = _state.players.get(_local_player)
-	if ps and ps.resource_placed_this_turn:
-		_resource_label.text = "resource placed"
-		_resource_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.35))
-	else:
-		_resource_label.text = "resource to be placed"
-		_resource_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+	var opp := "p2" if _local_player == "p1" else "p1"
+	_turn_steps_bottom.text = _turn_step_bbcode(_local_player)
+	_turn_steps_top.text    = _turn_step_bbcode(opp)
+	_update_opponent_pass_btn(opp)
+
+
+# "<pid>'s turn · Ready · Draw · Action Phase · End". The owner label is bolded
+# for the whole of that player's turn; the step is bolded only on the strip of
+# the player whose turn it is — so exactly one step is ever highlighted, on the
+# active player's side.
+func _turn_step_bbcode(pid: String) -> String:
+	var mine := _state.turn_player == pid
+	var parts: Array[String] = []
+	parts.append(("[b][color=#ffd24a]%s's turn[/color][/b]" if mine
+		else "[color=#71717e]%s's turn[/color]") % pid.to_upper())
+	for step in TURN_STEPS:
+		if mine and _state.phase == step[0]:
+			parts.append("[b][color=#ffd24a]%s[/color][/b]" % step[1])
+		else:
+			parts.append("[color=#71717e]%s[/color]" % step[1])
+	return "[center]%s[/center]" % "   ·   ".join(parts)
+
+
+# Status light: lit while the opponent holds priority (the moment the seated
+# player is waiting on them), greyed otherwise. Stays disabled — it is not a
+# control the seated player may press.
+func _update_opponent_pass_btn(opp: String) -> void:
+	if not _opp_pass_btn:
+		return
+	var theirs := _state.priority_player == opp
+	_opp_pass_btn.text     = "Priority" if theirs else "Waiting"
+	_opp_pass_btn.modulate = Color(1.0, 0.78, 0.3) if theirs \
+		else Color(0.42, 0.42, 0.48)
 
 
 func _update_pass_btn() -> void:
-	_update_resource_label()
+	_update_resource_info()
+	_update_turn_steps()
 	var my_turn    := _state.priority_player == _local_player
 	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
@@ -2136,12 +2525,51 @@ func _update_pass_btn() -> void:
 		_pass_btn.text     = "Pass  [Space]"
 		_pass_btn.modulate = Color(0.65, 0.65, 0.65)
 
+	_centre_in_pass_block(_pass_btn)
+	_centre_in_pass_block(_opp_pass_btn)
+	_centre_in_pass_block(_cancel_btn)
+
+
+# The pass button's label changes length a lot ("Pass  [Space]" vs
+# "Defense window : fight on!  [Space] · auto-pass [F]"), so a fixed-width button
+# either clips the long ones or leaves the short ones adrift. Size it to its own
+# text and re-centre it on the block instead: the button then always reads as
+# centred, whatever it currently says.
+func _centre_in_pass_block(btn: Button) -> void:
+	if not btn:
+		return
+	var w: float = maxf(PASS_BTN_MIN_W, btn.get_minimum_size().x + PASS_BTN_TEXT_PAD)
+	w = minf(w, PASS_BLOCK_RECT.size.x - 16.0)
+	btn.size.x     = w
+	btn.position.x = PASS_BLOCK_RECT.position.x + (PASS_BLOCK_RECT.size.x - w) * 0.5
+
 
 # ── Button handlers ────────────────────────────────────────────────────────────
 
 func _process(_delta: float) -> void:
 	if _dragging_window:
 		_drag_tool_window()
+	_update_combat_name_inspect()
+
+
+# Alt + hovering a combatant's written name in the Combat window examines that
+# card. Polled rather than event-driven so that pressing Alt while the pointer
+# is ALREADY resting on the name works, same as the board's own Alt+hover.
+# Re-asserted every frame because BoardRenderer's Alt handler hides the
+# inspector whenever no board card is under the cursor — which is exactly the
+# case while the pointer is over this window.
+var _combat_inspecting: bool = false
+
+func _update_combat_name_inspect() -> void:
+	if not _renderer:
+		return
+	var want: bool = _combat_name_hover_id != "" and Input.is_key_pressed(KEY_ALT)
+	if want:
+		_renderer.show_inspector_for(_combat_name_hover_id)
+		_combat_inspecting = true
+	elif _combat_inspecting:
+		_combat_inspecting = false
+		_renderer.hide_inspector()
 
 
 func _input(event: InputEvent) -> void:
@@ -2230,6 +2658,13 @@ func _input(event: InputEvent) -> void:
 			_on_gy_cancel_pressed()
 			get_viewport().set_input_as_handled()
 			return
+		# Otherwise Escape is the Controls panel — one key, one function. It is
+		# deliberately swallowed here so InputRouter never sees it: Esc used to
+		# also cancel targeting and retract the last chain entry, and those now
+		# have exactly one route each (right-click / the Retract button).
+		_set_window_open(_controls_window, not _controls_window.visible)
+		get_viewport().set_input_as_handled()
+		return
 	# T toggles Turbo ⇄ Tactical. Chaining multiple instants (e.g. two Quick Strikes
 	# against a 4-HP attacker) needs Tactical, since Turbo auto-passes after each of the
 	# human's own chain links. Toggle to Tactical, play the chain, pass manually, then
@@ -2671,9 +3106,9 @@ func _on_game_event(event: GameEvent) -> void:
 	_stats.record_event(event)
 	match event.event_type:
 		"turn_changed":
-			# End-of-turn heal: force a reconcile that ignores the wiggle-skip so any
-			# card left crooked/un-exhausted after a power or attack animation (the
-			# engine already has them exhausted) snaps to its true orientation.
+			# End-of-turn heal: force a reconcile (which also ends any lingering pulse
+			# cue) so any card left crooked/un-exhausted after a power or attack
+			# animation snaps to its true orientation.
 			if _renderer and _state:
 				_renderer.reconcile_from_state(_state, true)
 			# Hotseat: the turn passed to the OTHER human — hide both hands and
@@ -2760,11 +3195,9 @@ func _on_game_event(event: GameEvent) -> void:
 		"phase_changed":
 			if event.payload.get("new") == "action":
 				_played_this_action_phase[event.payload.get("player", "")] = false
-				# Same self-heal as turn_changed: force a reconcile that ignores the
-				# wiggle-skip, so the active player starts their action phase with
-				# every card drawn at its true ready/exhausted angle. Covers cards
-				# left upright by an animation race (e.g. Chops' attack-exhaust
-				# targeting wiggle re-basing on top of the exhaust tween).
+				# Same self-heal as turn_changed: force a reconcile, ending any
+				# lingering pulse cue, so the active player starts their action
+				# phase with every card at its true ready/exhausted angle.
 				if _renderer and _state:
 					_renderer.reconcile_from_state(_state, true)
 			if event.payload.get("new", "") != "end":
@@ -2868,8 +3301,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_refresh_ui()
 		"enter_play_target_required":
 			_handle_enter_play_target(event.payload)
-		"totem_target_required":
-			_handle_totem_target(event.payload)
+		"trigger_target_required":
+			_handle_trigger_target(event.payload)
 		"death_target_required":
 			_handle_death_target(event.payload)
 		"recomb_choice_opened":
@@ -3644,7 +4077,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 
 # Ongoing Totem "at the start of each turn" targeted damage (Searing Totem). The
 # totem's controller must pick a hero or ally. Mandatory, direct-call resolution.
-func _handle_totem_target(payload: Dictionary) -> void:
+func _handle_trigger_target(payload: Dictionary) -> void:
 	var card_id: String  = payload.get("card_id", "")
 	var ctrl: String     = payload.get("player", "")
 	var dmg_type: String = payload.get("dmg_type", "")
@@ -3660,7 +4093,7 @@ func _handle_totem_target(payload: Dictionary) -> void:
 			targets.append(ps_opp.hero_instance_id)
 		for ally in _state.cards_in_zone(opp + "_ally_row"):
 			targets.append(ally.instance_id)
-		var legal := StackResolver.get_totem_targets(_state, _db)
+		var legal := StackResolver.get_turn_start_trigger_targets(_state, _db)
 		targets = targets.filter(func(t): return t in legal)
 		var target_id := ""
 		if not targets.is_empty():
@@ -3676,20 +4109,20 @@ func _handle_totem_target(payload: Dictionary) -> void:
 				target_id = pool[0]
 			else:
 				target_id = targets[0]   # default: opposing hero (first in list)
-		var events := StackResolver.choose_totem_target(_state, target_id, _db)
+		var events := StackResolver.choose_trigger_target(_state, target_id, _db)
 		EventBus.emit_events(events)
 		_refresh_ui()
 		_schedule_next_turn()
 	else:
 		# Human: enter targeting mode to pick the target hero or ally.
-		_router.start_totem_targeting(card_id, dmg_type, amount)
+		_router.start_trigger_targeting(card_id, dmg_type, amount)
 		_refresh_ui()
 
 
 # A human finished picking a Totem trigger's target (or the queue advanced). Resume
 # driving the turn; if another totem trigger is now pending, its handler already
 # restarted targeting and _schedule_next_turn no-ops on the pending guard.
-func _on_totem_target_resolved() -> void:
+func _on_trigger_target_resolved() -> void:
 	_refresh_ui()
 	_schedule_next_turn()
 
@@ -3960,20 +4393,25 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	var card := _state.get_card(source_id) as CardInstance
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
 	var name_str := def.card_name if def else source_id
+	# Mandatory picks (Taz'dingo's enter-play damage, totem triggers, Boneshanks,
+	# Hidden Enemies' ferocity) can't be backed out of — a cancel just restarts the
+	# same pick — so the hint must not advertise one.
+	var cancel_hint := "  [mandatory]" if _router.targeting_is_mandatory() \
+		else "  [right-click to cancel]"
 	if dmg_type == "heal":
-		_set_status("✚ %s — select a target to heal  [Esc to cancel]" % name_str)
+		_set_status("✚ %s — select a target to heal%s" % [name_str, cancel_hint])
 	# Phase 1 of a two-pick sacrifice power (Gertha, Besh'iah): the cost, not the
 	# effect's target — say so, or the player can't tell the two picks apart.
 	elif dmg_type == "sacrifice":
-		_set_status("☠ %s — select an ally to sacrifice  [Esc to cancel]" % name_str)
+		_set_status("☠ %s — select an ally to sacrifice%s" % [name_str, cancel_hint])
 	# Ravenous Bite's two sequential ally picks (see InputRouter._is_atk_swing).
 	elif dmg_type in ["atk_up", "atk_down"]:
 		var swing: Array = StackResolver.atk_swing_amounts(def)
 		var idx := 0 if dmg_type == "atk_up" else 1
 		var amt: int = swing[idx] if idx < swing.size() else 0
 		if dmg_type == "atk_up":
-			_set_status("▲ %s — select the ally that gets %+d ATK this turn  [Esc to cancel]"
-				% [name_str, amt])
+			_set_status("▲ %s — select the ally that gets %+d ATK this turn%s"
+				% [name_str, amt, cancel_hint])
 		else:
 			_set_status("▼ %s — select the ally that gets %+d ATK this turn  [click the spell to go back]"
 				% [name_str, amt])
@@ -3982,10 +4420,10 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 		# "N / X target" (the same ally may be clicked more than once).
 		var div: Array = _router.divided_progress()
 		if int(div[1]) > 0:
-			_set_status("⚡ %s — %d / %d target — click an ally for each point of damage  [Esc to cancel]"
-				% [name_str, int(div[0]) + 1, int(div[1])])
+			_set_status("⚡ %s — %d / %d target — click an ally for each point of damage%s"
+				% [name_str, int(div[0]) + 1, int(div[1]), cancel_hint])
 		else:
-			_set_status("⚔ %s — select a target  [Esc to cancel]" % name_str)
+			_set_status("⚔ %s — select a target%s" % [name_str, cancel_hint])
 	_refresh_ui()
 
 
@@ -4001,11 +4439,16 @@ func _on_targeting_cancelled() -> void:
 	# A totem trigger's damage is mandatory ("deals", not "may") — the player can't
 	# bow out of picking. If one is still pending after a cancel, restart targeting
 	# from the front queued trigger so the human is asked again instead of locked.
-	if _state and _state.pending_totem_target_player != "" \
-			and not _state.pending_ongoing_triggers.is_empty():
-		var trig: Dictionary = _state.pending_ongoing_triggers[0]
-		_router.start_totem_targeting(
-			trig.get("card_id", ""), trig.get("dmg_type", ""), int(trig.get("amount", 0)))
+	if _state and _state.pending_trigger_target_player != "" \
+			and not _state.pending_turn_start_triggers.is_empty():
+		var trig: Dictionary = _state.pending_turn_start_triggers[0]
+		# The queue carries the raw effects args (see GameState.pending_turn_start_triggers);
+		# for the targeted trigger they are AMOUNT:DMG_TYPE.
+		var trig_args: Array = trig.get("args", [])
+		_router.start_trigger_targeting(
+			trig.get("card_id", ""),
+			String(trig_args[1]) if trig_args.size() > 1 else "",
+			int(trig_args[0]) if trig_args.size() > 0 else 0)
 		return
 	# Hidden Enemies' ferocity pick is mandatory once the mode was chosen — if a
 	# cancel somehow fired while it is pending, restart targeting.
@@ -4601,33 +5044,20 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 		if def_def:
 			def_name = def_def.card_name
 
-	# Centre everything on the same axis as the pass button (x=960).
-	const CENTER_X := 960
-	const BTN_W    := 170
-	const BTN_GAP  := 10
-	const SKIP_W   := 100
-	const SKIP_GAP := 20
+	# Prompt + buttons live in the Combat window (see _build_combat_window), which
+	# already shows the step and the combatants — this only adds the question and
+	# the choices. The window is off to the side, so the board stays visible and
+	# a protector can still be picked by clicking the card itself.
+	_update_combat_window()
+	_clear_combat_buttons()
+	_combat_prompt_lbl.text = "%s is attacking %s — protect?" % [atk_name, def_name]
 
-	# Total row width: protector buttons + gaps between them + gap before skip + skip.
-	var n          := protectors.size()
-	var row_width: int = n * BTN_W + max(n - 1, 0) * BTN_GAP + SKIP_GAP + SKIP_W
-	@warning_ignore("integer_division")
-	var btn_x      := CENTER_X - row_width / 2
-
-	# Header: who is attacking whom — centred over the button row.
-	var header_lbl := "%s is attacking %s — PROTECT?" % [atk_name, def_name]
-	var header := Label.new()
-	header.text = header_lbl
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.9, 0.5, 0.2))
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.size     = Vector2(row_width + 100, 20)
-	@warning_ignore("integer_division")
-	header.position = Vector2(CENTER_X - (row_width + 100) / 2, 968)
-	_hud.add_child(header)
-	_protect_nodes.append(header)
-
-	# One button per legal protector.
+	# One button per legal protector, then Skip; laid out left to right and
+	# wrapped to the row width so a wide party can't overflow the window.
+	var row_w: float = _combat_btn_row.size.x
+	var n := protectors.size()
+	var btn_w: float = min(170.0, (row_w - 100.0 - COMBAT_BTN_GAP * (n + 1)) / max(n, 1))
+	var bx := 0.0
 	for cid in protectors:
 		var card := _state.get_card(cid)
 		var btn_label: String = cid
@@ -4636,23 +5066,21 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 			if def:
 				btn_label = def.card_name
 		var btn := Button.new()
-		btn.text     = btn_label
-		btn.position = Vector2(btn_x, 987)
-		btn.size     = Vector2(BTN_W, 36)
+		btn.text          = btn_label
+		btn.clip_text     = true
+		btn.position      = Vector2(bx, 0)
+		btn.size          = Vector2(btn_w, COMBAT_BTN_H)
 		var captured_id: String = cid
 		btn.pressed.connect(func() -> void: _resolve_protection(captured_id))
-		_hud.add_child(btn)
-		_protect_nodes.append(btn)
-		btn_x += BTN_W + BTN_GAP
+		_combat_btn_row.add_child(btn)
+		bx += btn_w + COMBAT_BTN_GAP
 
-	# Skip button.
 	var skip := Button.new()
 	skip.text     = "Skip"
-	skip.position = Vector2(btn_x + SKIP_GAP - BTN_GAP, 987)
-	skip.size     = Vector2(SKIP_W, 36)
+	skip.position = Vector2(bx + COMBAT_BTN_GAP, 0)
+	skip.size     = Vector2(90, COMBAT_BTN_H)
 	skip.pressed.connect(func() -> void: _resolve_protection(""))
-	_hud.add_child(skip)
-	_protect_nodes.append(skip)
+	_combat_btn_row.add_child(skip)
 
 	# Defer outline setup one frame so it lands after any synchronous _refresh_ui
 	# calls that follow EventBus.emit_events() in the caller.
@@ -4678,6 +5106,7 @@ func _resolve_protection(protector_id: String) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_protect_nodes.clear()
+	_clear_combat_buttons()
 	_pass_btn.visible = true
 	_renderer.set_card_outline(_protect_attacker_id, false)
 	_renderer.set_card_outline(_protect_defender_id, false)
@@ -5600,7 +6029,7 @@ func _schedule_next_turn() -> void:
 		return  # wait for the discard-or-give-control choice before advancing
 	if _state.pending_reveal_pick_player != "":
 		return  # wait for the reveal-and-pick quest choice before advancing
-	if _state.pending_totem_target_player != "":
+	if _state.pending_trigger_target_player != "":
 		return  # wait for the Totem start-of-turn target choice before advancing
 	if _state.pending_death_target_player != "":
 		return  # wait for the Boneshanks death-trigger target choice before advancing
@@ -5658,6 +6087,16 @@ func _set_turbo_mode(on: bool) -> void:
 		_maybe_turbo_pass()
 
 
+# SUSPENDED (2026-08-13): Layer 2, the mode-independent "nothing changed"
+# auto-pass in _drain_passes — it skipped the human's priority window whenever
+# the chain top wasn't a new opponent link and no combat-window transition had
+# happened. That was convenient while few instants existed; now that responses
+# matter, every window is held so the player can act. The code is deliberately
+# kept (not deleted) so Turbo mode can switch it back on later — flip this to
+# true, or make it read a Turbo flag. Layers 3/`_maybe_turbo_pass`/`_do_turbo_pass`
+# already only fire under Turbo or a wrap-up burst, so they are untouched.
+const LAYER2_NOTHING_CHANGED_AUTOPASS := false
+
 func _drain_passes() -> void:
 	if _draining:
 		return
@@ -5685,7 +6124,7 @@ func _drain_passes() -> void:
 				or _state.pending_form_return_player != "" or _in_form_return_mode \
 				or _state.pending_control_discard_player != "" \
 				or _state.pending_reveal_pick_player != "" \
-				or _state.pending_totem_target_player != "" \
+				or _state.pending_trigger_target_player != "" \
 				or _state.pending_death_target_player != "" \
 				or StackResolver._quest_choice_pending(_state) \
 				or _in_quest_choice_mode \
@@ -5722,7 +6161,8 @@ func _drain_passes() -> void:
 					break
 				_mark_priority_info_seen()
 				events = StackResolver.pass_priority(_state, _db)
-			elif not owns_top and not _human_has_new_info(pid):
+			elif LAYER2_NOTHING_CHANGED_AUTOPASS and not owns_top \
+					and not _human_has_new_info(pid):
 				# Layer 2 (mode-independent "nothing changed" auto-pass): the chain
 				# top isn't a new opponent link and no combat window transition
 				# happened since we last looked. The engine still requires the
@@ -5916,7 +6356,15 @@ func _describe_priority_stop_reason() -> String:
 		if _state.combat_attack_window:
 			return "attack window opened"
 		return "protect point"
-	return "unknown"
+	# With the layer-2 "nothing changed" auto-pass suspended, a window is also
+	# held when nothing new happened — name the window rather than "unknown".
+	if _state.combat_defend_window:
+		return "defend window"
+	if _state.combat_attack_window:
+		return "attack window"
+	if not _state.pending_actions.is_empty():
+		return "chain response window"
+	return "priority window"
 
 
 # Call when the human is actually stopped/shown a decision, so the next
@@ -6006,6 +6454,10 @@ func _do_turbo_pass() -> void:
 func _set_status(text: String) -> void:
 	if _status:
 		_status.text = text
+	# The prompt window has no toggle button — a prompt IS the reason to show it,
+	# and an empty one is just a panel over the board.
+	if _turn_info_window and is_instance_valid(_turn_info_window):
+		_set_window_open(_turn_info_window, text != "")
 
 
 # ── Mock card helper ───────────────────────────────────────────────────────────

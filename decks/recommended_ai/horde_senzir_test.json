@@ -59,11 +59,6 @@
       "_card_name": "Skorn, Mistress of Shadow"
     },
     {
-      "card_def_id": "azeroth_38",
-      "count": 1,
-      "_card_name": "Fury"
-    },
-    {
       "card_def_id": "azeroth_41",
       "count": 1,
       "_card_name": "Multi-Shot"
@@ -72,11 +67,6 @@
       "card_def_id": "azeroth_35",
       "count": 1,
       "_card_name": "Bestial Wrath"
-    },
-    {
-      "card_def_id": "azeroth_154",
-      "count": 1,
-      "_card_name": "Lust for Battle"
     },
     {
       "card_def_id": "azeroth_40",
@@ -99,14 +89,24 @@
       "_card_name": "Elder Moorf"
     },
     {
+      "card_def_id": "dark_portal_38",
+      "count": 1,
+      "_card_name": "Protect the Master"
+    },
+    {
+      "card_def_id": "azeroth_246",
+      "count": 2,
+      "_card_name": "Kagra of the Crossroads"
+    },
+    {
       "card_def_id": "azeroth_36",
       "count": 3,
       "_card_name": "Bloodclaw"
     },
     {
-      "card_def_id": "dark_portal_38",
-      "count": 1,
-      "_card_name": "Protect the Master"
+      "card_def_id": "dark_portal_34",
+      "count": 2,
+      "_card_name": "Hootie"
     },
     {
       "card_def_id": "azeroth_33",
@@ -115,7 +115,7 @@
     },
     {
       "card_def_id": "azeroth_155",
-      "count": 1,
+      "count": 2,
       "_card_name": "Skewer"
     },
     {
@@ -130,8 +130,13 @@
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 4,
+      "count": 3,
       "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_244",
+      "count": 1,
+      "_card_name": "Jin'lak Nightfang"
     },
     {
       "card_def_id": "azeroth_44",
@@ -159,19 +164,9 @@
       "_card_name": "Ka'tali Stonetusk"
     },
     {
-      "card_def_id": "dark_portal_141",
-      "count": 1,
-      "_card_name": "First to Fall"
-    },
-    {
       "card_def_id": "azeroth_274",
       "count": 1,
       "_card_name": "Zorm Stonefury"
-    },
-    {
-      "card_def_id": "dark_portal_34",
-      "count": 2,
-      "_card_name": "Hootie"
     },
     {
       "card_def_id": "azeroth_153",

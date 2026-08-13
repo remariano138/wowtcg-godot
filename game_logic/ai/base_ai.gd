@@ -2456,6 +2456,43 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					if StackResolver.can_submit(state, act, db):
 						result.append(act)
 						break
+		elif ap.get("effect", "") == "cant_protect_target":
+			# Jin'lak Nightfang: "(3) -> Target hero or ally can't protect this
+			# turn." Purely an offensive enabler, so it is worth 3 resources
+			# only when it clears a body that would otherwise intercept our
+			# attack on the opposing hero. Probe the real rule
+			# (get_legal_protectors — so Stealth, Hannah's aura and an
+			# already-applied restriction all count) with our best ready
+			# attacker against the opposing hero, and strip the most dangerous
+			# protector. Nothing to attack with, or no legal protector, means
+			# the power changes nothing this turn: hold the resources rather
+			# than firing it at the enemy hero, which the generic hero_or_ally
+			# branch below would happily do.
+			var cp_opp := _other_player_id(state, player_id)
+			var cp_ps := state.players.get(cp_opp) as PlayerState
+			if not cp_ps or cp_ps.hero_instance_id == "":
+				continue
+			var cp_attackers := StackResolver.get_legal_attackers(state, player_id, db)
+			if cp_attackers.is_empty():
+				continue
+			var cp_best_attacker: String = cp_attackers[0]
+			for aid in cp_attackers:
+				if forecast_atk(state, db, aid) > forecast_atk(state, db, cp_best_attacker):
+					cp_best_attacker = aid
+			var cp_protectors := StackResolver.get_legal_protectors(
+				state, cp_best_attacker, cp_ps.hero_instance_id, db)
+			var cp_target := ""
+			var cp_best := -1
+			for pid2 in cp_protectors:
+				var pv := forecast_atk(state, db, pid2, false)
+				if pv > cp_best:
+					cp_best = pv
+					cp_target = pid2
+			if cp_target != "":
+				var cp_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": cp_target})
+				if StackResolver.can_submit(state, cp_act, db):
+					result.append(cp_act)
 		elif ap.get("targets", "") in ["hero_or_ally"]:
 			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []

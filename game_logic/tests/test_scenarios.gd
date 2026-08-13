@@ -379,6 +379,8 @@ func _ready() -> void:
 		_test_lowdown_luppo_shadefizzle,
 		_test_lhurg_destroys_exhausted_ally,
 		_test_lhurg_fizzle_and_ai,
+		_test_jinlak_cant_protect,
+		_test_jinlak_fizzle_and_ai,
 		_test_lady_courtney_heals_party,
 		_test_lady_courtney_gates_and_ai,
 	]
@@ -20961,6 +20963,142 @@ func _test_lady_courtney_gates_and_ai() -> void:
 	var acts := ai._get_ally_power_actions(s2, db, "p1")
 	eq(acts.size(), 1, "lc-n: AI heals once its own hero is damaged")
 	eq(acts[0].params.get("card_id", ""), "courtney2", "lc-o: the action is hers")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Jin'lak Nightfang (azeroth_244) — 2-cost 3/1 Horde Troll Rogue:
+# "(3) -> Target hero or ally can't protect this turn."
+# Recipe: activated_power:3:cant_protect_target:0::hero_or_ally:no_activate
+#
+# A plain payment power (701.2 — the printed cost carries no [Activate] tap
+# symbol): no self-exhaust, no summoning sickness, repeatable while he can pay.
+# The restriction is Frost Shock's cannot_protect Buff (turns:1), so the
+# end-of-turn sweep gives "this turn" expiry for free.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const JINLAK_RECIPE := "activated_power:3:cant_protect_target:0::hero_or_ally:no_activate"
+
+
+func _jinlak_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("jinlak_def", 3, 1, [], 2, JINLAK_RECIPE)
+	db.ally("prot_def", 3, 5, (["protector"] as Array[String]), 3)
+	db.ally("big_prot_def", 5, 5, (["protector"] as Array[String]), 4)
+	db.ally("grunt_def", 2, 2)
+	return db
+
+
+func _test_jinlak_cant_protect() -> void:
+	_buf.append("\n-- Jin'lak Nightfang: target hero or ally can't protect this turn --")
+	var db := _jinlak_db()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 6)
+	var jinlak := _add_ally(state, "jinlak", "jinlak_def", "p1")
+	jinlak.just_summoned = true   # no [Activate] symbol: sickness must not gate it
+	var prot := _add_ally(state, "prot", "prot_def", "p2")
+	prot.just_summoned = false
+
+	ok("prot" in StackResolver.get_legal_protectors(state, "jinlak", "p2_hero", db),
+		"jn-a: the enemy protector can protect its hero beforehand")
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "jinlak", "target_id": "prot"})
+	ok(StackResolver.can_submit(state, use, db),
+		"jn-b: usable while summoning-sick (no [Activate] tap symbol)")
+	StackResolver.submit_action(state, use, db)
+	ok(not state.get_card("jinlak").is_exhausted,
+		"jn-c: he does NOT exhaust — plain payment power")
+	eq(state.get_available_resources("p1"), 3, "jn-d: 3 resources paid at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(state.get_card("prot").has_restriction("cannot_protect"),
+		"jn-e: cannot_protect applied to the target")
+	ok("prot" not in StackResolver.get_legal_protectors(state, "jinlak", "p2_hero", db),
+		"jn-f: the target can no longer protect")
+
+	# Repeatable: nothing exhausted, so a second use only needs the resources.
+	var use2 := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "jinlak", "target_id": "p2_hero"})
+	ok(StackResolver.can_submit(state, use2, db),
+		"jn-g: repeatable — a second use is legal (heroes are legal targets too)")
+	StackResolver.submit_action(state, use2, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("p2_hero").has_restriction("cannot_protect"),
+		"jn-h: a hero target is restricted too (Draconian Deflector grant)")
+	eq(state.get_available_resources("p1"), 0, "jn-i: the second use cost 3 as well")
+
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "jinlak", "target_id": "prot"}), db),
+		"jn-j: unaffordable once the resources are spent")
+
+	# "This turn" — the existing end-of-turn buff sweep clears it.
+	TurnManager._enter_end(state, db)
+	ok(not state.get_card("prot").has_restriction("cannot_protect"),
+		"jn-k: the restriction expires at end of turn")
+	ok("prot" in StackResolver.get_legal_protectors(state, "jinlak", "p2_hero", db),
+		"jn-l: the protector protects again next turn")
+
+
+func _test_jinlak_fizzle_and_ai() -> void:
+	_buf.append("\n-- Jin'lak Nightfang: 706 re-check + AI only strips real protectors --")
+	var db := _jinlak_db()
+
+	# ── 706 (rule 4217): a target that leaves play before resolution fizzles.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var jl := _add_ally(state, "jinlak", "jinlak_def", "p1")
+	jl.just_summoned = false
+	var doomed := _add_ally(state, "doomed", "prot_def", "p2")
+	doomed.just_summoned = false
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "jinlak", "target_id": "doomed"}), db)
+	GameLogic.destroy_card(state, "doomed")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_available_resources("p1"), 0,
+		"jn-m: the cost stays paid even though the target left play")
+
+	# ── AI: holds the power when nothing on the other side can protect.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.phase = "action"
+	s2.turn_player = "p1"
+	_add_resources(s2, "p1", 3)
+	var jl2 := _add_ally(s2, "jinlak2", "jinlak_def", "p1")
+	jl2.just_summoned = false
+	_add_ally(s2, "chaff", "grunt_def", "p2")   # not a protector
+	var ai := BaseAI.new()
+	ok(ai._get_ally_power_actions(s2, db, "p1").is_empty(),
+		"jn-n: AI holds the power with no legal protector to strip")
+
+	# ── With protectors out, it strips the most dangerous one.
+	var small := _add_ally(s2, "small_prot", "prot_def", "p2")
+	small.just_summoned = false
+	var big := _add_ally(s2, "big_prot", "big_prot_def", "p2")
+	big.just_summoned = false
+	var acts := ai._get_ally_power_actions(s2, db, "p1")
+	eq(acts.size(), 1, "jn-o: exactly one action — the best target, not one each")
+	eq(acts[0].params.get("target_id", ""), "big_prot",
+		"jn-p: AI strips the highest-ATK protector")
+
+	# ── No legal attacker of our own: the power would change nothing this turn.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.phase = "action"
+	s3.turn_player = "p1"
+	_add_resources(s3, "p1", 3)
+	var jl3 := _add_ally(s3, "jinlak3", "jinlak_def", "p1")
+	jl3.just_summoned = false
+	jl3.is_exhausted = true               # he is our only body...
+	s3.get_card("p1_hero").is_exhausted = true   # ...and the hero can't swing either
+	var lone := _add_ally(s3, "lone_prot", "prot_def", "p2")
+	lone.just_summoned = false
+	ok(ai._get_ally_power_actions(s3, db, "p1").is_empty(),
+		"jn-q: AI holds the resources with nothing able to attack")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

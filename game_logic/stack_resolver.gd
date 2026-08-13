@@ -4394,6 +4394,18 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			var target_id: String = action.params.get("target_id", "")
 			if _is_legal_target(state, target_id, db):
 				events.append_array(GameLogic.heal(state, target_id, amount, db, card_id))
+		"cant_protect_target":
+			# Jin'lak Nightfang: "(3) -> Target hero or ally can't protect this
+			# turn." Frost Shock's `cannot_protect` rider reused as a power
+			# effect — the same restriction Buff (turns:1), so the end-of-turn
+			# sweep gives "this turn" expiry for free and it times correctly
+			# when the power is used during the opponent's turn. Rule 706
+			# re-check: fizzles if the target left play or became Untargetable.
+			var cp_target: String = action.params.get("target_id", "")
+			if _is_legal_target(state, cp_target, db) \
+					and _is_hero_or_ally(state, cp_target, db):
+				events.append_array(_apply_damage_riders(
+					state, cp_target, card_id, "cannot_protect"))
 		"heal_party":
 			# Lady Courtney Noel: "[Activate] -> [she] heals N damage from each hero
 			# and ally in your party." Non-targeted and friendly-only, so 706

@@ -153,6 +153,10 @@ var _cancel_btn: Button
 # Per-player resource readout beside each resource zone (world-space, mirrored):
 # "Available X / Total Y" plus the can-place line. pid -> {avail, place} Labels.
 var _res_info_labels: Dictionary = {}
+# Unrotated (camera-at-p1) top-left of every readout label, keyed by the Label:
+# _orient_res_info_labels re-derives the rotated placement from these.
+var _res_info_base: Dictionary = {}
+var _res_info_size: Vector2 = Vector2.ZERO
 # Turn-step strips (Ready · Draw · Action · End), one per pass block: the local
 # seat's under the pass button, the opponent's in the mirrored block. The
 # current step is bolded on the ACTIVE player's side only.
@@ -1137,6 +1141,9 @@ func _set_local_player(pid: String) -> void:
 # the HUD layer is untouched. Rotated camera position derivation:
 # world BOARD_PIVOT must stay at the same screen point → pos' = 2*PIVOT - pos.
 func _orient_camera(pid: String, animate: bool) -> void:
+	# World-space UI text counter-rotates with the view (see there). Done before
+	# the early-out below: the labels may be built after the camera was placed.
+	_orient_res_info_labels(pid)
 	if not _camera:
 		return
 	var flipped := pid == "p2"
@@ -2346,12 +2353,13 @@ func _update_cancel_btn() -> void:
 
 func _build_resource_info_labels() -> void:
 	var zone_size: Vector2 = BoardRenderer.res_grid_size(0)
-	# P1's two lines sit just above their zone; P2's are the mirror image (and
-	# rotated 180° so they read upright from P2's seat, like every board label).
+	# P1's two lines sit just above their zone; P2's are the mirror image, so each
+	# readout always hugs its own player's resource grid.
 	var line1 := Vector2(RES_ZONE_CENTRE.x - zone_size.x * 0.5,
 		RES_ZONE_CENTRE.y - zone_size.y * 0.5 - 48.0)
 	var line2 := line1 + Vector2(0, 22)
 	var lbl_size := Vector2(zone_size.x, 18)
+	_res_info_size = lbl_size
 	for pid in ["p1", "p2"]:
 		var l1 := _add_label("", Vector2.ZERO, 14, Color(0.85, 0.85, 0.9))
 		var l2 := _add_label("", Vector2.ZERO, 14, Color(1.0, 0.3, 0.3))
@@ -2359,19 +2367,36 @@ func _build_resource_info_labels() -> void:
 			(l as Label).size = lbl_size
 			(l as Label).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if pid == "p1":
-			l1.position = _board_pos(line1.x, line1.y)
-			l2.position = _board_pos(line2.x, line2.y)
+			_res_info_base[l1] = _board_pos(line1.x, line1.y)
+			_res_info_base[l2] = _board_pos(line2.x, line2.y)
 		else:
 			# Mirrored POSITION (a rect's mirror image has its top-left at the
-			# mirror of its bottom-right) but NOT rotated: the upside-down cards
-			# emulate a real opponent across the table, while UI text exists only
-			# for whoever is looking at the screen and must stay readable. The
-			# deck/graveyard tags are board-space labels and do still flip.
+			# mirror of its bottom-right).
 			var m1 := _mirror(line1 + lbl_size)
 			var m2 := _mirror(line2 + lbl_size)
-			l1.position = _board_pos(m1.x, m1.y)
-			l2.position = _board_pos(m2.x, m2.y)
+			_res_info_base[l1] = _board_pos(m1.x, m1.y)
+			_res_info_base[l2] = _board_pos(m2.x, m2.y)
 		_res_info_labels[pid] = {"avail": l1, "place": l2}
+	_orient_res_info_labels()
+
+
+# These readouts live in WORLD space (they must travel with the resource grid
+# they annotate), so the board camera turns them upside down when the p2 seat is
+# the one looking. Text exists for whoever is at the screen, so counter-rotate
+# it: a 180° turn about the label's own centre — expressed as rotation about the
+# top-left plus a shift by its size — keeps each readout over the same rect while
+# reading upright. Positions are re-derived from `_res_info_base` every time, so
+# repeated calls never drift. Same idea as `BoardRenderer.view_rotation_degrees`
+# for the transient overlays.
+func _orient_res_info_labels(pid: String = "") -> void:
+	if _res_info_base.is_empty():
+		return
+	var flipped := (pid if pid != "" else _local_player) == "p2"
+	for lbl in _res_info_base:
+		var l := lbl as Label
+		var base: Vector2 = _res_info_base[lbl]
+		l.rotation_degrees = 180.0 if flipped else 0.0
+		l.position = (base + _res_info_size) if flipped else base
 
 
 func _update_resource_info() -> void:

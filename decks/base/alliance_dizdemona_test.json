@@ -2,7 +2,12 @@
   "deck_id": "alliance_dizdemona_test",
   "display_name": "Alliance_test (Dizdemona)",
   "hero_card_def_id": "azeroth_2",
-  "card_entries": [    
+  "card_entries": [
+    {
+      "card_def_id": "dark_portal_292",
+      "count": 1,
+      "_card_name": "Operation Recombobulation"
+    },
     {
       "card_def_id": "azeroth_355",
       "count": 2,
@@ -39,9 +44,9 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "dark_portal_292",
+      "card_def_id": "azeroth_332",
       "count": 1,
-      "_card_name": "Operation Recombobulation"
+      "_card_name": "Rod of the Ogre Magi"
     },
     {
       "card_def_id": "azeroth_298",
@@ -49,9 +54,49 @@
       "_card_name": "Mooncloth Robe"
     },
     {
-      "card_def_id": "azeroth_332",
+      "card_def_id": "azeroth_151",
       "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
+      "_card_name": "From the Shadows"
+    },
+    {
+      "card_def_id": "azeroth_127",
+      "count": 1,
+      "_card_name": "Infernal"
+    },
+    {
+      "card_def_id": "dark_portal_164",
+      "count": 1,
+      "_card_name": "Gertha, The Old Crone"
+    },
+    {
+      "card_def_id": "azeroth_174",
+      "count": 2,
+      "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "azeroth_134",
+      "count": 2,
+      "_card_name": "Steal Essence"
+    },
+    {
+      "card_def_id": "azeroth_125",
+      "count": 3,
+      "_card_name": "Grimdron"
+    },
+    {
+      "card_def_id": "azeroth_206",
+      "count": 1,
+      "_card_name": "Melgwy Pingzot"
+    },
+    {
+      "card_def_id": "azeroth_173",
+      "count": 1,
+      "_card_name": "Acolyte Demia"
+    },
+    {
+      "card_def_id": "dark_portal_129",
+      "count": 1,
+      "_card_name": "Escape Artist"
     },
     {
       "card_def_id": "azeroth_176",
@@ -74,29 +119,14 @@
       "_card_name": "Parvink"
     },
     {
-      "card_def_id": "azeroth_174",
-      "count": 2,
-      "_card_name": "Adept Breton"
-    },
-    {
       "card_def_id": "azeroth_131",
       "count": 2,
       "_card_name": "Sever the Cord"
     },
     {
-      "card_def_id": "azeroth_134",
-      "count": 2,
-      "_card_name": "Steal Essence"
-    },
-    {
       "card_def_id": "azeroth_183",
       "count": 2,
       "_card_name": "Freya Lightsworn"
-    },
-    {
-      "card_def_id": "azeroth_125",
-      "count": 3,
-      "_card_name": "Grimdron"
     },
     {
       "card_def_id": "azeroth_130",
@@ -114,11 +144,6 @@
       "_card_name": "Latro Abiectus"
     },
     {
-      "card_def_id": "azeroth_206",
-      "count": 1,
-      "_card_name": "Melgwy Pingzot"
-    },
-    {
       "card_def_id": "dark_portal_177",
       "count": 1,
       "_card_name": "\"Lowdown\" Luppo Shadefizzle"
@@ -129,39 +154,14 @@
       "_card_name": "Mya, Dragonling Wrangler"
     },
     {
-      "card_def_id": "azeroth_173",
-      "count": 1,
-      "_card_name": "Acolyte Demia"
-    },
-    {
       "card_def_id": "azeroth_221",
       "count": 1,
       "_card_name": "Tristan Rapidstrike"
     },
     {
-      "card_def_id": "azeroth_151",
-      "count": 1,
-      "_card_name": "From the Shadows"
-    },
-    {
-      "card_def_id": "dark_portal_129",
-      "count": 1,
-      "_card_name": "Escape Artist"
-    },
-    {
-      "card_def_id": "azeroth_127",
-      "count": 1,
-      "_card_name": "Infernal"
-    },
-    {
       "card_def_id": "azeroth_200",
       "count": 3,
       "_card_name": "Liba Wobblebonk"
-    },
-    {
-      "card_def_id": "dark_portal_164",
-      "count": 1,
-      "_card_name": "Gertha, The Old Crone"
     }
   ],
   "recommended_ai_id": "ai_generic",

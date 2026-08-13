@@ -4,16 +4,6 @@
   "hero_card_def_id": "azeroth_13",
   "card_entries": [
     {
-      "card_def_id": "azeroth_298",
-      "count": 1,
-      "_card_name": "Mooncloth Robe"
-    },
-    {
-      "card_def_id": "azeroth_332",
-      "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
-    },
-    {
       "card_def_id": "azeroth_355",
       "count": 2,
       "_card_name": "Kibler's Exotic Pets"
@@ -44,9 +34,24 @@
       "_card_name": "A Donation of Wool"
     },
     {
-      "card_def_id": "azeroth_248",
-      "count": 2,
-      "_card_name": "Ka'tali Stonetusk"
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_332",
+      "count": 1,
+      "_card_name": "Rod of the Ogre Magi"
+    },
+    {
+      "card_def_id": "azeroth_298",
+      "count": 1,
+      "_card_name": "Mooncloth Robe"
+    },
+    {
+      "card_def_id": "azeroth_127",
+      "count": 1,
+      "_card_name": "Infernal"
     },
     {
       "card_def_id": "azeroth_235",
@@ -54,9 +59,29 @@
       "_card_name": "Elder Moorf"
     },
     {
-      "card_def_id": "azeroth_344",
+      "card_def_id": "azeroth_225",
+      "count": 2,
+      "_card_name": "Arnold Flem"
+    },
+    {
+      "card_def_id": "azeroth_134",
       "count": 1,
-      "_card_name": "For the Horde!"
+      "_card_name": "Steal Essence"
+    },
+    {
+      "card_def_id": "azeroth_125",
+      "count": 2,
+      "_card_name": "Grimdron"
+    },
+    {
+      "card_def_id": "azeroth_252",
+      "count": 1,
+      "_card_name": "Moko Hunts-at-Dawn"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 2,
+      "_card_name": "Ka'tali Stonetusk"
     },
     {
       "card_def_id": "azeroth_246",
@@ -74,29 +99,14 @@
       "_card_name": "Blood Guard Mal'wani"
     },
     {
-      "card_def_id": "azeroth_225",
-      "count": 2,
-      "_card_name": "Arnold Flem"
-    },
-    {
       "card_def_id": "dark_portal_114",
       "count": 2,
       "_card_name": "Shred Soul"
     },
     {
-      "card_def_id": "azeroth_134",
-      "count": 1,
-      "_card_name": "Steal Essence"
-    },
-    {
       "card_def_id": "azeroth_130",
       "count": 3,
       "_card_name": "Sarmoth"
-    },
-    {
-      "card_def_id": "azeroth_125",
-      "count": 2,
-      "_card_name": "Grimdron"
     },
     {
       "card_def_id": "azeroth_236",
@@ -122,16 +132,6 @@
       "card_def_id": "azeroth_274",
       "count": 2,
       "_card_name": "Zorm Stonefury"
-    },
-    {
-      "card_def_id": "azeroth_252",
-      "count": 1,
-      "_card_name": "Moko Hunts-at-Dawn"
-    },
-    {
-      "card_def_id": "azeroth_127",
-      "count": 1,
-      "_card_name": "Infernal"
     },
     {
       "card_def_id": "azeroth_249",

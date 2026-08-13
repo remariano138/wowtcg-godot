@@ -4,16 +4,6 @@
   "hero_card_def_id": "azeroth_5",
   "card_entries": [
     {
-      "card_def_id": "azeroth_298",
-      "count": 1,
-      "_card_name": "Mooncloth Robe"
-    },
-    {
-      "card_def_id": "azeroth_332",
-      "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
-    },
-    {
       "card_def_id": "azeroth_352",
       "count": 1,
       "_card_name": "In Dreams"
@@ -54,6 +44,41 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
+      "card_def_id": "azeroth_332",
+      "count": 1,
+      "_card_name": "Rod of the Ogre Magi"
+    },
+    {
+      "card_def_id": "azeroth_298",
+      "count": 1,
+      "_card_name": "Mooncloth Robe"
+    },
+    {
+      "card_def_id": "azeroth_174",
+      "count": 2,
+      "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "azeroth_173",
+      "count": 1,
+      "_card_name": "Acolyte Demia"
+    },
+    {
+      "card_def_id": "azeroth_56",
+      "count": 2,
+      "_card_name": "Frostbolt"
+    },
+    {
+      "card_def_id": "azeroth_181",
+      "count": 1,
+      "_card_name": "Donna Calister"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
+    },
+    {
       "card_def_id": "azeroth_176",
       "count": 2,
       "_card_name": "Apprentice Teep"
@@ -72,11 +97,6 @@
       "card_def_id": "azeroth_212",
       "count": 2,
       "_card_name": "Parvink"
-    },
-    {
-      "card_def_id": "azeroth_174",
-      "count": 2,
-      "_card_name": "Adept Breton"
     },
     {
       "card_def_id": "azeroth_171",
@@ -109,24 +129,9 @@
       "_card_name": "Latro Abiectus"
     },
     {
-      "card_def_id": "azeroth_173",
-      "count": 1,
-      "_card_name": "Acolyte Demia"
-    },
-    {
       "card_def_id": "azeroth_175",
       "count": 2,
       "_card_name": "Anika Berlyn"
-    },
-    {
-      "card_def_id": "azeroth_56",
-      "count": 2,
-      "_card_name": "Frostbolt"
-    },
-    {
-      "card_def_id": "azeroth_181",
-      "count": 1,
-      "_card_name": "Donna Calister"
     },
     {
       "card_def_id": "azeroth_210",
@@ -142,11 +147,6 @@
       "card_def_id": "azeroth_200",
       "count": 4,
       "_card_name": "Liba Wobblebonk"
-    },
-    {
-      "card_def_id": "dark_portal_160",
-      "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

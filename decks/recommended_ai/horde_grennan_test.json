@@ -49,19 +49,44 @@
       "_card_name": "Iceblade Hacker"
     },
     {
-      "card_def_id": "azeroth_114",
-      "count": 2,
-      "_card_name": "Purge"
-    },
-    {
       "card_def_id": "azeroth_108",
       "count": 1,
       "_card_name": "Elemental Focus"
     },
     {
+      "card_def_id": "dark_portal_137",
+      "count": 1,
+      "_card_name": "War Stomp"
+    },
+    {
+      "card_def_id": "azeroth_106",
+      "count": 1,
+      "_card_name": "Chain Lightning"
+    },
+    {
+      "card_def_id": "azeroth_114",
+      "count": 2,
+      "_card_name": "Purge"
+    },
+    {
       "card_def_id": "dark_portal_234",
       "count": 1,
       "_card_name": "Stone Guard Rashun"
+    },
+    {
+      "card_def_id": "dark_portal_98",
+      "count": 1,
+      "_card_name": "Lightning Storm"
+    },
+    {
+      "card_def_id": "dark_portal_236",
+      "count": 1,
+      "_card_name": "Thysta Spiritlasher"
+    },
+    {
+      "card_def_id": "azeroth_107",
+      "count": 2,
+      "_card_name": "Earthbind Totem"
     },
     {
       "card_def_id": "dark_portal_239",
@@ -84,16 +109,6 @@
       "_card_name": "Bala Silentblade"
     },
     {
-      "card_def_id": "dark_portal_98",
-      "count": 1,
-      "_card_name": "Lightning Storm"
-    },
-    {
-      "card_def_id": "dark_portal_137",
-      "count": 1,
-      "_card_name": "War Stomp"
-    },
-    {
       "card_def_id": "azeroth_171",
       "count": 1,
       "_card_name": "Vanquish"
@@ -114,19 +129,9 @@
       "_card_name": "Morik"
     },
     {
-      "card_def_id": "azeroth_106",
-      "count": 1,
-      "_card_name": "Chain Lightning"
-    },
-    {
       "card_def_id": "azeroth_113",
       "count": 2,
       "_card_name": "Lightning Bolt"
-    },
-    {
-      "card_def_id": "dark_portal_236",
-      "count": 1,
-      "_card_name": "Thysta Spiritlasher"
     },
     {
       "card_def_id": "dark_portal_100",
@@ -149,15 +154,10 @@
       "_card_name": "Flame Shock"
     },
     {
-      "card_def_id": "azeroth_107",
-      "count": 2,
-      "_card_name": "Earthbind Totem"
-    },
-    {
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
-    },    
+    },
     {
       "card_def_id": "azeroth_275",
       "count": 1,

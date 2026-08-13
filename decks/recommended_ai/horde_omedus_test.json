@@ -4,16 +4,6 @@
   "hero_card_def_id": "azeroth_12",
   "card_entries": [
     {
-      "card_def_id": "azeroth_282",
-      "count": 1,
-      "_card_name": "Chromatic Cloak"
-    },
-    {
-      "card_def_id": "azeroth_327",
-      "count": 1,
-      "_card_name": "Hypnotic Blade"
-    },
-    {
       "card_def_id": "dark_portal_304",
       "count": 3,
       "_card_name": "A New Plague"
@@ -49,6 +39,56 @@
       "_card_name": "A Donation of Wool"
     },
     {
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_327",
+      "count": 1,
+      "_card_name": "Hypnotic Blade"
+    },
+    {
+      "card_def_id": "azeroth_282",
+      "count": 1,
+      "_card_name": "Chromatic Cloak"
+    },
+    {
+      "card_def_id": "azeroth_88",
+      "count": 1,
+      "_card_name": "Shadowform"
+    },
+    {
+      "card_def_id": "azeroth_80",
+      "count": 1,
+      "_card_name": "Mind Blast"
+    },
+    {
+      "card_def_id": "azeroth_77",
+      "count": 1,
+      "_card_name": "Dispel Magic"
+    },
+    {
+      "card_def_id": "azeroth_225",
+      "count": 1,
+      "_card_name": "Arnold Flem"
+    },
+    {
+      "card_def_id": "azeroth_87",
+      "count": 1,
+      "_card_name": "Shadow Word: Pain"
+    },
+    {
+      "card_def_id": "azeroth_258",
+      "count": 2,
+      "_card_name": "Samuel Grey"
+    },
+    {
+      "card_def_id": "azeroth_234",
+      "count": 1,
+      "_card_name": "Deacon Johanna"
+    },
+    {
       "card_def_id": "azeroth_248",
       "count": 1,
       "_card_name": "Ka'tali Stonetusk"
@@ -57,11 +97,6 @@
       "card_def_id": "azeroth_246",
       "count": 3,
       "_card_name": "Kagra of the Crossroads"
-    },
-    {
-      "card_def_id": "azeroth_77",
-      "count": 1,
-      "_card_name": "Dispel Magic"
     },
     {
       "card_def_id": "azeroth_260",
@@ -82,11 +117,6 @@
       "card_def_id": "azeroth_274",
       "count": 2,
       "_card_name": "Zorm Stonefury"
-    },
-    {
-      "card_def_id": "azeroth_225",
-      "count": 1,
-      "_card_name": "Arnold Flem"
     },
     {
       "card_def_id": "dark_portal_204",
@@ -124,24 +154,9 @@
       "_card_name": "Ophelia Barrows"
     },
     {
-      "card_def_id": "azeroth_87",
-      "count": 1,
-      "_card_name": "Shadow Word: Pain"
-    },
-    {
-      "card_def_id": "azeroth_344",
-      "count": 1,
-      "_card_name": "For the Horde!"
-    },    
-    {
       "card_def_id": "azeroth_264",
       "count": 1,
       "_card_name": "Vesh'ral"
-    },
-    {
-      "card_def_id": "azeroth_88",
-      "count": 1,
-      "_card_name": "Shadowform"
     },
     {
       "card_def_id": "dark_portal_201",
@@ -157,21 +172,6 @@
       "card_def_id": "dark_portal_136",
       "count": 1,
       "_card_name": "Cannibalize"
-    },
-    {
-      "card_def_id": "azeroth_258",
-      "count": 2,
-      "_card_name": "Samuel Grey"
-    },
-    {
-      "card_def_id": "azeroth_80",
-      "count": 1,
-      "_card_name": "Mind Blast"
-    },
-    {
-      "card_def_id": "azeroth_234",
-      "count": 1,
-      "_card_name": "Deacon Johanna"
     }
   ],
   "recommended_ai_id": "ai_generic",

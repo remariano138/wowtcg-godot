@@ -39,9 +39,9 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_284",
+      "card_def_id": "azeroth_331",
       "count": 2,
-      "_card_name": "Devilsaur Leggings"
+      "_card_name": "Krol Blade"
     },
     {
       "card_def_id": "azeroth_311",
@@ -49,9 +49,9 @@
       "_card_name": "Ancient Bone Bow"
     },
     {
-      "card_def_id": "azeroth_331",
+      "card_def_id": "azeroth_284",
       "count": 2,
-      "_card_name": "Krol Blade"
+      "_card_name": "Devilsaur Leggings"
     },
     {
       "card_def_id": "azeroth_259",

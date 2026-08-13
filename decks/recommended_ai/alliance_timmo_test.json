@@ -4,6 +4,11 @@
   "hero_card_def_id": "azeroth_7",
   "card_entries": [
     {
+      "card_def_id": "dark_portal_292",
+      "count": 1,
+      "_card_name": "Operation Recombobulation"
+    },
+    {
       "card_def_id": "azeroth_348",
       "count": 1,
       "_card_name": "Big Game Hunter"
@@ -39,11 +44,6 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "dark_portal_292",
-      "count": 1,
-      "_card_name": "Operation Recombobulation"
-    },
-    {
       "card_def_id": "azeroth_331",
       "count": 2,
       "_card_name": "Krol Blade"
@@ -52,6 +52,51 @@
       "card_def_id": "dark_portal_260",
       "count": 1,
       "_card_name": "Pads of the Dread Wolf"
+    },
+    {
+      "card_def_id": "dark_portal_267",
+      "count": 1,
+      "_card_name": "Ramstein's Lightning Bolts"
+    },
+    {
+      "card_def_id": "azeroth_199",
+      "count": 1,
+      "_card_name": "Lhurg Venomblade"
+    },
+    {
+      "card_def_id": "azeroth_151",
+      "count": 1,
+      "_card_name": "From the Shadows"
+    },
+    {
+      "card_def_id": "azeroth_92",
+      "count": 1,
+      "_card_name": "Cold Blood"
+    },
+    {
+      "card_def_id": "dark_portal_170",
+      "count": 2,
+      "_card_name": "Jeleane Nightbreeze"
+    },
+    {
+      "card_def_id": "azeroth_213",
+      "count": 1,
+      "_card_name": "Randipan"
+    },
+    {
+      "card_def_id": "azeroth_173",
+      "count": 1,
+      "_card_name": "Acolyte Demia"
+    },
+    {
+      "card_def_id": "dark_portal_129",
+      "count": 1,
+      "_card_name": "Escape Artist"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     },
     {
       "card_def_id": "dark_portal_177",
@@ -69,11 +114,6 @@
       "_card_name": "Warden Tonarin"
     },
     {
-      "card_def_id": "azeroth_199",
-      "count": 1,
-      "_card_name": "Lhurg Venomblade"
-    },
-    {
       "card_def_id": "azeroth_212",
       "count": 4,
       "_card_name": "Parvink"
@@ -82,11 +122,6 @@
       "card_def_id": "azeroth_187",
       "count": 1,
       "_card_name": "Hannah the Unstoppable"
-    },
-    {
-      "card_def_id": "azeroth_151",
-      "count": 1,
-      "_card_name": "From the Shadows"
     },
     {
       "card_def_id": "dark_portal_85",
@@ -104,21 +139,6 @@
       "_card_name": "Galahandra Keeper of the Silent Grove"
     },
     {
-      "card_def_id": "dark_portal_267",
-      "count": 1,
-      "_card_name": "Ramstein's Lightning Bolts"
-    },
-    {
-      "card_def_id": "azeroth_213",
-      "count": 1,
-      "_card_name": "Randipan"
-    },
-    {
-      "card_def_id": "azeroth_173",
-      "count": 1,
-      "_card_name": "Acolyte Demia"
-    },
-    {
       "card_def_id": "dark_portal_141",
       "count": 2,
       "_card_name": "First to Fall"
@@ -127,11 +147,6 @@
       "card_def_id": "azeroth_197",
       "count": 2,
       "_card_name": "Latro Abiectus"
-    },
-    {
-      "card_def_id": "azeroth_92",
-      "count": 1,
-      "_card_name": "Cold Blood"
     },
     {
       "card_def_id": "azeroth_93",
@@ -147,16 +162,6 @@
       "card_def_id": "azeroth_190",
       "count": 1,
       "_card_name": "Kena Shadowbrand"
-    },
-    {
-      "card_def_id": "dark_portal_129",
-      "count": 1,
-      "_card_name": "Escape Artist"
-    },
-    {
-      "card_def_id": "dark_portal_170",
-      "count": 2,
-      "_card_name": "Jeleane Nightbreeze"
     },
     {
       "card_def_id": "azeroth_200",
@@ -177,11 +182,6 @@
       "card_def_id": "dark_portal_196",
       "count": 3,
       "_card_name": "Warden Ravella"
-    },
-    {
-      "card_def_id": "dark_portal_160",
-      "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

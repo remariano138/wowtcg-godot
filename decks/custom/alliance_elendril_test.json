@@ -44,19 +44,49 @@
       "_card_name": "Sunken Treasure"
     },
     {
+      "card_def_id": "azeroth_331",
+      "count": 2,
+      "_card_name": "Krol Blade"
+    },
+    {
+      "card_def_id": "azeroth_311",
+      "count": 1,
+      "_card_name": "Ancient Bone Bow"
+    },
+    {
+      "card_def_id": "dark_portal_271",
+      "count": 1,
+      "_card_name": "Blackcrow"
+    },
+    {
       "card_def_id": "azeroth_284",
       "count": 2,
       "_card_name": "Devilsaur Leggings"
     },
     {
-      "card_def_id": "dark_portal_34",
-      "count": 3,
-      "_card_name": "Hootie"
-    },
-    {
       "card_def_id": "azeroth_38",
       "count": 1,
       "_card_name": "Fury"
+    },
+    {
+      "card_def_id": "azeroth_32",
+      "count": 1,
+      "_card_name": "Aimed Shot"
+    },
+    {
+      "card_def_id": "azeroth_34",
+      "count": 1,
+      "_card_name": "Aspect of the Hawk"
+    },
+    {
+      "card_def_id": "dark_portal_170",
+      "count": 4,
+      "_card_name": "Jeleane Nightbreeze"
+    },
+    {
+      "card_def_id": "azeroth_43",
+      "count": 2,
+      "_card_name": "Rapid Fire"
     },
     {
       "card_def_id": "azeroth_45",
@@ -69,6 +99,16 @@
       "_card_name": "Old Bones"
     },
     {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
+    },
+    {
+      "card_def_id": "dark_portal_34",
+      "count": 3,
+      "_card_name": "Hootie"
+    },
+    {
       "card_def_id": "azeroth_33",
       "count": 2,
       "_card_name": "Arcane Shot"
@@ -77,11 +117,6 @@
       "card_def_id": "azeroth_165",
       "count": 2,
       "_card_name": "Quick Strike"
-    },
-    {
-      "card_def_id": "azeroth_32",
-      "count": 1,
-      "_card_name": "Aimed Shot"
     },
     {
       "card_def_id": "dark_portal_40",
@@ -97,26 +132,6 @@
       "card_def_id": "dark_portal_173",
       "count": 1,
       "_card_name": "Kavai the Wanderer"
-    },
-    {
-      "card_def_id": "azeroth_311",
-      "count": 1,
-      "_card_name": "Ancient Bone Bow"
-    },
-    {
-      "card_def_id": "dark_portal_271",
-      "count": 1,
-      "_card_name": "Blackcrow"
-    },
-    {
-      "card_def_id": "azeroth_331",
-      "count": 2,
-      "_card_name": "Krol Blade"
-    },
-    {
-      "card_def_id": "azeroth_34",
-      "count": 1,
-      "_card_name": "Aspect of the Hawk"
     },
     {
       "card_def_id": "azeroth_210",
@@ -157,21 +172,6 @@
       "card_def_id": "azeroth_221",
       "count": 2,
       "_card_name": "Tristan Rapidstrike"
-    },
-    {
-      "card_def_id": "dark_portal_170",
-      "count": 4,
-      "_card_name": "Jeleane Nightbreeze"
-    },
-    {
-      "card_def_id": "azeroth_43",
-      "count": 2,
-      "_card_name": "Rapid Fire"
-    },
-    {
-      "card_def_id": "dark_portal_160",
-      "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

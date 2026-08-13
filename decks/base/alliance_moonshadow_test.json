@@ -49,11 +49,6 @@
       "_card_name": "Ramstein's Lightning Bolts"
     },
     {
-      "card_def_id": "azeroth_196",
-      "count": 1,
-      "_card_name": "Lafiel"
-    },
-    {
       "card_def_id": "azeroth_23",
       "count": 1,
       "_card_name": "Innervate"
@@ -62,6 +57,36 @@
       "card_def_id": "azeroth_28",
       "count": 1,
       "_card_name": "Nature's Swiftness"
+    },
+    {
+      "card_def_id": "azeroth_31",
+      "count": 1,
+      "_card_name": "Starfire"
+    },
+    {
+      "card_def_id": "dark_portal_170",
+      "count": 2,
+      "_card_name": "Jeleane Nightbreeze"
+    },
+    {
+      "card_def_id": "azeroth_181",
+      "count": 1,
+      "_card_name": "Donna Calister"
+    },
+    {
+      "card_def_id": "azeroth_179",
+      "count": 1,
+      "_card_name": "Braxiss the Sleeper"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
+    },
+    {
+      "card_def_id": "azeroth_196",
+      "count": 1,
+      "_card_name": "Lafiel"
     },
     {
       "card_def_id": "azeroth_222",
@@ -89,19 +114,9 @@
       "_card_name": "Bretander of the Claw"
     },
     {
-      "card_def_id": "azeroth_181",
-      "count": 1,
-      "_card_name": "Donna Calister"
-    },
-    {
       "card_def_id": "azeroth_187",
       "count": 1,
       "_card_name": "Hannah the Unstoppable"
-    },
-    {
-      "card_def_id": "azeroth_31",
-      "count": 1,
-      "_card_name": "Starfire"
     },
     {
       "card_def_id": "azeroth_171",
@@ -117,11 +132,6 @@
       "card_def_id": "azeroth_184",
       "count": 3,
       "_card_name": "Galahandra Keeper of the Silent Grove"
-    },
-    {
-      "card_def_id": "dark_portal_170",
-      "count": 2,
-      "_card_name": "Jeleane Nightbreeze"
     },
     {
       "card_def_id": "azeroth_217",
@@ -142,11 +152,6 @@
       "card_def_id": "azeroth_175",
       "count": 1,
       "_card_name": "Anika Berlyn"
-    },
-    {
-      "card_def_id": "azeroth_179",
-      "count": 1,
-      "_card_name": "Braxiss the Sleeper"
     },
     {
       "card_def_id": "azeroth_221",
@@ -182,11 +187,6 @@
       "card_def_id": "azeroth_160",
       "count": 2,
       "_card_name": "Fall Back"
-    },
-    {
-      "card_def_id": "dark_portal_160",
-      "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
     }
   ],
   "recommended_ai_id": "ai_generic",

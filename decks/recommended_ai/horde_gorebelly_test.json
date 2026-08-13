@@ -39,14 +39,14 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_248",
-      "count": 4,
-      "_card_name": "Ka'tali Stonetusk"
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
     },
     {
-      "card_def_id": "azeroth_246",
+      "card_def_id": "azeroth_331",
       "count": 2,
-      "_card_name": "Kagra of the Crossroads"
+      "_card_name": "Krol Blade"
     },
     {
       "card_def_id": "azeroth_285",
@@ -59,6 +59,41 @@
       "_card_name": "Golem Skull Helm"
     },
     {
+      "card_def_id": "dark_portal_235",
+      "count": 1,
+      "_card_name": "Tanwa the Marksman"
+    },
+    {
+      "card_def_id": "azeroth_235",
+      "count": 2,
+      "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_242",
+      "count": 2,
+      "_card_name": "Hierophant Caydiem"
+    },
+    {
+      "card_def_id": "azeroth_252",
+      "count": 1,
+      "_card_name": "Moko Hunts-at-Dawn"
+    },
+    {
+      "card_def_id": "azeroth_234",
+      "count": 2,
+      "_card_name": "Deacon Johanna"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 4,
+      "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "azeroth_246",
+      "count": 2,
+      "_card_name": "Kagra of the Crossroads"
+    },
+    {
       "card_def_id": "azeroth_260",
       "count": 4,
       "_card_name": "Taz'dingo"
@@ -67,21 +102,6 @@
       "card_def_id": "azeroth_230",
       "count": 1,
       "_card_name": "Blood Guard Mal'wani"
-    },
-    {
-      "card_def_id": "azeroth_235",
-      "count": 2,
-      "_card_name": "Elder Moorf"
-    },
-    {
-      "card_def_id": "azeroth_344",
-      "count": 1,
-      "_card_name": "For the Horde!"
-    },
-    {
-      "card_def_id": "azeroth_242",
-      "count": 2,
-      "_card_name": "Hierophant Caydiem"
     },
     {
       "card_def_id": "azeroth_171",
@@ -99,11 +119,6 @@
       "_card_name": "Fa'tafi"
     },
     {
-      "card_def_id": "azeroth_331",
-      "count": 2,
-      "_card_name": "Krol Blade"
-    },
-    {
       "card_def_id": "azeroth_262",
       "count": 4,
       "_card_name": "Vaerik Proudhoof"
@@ -119,16 +134,6 @@
       "_card_name": "Guardian Steelhorn"
     },
     {
-      "card_def_id": "azeroth_252",
-      "count": 1,
-      "_card_name": "Moko Hunts-at-Dawn"
-    },
-    {
-      "card_def_id": "dark_portal_235",
-      "count": 1,
-      "_card_name": "Tanwa the Marksman"
-    },
-    {
       "card_def_id": "azeroth_274",
       "count": 1,
       "_card_name": "Zorm Stonefury"
@@ -137,11 +142,6 @@
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
-    },
-    {
-      "card_def_id": "azeroth_234",
-      "count": 2,
-      "_card_name": "Deacon Johanna"
     }
   ],
   "recommended_ai_id": "ai_generic",

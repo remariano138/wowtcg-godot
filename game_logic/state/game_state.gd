@@ -52,10 +52,12 @@ var priority_player: String = ""   # player_id who currently holds priority
 #     bounded and "this turn" is simply "in the log".
 # Entry shape: {"type": String, ...snapshot fields}. Current types:
 #   "damage_dealt" — {source_id, target_id, amount, source_controller,
-#                     target_controller, source_is_ally, target_is_hero}
+#                     target_controller, source_is_ally, target_is_hero,
+#                     target_is_ally}
 #     Appended AFTER prevention (717.2b — fully absorbed damage was never
-#     dealt) and AFTER the 405.3 excess guard (a packet at an already-0-HP
-#     target places nothing), i.e. exactly when damage_dealt is constructed.
+#     dealt), i.e. exactly when damage_dealt is constructed. `amount` is the
+#     DEALT amount, which per 405.2 may exceed the target's health (only "put"
+#     damage is capped at fatal) — overkill counts in full.
 #   "ally_destroyed" — {card_id, controller, owner, is_ally, is_token}
 #     Appended wherever GameEvent.card_destroyed is constructed
 #     (GameLogic.check_destroyed / destroy_card / the 400.5 attachment sweep),
@@ -63,6 +65,15 @@ var priority_player: String = ""   # player_id who currently holds priority
 #     time the card sits in a graveyard (so "was it an ally?" is no longer
 #     derivable from its zone) and a token has gone to RFG.
 var turn_events: Array = []
+
+# Index into turn_events of the first "damage_dealt" entry the board's
+# "when an ally is dealt damage" watchers (Skorn, Mistress of Shadow) have not
+# reacted to yet. Board-global rather than per player: unlike Cold Blood's or
+# Recombobulation's grants this is not a this-turn grant with an owner but a
+# static power read off whatever cards are in play, so one cursor serves every
+# copy — the sweep fires ALL in-play watchers for an entry before advancing
+# past it. Reset to 0 with turn_events at every turn start.
+var damage_watch_index: int = 0
 
 # The one append site. Keep new record calls co-located with the matching
 # GameEvent construction in the primitive, so log truth == event truth.
@@ -815,6 +826,7 @@ func to_dict() -> Dictionary:
 		"phase":             phase,
 		"priority_player":   priority_player,
 		"turn_events":       turn_events.duplicate(true),
+		"damage_watch_index": damage_watch_index,
 		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
@@ -833,6 +845,7 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.phase              = d.get("phase", "setup")
 	gs.priority_player    = d.get("priority_player", "")
 	gs.turn_events        = (d.get("turn_events", []) as Array).duplicate(true)
+	gs.damage_watch_index = d.get("damage_watch_index", 0)
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
 	for a in d.get("pending_actions", []):
 		gs.pending_actions.append(PendingAction.from_dict(a))

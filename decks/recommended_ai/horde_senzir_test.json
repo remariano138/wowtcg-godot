@@ -45,13 +45,18 @@
     },
     {
       "card_def_id": "azeroth_36",
-      "count": 2,
+      "count": 3,
       "_card_name": "Bloodclaw"
     },
     {
       "card_def_id": "dark_portal_32",
-      "count": 3,
+      "count": 1,
       "_card_name": "Chops"
+    },
+    {
+      "card_def_id": "azeroth_259",
+      "count": 1,
+      "_card_name": "Skorn, Mistress of Shadow"
     },
     {
       "card_def_id": "azeroth_38",

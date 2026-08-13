@@ -228,6 +228,8 @@ func _ready() -> void:
 		_test_devilsaur_leggings,
 		_test_cold_blood_hero_damage_destroys_ally,
 		_test_cold_blood_scope_and_expiry,
+		_test_skorn_reflects_ally_damage,
+		_test_skorn_combat_scope_and_gates,
 		_test_recombobulation_fetch_on_opposing_ally_death,
 		_test_recombobulation_scope_and_decline,
 		_test_iceblade_hacker,
@@ -7534,7 +7536,8 @@ func _test_steal_essence() -> void:
 	ok(st.get_card("se").zone_id == "p1_graveyard",
 		"sc40f-d: Steal Essence itself is in the graveyard")
 
-	# ── 405.3: only 1 damage fits on a 1-HP target → heal 1, target destroyed ──
+	# ── 405.2: a 1-HP target is still DEALT the full 2 (only "put" damage is
+	# capped at fatal), so the drain heals 2 even though only 1 damage fits ──
 	var st2 := _base_state(db, "p1_hero", "p2_hero")
 	_add_resources(st2, "p1", 2)
 	_add_hand_card(st2, "se2", "azeroth_134", "p1")
@@ -7548,8 +7551,8 @@ func _test_steal_essence() -> void:
 
 	ok(st2.get_card("wisp").zone_id == "p2_graveyard",
 		"sc40f-e: 1-HP target is destroyed")
-	eq(st2.get_card("p1_hero").damage_taken, 4,
-		"sc40f-f: only 1 damage placed (excess lost) → hero heals 1")
+	eq(st2.get_card("p1_hero").damage_taken, 3,
+		"sc40f-f: 2 dealt to the 1-HP target (405.2 overkill) → hero heals 2")
 
 	# ── Armor prevention on the target hero reduces the drain too ──
 	var st3 := _base_state(db, "p1_hero", "p2_hero")
@@ -20889,3 +20892,153 @@ func _test_lady_courtney_gates_and_ai() -> void:
 	var acts := ai._get_ally_power_actions(s2, db, "p1")
 	eq(acts.size(), 1, "lc-n: AI heals once its own hero is damaged")
 	eq(acts[0].params.get("card_id", ""), "courtney2", "lc-o: the action is hers")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Skorn, Mistress of Shadow (azeroth_259) — 5-cost 3/2 Horde Orc Warlock:
+# "When an ally is dealt damage, Skorn deals that amount of shadow damage to
+# target hero in that ally's party." Recipe: ally_damaged_reflect_hero:shadow.
+#
+# Swept off the turn event log (GameState.turn_events + damage_watch_index) at
+# the two points damage has just landed, so every damage source in the game
+# feeds it by construction. "An ally" is literal and symmetric — either party's,
+# Skorn's own side included — and the hero pinged is always the DAMAGED ally's.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _skorn_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("skorn_def", 3, 2, [], 5, "ally_damaged_reflect_hero:shadow")
+	db.ally("tank_def", 2, 5)
+	db.ally("wisp_def", 2, 1)
+	db.instant("bolt1_def", 1, "deal_damage_to_target:1:frost")
+	db.instant("bolt4_def", 1, "deal_damage_to_target:4:frost")
+	return db
+
+
+func _test_skorn_reflects_ally_damage() -> void:
+	_buf.append("\n-- Skorn: ally damage reflects onto that ally's own hero --")
+	var db := _skorn_db()
+
+	# ── Opposing ally chipped for 1 → the OPPOSING hero takes 1 shadow.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	_add_ally(s1, "skorn", "skorn_def", "p1")
+	_add_ally(s1, "tank", "tank_def", "p2")
+	_add_card_to_hand(s1, "bolt", "bolt1_def", "p1")
+
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt", "target_id": "tank"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+
+	eq(s1.get_card("tank").damage_taken, 1, "sk-a: the ally took the bolt")
+	eq(s1.get_card("p2_hero").damage_taken, 1,
+		"sk-b: Skorn reflected 1 shadow onto the damaged ally's own hero")
+	eq(s1.get_card("p1_hero").damage_taken, 0,
+		"sk-c: Skorn's controller's hero is untouched")
+
+	# ── 405.2: a 4-damage bolt into a 1-health ally DEALS 4 (only "put" damage
+	# is capped at fatal), so the reflect is 4, not the 1 that fit on the body.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_ally(s2, "skorn2", "skorn_def", "p1")
+	_add_ally(s2, "wisp", "wisp_def", "p2")
+	_add_card_to_hand(s2, "bolt4", "bolt4_def", "p1")
+
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt4", "target_id": "wisp"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+
+	ok(not s2.is_in_play("wisp"), "sk-d: the 1-health ally died to the overkill")
+	eq(s2.get_card("p2_hero").damage_taken, 4,
+		"sk-e: overkill counts in full — 4 dealt, so 4 reflected")
+
+	# ── Symmetry: damaging our OWN ally pings our OWN hero. That is the card.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	_add_ally(s3, "skorn3", "skorn_def", "p1")
+	_add_ally(s3, "mine", "tank_def", "p1")
+	_add_card_to_hand(s3, "bolt3", "bolt1_def", "p1")
+
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt3", "target_id": "mine"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+
+	eq(s3.get_card("p1_hero").damage_taken, 1,
+		"sk-f: our own damaged ally reflects onto our own hero")
+	eq(s3.get_card("p2_hero").damage_taken, 0, "sk-g: the opponent is untouched")
+
+
+func _test_skorn_combat_scope_and_gates() -> void:
+	_buf.append("\n-- Skorn: combat trades, hero damage, and the no-loop gate --")
+	var db := _skorn_db()
+
+	# ── A combat trade damages BOTH allies, so BOTH heroes are pinged. Both
+	# packets have landed by the time the sweep runs, so neither is missed.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "skorn", "skorn_def", "p1")
+	var att := _add_ally(s1, "att", "tank_def", "p1")   # 2/5
+	att.just_summoned = false
+	var def_ally := _add_ally(s1, "def", "tank_def", "p2")   # 2/5
+	def_ally.just_summoned = false
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "att", "defender_id": "def"}), db)
+	for _i in 6:
+		StackResolver.pass_priority(s1, db)
+
+	eq(s1.get_card("att").damage_taken, 2, "sk-h: attacker took retaliation")
+	eq(s1.get_card("def").damage_taken, 2, "sk-i: defender took the hit")
+	eq(s1.get_card("p1_hero").damage_taken, 2,
+		"sk-j: our damaged attacker reflected onto our hero")
+	eq(s1.get_card("p2_hero").damage_taken, 2,
+		"sk-k: their damaged defender reflected onto theirs")
+
+	# ── Damage to a HERO is not damage to an ally: no trigger, and therefore no
+	# loop — Skorn's own reflect can never feed the sweep that produced it.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_ally(s2, "skorn2", "skorn_def", "p1")
+	_add_card_to_hand(s2, "bolt", "bolt1_def", "p1")
+
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+
+	eq(s2.get_card("p2_hero").damage_taken, 1,
+		"sk-l: hero damage lands once and is not reflected")
+
+	# ── Skorn is herself an ally: damaging her pings her controller's hero, and
+	# with her off the board nothing reflects at all.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p2", 4)
+	_add_ally(s3, "skorn3", "skorn_def", "p1")
+	_add_card_to_hand(s3, "bolt2", "bolt1_def", "p2")
+	s3.turn_player = "p2"
+	s3.priority_player = "p2"
+
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p2",
+		{"card_id": "bolt2", "target_id": "skorn3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+
+	eq(s3.get_card("p1_hero").damage_taken, 1,
+		"sk-m: Skorn watches herself — her own damage pings her own hero")
+
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s4, "p1", 4)
+	_add_ally(s4, "tank4", "tank_def", "p2")
+	_add_card_to_hand(s4, "bolt4", "bolt1_def", "p1")
+
+	StackResolver.submit_action(s4, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt4", "target_id": "tank4"}), db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)
+
+	eq(s4.get_card("p2_hero").damage_taken, 0,
+		"sk-n: no Skorn in play → no reflect")

@@ -3541,7 +3541,8 @@ static func _open_or_apply_next_group(state: GameState, db) -> Array[GameEvent]:
 # cleared with the group).
 #
 # Optional per-packet hook fields (all read the damage actually DEALT — armor
-# prevention and 405.3 excess-beyond-fatal both reduce it; a fully prevented
+# prevention reduces it, but 405.2 overkill does NOT — a character can be dealt
+#  damage in excess of its health, so a killing blow counts in full; a fully prevented
 # packet ceases to exist, 717.2b, and fires none of them):
 #   drain_heal_per / drain_heal_to — heal N × dealt from a card (Steal Essence)
 #   discard_per — the damaged character's controller discards N × dealt
@@ -3593,6 +3594,10 @@ static func _apply_packet_group(state: GameState, db,
 	# Operation Recombobulation: any opposing non-token ally that died in this
 	# group (including to Cold Blood just above) offers its owner a fetch.
 	events.append_array(_fire_recombobulation(state, db))
+	# Skorn: any ally this group damaged reflects that amount onto its own
+	# party's hero. Last, so the destroy bookkeeping above is settled first — the
+	# reflect reads the log's snapshot, not the board, so a dead ally still pays.
+	events.append_array(_fire_skorn(state, db))
 	return events
 
 
@@ -5228,6 +5233,12 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		attacker_was_damaged, defender_was_damaged, atk_events, def_events, db))
 
+	# Skorn: "When an ally is dealt damage, [she] deals that amount of shadow
+	# damage to target hero in that ally's party." Off the turn event log, so a
+	# trade reflects BOTH allies' damage — attacker and defender packets have
+	# both landed by now — without either combat role being spelled out here.
+	events.append_array(_fire_skorn(state, db))
+
 	return events
 
 
@@ -5368,6 +5379,78 @@ static func _fire_cold_blood(state: GameState, db) -> Array[GameEvent]:
 			events.append_array(_destroy_card_trigger(
 				state, victim_id, ps.hero_instance_id, db))
 	return events
+
+
+# Skorn, Mistress of Shadow (azeroth_259): "When an ally is dealt damage, Skorn
+# deals that amount of shadow damage to target hero in that ally's party."
+# Recipe flag: `ally_damaged_reflect_hero:DMG_TYPE`.
+#
+# Read off the turn event log for the same reason Cold Blood is: every damage
+# packet in the game records a `damage_dealt` entry in GameLogic.deal_damage, so
+# one sweep covers combat, abilities, hero/ally/equipment powers, totems,
+# attachment burns and end-of-turn burns by construction — there is no
+# "damage an ally" hook to miss. Called from the two points where damage has
+# just landed: _apply_packet_group (the prevention pipeline) and
+# _do_combat_conclusion (after both simultaneous hits are placed, so a trade
+# reflects BOTH allies' damage).
+#
+# "An ally" is literal and symmetric — either party's allies, the controller's
+# own and Skorn herself included — and "target hero in that ally's party" is
+# therefore the DAMAGED ally's controller's hero. Damaging your own ally pings
+# your own hero; that self-punishment is the card. In a duel each party has
+# exactly one hero, so the target is forced and auto-chosen, and the whole
+# trigger is mandatory, free and choiceless — it resolves inline rather than on
+# the chain (see data/rules_deviations.md "Skorn, Mistress of Shadow").
+#
+# The amount is the damage actually DEALT (405.2 — overkill counts in full,
+# prevention does not), read from the entry rather than from the ally's
+# damage counters, which is what makes a killing blow reflect its true size.
+# `target_is_ally` is the entry's snapshot: by now the ally may already be in a
+# graveyard, where its zone can no longer answer the question.
+#
+# The cursor is advanced past everything scanned BEFORE any damage is dealt, so
+# each damage event fires each in-play Skorn exactly once and her own reflected
+# packet — which targets a hero, not an ally — can never re-enter the sweep.
+static func _fire_skorn(state: GameState, db) -> Array[GameEvent]:
+	if db == null:
+		return []
+	var pending: Array = []
+	while state.damage_watch_index < state.turn_events.size():
+		var entry: Dictionary = state.turn_events[state.damage_watch_index]
+		state.damage_watch_index += 1
+		if entry.get("type", "") != "damage_dealt":
+			continue
+		if not bool(entry.get("target_is_ally", false)):
+			continue
+		var amount := int(entry.get("amount", 0))
+		if amount <= 0:
+			continue
+		var victim_controller: String = str(entry.get("target_controller", ""))
+		var vps := state.players.get(victim_controller) as PlayerState
+		if not vps or vps.hero_instance_id == "" \
+				or not state.is_in_play(vps.hero_instance_id):
+			continue
+		# Live board scan: every watcher in play RIGHT NOW reacts, so a Skorn that
+		# arrived after an earlier hit this turn doesn't retroactively fire, and
+		# one that has left play doesn't fire at all.
+		for pid in state.players:
+			for card in state.cards_in_play(pid):
+				var def := db.get_def(card.card_def_id) as CardDef
+				if not def or def.effects == "":
+					continue
+				for segment in def.effects.split("|"):
+					var parts := segment.strip_edges().split(":")
+					if parts[0].strip_edges() != "ally_damaged_reflect_hero":
+						continue
+					pending.append({
+						"source": card.instance_id,
+						"target": vps.hero_instance_id,
+						"amount": amount,
+						"dmg_type": parts[1].strip_edges() if parts.size() > 1 else "shadow",
+					})
+	if pending.is_empty():
+		return []
+	return defer_packets(state, db, pending)
 
 
 # Operation Recombobulation: "When an opposing non-token ally is destroyed this

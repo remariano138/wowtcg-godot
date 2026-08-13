@@ -458,24 +458,25 @@ func _test_cards_in_play_includes_attachments() -> void:
 
 
 func _test_damage_cap() -> void:
-	print("\n-- damage cap (rule 405.3) --")
+	print("\n-- dealt vs placed damage (rules 405.2 / 405.3) --")
 	var state := _make_state()
 	var db    := _make_db()
 	var card  := _add_card(state, "cap1", "ally_2_2", "p1", "p1_ally_row")  # 2 HP
 	card.damage_taken = 1  # 1 HP remaining
 
 	var events := GameLogic.deal_damage(state, "src", "cap1", 5, db)
-	# Only 1 damage should be placed (fatal), excess lost
+	# 405.2: "A character CAN be dealt damage in excess of its health" — only PUT
+	# damage is capped at fatal (put_damage, tested separately). So all 5 are
+	# DEALT and reported as such (which is what "for each damage dealt" effects
+	# read — Steal Essence, Mind Spike, Skorn), while only the 1 that fits is
+	# placed as damage counters.
 	var dmg_event: GameEvent = null
 	for e in events:
 		if e.event_type == "damage_dealt":
 			dmg_event = e
 	ok(dmg_event != null,                    "cap: damage_dealt event fired")
-	eq(dmg_event.payload["amount"], 1,       "cap: reported amount is capped (1, not 5)")
-	# card moved to graveyard (damage_taken cleared there) — check via events instead
-	ok(events.any(func(e: GameEvent) -> bool:
-		return e.event_type == "damage_dealt" and e.payload["amount"] == 1),
-		"cap: only 1 damage placed (not 6)")
+	eq(dmg_event.payload["amount"], 5,       "cap: reported DEALT amount is the full 5")
+	eq(card.damage_taken, 2,                 "cap: only 1 more damage PLACED (fatal, not 6)")
 	# deal_damage doesn't destroy on its own (see _test_deal_damage_fatal) — the
 	# caller runs check_destroyed as a separate state-based check.
 	events.append_array(GameLogic.check_destroyed(state, "cap1", "src", db))

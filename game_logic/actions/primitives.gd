@@ -191,11 +191,21 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 
 	var old_hp := state.get_current_hp(target_id, db)
 
-	# Rule 405.3: excess damage beyond fatal is lost, not placed.
-	var actual: int = min(amount, old_hp)
-	if actual <= 0:
-		return []
-	target.damage_taken += actual
+	# Rules 405.2 / 405.3: "A character can be DEALT damage in excess of its
+	# health, but damage can't be PUT on a character in excess of its health."
+	# So the two numbers here are genuinely different and both matter:
+	#   placed — what lands as damage counters, capped at remaining health
+	#            (damage on a character past fatal is meaningless; put_damage
+	#            has its own separately-capped path for the "put" case);
+	#   dealt  — what the packet actually DEALT, uncapped. This is the number
+	#            every "for each damage dealt" effect reads (Steal Essence's
+	#            drain, Mind Spike's discard, Skorn's reflect, whelp bounce,
+	#            the turn event log), so overkill counts in full as printed.
+	# Only PREVENTION reduces `dealt` (717.2b, applied above) — a fully
+	# prevented packet ceases to exist and returned already.
+	var dealt := amount
+	var placed: int = min(amount, old_hp)
+	target.damage_taken += placed
 	var new_hp := state.get_current_hp(target_id, db)
 	var max_hp := state.get_max_hp(target_id, db)
 
@@ -203,11 +213,9 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 	# damage was dealt this turn", Torek's Assault's "opposing hero damaged by
 	# an ally in your party this turn"; see game_logic/turn_state_flags.md).
 	# Recorded here and nowhere else, deliberately paired with the damage_dealt
-	# event so log truth == event truth:
-	#   - AFTER prevention, so damage absorbed in full doesn't count (717.2b);
-	#   - AFTER the 405.3 excess guard above, so a packet at an already-0-HP
-	#     target (possible mid-combat, since deal_damage only places damage and
-	#     check_destroyed runs separately) doesn't count either.
+	# event so log truth == event truth. The amount is the DEALT amount, not the
+	# placed one (405.2, above), and it is recorded AFTER prevention, so damage
+	# absorbed in full doesn't count (717.2b).
 	# The controller/zone facts are SNAPSHOTTED now — by the time a condition
 	# scans the log the source may be in a graveyard or under new control
 	# (Infernal), and re-deriving from the id would answer a different question.
@@ -218,17 +226,22 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 	var source_zone: Zone = null
 	if source_card:
 		source_zone = state.zones.get(source_card.zone_id) as Zone
+	var target_zone := state.zones.get(target.zone_id) as Zone
 	state.record("damage_dealt", {
 		"source_id":         source_id,
 		"target_id":         target_id,
-		"amount":            actual,
+		"amount":            dealt,
 		"source_controller": source_card.controller if source_card else "",
 		"target_controller": target.controller,
 		"source_is_ally":    source_zone != null and source_zone.zone_type == "ally_row",
 		"target_is_hero":    target_ps != null and target_ps.hero_instance_id == target_id,
+		# Snapshot, not re-derived: a watcher that reads this entry (Skorn) runs
+		# after destruction, when the damaged ally is already in a graveyard and
+		# its zone can no longer say "ally".
+		"target_is_ally":    target_zone != null and target_zone.zone_type == "ally_row",
 	})
 
-	events.append(GameEvent.damage_dealt(source_id, target_id, actual))
+	events.append(GameEvent.damage_dealt(source_id, target_id, dealt))
 	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))
 
 	# Berserking: "Ongoing: When your hero is dealt damage, put a berserk counter

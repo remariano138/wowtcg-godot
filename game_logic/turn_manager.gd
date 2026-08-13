@@ -102,6 +102,8 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# starts clean each turn: "this turn" means "in the log". The end-phase
 	# triggers read it before this next reset.
 	state.turn_events.clear()
+	# The ally-damage watchers' cursor indexes into that log, so it resets with it.
+	state.damage_watch_index = 0
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false

@@ -458,9 +458,8 @@ segment paired with a `deal_damage_to_target` segment (Mind cards) or an
 `activated_power:...:deal_damage_to_target` power (Ismantal).
 
 **Deviation:** the discard is implemented faithfully (the damaged character's
-controller discards a card per damage actually DEALT — armor prevention and
-405.3 excess-beyond-fatal reduce the count, exactly like Steal Essence's drain
-heal). But the AI, which plays these cards for the damage via the normal
+controller discards a card per damage actually DEALT — armor prevention reduces
+the count, 405.2 overkill does not, exactly like Steal Essence's drain heal). But the AI, which plays these cards for the damage via the normal
 targeted-damage machinery (`_targeted_instant_actions` / ally-power actions),
 does NOT model the extra discard when scoring — it treats them as plain damage.
 
@@ -469,6 +468,48 @@ damage, so ignoring it never causes a wrong play, only a slight undervaluation.
 Enforcement site: `_apply_discard_per_damage` in `game_logic/stack_resolver.gd`
 (called from the `deal_damage_to_target` branches of `_resolve_play_instant`
 and `_resolve_use_ally_power`).
+
+---
+
+## Skorn, Mistress of Shadow (`azeroth_259`) — reflect resolved immediately, target auto-chosen
+
+**Printed text:** "When an ally is dealt damage, Skorn deals that amount of
+shadow damage to target hero in that ally's party."
+Recipe: `ally_damaged_reflect_hero:shadow`.
+
+**Rules 501.1 / 410 / 707.1d:** in paper play this is a triggered effect that
+goes on the chain when the damage is dealt, announcing a target hero, with a
+priority window before the shadow damage lands.
+
+**Deviation, two parts:**
+
+1. **The target is auto-chosen.** "Target hero in that ally's party" has exactly
+   one legal answer in a two-player duel — the damaged ally's controller's hero
+   — so no target point is opened. Same reasoning as Hypnotic Blade's "target
+   player" and Thwarting Kolkar Aggression's "target opponent".
+2. **The reflect resolves inline, not on the chain** — swept in
+   `StackResolver._fire_skorn` at the two points damage has just landed
+   (`_apply_packet_group` and `_do_combat_conclusion`), with no chain link and
+   no priority window. Same reasoning as Watcher Mal'wi / Thysta Spiritlasher:
+   the trigger is mandatory, free, choiceless and has no announced target, so
+   there is nothing a response could change except killing Skorn — and per
+   707.3 an effect exists independently of its source, so that would not stop
+   the reflect anyway.
+
+**Note — NOT a deviation:** the amount reflected is the damage actually DEALT,
+which per 405.2 may exceed the damaged ally's health ("a character CAN be dealt
+damage in excess of its health"; only *put* damage is capped at fatal). A
+4-damage hit on a 1-health ally reflects 4. Prevention DOES reduce it (717.2b —
+a fully absorbed packet was never dealt, so it reflects nothing). Enforcement
+site: `GameLogic.deal_damage`, which reports the dealt amount while placing only
+what fits.
+
+**Also not a deviation:** the trigger is symmetric. "An ally" is every ally on
+the board — Skorn's controller's own, and Skorn herself — and the hero pinged is
+always the damaged ally's own. Damaging your own ally burns your own hero.
+
+**AI:** none. Skorn is played as a vanilla 5-cost 3/2, and the AI does not model
+the self-harm side (its own allies taking combat damage burning its own hero).
 
 ---
 

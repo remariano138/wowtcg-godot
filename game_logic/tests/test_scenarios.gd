@@ -173,6 +173,7 @@ func _ready() -> void:
 		_test_ai_sneak_elusive_save,
 		_test_lust_for_battle_all_allies_ferocity,
 		_test_from_the_shadows_all_allies_elusive,
+		_test_protect_the_master_pet_protector,
 		_test_hootie_opposing_atk_aura,
 		_test_brigg_destroys_damaged_ally,
 		_test_ai_brigg_combat_math,
@@ -20126,6 +20127,70 @@ func _test_from_the_shadows_all_allies_elusive() -> void:
 	GameLogic.move_card(state, "shadows", "p1_graveyard")
 	ok("theirs" in StackResolver.get_legal_defenders(state, "atk", db),
 		"fts-i: allies are attackable again once the aura leaves play")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Protect the Master (dark_portal_38): "Ongoing: Your Pets have protector."
+# Lust for Battle's keyword aura, but controller-relative AND narrowed to Pets.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_protect_the_master_pet_protector() -> void:
+	_buf.append("\n-- Protect the Master: your Pets have protector --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 3, 3, [], 2)
+	db.pet("pet_def", 2, 3, [], 2)
+	db.ability("dark_portal_38", 1, "ongoing|friendly_pets_keyword:protector")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mypet := _add_ally(state, "mypet", "pet_def", "p1")
+	mypet.just_summoned = false
+	var myally := _add_ally(state, "myally", "grunt_def", "p1")
+	myally.just_summoned = false
+	var theirpet := _add_ally(state, "theirpet", "pet_def", "p2")
+	theirpet.just_summoned = false
+	var atk := _add_ally(state, "atk", "grunt_def", "p2")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "ptm", "dark_portal_38", "p1")
+	_add_resources(state, "p1", 1)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	ok("mypet" not in StackResolver.get_legal_protectors(state, "atk", "p1_hero", db),
+		"ptm-a: the Pet can't protect before the aura")
+
+	var cast := PendingAction.make("play_ability", "p1", {"card_id": "ptm"})
+	ok(StackResolver.can_submit(state, cast, db), "ptm-b: Protect the Master is playable")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("ptm").zone_id, "p1_hero_row",
+		"ptm-c: the ongoing ability stays in play in the hero row")
+
+	ok(StackResolver._has_keyword(mypet, "protector", db, state),
+		"ptm-d: our Pet has protector")
+	ok("mypet" in StackResolver.get_legal_protectors(state, "atk", "p1_hero", db),
+		"ptm-e: it is a legal protector for our hero")
+
+	# Scope, both ways: not our non-Pet allies, and not the opponent's Pets.
+	ok(not StackResolver._has_keyword(myally, "protector", db, state),
+		"ptm-f: our non-Pet ally is unaffected — the grant is Pets only")
+	ok(not StackResolver._has_keyword(theirpet, "protector", db, state),
+		"ptm-g: the OPPONENT's Pet is unaffected — 'your Pets', not all Pets")
+
+	# Covers a Pet that arrives after the aura resolved (read live, never cached).
+	var latepet := _add_ally(state, "latepet", "pet_def", "p1")
+	latepet.just_summoned = false
+	ok(StackResolver._has_keyword(latepet, "protector", db, state),
+		"ptm-h: a Pet that enters play after the aura has protector too")
+
+	# Lifts when the aura leaves play.
+	GameLogic.move_card(state, "ptm", "p1_graveyard")
+	ok(not StackResolver._has_keyword(mypet, "protector", db, state),
+		"ptm-i: the grant lifts the moment the aura leaves play")
+	ok("mypet" not in StackResolver.get_legal_protectors(state, "atk", "p1_hero", db),
+		"ptm-j: and the Pet is no longer a legal protector")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

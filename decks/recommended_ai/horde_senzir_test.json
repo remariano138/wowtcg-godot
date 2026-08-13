@@ -39,14 +39,19 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_36",
-      "count": 3,
-      "_card_name": "Bloodclaw"
+      "card_def_id": "azeroth_284",
+      "count": 2,
+      "_card_name": "Devilsaur Leggings"
     },
     {
-      "card_def_id": "dark_portal_32",
-      "count": 1,
-      "_card_name": "Chops"
+      "card_def_id": "azeroth_311",
+      "count": 2,
+      "_card_name": "Ancient Bone Bow"
+    },
+    {
+      "card_def_id": "azeroth_331",
+      "count": 2,
+      "_card_name": "Krol Blade"
     },
     {
       "card_def_id": "azeroth_259",
@@ -59,19 +64,54 @@
       "_card_name": "Fury"
     },
     {
+      "card_def_id": "azeroth_41",
+      "count": 1,
+      "_card_name": "Multi-Shot"
+    },
+    {
+      "card_def_id": "azeroth_35",
+      "count": 1,
+      "_card_name": "Bestial Wrath"
+    },
+    {
+      "card_def_id": "azeroth_154",
+      "count": 1,
+      "_card_name": "Lust for Battle"
+    },
+    {
+      "card_def_id": "azeroth_40",
+      "count": 1,
+      "_card_name": "Master of the Hunt"
+    },
+    {
+      "card_def_id": "dark_portal_134",
+      "count": 1,
+      "_card_name": "Berserking"
+    },
+    {
       "card_def_id": "azeroth_45",
-      "count": 2,
+      "count": 1,
       "_card_name": "Rayder"
+    },
+    {
+      "card_def_id": "azeroth_235",
+      "count": 1,
+      "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_36",
+      "count": 3,
+      "_card_name": "Bloodclaw"
+    },
+    {
+      "card_def_id": "dark_portal_38",
+      "count": 1,
+      "_card_name": "Protect the Master"
     },
     {
       "card_def_id": "azeroth_33",
       "count": 2,
       "_card_name": "Arcane Shot"
-    },
-    {
-      "card_def_id": "azeroth_271",
-      "count": 1,
-      "_card_name": "Windseer Tarus"
     },
     {
       "card_def_id": "azeroth_155",
@@ -84,19 +124,9 @@
       "_card_name": "Shattering Blow"
     },
     {
-      "card_def_id": "azeroth_41",
-      "count": 1,
-      "_card_name": "Multi-Shot"
-    },
-    {
       "card_def_id": "dark_portal_40",
       "count": 2,
       "_card_name": "Trophy Kill"
-    },
-    {
-      "card_def_id": "azeroth_311",
-      "count": 2,
-      "_card_name": "Ancient Bone Bow"
     },
     {
       "card_def_id": "azeroth_260",
@@ -134,24 +164,14 @@
       "_card_name": "First to Fall"
     },
     {
-      "card_def_id": "dark_portal_134",
+      "card_def_id": "azeroth_274",
       "count": 1,
-      "_card_name": "Berserking"
+      "_card_name": "Zorm Stonefury"
     },
     {
-      "card_def_id": "azeroth_226",
-      "count": 3,
-      "_card_name": "Bala Silentblade"
-    },
-    {
-      "card_def_id": "azeroth_35",
-      "count": 1,
-      "_card_name": "Bestial Wrath"
-    },
-    {
-      "card_def_id": "azeroth_154",
-      "count": 1,
-      "_card_name": "Lust for Battle"
+      "card_def_id": "dark_portal_34",
+      "count": 2,
+      "_card_name": "Hootie"
     },
     {
       "card_def_id": "azeroth_153",
@@ -159,24 +179,14 @@
       "_card_name": "Into the Fray"
     },
     {
-      "card_def_id": "azeroth_235",
-      "count": 1,
-      "_card_name": "Elder Moorf"
-    },
-    {
-      "card_def_id": "azeroth_331",
-      "count": 2,
-      "_card_name": "Krol Blade"
-    },
-    {
-      "card_def_id": "azeroth_40",
-      "count": 1,
-      "_card_name": "Master of the Hunt"
-    },
-    {
       "card_def_id": "azeroth_229",
-      "count": 2,
+      "count": 1,
       "_card_name": "Besh'iah"
+    },
+    {
+      "card_def_id": "azeroth_269",
+      "count": 1,
+      "_card_name": "Watcher Mal'wi"
     },
     {
       "card_def_id": "azeroth_231",

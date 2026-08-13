@@ -4842,6 +4842,12 @@ static func _has_keyword(card: CardInstance, keyword: String, db,
 	if state != null and _ally_keyword_aura(state, keyword, db) \
 			and _is_ally(state, card.instance_id):
 		return true
+	# "Ongoing: Your Pets have <keyword>." (Protect the Master). The same live
+	# read as the aura above, but controller-relative and narrowed to Pets — so
+	# it only ever grants to Pets in the aura controller's own party.
+	if state != null and _is_pet(state, card.instance_id, db) \
+			and _pet_keyword_aura(state, card.controller, keyword, db):
+		return true
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def and keyword in def.keywords:
@@ -4868,6 +4874,28 @@ static func _ally_keyword_aura(state: GameState, keyword: String, db) -> bool:
 					if parts[0].strip_edges() == "all_allies_keyword" \
 							and parts.size() > 1 and parts[1].strip_edges() == keyword:
 						return true
+	return false
+
+
+# True when `player_id` controls an in-play card granting `keyword` to their own
+# Pets (`friendly_pets_keyword:<keyword>` — Protect the Master). Unlike
+# _ally_keyword_aura this is controller-relative: only the aura controller's
+# rows are scanned, so an opposing Pet is never granted anything. Evaluated
+# live, never cached.
+static func _pet_keyword_aura(state: GameState, player_id: String,
+		keyword: String, db) -> bool:
+	if not db or keyword == "" or player_id == "":
+		return false
+	for zone_suffix in ["_hero_row", "_ally_row"]:
+		for card in state.cards_in_zone(player_id + zone_suffix):
+			var def := db.get_def(card.card_def_id) as CardDef
+			if not def or def.effects == "":
+				continue
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				if parts[0].strip_edges() == "friendly_pets_keyword" \
+						and parts.size() > 1 and parts[1].strip_edges() == keyword:
+					return true
 	return false
 
 

@@ -1298,7 +1298,9 @@ func _on_card_hover_scene(instance_id: String) -> void:
 	# The local player's own hand magnifies on hover.
 	if card.zone_id == _local_player + "_hand":
 		cn.set_base_scale(Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY))
-		cn.z_index = BoardRenderer.HAND_Z_INDEX + 1
+		# Above the whole fan, not just its left neighbour — a fanned hand card is
+		# partly covered by the one to its right until it is hovered.
+		cn.z_index = BoardRenderer.HAND_HOVER_Z_INDEX
 
 
 func _on_card_unhover_scene(instance_id: String) -> void:
@@ -1314,7 +1316,8 @@ func _on_card_unhover_scene(instance_id: String) -> void:
 		cn.show_card_back()
 	if card.zone_id.ends_with("_hand"):
 		cn.set_base_scale(Vector2.ONE * BoardRenderer.HAND_CARD_SCALE)
-		cn.z_index = BoardRenderer.HAND_Z_INDEX
+		# Back into the fan: behind its right-hand neighbour again.
+		_renderer.restore_hand_z(instance_id)
 
 
 func _add_deck_back_sprite(pos: Vector2, facing: float = 0.0) -> void:
@@ -1548,7 +1551,7 @@ func _clear_combat_buttons() -> void:
 		_combat_prompt_lbl.text = ""
 
 
-const ROW_GRID_COLS := 7   # slots outlined per ally / hero row
+const ROW_GRID_COLS := 6   # slots outlined per ally / hero row
 
 func _draw_zone_grids() -> void:
 	for spec in [
@@ -2472,15 +2475,33 @@ func _turn_step_bbcode(pid: String) -> String:
 func _update_opponent_pass_btn(opp: String) -> void:
 	if not _opp_pass_btn:
 		return
+	if _in_mulligan_ui():
+		_opp_pass_btn.text     = MULLIGAN_BTN_TEXT
+		_opp_pass_btn.modulate = MULLIGAN_BTN_COLOR
+		return
 	var theirs := _state.priority_player == opp
 	_opp_pass_btn.text     = "Priority" if theirs else "Waiting"
 	_opp_pass_btn.modulate = Color(1.0, 0.78, 0.3) if theirs \
 		else Color(0.42, 0.42, 0.48)
 
 
+# While the mulligan panel owns the screen neither seat holds priority, so both
+# pass buttons are inert status text rather than controls.
+const MULLIGAN_BTN_TEXT  := "Mulligan phase"
+const MULLIGAN_BTN_COLOR := Color(0.42, 0.42, 0.48)
+
+func _in_mulligan_ui() -> bool:
+	return _mulligan_panel != null and _mulligan_panel.visible
+
+
 func _update_pass_btn() -> void:
 	_update_resource_info()
 	_update_turn_steps()
+	if _in_mulligan_ui():
+		_pass_btn.disabled = true
+		_pass_btn.text     = MULLIGAN_BTN_TEXT
+		_pass_btn.modulate = MULLIGAN_BTN_COLOR
+		return
 	var my_turn    := _state.priority_player == _local_player
 	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
@@ -3427,7 +3448,9 @@ func _advance_mulligan_queue() -> void:
 
 
 func _show_mulligan_panel() -> void:
-	_pass_btn.visible          = false
+	# Both pass buttons stay up, greyed, reading "Mulligan phase" — nobody is
+	# passing priority yet, and hiding one of the pair left the board lopsided.
+	_pass_btn.visible          = true
 	_mulligan_panel.visible    = true
 	_mulligan_awaiting_ack     = false
 	_mulligan_btn.visible      = true

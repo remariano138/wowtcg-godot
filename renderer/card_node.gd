@@ -29,6 +29,11 @@ var _is_face_down: bool = false
 # (top). Every rotation write (exhaust/ready/settle) composes with this base,
 # so P2's cards stay upside-down to the P1 viewer, Tabletop-Simulator style.
 var facing_degrees: float = 0.0
+# Fan tilt, in the same sense as facing: a card in a curved hand stands square
+# to the arc, so its vertical edges point at the arc's centre. Non-zero only for
+# hand cards (BoardRenderer owns it — see HAND_FAN_RADIUS) and composed into
+# every rotation write, so a reconcile/settle tick can't flatten the fan.
+var fan_degrees: float = 0.0
 # True while this card is attached to a host (rule 400). Attachments peek out
 # from behind their host and would otherwise steal clicks meant for it; an
 # attachment stays hoverable (Alt+hover inspector still works) but does not
@@ -614,7 +619,7 @@ func set_base_scale(v: Vector2) -> void:
 # Safe to call at any time: the pulse cue animates `scale`, never rotation, so
 # there is no in-flight rotation to fight. Visual-only.
 func settle_rotation(exhausted: bool) -> void:
-	rotation_degrees = facing_degrees + (90.0 if exhausted else 0.0)
+	rotation_degrees = facing_degrees + fan_degrees + (90.0 if exhausted else 0.0)
 
 
 # True while the pointer is inside a registered HUD shield rect. Shields are in

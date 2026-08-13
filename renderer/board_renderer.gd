@@ -107,6 +107,57 @@ const CARD_PAD        := CardNode.H / 5.0
 const HAND_CARD_SCALE := 1.2
 const HAND_SPREAD_GAP := CardNode.W * HAND_CARD_SCALE + 12.0
 
+# ── Hand fan ──────────────────────────────────────────────────────────────────
+# Hand cards are FANNED like a held hand rather than laid out side by side: card
+# centres sit at regular intervals along a curve, close enough together that each
+# card overlaps its left neighbour, with the right card drawn on top. Only the
+# left edge of a covered card shows — which is exactly the corner carrying its
+# cost and its type colour, so the hand stays readable while taking far less room.
+#
+# Two parameters (see fan_slots):
+#   width  — the span the fan occupies, from the FIRST card's centre to the
+#            LAST card's centre. Constant, so the hand never spills sideways:
+#            more cards simply tighten the fan.
+#   radius — radius of the circle the centres ride on. 0 (by convention) means a
+#            straight line, i.e. cards stay aligned and only overlap.
+#
+# Spacing is capped at the un-overlapped gap: with few cards in hand there is no
+# reason to spread them further apart than touching, so a 2-card hand sits
+# together in the middle instead of at the two ends of the full width.
+const HAND_FAN_CARDS  := 7     # hand size the width is budgeted for
+const HAND_FAN_TIGHT  := 0.6   # fraction of a card width per card at that size
+const HAND_FAN_WIDTH  := HAND_FAN_CARDS * HAND_FAN_TIGHT * CardNode.W * HAND_CARD_SCALE
+# Radius sets how hard the hand curves. Scale reference: a hand card is 90 px
+# wide and 126 px tall, and a full 7-card fan spans HAND_FAN_WIDTH ≈ 378 px of
+# arc — so the total sweep is width/radius radians, and the middle of the fan
+# rides radius*(1-cos(half sweep)) above its ends.
+#   1400 → ~15° total,  ~13 px of lift — barely a curve
+#    900 → ~24° total,  ~20 px of lift — Hearthstone-ish (outer cards tilt ~12°)
+#    600 → ~36° total,  ~29 px of lift — clearly a held hand, edges tilt a lot
+#      0 → straight line (the convention)
+const HAND_FAN_RADIUS := 900.0
+
+const HAND_ZONES := ["p1_hand", "p2_hand"]
+
+# Fan slot i of `count`: offset from the zone anchor plus the card's own tilt.
+# Pure geometry — no node access — so layout, settle-checks and hit-testing all
+# read the same source.
+static func fan_slot(idx: int, count: int, width: float, radius: float) -> Dictionary:
+	if count <= 1:
+		return {"offset": Vector2.ZERO, "angle": 0.0}
+	var spacing: float = min(width / float(count - 1), HAND_SPREAD_GAP)
+	# Arc length from the fan's centre to this card's centre.
+	var s: float = (float(idx) - float(count - 1) * 0.5) * spacing
+	if is_zero_approx(radius):
+		return {"offset": Vector2(s, 0.0), "angle": 0.0}
+	# Circle centred `radius` BELOW the anchor, so the fan bulges upward (the
+	# middle cards sit highest) and the outer cards tilt away from centre.
+	var theta: float = s / radius
+	return {
+		"offset": Vector2(radius * sin(theta), radius * (1.0 - cos(theta))),
+		"angle": rad_to_deg(theta),
+	}
+
 # Hero cards are special (rule 200) and render twice table size, centred on the
 # same "_hero_card" anchor as before — CardNode's visual origin is its centre,
 # so scaling keeps it height-centred on its hero row (where equipment goes).
@@ -645,6 +696,12 @@ func _animate_move(card_id: String, from_zone: String, to_zone: String) -> void:
 		cn.facing_degrees = _facing_for_zone(to_zone)
 		cn.rotation_degrees = cn.facing_degrees
 
+	# Leaving a fanned hand sheds the fan tilt — nothing outside a hand is
+	# rotated except by exhaust, and a hand card is never exhausted.
+	if cn and from_zone in HAND_ZONES and not (to_zone in HAND_ZONES):
+		cn.fan_degrees = 0.0
+		cn.rotation_degrees = cn.facing_degrees
+
 	# Re-centre source zone (closes the gap).
 	_relayout_zone(from_zone)
 
@@ -849,7 +906,7 @@ static func _spread_order(zone_id: String, ids: Array) -> Array:
 # is put through _spread_order (which reverses for p2) and the p2 camera's 180°
 # rotation flips both axes back, so each player reads their own grid the same way.
 const RESOURCE_ZONES  := ["p1_resource_row", "p2_resource_row"]
-const RES_GRID_COLS   := 5
+const RES_GRID_COLS   := 4
 const RES_GRID_ROWS   := 3
 const RES_CELL        := CARD_SLOT
 
@@ -941,8 +998,24 @@ func _slot_offset(zone_id: String, idx: int, count: int) -> Vector2:
 		return Vector2(
 			(col - (RES_GRID_COLS - 1) * 0.5) * RES_CELL,
 			(row - (rows - 1) * 0.5) * RES_CELL)
+	if zone_id in HAND_ZONES:
+		var off: Vector2 = fan_slot(idx, count, HAND_FAN_WIDTH, HAND_FAN_RADIUS)["offset"]
+		# The fan is built in the OWNER's frame (bulging up, toward their board).
+		# p2's frame is the world's turned 180°: _spread_order has already mirrored
+		# the x axis, so only the sag needs flipping.
+		return Vector2(off.x, -off.y) if zone_id.begins_with("p2_") else off
 	var gap: float = _spread_gap(zone_id)
 	return Vector2(-gap * (count - 1) * 0.5 + idx * gap, 0.0)
+
+
+# Fan tilt for a hand card, on top of the zone's facing. 0 everywhere else.
+static func _slot_angle(zone_id: String, idx: int, count: int) -> float:
+	if not (zone_id in HAND_ZONES):
+		return 0.0
+	var a: float = fan_slot(idx, count, HAND_FAN_WIDTH, HAND_FAN_RADIUS)["angle"]
+	# Mirrored x for p2 (see _slot_offset) means the tilt mirrors with it; the
+	# 180° facing the rotation composes with supplies the rest.
+	return -a if zone_id.begins_with("p2_") else a
 
 
 # Cards in a hero_row zone, excluding the pinned hero card — used for the spread.
@@ -985,6 +1058,28 @@ func _card_position_in_zone(card_id: String, zone_id: String) -> Vector2:
 		return anchor.global_position
 
 	return anchor.global_position + _slot_offset(zone_id, idx, count)
+
+
+# Put a hand card back into its fan slot's draw order — the counterpart of the
+# scene's hover pop (which lifts it above every other card). No-op elsewhere.
+func restore_hand_z(instance_id: String) -> void:
+	var zone := _zone_of_card(instance_id)
+	if not (zone in HAND_ZONES):
+		return
+	var node := card_nodes.get(instance_id) as Node2D
+	if not node:
+		return
+	var zc: Array = _spread_cards(zone)
+	var i := zc.find(instance_id)
+	if i < 0:
+		node.z_index = HAND_Z_INDEX
+		return
+	var seat_i: int = (zc.size() - 1 - i) if zone.begins_with("p2_") else i
+	node.z_index = HAND_Z_INDEX + seat_i
+
+
+# Draw order for the hovered hand card — above every card in the fan.
+const HAND_HOVER_Z_INDEX := HAND_Z_INDEX + 64
 
 
 # Smoothly slide all cards in a zone to their centred positions.
@@ -1078,6 +1173,23 @@ func _relayout_zone(zone_id: String) -> void:
 			var stack_n: int = lay["stack"].get(cid, 0)
 			(node as CardNode).set_stack_count(stack_n)
 			node.z_index = 1 if stack_n > 0 else 0
+		# Fanned hands: each card overlaps the one to ITS OWN CONTROLLER'S left,
+		# so the exposed sliver is the cost/type corner. zc is in world order
+		# (reversed for p2), so the seat's own left-to-right index is the one
+		# that decides who is drawn on top.
+		if zone_id in HAND_ZONES and node is CardNode:
+			var cn := node as CardNode
+			var seat_i: int = (count - 1 - i) if zone_id.begins_with("p2_") else i
+			node.z_index = HAND_Z_INDEX + seat_i
+			# The tilt lives on the node (fan_degrees) rather than being written
+			# straight to rotation_degrees, so the reconcile tick's settle_rotation
+			# re-derives it instead of flattening the fan.
+			cn.fan_degrees = _slot_angle(zone_id, i, count)
+			var ang: float = cn.facing_degrees + cn.fan_degrees
+			if not is_equal_approx(node.rotation_degrees, ang):
+				var rt := create_tween()
+				rt.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+				rt.tween_property(node, "rotation_degrees", ang, GameTiming.anim(0.2))
 		_kill_pos_tween(cid)
 		var tween  := create_tween()
 		tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)

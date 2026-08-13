@@ -542,12 +542,19 @@ func _on_game_event(event: GameEvent) -> void:
 			var cn := card_nodes.get(event.payload.get("quest_id", "")) as CardNode
 			if cn:
 				cn.show_card_back()
+			# face_down is part of the pile key, but completing a quest changes no
+			# pose (the cost is paid by OTHER resources), so nothing else regroups
+			# the piles: without this the spent quest stays in the face-up pile,
+			# keeps its stale count badge and covers the still-playable copy under
+			# it — clicks then land on a card with no legal action.
+			_res_restack(event.payload.get("quest_id", ""))
 		"quest_turned_face_down":
 			# Kolkar: same spent face-down resource state as a completed quest,
 			# but no reward was applied.
 			var fd_cn := card_nodes.get(event.payload.get("quest_id", "")) as CardNode
 			if fd_cn:
 				fd_cn.show_card_back()
+			_res_restack(event.payload.get("quest_id", ""))
 		"hero_power_used":
 			var hero_id: String = event.payload.get("hero_id", "")
 			var hcn := card_nodes.get(hero_id) as CardNode
@@ -996,20 +1003,46 @@ func _res_layout(zone_id: String) -> Dictionary:
 	var ids: Array = _zone_cards.get(zone_id, [])
 	var slots: Dictionary = {}
 	var stack: Dictionary = {}
+	var pile_idx: Dictionary = {}   # card_id -> position within its pile
+	var pile_n:   Dictionary = {}   # card_id -> pile size
 	var key_slot: Dictionary = {}   # stack key -> slot idx
-	var key_rep:  Dictionary = {}   # stack key -> representative card_id
+	var key_members: Dictionary = {}   # stack key -> [card_id]
 	var next_slot := 0
 	for cid in ids:
 		var key := _res_stack_key(cid)
 		if not key_slot.has(key):
 			key_slot[key] = next_slot
-			key_rep[key]  = cid
+			key_members[key] = []
 			next_slot += 1
 		slots[cid] = key_slot[key]
 		stack[cid] = 0
-	for cid in ids:
-		stack[key_rep[_res_stack_key(cid)]] += 1
-	return {"slots": slots, "slot_count": next_slot, "stack": stack}
+		key_members[key].append(cid)
+	# The pile's LAST member is its representative: the pile fan draws later
+	# members on top, so the last one is the fully visible card and the only one
+	# whose count badge can't be covered by a neighbour's sliver.
+	for key in key_members:
+		var members: Array = key_members[key]
+		for i in members.size():
+			pile_idx[members[i]] = i
+			pile_n[members[i]]   = members.size()
+		stack[members[-1]] = members.size()
+	return {"slots": slots, "slot_count": next_slot, "stack": stack,
+		"pile_idx": pile_idx, "pile_n": pile_n}
+
+
+# Offset of a card inside its resource pile. Straight-line fan (radius 0) whose
+# TOTAL span is a fraction of a card width, so a pile of any size stays well
+# inside its own slot and can never reach the neighbouring resource — what each
+# extra copy buys is a sliver, not room. Piles of one sit dead centre.
+const RES_PILE_FAN_WIDTH := CardNode.W * TABLE_CARD_SCALE / 5.0
+
+func _res_pile_offset(lay: Dictionary, cid: String) -> Vector2:
+	if lay.is_empty():
+		return Vector2.ZERO
+	var n: int = lay["pile_n"].get(cid, 1)
+	if n <= 1:
+		return Vector2.ZERO
+	return fan_slot(lay["pile_idx"].get(cid, 0), n, RES_PILE_FAN_WIDTH, 0.0)["offset"]
 
 
 # Position of slot `idx` (of `count`) in `zone_id`, as an offset from the zone
@@ -1166,7 +1199,8 @@ func _zone_settled(zone_id: String, ids: Array) -> bool:
 			continue   # in flight — its tween owns the final position
 		var slot_i: int = lay["slots"].get(spread_ids[i], i) if lay else i
 		var slot_n: int = lay["slot_count"] if lay else count
-		var target := anchor.global_position + _slot_offset(zone_id, slot_i, slot_n)
+		var target := anchor.global_position + _slot_offset(zone_id, slot_i, slot_n) \
+			+ _res_pile_offset(lay, spread_ids[i])
 		if node.global_position.distance_to(target) > 1.0:
 			return false
 	if hero_id != "" and hero_id in ids:
@@ -1197,13 +1231,23 @@ func _relayout_zone(zone_id: String) -> void:
 			continue
 		var slot_i: int = lay["slots"].get(cid, i) if lay else i
 		var slot_n: int = lay["slot_count"] if lay else count
-		var target := anchor.global_position + _slot_offset(zone_id, slot_i, slot_n)
-		# Pile badge + draw order: the pile's representative renders on top and
-		# wears the count; everyone else hides theirs beneath it.
+		var target := anchor.global_position + _slot_offset(zone_id, slot_i, slot_n) \
+			+ _res_pile_offset(lay, cid)
+		# Pile badge + draw order: members are fanned a sliver apart and drawn in
+		# pile order, so each one is individually visible, hoverable and
+		# clickable. The representative is last — on top, fully visible, wearing
+		# the count; everyone else hides their badge beneath it.
 		if lay and node is CardNode:
 			var stack_n: int = lay["stack"].get(cid, 0)
 			(node as CardNode).set_stack_count(stack_n)
-			node.z_index = 1 if stack_n > 0 else 0
+			# Ordered from the TOP of the pile down, and clamped into [0, 2] so a
+			# deep pile can never climb into the hand's band (HAND_Z_INDEX). The
+			# top two members are pinned — which is all that's needed to keep the
+			# representative's badge uncovered — and the rest fall back to tree
+			# order, which is the order they entered the zone, i.e. pile order.
+			var p_i: int = lay["pile_idx"].get(cid, 0)
+			var p_n: int = lay["pile_n"].get(cid, 1)
+			node.z_index = maxi(0, HAND_Z_INDEX - 1 - (p_n - 1 - p_i))
 		# Fanned hands: each card overlaps the one to ITS OWN CONTROLLER'S left,
 		# so the exposed sliver is the cost/type corner. zc is in world order
 		# (reversed for p2), so the seat's own left-to-right index is the one

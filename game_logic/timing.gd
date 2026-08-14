@@ -24,7 +24,7 @@ const DEATH_ANIMATION  := 1.0   # red overlay fade after a card is destroyed
 const HEAL_ANIMATION   := 0.5   # green overlay fade after a card is healed
 const DAMAGE_PAUSE     := 0.5   # pause after damage is dealt (once per resolved action)
 const CHAIN_PAUSE      := 1.0   # pause while a played card sits on the chain
-const RESOLUTION_DELAY := 1.0   # pause after combat/an AI chain play, before the next turn is scheduled (lets backswings breathe; scale live via animation_speed)
+const RESOLUTION_DELAY := 0.1   # pause after combat/an AI chain play, before the next turn is scheduled (near-instant: the UI now shows what happened, so this only has to break the call stack)
 
 static func death_animation() -> float:
 	return anim(DEATH_ANIMATION)

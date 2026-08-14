@@ -332,6 +332,7 @@ const YOUR_TURN_TRIGGERS := [
 	"turn_start_heal_hero_and_pets",    # Spirit Bond
 	"rfg_self_next_turn",               # Tooga
 	"turn_start_discard_or_give_control",  # Infernal
+	"turn_start_look_top_card",         # Track Humanoids
 ]
 
 

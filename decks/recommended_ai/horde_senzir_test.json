@@ -44,11 +44,6 @@
       "_card_name": "Annihilator"
     },
     {
-      "card_def_id": "azeroth_311",
-      "count": 1,
-      "_card_name": "Ancient Bone Bow"
-    },
-    {
       "card_def_id": "azeroth_35",
       "count": 1,
       "_card_name": "Bestial Wrath"
@@ -84,11 +79,6 @@
       "_card_name": "Elder Moorf"
     },
     {
-      "card_def_id": "dark_portal_38",
-      "count": 1,
-      "_card_name": "Protect the Master"
-    },
-    {
       "card_def_id": "azeroth_45",
       "count": 1,
       "_card_name": "Rayder"
@@ -97,6 +87,16 @@
       "card_def_id": "azeroth_37",
       "count": 1,
       "_card_name": "Eagle Eye"
+    },
+    {
+      "card_def_id": "azeroth_46",
+      "count": 1,
+      "_card_name": "Track Humanoids"
+    },
+    {
+      "card_def_id": "azeroth_39",
+      "count": 1,
+      "_card_name": "Marked for Death"
     },
     {
       "card_def_id": "azeroth_246",

@@ -191,6 +191,16 @@ static func discard_choice_opened(player_id: String, count: int, reason: String 
 static func control_discard_choice_opened(player_id: String, source_card_id: String) -> GameEvent:
 	return make("control_discard_choice_opened", {"player": player_id, "source": source_card_id})
 
+# Track Humanoids' look. The OPENED event carries the card so the deciding
+# player's own screen can show it; the RESOLVED event deliberately does not —
+# it is a "look at", so the card stays private and the shared game log may only
+# say where it went (same rule as It's a Secret to Everybody's private pick).
+static func track_look_opened(player_id: String, card_id: String) -> GameEvent:
+	return make("track_look_opened", {"player": player_id, "card": card_id})
+
+static func track_look_resolved(player_id: String, to_bottom: bool) -> GameEvent:
+	return make("track_look_resolved", {"player": player_id, "to_bottom": to_bottom})
+
 static func control_changed(card_id: String, old_controller: String, new_controller: String) -> GameEvent:
 	return make("control_changed", {"card": card_id, "old": old_controller, "new": new_controller})
 

@@ -415,6 +415,10 @@ func _ready() -> void:
 		_test_jinlak_fizzle_and_ai,
 		_test_lady_courtney_heals_party,
 		_test_lady_courtney_gates_and_ai,
+		_test_marked_for_death_attach_and_aura,
+		_test_marked_for_death_fizzle_and_ai,
+		_test_track_humanoids_look_top_card,
+		_test_track_humanoids_scope_and_empty_deck,
 	]
 
 	for t in tests:
@@ -23623,3 +23627,249 @@ func _test_uniqueness_is_state_based() -> void:
 	StackResolver.choose_equipment_sacrifice(state, "krol", db)
 	eq(krol.zone_id, "p2_graveyard", "usb-h: destroyed to its owner's graveyard")
 	eq(state.pending_equip_sacrifice_player, "", "usb-i: conflict resolved")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Marked for Death (azeroth_39, 2, Instant Ability — Marksmanship):
+#   "Attach to target opposing hero or ally.
+#    Ongoing: Allies in your party have +1 ATK while attacking attached
+#    character."
+#   ongoing|attach:opposing_hero_or_ally|party_atk_vs_attached:1
+# First OPPOSING-only attach kind, and the first ATK aura sourced from an
+# attachment. The grant is live and defender-dependent (Bala Silentblade's
+# shape): it counts only while one of the controller's ALLIES is the combat
+# attacker and the host is the current defender.
+# ══════════════════════════════════════════════════════════════════════════════
+const MFD_FX := "ongoing|attach:opposing_hero_or_ally|party_atk_vs_attached:1"
+
+func _test_marked_for_death_attach_and_aura() -> void:
+	_buf.append("\n-- Marked for Death: opposing-only attach, +1 ATK vs the host --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wolf_def", 2, 3, [], 2)
+	db.instant("azeroth_39", 2, MFD_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine := _add_ally(state, "mine", "wolf_def", "p1")
+	mine.just_summoned = false
+	_add_ally(state, "theirs", "wolf_def", "p2")
+	_add_card_to_hand(state, "mfd", "azeroth_39", "p1")
+	_add_card_to_hand(state, "mfd2", "azeroth_39", "p1")
+	_add_resources(state, "p1", 8)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# "target OPPOSING hero or ally" — our own characters are never legal.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd", "target_id": "mine"}), db),
+		"mfd-a: can't attach to our own ally")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd", "target_id": "p1_hero"}), db),
+		"mfd-b: can't attach to our own hero")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd", "target_id": "p2_hero"}), db),
+		"mfd-c: the opposing hero is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd", "target_id": "theirs"}), db),
+		"mfd-d: an opposing ally is a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd", "target_id": "theirs"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("mfd").zone_id, "attached", "mfd-e: attached")
+	eq(state.get_card("mfd").attached_to, "theirs", "mfd-f: host is the opposing ally")
+
+	# Out of combat the aura contributes nothing.
+	eq(state.get_atk("mine", db), 2, "mfd-g: no bonus outside combat")
+
+	# Attacking the HOST: +1. The bonus is defender-dependent, so an
+	# assume_attacking forecast (no defender yet) deliberately does NOT show it.
+	eq(state.get_atk("mine", db, true), 2, "mfd-h: not counted in an attacking forecast")
+	state.combat_attacker = "mine"
+	state.combat_defender = "theirs"
+	eq(state.get_atk("mine", db), 3, "mfd-i: +1 ATK while attacking the marked ally")
+	# Attacking anything else: nothing.
+	state.combat_defender = "p2_hero"
+	eq(state.get_atk("mine", db), 2, "mfd-j: no bonus against a different defender")
+	# A HERO attacking gets nothing — the text says "allies in your party".
+	state.combat_attacker = "p1_hero"
+	state.combat_defender = "theirs"
+	eq(state.get_atk("p1_hero", db), 0, "mfd-k: the hero is not an ally")
+	# Nor does the OPPONENT's ally benefit from our attachment.
+	state.combat_attacker = "theirs"
+	state.combat_defender = "mine"
+	eq(state.get_atk("theirs", db), 2, "mfd-l: controller-scoped, not the opponent's allies")
+	state.combat_attacker = ""
+	state.combat_defender = ""
+
+	# Stacks per copy.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd2", "target_id": "theirs"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	state.combat_attacker = "mine"
+	state.combat_defender = "theirs"
+	eq(state.get_atk("mine", db), 4, "mfd-m: two copies stack")
+	state.combat_attacker = ""
+	state.combat_defender = ""
+
+	# The host leaving play takes both attachments with it (400.5), and the
+	# grant lifts with them.
+	GameLogic.destroy_card(state, "theirs", "")
+	eq(state.get_card("mfd").zone_id, "p1_graveyard", "mfd-n: attachment died with its host")
+	eq(state.get_atk("mine", db), 2, "mfd-o: bonus gone")
+
+
+func _test_marked_for_death_fizzle_and_ai() -> void:
+	_buf.append("\n-- Marked for Death: 400.2 re-check, and the AI marks the enemy hero --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wolf_def", 2, 3, [], 2)
+	db.instant("azeroth_39", 2, MFD_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "mine", "wolf_def", "p1")
+	_add_ally(state, "theirs", "wolf_def", "p2")
+	_add_card_to_hand(state, "mfd", "azeroth_39", "p1")
+	_add_resources(state, "p1", 8)
+	state.players["p1"].resource_placed_this_turn = true
+
+	# Target killed in the response window: the attachment goes to the
+	# graveyard instead (400.2 / glossary 4217).
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "mfd", "target_id": "theirs"}), db)
+	GameLogic.destroy_card(state, "theirs", "")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("mfd").zone_id, "p1_graveyard", "mfdf-a: fizzled to the graveyard")
+	eq(state.get_card("mfd").attached_to, "", "mfdf-b: nothing attached")
+
+	# AI: aims at the opposing HERO (where we attack most, and a host that can't
+	# be killed to shed it) and only while we have an ally to benefit.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(st2, "mfd_ai", "azeroth_39", "p1")
+	_add_resources(st2, "p1", 8)
+	st2.players["p1"].resource_placed_this_turn = true
+	var ai := BaseAI.new()
+	var acts: Array = []
+	for a in ai.get_reasonable_actions(st2, db, "p1"):
+		if a.params.get("card_id", "") == "mfd_ai":
+			acts.append(a)
+	eq(acts.size(), 0, "mfdf-c: not played with an empty party, nothing would benefit")
+
+	_add_ally(st2, "ai_ally", "wolf_def", "p1")
+	_add_ally(st2, "opp_ally", "wolf_def", "p2")
+	var targets: Array = []
+	for a in ai.get_reasonable_actions(st2, db, "p1"):
+		if a.params.get("card_id", "") == "mfd_ai":
+			targets.append(a.params.get("target_id", ""))
+	eq(targets.size(), 1, "mfdf-d: exactly one action generated")
+	ok("p2_hero" in targets, "mfdf-e: aimed at the opposing hero")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Track Humanoids (azeroth_46, 2, Ability — Survival):
+#   "Ongoing: At the start of your turn, look at the top card of your deck.
+#    You may put it on the bottom of your deck."
+#   ongoing|turn_start_look_top_card
+# A YOUR_TURN_TRIGGERS entry that resolves into a direct-call binary choice.
+# Looking is NOT a draw (410.6b), so an empty deck is a harmless no-op.
+# ══════════════════════════════════════════════════════════════════════════════
+const TRACK_FX := "ongoing|turn_start_look_top_card"
+
+func _test_track_humanoids_look_top_card() -> void:
+	_buf.append("\n-- Track Humanoids: look at the top card, keep it or bury it --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wolf_def", 2, 3, [], 2)
+	db.ability("azeroth_46", 2, TRACK_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "track", "azeroth_46", "p1")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+	for i in 3:
+		var dc := CardInstance.create("deck_%d" % i, "wolf_def", "p1", "p1_deck")
+		state.cards["deck_%d" % i] = dc
+		state.zones["p1_deck"].card_ids.append("deck_%d" % i)
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "track"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("track").zone_id, "p1_hero_row", "trk-a: ongoing, lives in the hero row")
+
+	# Start of OUR turn: the look opens, and it hard-blocks priority.
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	eq(state.pending_track_look_player, "p1", "trk-b: the look opened for the controller")
+	eq(state.pending_track_look_card_id, "deck_0", "trk-c: it is the top card")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "track"}), db), "trk-d: can_submit is blocked while pending")
+	eq(StackResolver.pass_priority(state, db).size(), 0, "trk-e: pass_priority is blocked too")
+
+	# Keep it on top: the card does not move at all.
+	StackResolver.choose_track_placement(state, false, db)
+	eq(state.pending_track_look_player, "", "trk-f: choice resolved")
+	eq(state.zones["p1_deck"].card_ids[0], "deck_0", "trk-g: kept on top")
+	eq(state.zones["p1_deck"].card_ids.size(), 3, "trk-h: still 3 cards, a look is not a draw")
+	eq(state.cards_in_zone("p1_hand").size(), 0, "trk-i: nothing reached the hand")
+
+	# Next turn, bury it: it goes to the BOTTOM and the next card is on top.
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	eq(state.pending_track_look_card_id, "deck_0", "trk-j: same card is still on top")
+	StackResolver.choose_track_placement(state, true, db)
+	eq(state.zones["p1_deck"].card_ids[0], "deck_1", "trk-k: next card is now on top")
+	eq(state.zones["p1_deck"].card_ids[2], "deck_0", "trk-l: the looked-at card went to the bottom")
+	eq(state.zones["p1_deck"].card_ids.size(), 3, "trk-m: deck size unchanged")
+
+
+func _test_track_humanoids_scope_and_empty_deck() -> void:
+	_buf.append("\n-- Track Humanoids: your turn only, empty deck is safe, AI 80/20 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wolf_def", 2, 3, [], 2)
+	db.ability("azeroth_46", 2, TRACK_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "track", "azeroth_46", "p1")
+	_add_resources(state, "p1", 6)
+	state.players["p1"].resource_placed_this_turn = true
+	var dc := CardInstance.create("only", "wolf_def", "p1", "p1_deck")
+	state.cards["only"] = dc
+	state.zones["p1_deck"].card_ids.append("only")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "track"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# "At the start of YOUR turn" — the opponent's ready step must not open it.
+	state.turn_player = "p2"
+	_ready_step(state, db)
+	eq(state.pending_track_look_player, "", "trks-a: does not fire on the opponent's turn")
+
+	# Empty deck: looking is not a draw (410.6b), so this is a plain no-op —
+	# no choice, and above all no decking loss.
+	GameLogic.move_card(state, "only", "p1_graveyard")
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	eq(state.pending_track_look_player, "", "trks-b: no choice opened on an empty deck")
+	eq(state.decked_players.size(), 0, "trks-c: looking at an empty deck never decks you")
+
+	# AI: 80% keep on top / 20% bury. Sample the hook and assert the split is
+	# roughly right — the point is that both branches are reachable and keeping
+	# dominates, not the exact draw.
+	var ai := BaseAI.new()
+	seed(12345)
+	var bottom := 0
+	for i in 400:
+		if ai.choose_track_placement(state, db, "p1"):
+			bottom += 1
+	ok(bottom > 20 and bottom < 140,
+		"trks-e: AI buries roughly 20 percent of the time (got %d/400)" % bottom)

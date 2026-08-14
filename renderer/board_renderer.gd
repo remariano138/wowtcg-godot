@@ -1150,6 +1150,24 @@ func restore_hand_z(instance_id: String) -> void:
 const HAND_HOVER_Z_INDEX := HAND_Z_INDEX + 64
 
 
+# The card's place in its fan's draw order (higher = drawn in front), or -1 when
+# it isn't a hand card. Reads the seat index the same way restore_hand_z does
+# rather than the live z_index, which the scene's hover pop overwrites — so this
+# stays the truth about which of two overlapping cards is the front one even
+# while one of them is popped. Used by the scene to magnify only the frontmost
+# hovered card: it is the one the pointer is really on, and the one a click
+# lands on.
+func hand_fan_order(instance_id: String) -> int:
+	var zone := _zone_of_card(instance_id)
+	if not (zone in HAND_ZONES):
+		return -1
+	var zc: Array = _spread_cards(zone)
+	var i := zc.find(instance_id)
+	if i < 0:
+		return -1
+	return (zc.size() - 1 - i) if zone.begins_with("p2_") else i
+
+
 # Smoothly slide all cards in a zone to their centred positions.
 # Public so the scene can call it for initial placement before events start.
 func relayout_zone(zone_id: String) -> void:

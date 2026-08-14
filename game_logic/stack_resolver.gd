@@ -295,6 +295,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_whelp_bounce() before priority can move.
 	if state.pending_whelp_bounce_player != "":
 		return []
+	# A pending Track Humanoids look must be resolved via
+	# choose_track_placement() before priority can move.
+	if state.pending_track_look_player != "":
+		return []
 	# A pending Form pay-return decision must be resolved via
 	# choose_form_return() before priority can move.
 	if state.pending_form_return_player != "":
@@ -476,6 +480,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Green Whelp Armor bounce point blocks everything until resolved via
 	# choose_whelp_bounce().
 	if state.pending_whelp_bounce_player != "":
+		return false
+
+	# Track Humanoids' look blocks everything until resolved via
+	# choose_track_placement().
+	if state.pending_track_look_player != "":
 		return false
 
 	# Start-of-turn trigger target choice blocks everything until resolved via
@@ -669,6 +678,11 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id):
 					return false
+			elif _attach_targets_opposing_only(def):
+				# Marked for Death: "target opposing hero or ally."
+				if not _is_hero_or_ally(state, target_id, db) \
+						or state.get_card(target_id).controller == action.source_player:
+					return false
 			elif _attach_targets_weapon_only(def):
 				if not _is_melee_weapon(state, target_id, db) \
 						or state.get_card(target_id).controller != action.source_player:
@@ -798,6 +812,13 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 						return false
 			elif _attach_targets_hero_only(def):
 				if not _is_hero(state, target_id): return false
+			elif _attach_targets_opposing_only(def):
+				# Marked for Death: "target opposing hero or ally." (Sorcery-speed
+				# twin of the instant path above — a future non-instant attachment
+				# with the same kind gets it for free.)
+				if not _is_hero_or_ally(state, target_id, db) \
+						or state.get_card(target_id).controller == action.source_player:
+					return false
 			elif _attach_targets_weapon_only(def):
 				if not _is_melee_weapon(state, target_id, db) \
 						or state.get_card(target_id).controller != action.source_player:
@@ -1588,6 +1609,16 @@ static func _is_pet(state: GameState, card_id: String, db) -> bool:
 static func _attach_targets_hero_only(def: CardDef) -> bool:
 	var parts := attach_parts(def)
 	return parts.size() > 1 and parts[1] == "hero"
+
+
+# Marked for Death: `attach:opposing_hero_or_ally` — "Attach to target opposing
+# hero or ally." A hero-or-ally attach narrowed to characters an OPPONENT of the
+# caster controls. Every other attach kind so far allows a friendly target, so
+# this is the one that has to ask who the caster is; the check lives at each
+# call site (which knows the caster) rather than here.
+static func _attach_targets_opposing_only(def: CardDef) -> bool:
+	var parts := attach_parts(def)
+	return parts.size() > 1 and parts[1] == "opposing_hero_or_ally"
 
 
 # Windfury Weapon: `attach:melee_weapon` — "Attach to one of your Melee weapons."
@@ -2531,6 +2562,13 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 	elif target_ok and parts.size() > 1 and parts[1] == "hero":
 		# Arcane Intellect: "Attach to target hero" — heroes only.
 		target_ok = _is_hero(state, target_id)
+	elif target_ok and parts.size() > 1 and parts[1] == "opposing_hero_or_ally":
+		# Marked for Death: "Attach to target opposing hero or ally." Re-checked
+		# per 400.2 — a target that left play, became Untargetable, or CHANGED
+		# CONTROL to the caster (Infernal, Nyn'jah) no longer matches the attach
+		# description, so the attachment goes to its owner's graveyard.
+		target_ok = _is_hero_or_ally(state, target_id, db) \
+				and state.get_card(target_id).controller != card.controller
 	elif target_ok and parts.size() > 1 and parts[1] == "melee_weapon":
 		# Windfury Weapon: "Attach to one of your Melee weapons" — the target must
 		# still be a Melee weapon controlled by the caster (400.2 re-check).
@@ -8218,6 +8256,59 @@ static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 				events.append(GameEvent.control_discard_choice_opened(
 					controller, source_id))
 
+		# Track Humanoids: "look at the top card of your deck. You may put it on
+		# the bottom of your deck."
+		#
+		# Looking is NOT a draw (410.6b): an empty deck is a harmless no-op and
+		# can never deck the controller — which is why nothing here goes near
+		# GameLogic.draw_one. The card also never leaves the deck: "keep it on
+		# top" is literally not moving it, so only the bottom branch does any
+		# work (see choose_track_placement).
+		#
+		# WHICH card is looked at is read at RESOLUTION (709.2b — 707.1 locks in
+		# only X, modes and targets), so a mill or a draw in the response window
+		# changes what the controller sees.
+		"turn_start_look_top_card":
+			var t_deck := state.zones.get(controller + "_deck") as Zone
+			if t_deck and not t_deck.card_ids.is_empty():
+				state.pending_track_look_player  = controller
+				state.pending_track_look_card_id = t_deck.card_ids[0]
+				events.append(GameEvent.track_look_opened(
+					controller, t_deck.card_ids[0]))
+			else:
+				events.append(GameEvent.make("deck_empty", {"player": controller}))
+
+	return events
+
+
+# Entry point: the controller has decided where the looked-at card goes.
+# `to_bottom` true moves it to the bottom of their deck; false leaves it exactly
+# where it is (on top — the card never left the deck, so "keep" is a no-op).
+# Called directly by the scene, NOT via submit_action — like choose_whelp_bounce.
+#
+# The resolved event deliberately does NOT name the card: this is a "look at",
+# so the card is private information and the shared game log must not leak it
+# (the same reasoning as It's a Secret to Everybody's `private` reveal-pick).
+static func choose_track_placement(state: GameState, to_bottom: bool,
+		_db = null) -> Array[GameEvent]:
+	if state.pending_track_look_player == "":
+		return []
+	var player_id := state.pending_track_look_player
+	var card_id   := state.pending_track_look_card_id
+	state.pending_track_look_player  = ""
+	state.pending_track_look_card_id = ""
+	var events: Array[GameEvent] = []
+	# Re-check that the card is still on top: a mill or a draw could not have
+	# happened while this point was open (it hard-blocks priority), but the
+	# guard keeps the move honest if a future effect ever resolves in between.
+	var deck := state.zones.get(player_id + "_deck") as Zone
+	var still_on_top: bool = deck != null and not deck.card_ids.is_empty() \
+			and deck.card_ids[0] == card_id
+	if to_bottom and still_on_top:
+		# move_card appends, so re-adding it to the same zone puts it at the
+		# bottom (the Blueleaf Tubers / reveal-pick convention).
+		events.append_array(GameLogic.move_card(state, card_id, player_id + "_deck"))
+	events.append(GameEvent.track_look_resolved(player_id, to_bottom))
 	return events
 
 

@@ -299,6 +299,9 @@ var _auto_pass_combat: bool = false
 # _end_phase_has_consequences / _wrap_up_skippable_window. Read that before
 # widening or narrowing the burst.
 var _wrap_up_active: bool = false
+# Every local hand card the pointer is currently inside — a fan overlaps, so this
+# is routinely more than one. Only the frontmost magnifies (_apply_hand_magnify).
+var _hovered_hand_ids: Array[String] = []
 # "Nothing changed" tracking (mode-independent — runs ahead of Turbo/Tactical,
 # see _human_has_new_info): identity of the chain-top PendingAction and a
 # generation counter for combat window transitions, both captured the last
@@ -337,6 +340,8 @@ var _in_strike_ready_mode: bool = false
 var _strike_ready_nodes: Array[Node] = []
 var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
+var _in_track_look_mode: bool = false
+var _track_look_nodes: Array[Node] = []
 var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
 var _form_return_nodes: Array[Node] = []
 # Quest reward choice ("Choose one … you may choose both" — Hidden Enemies etc.):
@@ -1080,6 +1085,12 @@ func _make_ai(type: String, deck_id: String) -> Object:
 func _begin_handoff(next_player: String, reason: String, on_confirm: Callable) -> void:
 	_handoff_pending = true
 	_wrap_up_active = false   # the outgoing player's wrap-up burst ends at the handoff
+	# Hover state belongs to the outgoing seat; drop it so nothing stays magnified
+	# behind the overlay (no unhover fires while card input is blocked).
+	for id in _hovered_hand_ids:
+		var hc := _state.get_card(id) if _state else null
+		_reset_hand_card(id, hc.zone_id if hc else "")
+	_hovered_hand_ids.clear()
 	_ai_timer.stop()
 	_renderer.set_perspective("__handoff__")
 	_renderer.refresh_hand_visibility()
@@ -1349,21 +1360,10 @@ func _on_card_hover_scene(instance_id: String) -> void:
 	var cn := _renderer.card_nodes.get(instance_id) as CardNode
 	if not card or not cn:
 		return
-	# Ambush peek: a playable (yellow) instant in the ambusher's hidden hand
-	# shows its face only while hovered.
-	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand" \
-			and instance_id in _router.get_playable_card_ids():
-		cn.show_card_front()
-	# Discard peek: the off-screen player choosing a mandatory discard peeks
-	# their face-down hand one card at a time.
-	if _in_choice_peek and _choice_peek_hides_hand and card.zone_id == _choice_peek_player + "_hand":
-		cn.show_card_front()
-	# The local player's own hand magnifies on hover.
-	if card.zone_id == _local_player + "_hand":
-		cn.set_base_scale(Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY))
-		# Above the whole fan, not just its left neighbour — a fanned hand card is
-		# partly covered by the one to its right until it is hovered.
-		cn.z_index = BoardRenderer.HAND_HOVER_Z_INDEX
+	if card.zone_id.ends_with("_hand"):
+		if not _hovered_hand_ids.has(instance_id):
+			_hovered_hand_ids.append(instance_id)
+		_apply_hand_hover()
 
 
 func _on_card_unhover_scene(instance_id: String) -> void:
@@ -1373,14 +1373,91 @@ func _on_card_unhover_scene(instance_id: String) -> void:
 	var cn := _renderer.card_nodes.get(instance_id) as CardNode
 	if not card or not cn:
 		return
-	if _in_ambush_mode and card.zone_id == _ambush_player + "_hand":
-		cn.show_card_back()
-	if _in_choice_peek and _choice_peek_hides_hand and card.zone_id == _choice_peek_player + "_hand":
-		cn.show_card_back()
 	if card.zone_id.ends_with("_hand"):
-		cn.set_base_scale(Vector2.ONE * BoardRenderer.HAND_CARD_SCALE)
-		# Back into the fan: behind its right-hand neighbour again.
-		_renderer.restore_hand_z(instance_id)
+		_hovered_hand_ids.erase(instance_id)
+		_reset_hand_card(instance_id, card.zone_id)
+		_apply_hand_hover()
+
+
+# In a tight fan the cards overlap, so the pointer sits inside several of them at
+# once and every one emits card_hovered. Only the FRONTMOST of them reacts — it
+# is the one actually under the pointer visually, and the one a click resolves to
+# (CardNode marks the input handled, so the card drawn in front wins). Without
+# this the card tucked behind the hovered one pops out too, which reads as the
+# hand reacting to a card you aren't pointing at — and for the two face-down peek
+# modes it would reveal several hidden cards at once, which is real information
+# leaking to the seated player.
+#
+# The front is resolved PER HAND ZONE. The pointer can only be in one place, so
+# in practice one zone is involved; keying by zone just means the two hands can
+# never arbitrate against each other.
+func _apply_hand_hover() -> void:
+	# Drop stale entries — a card played or discarded while hovered never emits
+	# card_unhovered, and would otherwise pin the reaction on a card that has
+	# left the hand.
+	for id in _hovered_hand_ids.duplicate():
+		var c := _state.get_card(id) if _state else null
+		if c == null or not c.zone_id.ends_with("_hand") \
+				or not _renderer.card_nodes.has(id):
+			_hovered_hand_ids.erase(id)
+			if c:
+				_reset_hand_card(id, c.zone_id)
+	var fronts: Dictionary = {}        # zone_id -> {"id", "order"}
+	for id in _hovered_hand_ids:
+		var zone: String = _state.get_card(id).zone_id
+		var o: int = _renderer.hand_fan_order(id)
+		if not fronts.has(zone) or o > int(fronts[zone]["order"]):
+			fronts[zone] = {"id": id, "order": o}
+	for id in _hovered_hand_ids:
+		var zone: String = _state.get_card(id).zone_id
+		if fronts.get(zone, {}).get("id", "") == id:
+			_raise_hand_card(id, zone)
+		else:
+			_reset_hand_card(id, zone)
+
+
+# The frontmost hovered card's reaction: magnify (own hand) or show its face
+# (either peek mode). Split out so the "not the front one" path is exactly its
+# inverse — see _reset_hand_card.
+func _raise_hand_card(instance_id: String, zone_id: String) -> void:
+	var cn := _renderer.card_nodes.get(instance_id) as CardNode
+	if not cn:
+		return
+	# Ambush peek: a playable (yellow) instant in the ambusher's hidden hand
+	# shows its face only while hovered.
+	if _in_ambush_mode and zone_id == _ambush_player + "_hand" \
+			and instance_id in _router.get_playable_card_ids():
+		cn.show_card_front()
+	# Discard peek: the off-screen player choosing a mandatory discard peeks
+	# their face-down hand one card at a time.
+	if _in_choice_peek and _choice_peek_hides_hand and zone_id == _choice_peek_player + "_hand":
+		cn.show_card_front()
+	# The local player's own hand magnifies on hover.
+	if zone_id == _local_player + "_hand":
+		cn.set_base_scale(Vector2.ONE * (BoardRenderer.HAND_CARD_SCALE * HOVER_MAGNIFY))
+		# Above the whole fan, not just its left neighbour — a fanned hand card is
+		# partly covered by the one to its right until it is hovered.
+		cn.z_index = BoardRenderer.HAND_HOVER_Z_INDEX
+
+
+func _reset_hand_card(instance_id: String, zone_id: String) -> void:
+	var cn := _renderer.card_nodes.get(instance_id) as CardNode
+	if not cn:
+		return
+	if _in_ambush_mode and zone_id == _ambush_player + "_hand":
+		cn.show_card_back()
+	if _in_choice_peek and _choice_peek_hides_hand and zone_id == _choice_peek_player + "_hand":
+		cn.show_card_back()
+	_shrink_hand_card(instance_id)
+
+
+func _shrink_hand_card(instance_id: String) -> void:
+	var cn := _renderer.card_nodes.get(instance_id) as CardNode
+	if not cn:
+		return
+	cn.set_base_scale(Vector2.ONE * BoardRenderer.HAND_CARD_SCALE)
+	# Back into the fan: behind its right-hand neighbour again.
+	_renderer.restore_hand_z(instance_id)
 
 
 func _add_deck_back_sprite(pos: Vector2, facing: float = 0.0) -> void:
@@ -2095,7 +2172,8 @@ func _refresh_ui() -> void:
 	_update_combat_window()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
-			and not _in_strike_ready_mode and not _in_whelp_bounce_mode:
+			and not _in_strike_ready_mode and not _in_whelp_bounce_mode \
+			and not _in_track_look_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
 	_update_cancel_btn()
@@ -3235,6 +3313,14 @@ func _log_event(event: GameEvent) -> void:
 			_log_entry("[color=#9cf]%s pays to return %s to hand[/color]"
 				% [_log_player(event.payload.get("player", "")),
 				   _log_card(event.payload.get("ally_id", ""))])
+		"track_look_resolved":
+			# A "look at" is private — the log is shared, so it may only say
+			# WHERE the card went, never which card it was.
+			var tr_p: String = _log_player(event.payload.get("player", ""))
+			if bool(event.payload.get("to_bottom", false)):
+				_log_entry("[color=#af8]%s puts the top card of their deck on the bottom[/color]" % tr_p)
+			else:
+				_log_entry("[color=#af8]%s keeps the top card of their deck on top[/color]" % tr_p)
 		"form_return_resolved":
 			if event.payload.get("paid", false):
 				_log_entry("[color=#9cf]%s pays to return %s to hand[/color]"
@@ -3498,6 +3584,11 @@ func _on_game_event(event: GameEvent) -> void:
 		"whelp_bounce_opened":
 			_window_generation += 1
 			_handle_whelp_bounce(event.payload)
+		"track_look_opened":
+			_window_generation += 1
+			_handle_track_look(event.payload)
+		"track_look_resolved":
+			_refresh_ui()
 		"prevention_opened":
 			_window_generation += 1
 			_handle_prevention(event.payload)
@@ -6219,6 +6310,74 @@ func _resolve_form_return(pay: bool) -> void:
 	_drain_passes()
 
 
+# Track Humanoids' look. Unlike the whelp bounce this choice is made on PRIVATE
+# information — the looked-at card is named only to the deciding player — so the
+# popup shows the card name to whoever is deciding and the shared game log never
+# does (GameEvent.track_look_resolved carries no card). In hotseat both humans
+# share a screen, so the privacy is nominal, exactly as for It's a Secret to
+# Everybody; it is what a two-device build would key off.
+func _handle_track_look(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var to_bottom: bool = ai.choose_track_placement(_state, _db, player) if ai else false
+		var events := StackResolver.choose_track_placement(_state, to_bottom, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_track_look_inline(payload)
+
+
+func _show_track_look_inline(payload: Dictionary) -> void:
+	_in_track_look_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var card_id: String = payload.get("card", "")
+	var card := _state.get_card(card_id)
+	var card_name := "the top card"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var header_text := "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
+	var buttons: Array = [
+		{
+			"text": "Top (keep it)",
+			"callback": func() -> void: _resolve_track_look(false),
+		},
+		{
+			"text": "Bottom",
+			"callback": func() -> void: _resolve_track_look(true),
+		},
+	]
+	_track_look_nodes.append(_build_choice_popup(header_text, Color(0.6, 0.8, 0.45), buttons, true))
+
+
+func _resolve_track_look(to_bottom: bool) -> void:
+	_in_track_look_mode = false
+	for n in _track_look_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_track_look_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_track_placement(_state, to_bottom, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 func _resolve_whelp_bounce(pay: bool) -> void:
 	_in_whelp_bounce_mode = false
 	for n in _whelp_bounce_nodes:
@@ -6357,6 +6516,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
 		return  # wait for the Green Whelp Armor bounce choice before advancing
+	if _state.pending_track_look_player != "" or _in_track_look_mode:
+		return  # wait for Track Humanoids' top/bottom choice before advancing
 	if _state.pending_prevention_player != "" or _in_prevention_mode:
 		return  # wait for the armor-prevention choice (717.2c) before advancing
 	if _in_ally_exhaust_mode:
@@ -6443,7 +6604,8 @@ func _drain_passes() -> void:
 				or _state.pending_death_target_player != "" \
 				or StackResolver._quest_choice_pending(_state) \
 				or _in_quest_choice_mode \
-				or _state.pending_whelp_bounce_player != "":
+				or _state.pending_whelp_bounce_player != "" \
+				or _state.pending_track_look_player != "" or _in_track_look_mode:
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
@@ -6574,6 +6736,9 @@ func _maybe_turbo_pass() -> void:
 		_wrap_up_active = false
 		return
 	if _state.pending_resource_place_player != "":
+		_wrap_up_active = false
+		return
+	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		_wrap_up_active = false
 		return
 	if _state.priority_player != _local_player or _type_of(_local_player) != "human":

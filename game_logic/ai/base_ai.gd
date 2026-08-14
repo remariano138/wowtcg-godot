@@ -2305,6 +2305,18 @@ func choose_quest_facedown(state: GameState, db, _player_id: String) -> String:
 	return pool[0]
 
 
+# Track Humanoids: we looked at the top card of our deck — return true to bury it
+# at the bottom, false to keep it on top (drawing it this turn).
+#
+# A flat 80/20 in favour of keeping, by design. Judging this properly means
+# asking whether the card helps the CURRENT board and what we'd rather draw
+# instead, which is a plan the AI doesn't have; a fixed bias at least makes the
+# ongoing do something and keeps the deck moving. Overridable — a future AI with
+# a curve/board model should replace this outright rather than tune the number.
+func choose_track_placement(_state: GameState, _db, _player_id: String) -> bool:
+	return randf() < 0.2
+
+
 # Green Whelp Armor: after an attacking ally damaged our hero, decide whether to
 # pay to bounce it to its owner's hand. Worth it when the ally is expensive enough
 # that costing the opponent a re-cast (and our 2 resources) is a good trade — and
@@ -4317,6 +4329,22 @@ func _attach_actions(state: GameState, db, player_id: String,
 				{"card_id": card_id, "target_id": own_hero.instance_id})
 			if StackResolver.can_submit(state, h_act, db):
 				result.append(h_act)
+		return result
+	# Marked for Death (`party_atk_vs_attached`): the bonus only pays off while one
+	# of our allies is attacking the HOST, so put it where we attack most — the
+	# opposing hero, which is also the one host that can never be killed to shed
+	# it. Needs an ally in play to benefit at all ("allies in your party"), so with
+	# an empty party the card is simply not played.
+	if StackResolver._has_effect_flag_prefix(def, "party_atk_vs_attached"):
+		if state.cards_in_zone(player_id + "_ally_row").is_empty():
+			return result
+		var m_opp := "p2" if player_id == "p1" else "p1"
+		var m_hero := state.get_hero(m_opp)
+		if m_hero:
+			var m_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": m_hero.instance_id})
+			if StackResolver.can_submit(state, m_act, db):
+				result.append(m_act)
 		return result
 	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage") \
 			or StackResolver._has_effect_flag_prefix(def, "attached_damage_turn_start"):

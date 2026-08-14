@@ -159,6 +159,14 @@ var pending_strike_ready_side: String = ""
 var pending_whelp_bounce_player: String = ""
 var pending_whelp_bounce_ally_id: String = ""
 var pending_whelp_bounce_cost: int = 0
+# Track Humanoids: "At the start of your turn, look at the top card of your deck.
+# You may put it on the bottom of your deck." Non-empty while the controller is
+# deciding. The looked-at card is NOT drawn and never leaves the deck — keeping
+# it on top means literally not moving it — so this holds only the card's id for
+# display; the choice is resolved via StackResolver.choose_track_placement()
+# (direct call, like the whelp bounce). "" = none pending.
+var pending_track_look_player: String = ""
+var pending_track_look_card_id: String = ""
 # Attack-exhaust point (Chops / Voss Treebender: "When [this] attacks, you may
 # exhaust target hero or ally."): non-empty while the attacker's controller may
 # pick a target to exhaust (or decline). Opened at combat-step start (602.1),
@@ -643,6 +651,41 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 						if owner_ps and owner_ps.hero_instance_id == inst.instance_id:
 							bonus += int(p[1]) if p.size() > 1 else 1
 	bonus += _opposing_atk_aura(inst, inst_is_ally, db)
+	bonus += _marked_target_atk_aura(inst, inst_is_ally, db)
+	return bonus
+
+
+# ATK bonus from an ATTACHMENT the card's controller owns that buffs attacks
+# against its host (`party_atk_vs_attached:N` — Marked for Death: "Allies in your
+# party have +1 ATK while attacking attached character").
+#
+# Two live conditions, both re-read at every get_atk:
+#   * this card is the actual combat attacker, and
+#   * the current defender IS the attachment's host.
+# So it is defender-dependent exactly like atk_vs_exhausted_defender, which is
+# why it deliberately does NOT key on `is_attacking`: an assume_attacking
+# forecast has no defender yet and must not claim the bonus. (Same known limit —
+# the attack cursor can't preview it. The damage still lands at the conclusion.)
+#
+# "Allies in your party" is literal: the scan is the affected card's own
+# controller's attachments, and a HERO attacking never gets it. Stacks per copy,
+# and lifts the instant the attachment leaves play (its host dying takes it with
+# it, per 400.5).
+func _marked_target_atk_aura(inst: CardInstance, inst_is_ally: bool, db) -> int:
+	if not db or not inst_is_ally or inst.instance_id != combat_attacker \
+			or combat_defender == "":
+		return 0
+	var bonus := 0
+	for source in cards_in_zone("attached"):
+		if source.controller != inst.controller or source.attached_to != combat_defender:
+			continue
+		var src_def: CardDef = db.get_def(source.card_def_id)
+		if not src_def or src_def.effects == "":
+			continue
+		for seg in src_def.effects.split("|"):
+			var p := seg.split(":")
+			if p[0] == "party_atk_vs_attached":
+				bonus += int(p[1]) if p.size() > 1 else 1
 	return bonus
 
 

@@ -5496,6 +5496,15 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		attacker_was_damaged, defender_was_damaged, atk_events, def_events, db))
 
+	# Zy'lah Manslayer (rule 703 triggered ally power): "When Zy'lah Manslayer
+	# deals combat damage to an ally, ready her." Brigg's shape without the
+	# "with damage on it" condition, and pointed at the SOURCE rather than the
+	# victim — so the victim dying to the hit is irrelevant, while a source that
+	# died to the other packet readies nothing (ready_card no-ops out of play).
+	events.append_array(_fire_combat_dmg_readies_self(
+		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
+		atk_events, def_events, db))
+
 	# Skorn: "When an ally is dealt damage, [she] deals that amount of shadow
 	# damage to target hero in that ally's party." Off the turn event log, so a
 	# trade reflects BOTH allies' damage — attacker and defender packets have
@@ -5537,6 +5546,41 @@ static func _fire_combat_dmg_destroys_damaged_ally(state: GameState,
 			and _combat_dmg_landed(def_events, attacker_id) > 0 \
 			and state.is_in_play(attacker_id):
 		events.append_array(_destroy_card_trigger(state, attacker_id, defender_id, db))
+	return events
+
+
+# on_combat_damage_readies_self ally flag (Zy'lah Manslayer). See the call site
+# in _do_combat_conclusion. Brigg's _fire_combat_dmg_destroys_damaged_ally with
+# two differences: there is no "with damage on it" clause (any ally she lands
+# combat damage on triggers it, dead or alive — so nothing is sampled ahead of
+# the packets), and the effect is aimed at the SOURCE, not the victim.
+#
+# Mandatory, free, no choice and no target, so nothing goes on the chain. Fires
+# in both combat roles — the printed text says "deals combat damage", not
+# "attacks": Zy'lah attacking into an ally defender, and Zy'lah as a defender
+# (directly attacked, or having stepped in with her own Protector) retaliating
+# onto an attacking ally. The latter is the card: protecting exhausts her
+# (602.2) and the retaliation readies her to protect again.
+#
+# A source killed by the other packet readies nothing — GameLogic.ready_card
+# no-ops on a card that is no longer in play, so no explicit guard is needed.
+static func _fire_combat_dmg_readies_self(state: GameState,
+		attacker_id: String, defender_id: String,
+		attacker_was_ally: bool, defender_was_ally: bool,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Source attacking → ally defender.
+	if defender_was_ally \
+			and _card_has_flag(state, attacker_id, "on_combat_damage_readies_self", db) \
+			and _combat_dmg_landed(atk_events, defender_id) > 0:
+		events.append_array(GameLogic.ready_card(state, attacker_id))
+	# Source defending → retaliation onto an attacking ally.
+	if attacker_was_ally \
+			and _card_has_flag(state, defender_id, "on_combat_damage_readies_self", db) \
+			and _combat_dmg_landed(def_events, attacker_id) > 0:
+		events.append_array(GameLogic.ready_card(state, defender_id))
 	return events
 
 

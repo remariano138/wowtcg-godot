@@ -872,6 +872,67 @@ and the `damage_dealt` record in `GameLogic.deal_damage`.
 
 ---
 
+## Venomstrike — an inline end-of-turn burn, and why a dead scorpid burns nothing
+
+**Card:** Venomstrike (`dark_portal_41`, 4-cost 1/5 Scorpid Pet, Hunter).
+Printed text: "At the end of each turn, Venomstrike deals 4 nature damage to
+each hero and ally it dealt damage to this turn."
+
+**Deviation:** the trigger resolves **inline** in `TurnManager._enter_end`
+rather than going on the chain with a priority window, exactly as Thysta
+Spiritlasher's does and for the same reason — it is mandatory, free, has no
+choice and no announced target, so nothing a response could do changes what
+happens. The damage still goes through `StackResolver.defer_packets`, so every
+victim's controller keeps the armor prevention point (717.2c), which is the one
+decision the trigger does present.
+
+**NOT a deviation — the ruling this card is most often misread on.** The burn
+looks like a delayed effect planted at the moment damage is dealt, which would
+fire whether or not Venomstrike survives. It isn't. The printed text is a single
+triggered power (703.1) whose trigger event is *the end of turn*; "it dealt
+damage to this turn" merely selects the victims. And:
+
+> **703.3** — "A card's triggered power is active only while that card is face
+> up in play and that power hasn't been lost. Otherwise, it's inactive."
+
+So a Venomstrike destroyed before the end phase never triggers and burns
+nothing — killing the scorpid is the answer to the card. This needs no code: the
+sweep in `_enter_end` only visits `state.cards_in_play(pid)`.
+
+The distinction that does survive his death is **707.3**: once the power HAS
+triggered and its packets exist, they are independent of their source. Killing
+him in a response window after the burn has gone out changes nothing — the same
+ruling as the totem ping.
+
+**Other rulings pinned alongside it:**
+
+- **The victim list is turn history**, read off the `damage_dealt` entries in
+  `GameState.turn_events` filtered to `source_id` == this card (see
+  `game_logic/turn_state_flags.md`). Every damage source in the game records
+  there, so combat damage, ability damage and power damage all feed it by
+  construction, and "this turn" is free — the log is cleared at every turn start.
+- **Victims are de-duplicated.** "Each hero and ally it dealt damage to" is a
+  set: damaging one ally three times burns it once, for the flat printed amount.
+- **The amount is flat**, not the damage dealt — a 1-point poke sets up a
+  4-point hit, which is what makes his 1 ATK body dangerous.
+- **408.2b**: no packet is created for a character no longer in play, so an ally
+  he killed in combat is not burned again, and one dead victim does not cancel
+  the rest of the group.
+- **Not restricted to opposing characters.** "Each hero and ally" is literal —
+  damage your own side (an AoE, a stray packet) and you burn your own side.
+- **Copies never cross-feed**: the filter is the instance's own `source_id`, not
+  the card name, so two Venomstrikes each burn only what they personally damaged.
+- Damage prevented in full was never dealt (717.2b), so a victim whose damage
+  was entirely absorbed is not on the list at all.
+
+**AI:** none. Venomstrike is played as a vanilla 4-cost 1/5 Pet; the AI does not
+seek out chip damage to set the burn up, and does not weigh the self-harm side.
+
+Enforcement site: the `end_of_turn_damage_own_victims` arm of
+`TurnManager._apply_each_turn_end_effects`.
+
+---
+
 ## Operation Recombobulation — reward trigger resolved immediately, not on the chain
 
 **Card:** Operation Recombobulation (`dark_portal_292`, Quest, Alliance, Gnome

@@ -39,11 +39,6 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_331",
-      "count": 1,
-      "_card_name": "Krol Blade"
-    },
-    {
       "card_def_id": "azeroth_312",
       "count": 1,
       "_card_name": "Annihilator"
@@ -52,11 +47,6 @@
       "card_def_id": "azeroth_311",
       "count": 1,
       "_card_name": "Ancient Bone Bow"
-    },
-    {
-      "card_def_id": "azeroth_284",
-      "count": 1,
-      "_card_name": "Devilsaur Leggings"
     },
     {
       "card_def_id": "azeroth_35",
@@ -74,14 +64,19 @@
       "_card_name": "Lust for Battle"
     },
     {
+      "card_def_id": "dark_portal_41",
+      "count": 1,
+      "_card_name": "Venomstrike"
+    },
+    {
       "card_def_id": "azeroth_259",
       "count": 1,
       "_card_name": "Skorn, Mistress of Shadow"
     },
     {
-      "card_def_id": "azeroth_41",
+      "card_def_id": "azeroth_276",
       "count": 1,
-      "_card_name": "Multi-Shot"
+      "_card_name": "Zy'lah Manslayer"
     },
     {
       "card_def_id": "azeroth_235",
@@ -120,7 +115,7 @@
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
@@ -132,6 +127,11 @@
       "card_def_id": "azeroth_231",
       "count": 1,
       "_card_name": "Brigg"
+    },
+    {
+      "card_def_id": "dark_portal_232",
+      "count": 1,
+      "_card_name": "Scout Omerrta"
     },
     {
       "card_def_id": "dark_portal_34",
@@ -187,6 +187,11 @@
       "card_def_id": "dark_portal_224",
       "count": 2,
       "_card_name": "Morik"
+    },
+    {
+      "card_def_id": "dark_portal_215",
+      "count": 1,
+      "_card_name": "Ja'zaron"
     },
     {
       "card_def_id": "azeroth_155",

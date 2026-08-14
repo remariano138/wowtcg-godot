@@ -189,6 +189,9 @@ func _ready() -> void:
 		_test_warcaller_zinbawa_atk_per_party_damage,
 		_test_brigg_destroys_damaged_ally,
 		_test_ai_brigg_combat_math,
+		_test_zylah_readies_on_combat_damage_to_ally,
+		_test_venomstrike_burns_its_victims,
+		_test_venomstrike_death_and_scope,
 		_test_war_stomp_mass_exhaust,
 		_test_ai_war_stomp_freeze_save,
 		_test_coup_de_grace_destroys_exhausted_ally,
@@ -21206,6 +21209,312 @@ func _test_brigg_destroys_damaged_ally() -> void:
 
 	_run_combat(s5, db, "p1", "plain", "hurt5")
 	ok(s5.is_in_play("hurt5"), "bg-j: an ally without the power leaves it alive")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Zy'lah Manslayer (azeroth_276, 7-cost 5/6 Horde Troll Warrior, Protector):
+#   "When Zy'lah Manslayer deals combat damage to an ally, ready her."
+#   on_combat_damage_readies_self
+# Brigg's conclusion trigger without the "with damage on it" clause, aimed at
+# the SOURCE instead of the victim. Fires in both combat roles.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_zylah_readies_on_combat_damage_to_ally() -> void:
+	_buf.append("\n-- Zy'lah Manslayer: readies after dealing combat damage to an ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zylah_def", 5, 6, ["protector"], 7, "on_combat_damage_readies_self")
+	db.ally("tank_def", 0, 9, [], 3)     # 0 ATK — no retaliation, survives her 5
+	db.ally("biter_def", 2, 9, [], 3)    # attacks into her, survives the retaliation
+
+	# ── Case 1: Zy'lah attacks an ally. Attacking exhausted her (602.1); the
+	# trigger readies her again at the conclusion.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	var zylah := _add_ally(s1, "zylah", "zylah_def", "p1")
+	zylah.just_summoned = false
+	var tank := _add_ally(s1, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	s1.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s1, db, "p1", "zylah", "tank")
+
+	eq(s1.get_card("tank").damage_taken, 5, "zy-a: the ally took her 5 combat damage")
+	ok(s1.is_in_play("zylah"), "zy-b: Zy'lah survives (0-ATK defender)")
+	ok(not s1.get_card("zylah").is_exhausted,
+		"zy-c: she is READY again — the attack exhaust is undone by the trigger")
+
+	# ── Case 2: THE RULING. No "with damage on it" clause — an UNDAMAGED ally
+	# triggers her just the same (Brigg's gate must not have leaked in).
+	# Covered by case 1 (tank was undamaged), so here the mirror case: a victim
+	# that DIES to the hit still readies her — the effect is on the source.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var zylah2 := _add_ally(s2, "zylah2", "zylah_def", "p1")
+	zylah2.just_summoned = false
+	db.ally("chump_def", 0, 2, [], 1)
+	var chump := _add_ally(s2, "chump", "chump_def", "p2")
+	chump.just_summoned = false
+	s2.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s2, db, "p1", "zylah2", "chump")
+
+	ok(not s2.is_in_play("chump"), "zy-d: the ally dies to her 5")
+	ok(not s2.get_card("zylah2").is_exhausted,
+		"zy-e: a victim that DIES still readies her — the trigger is on the source")
+
+	# ── Case 3: "deals combat damage", not "attacks" — Zy'lah DEFENDING readies
+	# herself off her retaliation onto an attacking ally.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.turn_player     = "p2"
+	s3.priority_player = "p2"
+	var zylah3 := _add_ally(s3, "zylah3", "zylah_def", "p1")
+	zylah3.just_summoned = false
+	zylah3.is_exhausted = true            # she was spent before being attacked
+	var biter := _add_ally(s3, "biter", "biter_def", "p2")
+	biter.just_summoned = false
+	s3.players["p2"].resource_placed_this_turn = true
+
+	_run_combat(s3, db, "p2", "biter", "zylah3")
+
+	eq(s3.get_card("biter").damage_taken, 5, "zy-f: the attacker took her retaliation")
+	ok(not s3.get_card("zylah3").is_exhausted,
+		"zy-g: an exhausted DEFENDER readies off her own retaliation damage")
+
+	# ── Case 4: the card's real use — she PROTECTS (which exhausts her, 602.2),
+	# retaliates onto the attacking ally, and readies to protect again.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	s4.turn_player     = "p2"
+	s4.priority_player = "p2"
+	var zylah4 := _add_ally(s4, "zylah4", "zylah_def", "p1")
+	zylah4.just_summoned = false
+	var biter4 := _add_ally(s4, "biter4", "biter_def", "p2")
+	biter4.just_summoned = false
+	s4.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(s4, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "biter4", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)   # combat starts → attack window
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)   # attack window closes → protect point
+	ok(s4.in_protect_point, "zy-h: protect point opened")
+	StackResolver.choose_protector(s4, "zylah4", db)
+	eq(s4.combat_defender, "zylah4", "zy-i: she became the defender")
+	ok(s4.get_card("zylah4").is_exhausted, "zy-j: protecting exhausted her (602.2)")
+	for i in range(4):
+		StackResolver.pass_priority(s4, db)
+
+	eq(s4.get_card("p1_hero").damage_taken, 0, "zy-k: the hero took nothing")
+	ok(not s4.get_card("zylah4").is_exhausted,
+		"zy-l: she is ready again after blocking — free to protect the next attack")
+
+	# ── Case 5: damage to a HERO does not trigger her ("to an ALLY").
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	var zylah5 := _add_ally(s5, "zylah5", "zylah_def", "p1")
+	zylah5.just_summoned = false
+	s5.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s5, db, "p1", "zylah5", "p2_hero")
+
+	eq(s5.get_card("p2_hero").damage_taken, 5, "zy-m: the hero took the damage")
+	ok(s5.get_card("zylah5").is_exhausted,
+		"zy-n: hitting a HERO does NOT ready her — the clause says 'to an ally'")
+
+	# ── Case 6: she died to the hit she dealt → nothing readies, nothing errors.
+	# (ready_card no-ops out of play; her body must still be in the graveyard.)
+	var s6 := _base_state(db, "p1_hero", "p2_hero")
+	db.ally("ogre_def", 9, 9, [], 5)
+	var zylah6 := _add_ally(s6, "zylah6", "zylah_def", "p1")
+	zylah6.just_summoned = false
+	var ogre := _add_ally(s6, "ogre", "ogre_def", "p2")
+	ogre.just_summoned = false
+	s6.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s6, db, "p1", "zylah6", "ogre")
+
+	ok(not s6.is_in_play("zylah6"), "zy-o: she dies to the 9-ATK retaliation")
+	eq(s6.get_card("zylah6").zone_id, "p1_graveyard", "zy-p: she is in the graveyard")
+
+	# ── Case 7: an ally without the flag never readies itself.
+	var s7 := _base_state(db, "p1_hero", "p2_hero")
+	db.ally("plainz_def", 5, 6, [], 3)
+	var plain := _add_ally(s7, "plainz", "plainz_def", "p1")
+	plain.just_summoned = false
+	var tank7 := _add_ally(s7, "tank7", "tank_def", "p2")
+	tank7.just_summoned = false
+	s7.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s7, db, "p1", "plainz", "tank7")
+	ok(s7.get_card("plainz").is_exhausted,
+		"zy-q: an ally without the power stays exhausted after attacking")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Venomstrike (dark_portal_41, 4-cost 1/5 Scorpid Pet, Hunter):
+#   "At the end of each turn, Venomstrike deals 4 nature damage to each hero and
+#    ally it dealt damage to this turn."
+#   end_of_turn_damage_own_victims:4:nature
+# The victim list is turn history (the `damage_dealt` log filtered to him as
+# source). Rule 703.3: the power is active only while he is in play, so a
+# Venomstrike that died earlier in the turn burns nothing.
+# ══════════════════════════════════════════════════════════════════════════════
+const VENOMSTRIKE_FX := "end_of_turn_damage_own_victims:4:nature"
+
+func _test_venomstrike_burns_its_victims() -> void:
+	_buf.append("\n-- Venomstrike: end of turn, 4 nature to everything he damaged --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("venom_def", 1, 5, [], 4, VENOMSTRIKE_FX)
+	db.ally("tank_def", 0, 9, [], 3)
+
+	# ── Case 1: he damaged the opposing hero and an ally → both burn for 4.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "venom", "venom_def", "p1")
+	_add_ally(s1, "tank", "tank_def", "p2")
+	s1.turn_player = "p1"
+
+	GameLogic.deal_damage(s1, "venom", "p2_hero", 1, db)
+	GameLogic.deal_damage(s1, "venom", "tank", 1, db)
+	s1.phase = "action"
+	_advance_phase(s1, db)
+
+	eq(s1.get_card("p2_hero").damage_taken, 5, "vs-a: hero took its 1 + the 4 burn")
+	eq(s1.get_card("tank").damage_taken, 5, "vs-b: the ally took its 1 + the 4 burn")
+	eq(s1.get_card("p1_hero").damage_taken, 0, "vs-c: a character he never touched is untouched")
+
+	# ── Case 2: "each hero and ally IT dealt damage to" — another source's
+	# victim is not his, and the burn hits each victim once however many times
+	# he damaged it.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "venom2", "venom_def", "p1")
+	_add_ally(s2, "tank2", "tank_def", "p2")
+	_add_ally(s2, "other", "tank_def", "p2")
+	s2.turn_player = "p1"
+
+	GameLogic.deal_damage(s2, "venom2", "tank2", 1, db)
+	GameLogic.deal_damage(s2, "venom2", "tank2", 1, db)   # same victim twice
+	GameLogic.deal_damage(s2, "p1_hero", "other", 1, db)  # a DIFFERENT source
+	s2.phase = "action"
+	_advance_phase(s2, db)
+
+	eq(s2.get_card("tank2").damage_taken, 6, "vs-d: 2 dealt + ONE 4 burn — victims are de-duplicated")
+	eq(s2.get_card("other").damage_taken, 1, "vs-e: another source's victim is not burned")
+
+	# ── Case 3: it is "each turn", not "your turn" — he fires on the opponent's
+	# turn too, and the log clearing at turn start means each turn stands alone.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s3, "venom3", "venom_def", "p1")
+	s3.turn_player = "p2"
+
+	GameLogic.deal_damage(s3, "venom3", "p2_hero", 1, db)
+	s3.phase = "action"
+	_advance_phase(s3, db)
+	eq(s3.get_card("p2_hero").damage_taken, 5, "vs-f: fires at the end of the OPPONENT's turn")
+
+	# Next turn, having damaged nobody: no burn at all.
+	s3.turn_events.clear()
+	s3.phase       = "action"
+	s3.turn_player = "p1"
+	_advance_phase(s3, db)
+	eq(s3.get_card("p2_hero").damage_taken, 5, "vs-g: a turn he damaged nobody burns nothing")
+
+	# ── Case 4: he damaged his OWN side — "each hero and ally", no restriction
+	# to opposing characters, so his controller's hero burns too.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s4, "venom4", "venom_def", "p1")
+	s4.turn_player = "p1"
+
+	GameLogic.deal_damage(s4, "venom4", "p1_hero", 1, db)
+	s4.phase = "action"
+	_advance_phase(s4, db)
+	eq(s4.get_card("p1_hero").damage_taken, 5, "vs-h: burns his own controller's hero just the same")
+
+
+func _test_venomstrike_death_and_scope() -> void:
+	_buf.append("\n-- Venomstrike: 703.3 (dead = silent), 408.2b (dead victim), combat --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("venom_def", 1, 5, [], 4, VENOMSTRIKE_FX)
+	db.ally("tank_def", 0, 9, [], 3)
+	db.ally("chump_def", 0, 1, [], 1)
+
+	# ── Case 1: THE RULING (703.3). He damaged the hero, then died before the
+	# end phase → his power is inactive and nothing burns.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "venom", "venom_def", "p1")
+	s1.turn_player = "p1"
+
+	GameLogic.deal_damage(s1, "venom", "p2_hero", 1, db)
+	GameLogic.destroy_card(s1, "venom")
+	ok(not s1.is_in_play("venom"), "vs-i: Venomstrike is dead before the end phase")
+
+	s1.phase = "action"
+	_advance_phase(s1, db)
+	eq(s1.get_card("p2_hero").damage_taken, 1,
+		"vs-j: a DEAD Venomstrike burns nothing — 703.3, the power is inactive")
+
+	# ── Case 2 (408.2b): a victim that left play gets no packet, and the
+	# surviving victims still burn — one dead victim doesn't cancel the rest.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "venom2", "venom_def", "p1")
+	_add_ally(s2, "chump", "chump_def", "p2")
+	s2.turn_player = "p1"
+
+	GameLogic.deal_damage(s2, "venom2", "p2_hero", 1, db)
+	GameLogic.deal_damage(s2, "venom2", "chump", 1, db)
+	GameLogic.check_destroyed(s2, "chump", "", db)
+	ok(not s2.is_in_play("chump"), "vs-k: the 1-health victim died to the hit")
+
+	s2.phase = "action"
+	_advance_phase(s2, db)
+	eq(s2.get_card("p2_hero").damage_taken, 5,
+		"vs-l: the surviving victim still burns — a dead one just gets no packet")
+
+	# ── Case 3: COMBAT damage feeds the victim list too (the log is written by
+	# deal_damage, so every source reaches this by construction).
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var venom3 := _add_ally(s3, "venom3", "venom_def", "p1")
+	venom3.just_summoned = false
+	var tank := _add_ally(s3, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	s3.players["p1"].resource_placed_this_turn = true
+
+	_run_combat(s3, db, "p1", "venom3", "tank")
+	eq(s3.get_card("tank").damage_taken, 1, "vs-m: 1 combat damage landed")
+
+	s3.phase = "action"
+	_advance_phase(s3, db)
+	eq(s3.get_card("tank").damage_taken, 5, "vs-n: his combat victim burns for 4 at end of turn")
+
+	# ── Case 4: two copies each burn their OWN victims, and neither picks up
+	# the other's (the filter is on source_id, not "a Venomstrike").
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s4, "venom_a", "venom_def", "p1")
+	_add_ally(s4, "venom_b", "venom_def", "p1")
+	_add_ally(s4, "tank_a", "tank_def", "p2")
+	_add_ally(s4, "tank_b", "tank_def", "p2")
+	s4.turn_player = "p1"
+
+	GameLogic.deal_damage(s4, "venom_a", "tank_a", 1, db)
+	GameLogic.deal_damage(s4, "venom_b", "tank_b", 1, db)
+	s4.phase = "action"
+	_advance_phase(s4, db)
+
+	eq(s4.get_card("tank_a").damage_taken, 5, "vs-o: copy A burned its own victim")
+	eq(s4.get_card("tank_b").damage_taken, 5, "vs-p: copy B burned its own victim, once")
+
+	# ── Case 5: an ally without the power never burns anyone.
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	db.ally("plainv_def", 1, 5, [], 4)
+	_add_ally(s5, "plainv", "plainv_def", "p1")
+	s5.turn_player = "p1"
+
+	GameLogic.deal_damage(s5, "plainv", "p2_hero", 1, db)
+	s5.phase = "action"
+	_advance_phase(s5, db)
+	eq(s5.get_card("p2_hero").damage_taken, 1, "vs-q: an ally without the power burns nothing")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

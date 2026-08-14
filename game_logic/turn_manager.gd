@@ -448,6 +448,44 @@ static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, d
 					"amount": amount,
 					"dmg_type": dmg_type,
 				}]))
+			"end_of_turn_damage_own_victims":
+				# Venomstrike: "At the end of each turn, [this] deals AMOUNT
+				# DMG_TYPE damage to each hero and ally it dealt damage to this
+				# turn." The victim list is turn HISTORY, read off the turn event
+				# log's `damage_dealt` entries filtered to this card as source —
+				# so it covers combat damage, ability/power damage and any future
+				# way it deals damage, by construction.
+				#
+				# Rule 703.3 needs no code here: the sweep above only visits
+				# cards_in_play, so a Venomstrike that died earlier this turn
+				# never reaches this arm and burns nothing. (Killing him in the
+				# response window AFTER this has gone out is a different matter —
+				# by then the packets exist independently of him, 707.3.)
+				var amount := int(parts[1]) if parts.size() > 1 else 1
+				var dmg_type := parts[2].strip_edges() if parts.size() > 2 else ""
+				var packets: Array = []
+				var seen := {}
+				for log_entry in state.turn_events_of("damage_dealt"):
+					if String(log_entry.get("source_id", "")) != card.instance_id:
+						continue
+					var victim := String(log_entry.get("target_id", ""))
+					if victim == "" or seen.has(victim):
+						continue
+					seen[victim] = true
+					# 408.2b: no packet is created for a character no longer in
+					# play — an ally he killed in combat isn't burned again.
+					if not state.is_in_play(victim):
+						continue
+					packets.append({
+						"source": card.instance_id,
+						"target": victim,
+						"amount": amount,
+						"dmg_type": dmg_type,
+					})
+				# One deferred group, so several victims' armor prevention
+				# offers open in a fixed order (first damaged first).
+				if not packets.is_empty():
+					events.append_array(StackResolver.defer_packets(state, db, packets))
 	return events
 
 

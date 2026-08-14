@@ -226,8 +226,39 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# per-resolution checks did.
 	var events: Array[GameEvent] = []
 	events.append_array(drain_uniqueness_checks(state, db))
+	events.append_array(drain_state_based_deaths(state, db))
 	events.append_array(_pass_priority(state, db))
 	events.append_array(drain_uniqueness_checks(state, db))
+	events.append_array(drain_state_based_deaths(state, db))
+	return events
+
+
+# Rule 118.4 / 704: an in-play ally at 0 or fewer health is destroyed by the
+# game, whatever put it there. Damage and destroy effects already run their own
+# check at the moment they land, and a card LEAVING play sweeps the boards it
+# was buffing (`_check_aura_loss_deaths`). This is the catch-all for the routes
+# neither covers — a conditional max-health grant switching OFF while the card
+# sits there: Kailis Truearc's `buff_while_party_size` ends the moment the party
+# drops below four, and the ally that took it there may have been bounced,
+# exiled or taken by a control change rather than destroyed.
+#
+# Drained at the priority gate, the same state-based-check moment the uniqueness
+# queue uses, so nothing can act between the grant lapsing and the death. Cards
+# at full effective health are untouched, so this is a no-op in the overwhelming
+# majority of passes.
+static func drain_state_based_deaths(state: GameState, db = null) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_ally_row"):
+			# Only a card carrying DAMAGE can die this way. A card whose max
+			# health is 0 to begin with (a Totem def with no health column) was
+			# never reduced to 0 by anything and must not be swept off the board.
+			if card.damage_taken > 0 \
+					and state.get_current_hp(card.instance_id, db) <= 0:
+				events.append_array(
+					_check_destroyed_trigger(state, card.instance_id, "", db))
 	return events
 
 
@@ -235,6 +266,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# A pending discard-or-give-control choice (Infernal) must be resolved via
 	# choose_control_discard / decline_control_discard before priority can move.
 	if state.pending_control_discard_player != "":
+		return []
+	# Nightbloom's optional "put a card from your hand into your resource row"
+	# choice — resolve it via choose_hand_resource / decline_hand_resource.
+	if state.pending_resource_place_player != "":
 		return []
 	# A pending reveal-and-pick choice is mandatory — resolve it via
 	# choose_reveal_pick() before priority can move.
@@ -407,6 +442,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Infernal-style discard-or-give-control choice blocks everything until
 	# resolved via choose_control_discard() / decline_control_discard().
 	if state.pending_control_discard_player != "":
+		return false
+
+	# Nightbloom's optional resource placement blocks everything until resolved
+	# via choose_hand_resource() / decline_hand_resource().
+	if state.pending_resource_place_player != "":
 		return false
 
 	# Reveal-and-pick quest reward blocks everything until resolved via
@@ -3242,6 +3282,13 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 				"resource_cost": 0 if cost_is_x else (int(parts[1]) if parts.size() > 1 else 0),
 				"effect":        parts[2] if parts.size() > 2 else "",
 				"amount":        int(parts[3]) if parts.size() > 3 else 0,
+				# Mezzik Darkspark's AMOUNT is not a number but the token
+				# `sac_atk` — "X is the ATK of the destroyed ally", read at
+				# resolution from the ally the sacrifice_ally cost eats. Kept as
+				# the raw field so `amount` stays an int for every other power
+				# (int("sac_atk") is 0, which is also the correct fallback if the
+				# sacrifice no-opped).
+				"amount_raw":    parts[3] if parts.size() > 3 else "",
 				"dmg_type":      parts[4] if parts.size() > 4 else "",
 				"targets":       parts[5] if parts.size() > 5 else "",
 				"extra_cost":    ":".join(extra_parts) if extra_parts.size() > 0 else "",
@@ -4285,6 +4332,10 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 
 	var events: Array[GameEvent] = []
 	var extra_cost: String = ap.get("extra_cost", "")
+	# ATK of the ally eaten by a sacrifice_ally cost, captured as it is paid —
+	# Mezzik Darkspark's X. 0 when this power has no such cost, or when the
+	# sacrifice already left play.
+	var sac_atk := 0
 	# Resource cost, the [Activate] tap symbol, the once-per-turn mark and the
 	# "exhaust your hero" extra cost were ALL paid at submission time, on chain
 	# entry (rule 412.2 — see _pay_activate_costs in submit_action). Only the
@@ -4325,6 +4376,13 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		var sac_id: String = action.params.get("sacrifice_id",
 			action.params.get("target_id", ""))
 		if _is_ally(state, sac_id):
+			# Mezzik Darkspark: "X is the ATK of the destroyed ally." Read LIVE
+			# off the sacrifice the instant before it dies, so an ATK buff or
+			# aura on it counts and one that was answered in the response window
+			# does not. A sacrifice that already left play never gets here, and
+			# sac_atk stays 0 — the cost no-ops and the effect still resolves
+			# (for nothing), exactly as for Gertha and Besh'iah.
+			sac_atk = state.get_atk(sac_id, db)
 			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
 	elif power_has_extra_cost(extra_cost, "sacrifice_self"):
 		# Kavai the Wanderer / Mana Agate: destroy the source itself as a cost.
@@ -4471,15 +4529,35 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				events.append_array(defer_packets(state, db, aoe_all_packets))
 		"deal_damage_to_target":
 			var amount: int = int(ap.get("amount", 0))
+			# Mezzik Darkspark: AMOUNT is the token `sac_atk`, not a number —
+			# "X is the ATK of the destroyed ally", captured above as the
+			# sacrifice cost was paid. A sacrifice killed in response leaves it
+			# at 0, so the power resolves and deals nothing (709.2c).
+			if str(ap.get("amount_raw", "")) == "sac_atk":
+				amount = sac_atk
 			var target_id: String = action.params.get("target_id", "")
 			# Rule 706 re-check: fizzle if the target left play or became Untargetable.
-			if _is_legal_target(state, target_id, db):
+			if _is_legal_target(state, target_id, db) and amount > 0:
 				# Packet pipeline — the paired discard_per_damage rider (Dark
 				# Cleric Ismantal) travels with the packet.
 				events.append_array(defer_packets(state, db, [{
 					"source": card_id, "target": target_id, "amount": amount,
+					"dmg_type": str(ap.get("dmg_type", "")),
 					"discard_per": _discard_per_damage(def),
 				}]))
+		"put_hand_card_as_resource":
+			# Nightbloom: "(1), [Activate] -> You may put a card from your hand
+			# into your resource row face down and exhausted." Which card is a
+			# resolution choice (709.2b — 707.1 locks in only X, modes and
+			# targets), so it opens a direct-call choice point here rather than
+			# being announced; an instant that DRAWS in response can supply the
+			# card. Optional, so it is declinable, and an empty hand simply does
+			# nothing (no choice opens).
+			if not state.cards_in_zone(card.controller + "_hand").is_empty():
+				state.pending_resource_place_player = card.controller
+				state.pending_resource_place_source = card_id
+				events.append(GameEvent.make("resource_place_choice_opened",
+					{"player": card.controller, "source": card_id}))
 		"heal_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
@@ -4930,6 +5008,13 @@ static func _has_keyword(card: CardInstance, keyword: String, db,
 	if state != null and _is_pet(state, card.instance_id, db) \
 			and _pet_keyword_aura(state, card.controller, keyword, db):
 		return true
+	# "Your hero has <keyword>." (Sentry Gwynn). The same live read again, but the
+	# recipient is the aura controller's own HERO — so an ally of theirs, and the
+	# opponent's hero, are never granted anything. Live, so it lifts the instant
+	# the source leaves play.
+	if state != null and _is_hero(state, card.instance_id) \
+			and _hero_keyword_aura(state, card.controller, keyword, db):
+		return true
 	if db:
 		var def := db.get_def(card.card_def_id) as CardDef
 		if def and keyword in def.keywords:
@@ -4976,6 +5061,28 @@ static func _pet_keyword_aura(state: GameState, player_id: String,
 			for entry in def.effects.split("|"):
 				var parts := entry.strip_edges().split(":")
 				if parts[0].strip_edges() == "friendly_pets_keyword" \
+						and parts.size() > 1 and parts[1].strip_edges() == keyword:
+					return true
+	return false
+
+
+# True when `player_id` controls an in-play card granting `keyword` to their own
+# HERO (`hero_keyword:<keyword>` — Sentry Gwynn). Controller-relative like
+# _pet_keyword_aura, and narrowed to the hero: the source may be an ally, an
+# ongoing ability or equipment, but the grant only ever reaches the one hero.
+# Evaluated live, never cached.
+static func _hero_keyword_aura(state: GameState, player_id: String,
+		keyword: String, db) -> bool:
+	if not db or keyword == "" or player_id == "":
+		return false
+	for zone_suffix in ["_hero_row", "_ally_row"]:
+		for card in state.cards_in_zone(player_id + zone_suffix):
+			var def := db.get_def(card.card_def_id) as CardDef
+			if not def or def.effects == "":
+				continue
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				if parts[0].strip_edges() == "hero_keyword" \
 						and parts.size() > 1 and parts[1].strip_edges() == keyword:
 					return true
 	return false
@@ -7037,6 +7144,54 @@ static func _advance_control_discard_queue(state: GameState,
 			state.pending_control_discard_ids[0]))
 
 
+# Nightbloom's resolution choice: put the chosen hand card into its controller's
+# resource row FACE DOWN and EXHAUSTED. Direct call — no chain, no priority pass
+# (`can_submit` / `pass_priority` are hard-blocked while it is pending).
+#
+# Rule 412.1c: a resource put into the row by an EFFECT is an additional
+# resource and does not count toward the one-per-turn placement (412.1), so
+# `resource_placed_this_turn` is deliberately untouched — the controller can
+# still make their normal placement this turn, or already have made it.
+static func choose_hand_resource(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_resource_place_player == "":
+		return []
+	var card := state.get_card(card_id)
+	if not card or card.controller != state.pending_resource_place_player:
+		return []
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand":
+		return []
+	var player := state.pending_resource_place_player
+	var source := state.pending_resource_place_source
+	state.pending_resource_place_player = ""
+	state.pending_resource_place_source = ""
+	var events: Array[GameEvent] = []
+	# 412.1b: anything other than a quest or location can only be placed face
+	# down, and the printed text says face down regardless — so no choice here.
+	card.face_down = true
+	events.append_array(GameLogic.move_card(state, card_id, player + "_resource_row"))
+	card.is_exhausted = true
+	events.append(GameEvent.make("resource_placed", {
+		"card_id": card_id, "player": player, "face_up": false,
+		"exhausted": true, "source": source,
+	}))
+	return events
+
+
+# Player declined Nightbloom's optional placement ("You MAY put a card...").
+static func decline_hand_resource(state: GameState,
+		_db = null) -> Array[GameEvent]:
+	if state.pending_resource_place_player == "":
+		return []
+	var player := state.pending_resource_place_player
+	var source := state.pending_resource_place_source
+	state.pending_resource_place_player = ""
+	state.pending_resource_place_source = ""
+	return [GameEvent.make("resource_place_declined",
+		{"player": player, "source": source})]
+
+
 static func choose_pet_sacrifice(state: GameState, card_id: String,
 		db = null) -> Array[GameEvent]:
 	if state.pending_pet_sacrifice_player == "":
@@ -8424,9 +8579,23 @@ static func _fire_on_destroyed(state: GameState, card_id: String, db) -> Array[G
 				# chain). If no ally is in play there is no legal target, so the
 				# trigger does nothing. The chosen ally is destroyed in
 				# choose_death_target(); chained deaths queue behind it.
-				if not get_death_target_targets(state, db).is_empty():
+				if not get_death_trigger_targets(state, db, "destroy_target").is_empty():
 					state.pending_death_triggers.append({
-						"card_id": card_id, "controller": card.controller})
+						"card_id": card_id, "controller": card.controller,
+						"key": "destroy_target", "args": parts.slice(2)})
+					events.append_array(_open_next_death_trigger(state, db))
+			"deal_damage_hero_per_hand":
+				# on_destroyed:deal_damage_hero_per_hand:AMOUNT:DMG_TYPE (Vexra
+				# Darkfall: "When Vexra Darkfall is destroyed, she deals 1 arcane
+				# damage to target hero for each card in its controller's hand.")
+				# Boneshanks' mandatory targeted death trigger with a HERO pool and
+				# a damage effect — the amount is counted at RESOLUTION, off the
+				# chosen hero's controller's hand, so a card played or drawn
+				# between the death and the pick changes it.
+				if not get_death_trigger_targets(state, db, "deal_damage_hero_per_hand").is_empty():
+					state.pending_death_triggers.append({
+						"card_id": card_id, "controller": card.controller,
+						"key": "deal_damage_hero_per_hand", "args": parts.slice(2)})
 					events.append_array(_open_next_death_trigger(state, db))
 			"pay_return_hand":
 				# on_destroyed:pay_return_hand:COST (Bear Form / Cat Form): the
@@ -8454,11 +8623,14 @@ static func _open_next_death_trigger(state: GameState, db) -> Array[GameEvent]:
 	if state.pending_death_target_player != "":
 		return []
 	while not state.pending_death_triggers.is_empty():
-		if get_death_target_targets(state, db).is_empty():
-			# No legal ally left to destroy — the remaining triggers fizzle.
-			state.pending_death_triggers.clear()
-			break
 		var trigger: Dictionary = state.pending_death_triggers[0]
+		# Each queued trigger has its OWN pool (Boneshanks targets an ally,
+		# Vexra Darkfall a hero), so one that has run out of legal targets
+		# fizzles on its own and the rest of the queue carries on.
+		if get_death_trigger_targets(state, db,
+				str(trigger.get("key", "destroy_target"))).is_empty():
+			state.pending_death_triggers.pop_front()
+			continue
 		state.pending_death_target_player = trigger.get("controller", "")
 		return [GameEvent.death_target_required(
 			trigger.get("card_id", ""), trigger.get("controller", ""))]
@@ -8475,11 +8647,36 @@ static func choose_death_target(state: GameState, target_id: String, db) -> Arra
 		return []
 	var trigger: Dictionary = state.pending_death_triggers.pop_front()
 	var source_id: String = trigger.get("card_id", "")
+	var key: String = str(trigger.get("key", "destroy_target"))
+	var args: PackedStringArray = trigger.get("args", PackedStringArray())
 	state.pending_death_target_player = ""
 	var events: Array[GameEvent] = []
-	# 706 re-check: the target must still be a legal ally in play.
-	if _is_legal_target(state, target_id, db) and _is_ally(state, target_id):
-		events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
+	match key:
+		"deal_damage_hero_per_hand":
+			# Vexra Darkfall: "she deals AMOUNT damage to target hero for each
+			# card in its controller's hand." 706 re-check first (a hero can't
+			# leave play, but it CAN become Untargetable after the pick was
+			# offered), then count the hand at RESOLUTION — an empty hand means
+			# the trigger resolves and deals nothing. "Its controller" is the
+			# TARGET hero's controller, so aiming this at your own hero burns you
+			# for your own hand size. The source is Vexra, an ally, so the packet
+			# is not tagged from_ability; it goes through defer_packets, so armor
+			# prevention opens normally.
+			if _is_legal_target(state, target_id, db) and _is_hero(state, target_id):
+				var per := int(args[0]) if args.size() > 0 else 1
+				var dmg_type := str(args[1]) if args.size() > 1 else ""
+				var victim := state.get_card(target_id)
+				var hand_size := state.cards_in_zone(victim.controller + "_hand").size()
+				var total := per * hand_size
+				if total > 0:
+					events.append_array(defer_packets(state, db, [{
+						"source": source_id, "target": target_id,
+						"amount": total, "dmg_type": dmg_type,
+					}], "", false))
+		_:
+			# 706 re-check: the target must still be a legal ally in play.
+			if _is_legal_target(state, target_id, db) and _is_ally(state, target_id):
+				events.append_array(_destroy_card_trigger(state, target_id, source_id, db))
 	# Open the next queued death trigger, if any (may have been added by the
 	# destruction above).
 	events.append_array(_open_next_death_trigger(state, db))
@@ -8495,6 +8692,34 @@ static func get_death_target_targets(state: GameState, db) -> Array[String]:
 			if _is_legal_target(state, ally.instance_id, db):
 				result.append(ally.instance_id)
 	return result
+
+
+# Legal targets for a queued death trigger, by effect key. Boneshanks targets an
+# ally, Vexra Darkfall a hero ("target hero", either player's — a controller may
+# be forced to point it at their own). One dispatcher so the queue carries no
+# per-card knowledge and every caller — the open/fizzle check, the resolution
+# re-check, the router's target list and the AI — asks the same question.
+static func get_death_trigger_targets(state: GameState, db, key: String) -> Array[String]:
+	if key == "deal_damage_hero_per_hand":
+		var heroes: Array[String] = []
+		for pid in state.players:
+			var ps := state.players.get(pid) as PlayerState
+			if ps and ps.hero_instance_id != "" \
+					and state.is_in_play(ps.hero_instance_id) \
+					and _is_legal_target(state, ps.hero_instance_id, db):
+				heroes.append(ps.hero_instance_id)
+		return heroes
+	return get_death_target_targets(state, db)
+
+
+# The pool of the death trigger that is CURRENTLY awaiting a pick — what the UI
+# highlights and the AI chooses from. [] when no death choice is open.
+static func get_active_death_target_targets(state: GameState, db) -> Array[String]:
+	if state.pending_death_triggers.is_empty():
+		return []
+	var trigger: Dictionary = state.pending_death_triggers[0]
+	return get_death_trigger_targets(state, db,
+		str(trigger.get("key", "destroy_target")))
 
 
 # Wrapper: check_destroyed + on_destroyed trigger if the card actually died.

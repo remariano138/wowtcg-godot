@@ -145,6 +145,10 @@ func _ready() -> void:
 		_test_mind_damage_discard,
 		_test_ismantal_ally_power_discard,
 		_test_boneshanks_death_trigger,
+		_test_nightbloom_extra_resource,
+		_test_nightbloom_decline_gates_and_ai,
+		_test_vexra_darkfall_death_burn,
+		_test_vexra_hand_read_at_resolution_and_ai,
 		_test_lady_jaina_aura,
 		_test_lady_jaina_unique,
 		_test_hannah_cant_protect_aura,
@@ -185,6 +189,8 @@ func _ready() -> void:
 		_test_lust_for_battle_all_allies_ferocity,
 		_test_from_the_shadows_all_allies_elusive,
 		_test_protect_the_master_pet_protector,
+		_test_sentry_gwynn_hero_elusive,
+		_test_kailis_truearc_party_size_buff,
 		_test_hootie_opposing_atk_aura,
 		_test_warcaller_zinbawa_atk_per_party_damage,
 		_test_brigg_destroys_damaged_ally,
@@ -310,6 +316,8 @@ func _ready() -> void:
 		_test_lafiel_destroys_ability,
 		_test_lafiel_fizzles_and_ai,
 		_test_beshiah_sacrifice_destroys_ability,
+		_test_mezzik_darkspark_sacrifice_damage,
+		_test_mezzik_sacrifice_killed_in_response_and_ai,
 		_test_beshiah_repeatable_and_ai,
 		_test_moira_destroys_equipment,
 		_test_moira_killed_in_response_and_ai,
@@ -8332,6 +8340,260 @@ func _test_ismantal_ally_power_discard() -> void:
 # by the destroyed card's controller via choose_death_target (direct call).
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Nightbloom (azeroth_211): "(1), [Activate] -> You may put a card from your hand
+# into your resource row face down and exhausted." Rule 412.1c: a resource put
+# there by an EFFECT is an additional resource and does not count toward the
+# one-per-turn placement.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const NIGHTBLOOM_FX := "activated_power:1:put_hand_card_as_resource:0"
+
+func _test_nightbloom_extra_resource() -> void:
+	_buf.append("\n-- Nightbloom: bury a hand card as an extra resource --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bloom_def", 1, 1, [], 2, NIGHTBLOOM_FX)
+	db.instant("filler_def", 1, "draw:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var bloom := _add_ally(state, "bloom", "bloom_def", "p1")
+	bloom.just_summoned = false
+	_add_resources(state, "p1", 1)
+	_add_card_to_hand(state, "h1", "filler_def", "p1")
+	_add_card_to_hand(state, "h2", "filler_def", "p1")
+	# The normal once-per-turn placement is ALREADY spent this turn.
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "bloom"})
+	ok(StackResolver.can_submit(state, use, db), "nb-a: power submittable")
+	StackResolver.submit_action(state, use, db)
+	ok(state.get_card("bloom").is_exhausted, "nb-b: [Activate] tap paid at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.pending_resource_place_player, "p1",
+		"nb-c: the choice opens for the controller at resolution")
+	# Everything else is blocked while the choice is pending.
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("place_resource", "p1", {"card_id": "h1"}), db),
+		"nb-d: can_submit blocked while pending")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"nb-e: pass_priority hard-blocked while pending")
+
+	StackResolver.choose_hand_resource(state, "h1", db)
+	eq(state.get_card("h1").zone_id, "p1_resource_row", "nb-f: the card is now a resource")
+	ok(state.get_card("h1").face_down, "nb-g: face down (412.1b)")
+	ok(state.get_card("h1").is_exhausted,
+		"nb-h: and EXHAUSTED — it can't be spent this turn")
+	eq(state.pending_resource_place_player, "", "nb-i: choice resolved")
+	# Rule 412.1c: this is an ADDITIONAL resource. The flag was already true here,
+	# but the placement must not have depended on it — see nb-m below.
+	ok(state.players["p1"].resource_placed_this_turn,
+		"nb-j: the once-per-turn placement flag is untouched")
+	eq(state.get_available_resources("p1"), 0,
+		"nb-k: 1 resource paid for the power, and the new one is exhausted")
+
+
+func _test_nightbloom_decline_gates_and_ai() -> void:
+	_buf.append("\n-- Nightbloom: decline, empty hand, 412.1c, AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bloom_def", 1, 1, [], 2, NIGHTBLOOM_FX)
+	db.instant("filler_def", 1, "draw:1")
+
+	# ── Declining is a legal resolution ("You MAY put a card...").
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	var b1 := _add_ally(s1, "b1", "bloom_def", "p1")
+	b1.just_summoned = false
+	_add_resources(s1, "p1", 1)
+	_add_card_to_hand(s1, "keep", "filler_def", "p1")
+	s1.players["p1"].resource_placed_this_turn = true
+	s1.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(s1, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "b1"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.decline_hand_resource(s1, db)
+	eq(s1.get_card("keep").zone_id, "p1_hand", "nb-l: declined — the card stays in hand")
+	eq(s1.pending_resource_place_player, "", "nb-m: and the choice is closed")
+
+	# ── 412.1c the other way round: the placement does NOT consume the normal
+	# one-per-turn action, so a player who used the power can still place.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var b2 := _add_ally(s2, "b2", "bloom_def", "p1")
+	b2.just_summoned = false
+	_add_resources(s2, "p1", 1)
+	_add_card_to_hand(s2, "bury", "filler_def", "p1")
+	_add_card_to_hand(s2, "normal", "filler_def", "p1")
+	s2.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(s2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "b2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.choose_hand_resource(s2, "bury", db)
+	ok(not s2.players["p1"].resource_placed_this_turn,
+		"nb-n: the effect placement doesn't spend the turn's own placement (412.1c)")
+	ok(StackResolver.can_submit(s2, PendingAction.make("place_resource", "p1",
+			{"card_id": "normal"}), db),
+		"nb-o: so the normal once-per-turn placement is still available")
+
+	# ── An empty hand opens no choice at all.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var b3 := _add_ally(s3, "b3", "bloom_def", "p1")
+	b3.just_summoned = false
+	_add_resources(s3, "p1", 1)
+	s3.players["p1"].resource_placed_this_turn = true
+	s3.players["p2"].resource_placed_this_turn = true
+	StackResolver.submit_action(s3, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "b3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(s3.pending_resource_place_player, "",
+		"nb-p: an empty hand opens no choice — the power just resolves")
+
+	# ── AI: ramps while the hand can spare a card, declines when it can't, and
+	# doesn't tap Nightbloom at all for a choice it would decline.
+	var ai := BaseAI.new()
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	var b4 := _add_ally(s4, "b4", "bloom_def", "p1")
+	b4.just_summoned = false
+	_add_resources(s4, "p1", 3)
+	s4.players["p1"].resource_placed_this_turn = true
+	for i in range(4):
+		_add_card_to_hand(s4, "ai_%d" % i, "filler_def", "p1")
+	ok(ai.choose_hand_resource(s4, db, "p1") != "",
+		"nb-q: AI buries a card with a hand of four")
+	var found := false
+	for a in ai.get_reasonable_actions(s4, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "b4":
+			found = true
+	ok(found, "nb-r: and it actually uses the power")
+
+	var s5 := _base_state(db, "p1_hero", "p2_hero")
+	var b5 := _add_ally(s5, "b5", "bloom_def", "p1")
+	b5.just_summoned = false
+	_add_resources(s5, "p1", 3)
+	s5.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s5, "last1", "filler_def", "p1")
+	_add_card_to_hand(s5, "last2", "filler_def", "p1")
+	eq(ai.choose_hand_resource(s5, db, "p1"), "",
+		"nb-s: AI declines on a hand of two — the card matters more than the ramp")
+	var found5 := false
+	for a in ai.get_reasonable_actions(s5, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "b5":
+			found5 = true
+	ok(not found5, "nb-t: and it doesn't waste her tap and 1 resource opening it")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Vexra Darkfall (azeroth_265): "When Vexra Darkfall is destroyed, she deals 1
+# arcane damage to target hero for each card in its controller's hand."
+# Boneshanks' mandatory targeted death trigger with a HERO pool and a damage
+# effect whose amount is counted at resolution.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const VEXRA_FX := "on_destroyed:deal_damage_hero_per_hand:1:arcane"
+
+func _test_vexra_darkfall_death_burn() -> void:
+	_buf.append("\n-- Vexra Darkfall: damage to target hero per card in its hand --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("vexra_def", 5, 2, [], 5, VEXRA_FX)
+	db.ally("grunt_def", 3, 5, [], 3)
+	db.instant("filler_def", 1, "draw:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var vexra := _add_ally(state, "vexra", "vexra_def", "p1")
+	vexra.just_summoned = false
+	_add_ally(state, "bystander", "grunt_def", "p2")
+	for i in range(3):
+		_add_card_to_hand(state, "opp_card_%d" % i, "filler_def", "p2")
+	_add_card_to_hand(state, "own_card", "filler_def", "p1")
+
+	var events := StackResolver._destroy_card_trigger(state, "vexra", "vexra", db)
+	eq(state.pending_death_target_player, "p1",
+		"vx-a: her controller must pick a target hero")
+	var saw_req := false
+	for e in events:
+		if e.event_type == "death_target_required":
+			saw_req = true
+	ok(saw_req, "vx-b: death_target_required emitted")
+
+	# The pool is HEROES — an ally is never a legal pick, even though the
+	# ally-pool helper the Boneshanks trigger uses still reports one.
+	var pool := StackResolver.get_active_death_target_targets(state, db)
+	eq(str(pool), str(["p1_hero", "p2_hero"]), "vx-c: both heroes are legal, no allies")
+
+	# Everything else is blocked while the choice is pending (shared machinery).
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("place_resource", "p1", {"card_id": "x"}), db),
+		"vx-d: can_submit blocked while the death choice is pending")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"vx-e: pass_priority hard-blocked while pending")
+
+	StackResolver.choose_death_target(state, "p2_hero", db)
+	eq(state.get_card("p2_hero").damage_taken, 3,
+		"vx-f: 1 damage per card in the TARGET hero's controller's hand (3)")
+	eq(state.get_card("p1_hero").damage_taken, 0, "vx-g: our own hero is untouched")
+	eq(state.pending_death_target_player, "", "vx-h: choice resolved")
+
+
+func _test_vexra_hand_read_at_resolution_and_ai() -> void:
+	_buf.append("\n-- Vexra Darkfall: empty hand, self-target, AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("vexra_def", 5, 2, [], 5, VEXRA_FX)
+	db.instant("filler_def", 1, "draw:1")
+
+	# An empty hand means the trigger resolves and deals nothing — it does NOT
+	# fizzle (a hero is always a legal target, so the choice still opens).
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "v1", "vexra_def", "p1")
+	StackResolver._destroy_card_trigger(s1, "v1", "v1", db)
+	eq(s1.pending_death_target_player, "p1", "vx-i: the choice opens on an empty hand")
+	StackResolver.choose_death_target(s1, "p2_hero", db)
+	eq(s1.get_card("p2_hero").damage_taken, 0, "vx-j: an empty hand deals 0 damage")
+
+	# "Its controller" is the TARGET's controller — aiming at our own hero burns
+	# us for OUR hand, which is what makes the AI's choice matter.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "v2", "vexra_def", "p1")
+	for i in range(4):
+		_add_card_to_hand(s2, "mine_%d" % i, "filler_def", "p1")
+	StackResolver._destroy_card_trigger(s2, "v2", "v2", db)
+	StackResolver.choose_death_target(s2, "p1_hero", db)
+	eq(s2.get_card("p1_hero").damage_taken, 4,
+		"vx-k: pointed at our own hero it counts OUR hand and burns us")
+
+	# The count is taken at RESOLUTION, not when she died: a card drawn between
+	# the death and the pick is counted.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s3, "v3", "vexra_def", "p1")
+	_add_card_to_hand(s3, "opp_a", "filler_def", "p2")
+	StackResolver._destroy_card_trigger(s3, "v3", "v3", db)
+	_add_card_to_hand(s3, "opp_b", "filler_def", "p2")
+	StackResolver.choose_death_target(s3, "p2_hero", db)
+	eq(s3.get_card("p2_hero").damage_taken, 2,
+		"vx-l: the hand is counted at resolution, not at death")
+
+	# AI: always the opposing hero — the damage scales with the target's own
+	# hand, so self-targeting is pure self-harm.
+	var ai := BaseAI.new()
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s4, "v4", "vexra_def", "p1")
+	for i in range(2):
+		_add_card_to_hand(s4, "ai_own_%d" % i, "filler_def", "p1")
+	StackResolver._destroy_card_trigger(s4, "v4", "v4", db)
+	eq(ai.choose_death_target(s4, db, "p1"), "p2_hero",
+		"vx-m: AI targets the opposing hero even when its own hand is bigger")
+
+
 func _test_boneshanks_death_trigger() -> void:
 	_buf.append("\n-- Scenario 40i: Boneshanks — on-destroy destroy target ally --")
 	var db := MockDB.new()
@@ -13633,17 +13895,19 @@ func _test_hammer_of_grace_heal_power() -> void:
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
 	db.weapon("hammer_def", 3, 1, 3, "Melee", "melee_weapon", HAMMER_EXTRA)
-	db.ally("grunt_def", 2, 3)
+	db.ally("grunt_def", 2, 5)
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
 	_add_resources(state, "p1", 2)
 	var hammer := CardInstance.create("hammer", "hammer_def", "p1", "p1_hero_row")
 	state.cards["hammer"] = hammer
 	state.zones["p1_hero_row"].card_ids.append("hammer")
-	# A damaged friendly ally to heal.
+	# A damaged friendly ally to heal. It must be a state the game could really
+	# be in — an ally at 0 effective health is destroyed by the state-based
+	# sweep at the next priority gate (StackResolver.drain_state_based_deaths).
 	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
 	grunt.just_summoned = false
-	grunt.damage_taken = 3   # 2/3 grunt on 3 damage — heal 2 leaves 1.
+	grunt.damage_taken = 3   # 2/5 grunt on 3 damage — heal 2 leaves 1.
 
 	# hg-a: power submittable, heals 2 from the target ally; hammer AND hero exhaust.
 	var use := PendingAction.make("use_ally_power", "p1",
@@ -19571,6 +19835,148 @@ func _test_lafiel_fizzles_and_ai() -> void:
 
 const BESHIAH_RECIPE := "activated_power:0:destroy_ability:0::ability:sacrifice_ally+no_activate"
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Mezzik Darkspark (azeroth_207): "[Activate], Destroy an ally in your party ->
+# Mezzik Darkspark deals X shadow damage to target hero or ally, where X is the
+# ATK of the destroyed ally." Gertha's two-pick sacrifice power, with the
+# sacrifice's ATK as the damage.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const MEZZIK_RECIPE := "activated_power:0:deal_damage_to_target:sac_atk:shadow:hero_or_ally:sacrifice_ally"
+
+func _test_mezzik_darkspark_sacrifice_damage() -> void:
+	_buf.append("\n-- Mezzik Darkspark: X = the sacrificed ally's ATK --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mezzik_def", 1, 1, [], 1, MEZZIK_RECIPE)
+	db.ally("big_def", 4, 2, [], 4)
+	db.ally("victim_def", 1, 6, [], 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mezzik := _add_ally(state, "mezzik", "mezzik_def", "p1")
+	mezzik.just_summoned = false
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+
+	# mz-a: the sacrifice is a real cost picked separately from the target.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "mezzik", "target_id": "victim"}), db),
+		"mz-a: illegal with no sacrifice_id")
+	# mz-b: the sacrifice must be one of OUR allies, not the opponent's.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "mezzik", "target_id": "p2_hero", "sacrifice_id": "victim"}), db),
+		"mz-b: an opposing ally can't be sacrificed")
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "mezzik", "target_id": "victim", "sacrifice_id": "big"})
+	ok(StackResolver.can_submit(state, use, db), "mz-c: legal with our own ally named")
+	StackResolver.submit_action(state, use, db)
+	ok(state.get_card("big").zone_id == "p1_ally_row",
+		"mz-d: sacrifice not paid at announcement (paid at resolution)")
+	ok(state.get_card("mezzik").is_exhausted,
+		"mz-e: the [Activate] tap symbol IS paid at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("big").zone_id, "p1_graveyard", "mz-f: the sacrifice is destroyed")
+	eq(state.get_card("victim").damage_taken, 4,
+		"mz-g: X = the sacrificed ally's 4 ATK, not Mezzik's own 1")
+	eq(state.get_available_resources("p1"), 0, "mz-h: costs no resources")
+
+	# X is read LIVE off the sacrifice, so a buff on it counts.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var m2 := _add_ally(s2, "m2", "mezzik_def", "p1")
+	m2.just_summoned = false
+	var buffed := _add_ally(s2, "buffed", "big_def", "p1")
+	buffed.just_summoned = false
+	buffed.active_buffs.append(Buff.make("test_pump", "src", "atk", 2, "permanent", 0))
+	var v2 := _add_ally(s2, "v2", "victim_def", "p2")
+	v2.just_summoned = false
+	StackResolver.submit_action(s2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "m2", "target_id": "v2", "sacrifice_id": "buffed"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	# 4 printed + 2 = exactly the 6-health victim: the buff is what kills it.
+	ok(not s2.is_in_play("v2"),
+		"mz-i: a +2 ATK buff on the sacrifice is counted — 6 damage kills the 6-health ally")
+
+
+func _test_mezzik_sacrifice_killed_in_response_and_ai() -> void:
+	_buf.append("\n-- Mezzik Darkspark: sacrifice answered in response, AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mezzik_def", 1, 1, [], 1, MEZZIK_RECIPE)
+	db.ally("big_def", 4, 2, [], 4)
+	db.ally("victim_def", 1, 6, [], 3)
+	db.instant("kill_def", 1, "destroy_target:ally")
+
+	# The sacrifice is paid at RESOLUTION, so killing it in response no-ops the
+	# cost — and here that also empties X, so the power resolves for nothing.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mezzik := _add_ally(state, "mezzik", "mezzik_def", "p1")
+	mezzik.just_summoned = false
+	var big := _add_ally(state, "big", "big_def", "p1")
+	big.just_summoned = false
+	var victim := _add_ally(state, "victim", "victim_def", "p2")
+	victim.just_summoned = false
+	_add_card_to_hand(state, "kill", "kill_def", "p2")
+	_add_resources(state, "p2", 1)
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "mezzik", "target_id": "victim", "sacrifice_id": "big"}), db)
+	StackResolver.pass_priority(state, db)   # p1 passes, p2 gets priority
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p2",
+		{"card_id": "kill", "target_id": "big"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("big").zone_id, "p1_graveyard", "mz-j: the sacrifice died in response")
+	eq(state.get_card("victim").damage_taken, 0,
+		"mz-k: the cost no-ops and X is 0 — the power resolves for nothing")
+	ok(state.is_in_play("mezzik"), "mz-l: Mezzik survives, but her tap is spent")
+
+	# ── AI: target-first. It fires only when the damage KILLS something worth
+	# more than the body it feeds in, and never eats Mezzik herself.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var ai_mez := _add_ally(s2, "ai_mez", "mezzik_def", "p1")
+	ai_mez.just_summoned = false
+	var fodder := _add_ally(s2, "fodder", "big_def", "p1")
+	fodder.just_summoned = false
+	s2.players["p1"].resource_placed_this_turn = true
+	var ai := BaseAI.new()
+
+	# Nothing killable on their board (6 health vs 4 ATK) → hold the power.
+	var tough := _add_ally(s2, "tough", "victim_def", "p2")
+	tough.just_summoned = false
+	var acts := ai.get_reasonable_actions(s2, db, "p1")
+	var found := false
+	for a in acts:
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "ai_mez":
+			found = true
+	ok(not found, "mz-m: AI holds the power when the damage would only chip")
+
+	# A killable, more valuable target → fire it, feeding the 4-ATK body.
+	GameLogic.move_card(s2, "tough", "p2_graveyard")
+	db.ally("juicy_def", 5, 4, [], 6)
+	var juicy := _add_ally(s2, "juicy", "juicy_def", "p2")
+	juicy.just_summoned = false
+	var acts2 := ai.get_reasonable_actions(s2, db, "p1")
+	var mez_act: PendingAction = null
+	for a in acts2:
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "ai_mez":
+			mez_act = a
+	ok(mez_act != null, "mz-n: AI fires it to kill a target worth more than the sacrifice")
+	if mez_act:
+		eq(mez_act.params.get("target_id", ""), "juicy", "mz-o: aimed at the enemy ally")
+		eq(mez_act.params.get("sacrifice_id", ""), "fodder",
+			"mz-p: and it feeds the 4-ATK body, never Mezzik herself")
+
+
 func _test_beshiah_sacrifice_destroys_ability() -> void:
 	_buf.append("\n-- Besh'iah: sacrifice a party ally -> destroy target ability --")
 	var db := MockDB.new()
@@ -21107,6 +21513,168 @@ func _test_protect_the_master_pet_protector() -> void:
 		"ptm-i: the grant lifts the moment the aura leaves play")
 	ok("mypet" not in StackResolver.get_legal_protectors(state, "atk", "p1_hero", db),
 		"ptm-j: and the Pet is no longer a legal protector")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Kailis Truearc (azeroth_189): "+2 ATK and +2 health while there are four or
+# more allies in your party." One conditional self-grant covering both stats,
+# read live off the controller's ally_row (she counts herself).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_kailis_truearc_party_size_buff() -> void:
+	_buf.append("\n-- Kailis Truearc: +2/+2 while four or more allies --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("kailis_def", 1, 1, [], 1, "buff_while_party_size:4:2:2")
+	db.ally("grunt_def", 1, 3, [], 2)
+	db.ability("totem_def", 1, "ongoing|totem:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var kailis := _add_ally(state, "kailis", "kailis_def", "p1")
+	kailis.just_summoned = false
+	var a2 := _add_ally(state, "a2", "grunt_def", "p1")
+	var a3 := _add_ally(state, "a3", "grunt_def", "p1")
+	# The opponent's board must not count toward "your party".
+	_add_ally(state, "theirs1", "grunt_def", "p2")
+	_add_ally(state, "theirs2", "grunt_def", "p2")
+
+	eq(state.get_atk("kailis", db), 1, "kt-a: 1 ATK with a three-ally party")
+	eq(state.get_max_hp("kailis", db), 1, "kt-b: and 1 health — the opponent's board doesn't count")
+
+	var a4 := _add_ally(state, "a4", "grunt_def", "p1")
+	eq(state.get_atk("kailis", db), 3, "kt-c: the fourth ally switches the grant on (+2 ATK)")
+	eq(state.get_max_hp("kailis", db), 3, "kt-d: and +2 health, in the same breath")
+	eq(state.get_current_hp("kailis", db), 3, "kt-e: undamaged, so she is at 3 HP")
+
+	# "Four or MORE" — a fifth ally doesn't stack the grant.
+	var a5 := _add_ally(state, "a5", "grunt_def", "p1")
+	eq(state.get_atk("kailis", db), 3, "kt-f: a fifth ally doesn't stack it")
+	GameLogic.move_card(state, a5.instance_id, "p1_graveyard")
+
+	# A Totem is an ally in your party (305.3a), so it counts toward the four.
+	GameLogic.move_card(state, a4.instance_id, "p1_graveyard")
+	eq(state.get_atk("kailis", db), 1, "kt-g: back to three allies, grant off")
+	var totem := CardInstance.create("totem", "totem_def", "p1", "p1_ally_row")
+	state.cards["totem"] = totem
+	state.zones["p1_ally_row"].card_ids.append("totem")
+	eq(state.get_atk("kailis", db), 3, "kt-h: a Totem counts as the fourth ally (305.3a)")
+	eq(state.get_max_hp("kailis", db), 3, "kt-i: health half agrees")
+
+	# Damage she can only survive because of the grant.
+	kailis.damage_taken = 2
+	eq(state.get_current_hp("kailis", db), 1, "kt-j: 2 damage on a 3-health body leaves 1 HP")
+
+	# The grant lapsing is a state-based death (118.4/704) — and the fourth ally
+	# leaves by a route that is NOT a destruction, so only the priority-gate
+	# sweep can catch it.
+	GameLogic.move_card(state, "totem", "p1_hand")
+	ok(state.is_in_play("kailis"), "kt-k: still on the board until the next state-based check")
+	StackResolver.pass_priority(state, db)
+	ok(not state.is_in_play("kailis"),
+		"kt-l: she dies once the party drops below four and her max health falls under her damage")
+	eq(state.get_card("kailis").zone_id, "p1_graveyard", "kt-m: and she is in the graveyard")
+
+	# An UNdamaged Kailis simply shrinks back to 1/1 — losing the grant is not
+	# lethal on its own.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var k2 := _add_ally(s2, "k2", "kailis_def", "p1")
+	k2.just_summoned = false
+	_add_ally(s2, "b2", "grunt_def", "p1")
+	_add_ally(s2, "b3", "grunt_def", "p1")
+	var b4 := _add_ally(s2, "b4", "grunt_def", "p1")
+	eq(s2.get_max_hp("k2", db), 3, "kt-n: grant on at four allies")
+	GameLogic.move_card(s2, b4.instance_id, "p1_graveyard")
+	StackResolver.pass_priority(s2, db)
+	ok(s2.is_in_play("k2"), "kt-o: an undamaged Kailis survives losing the grant")
+	eq(s2.get_atk("k2", db), 1, "kt-p: back to a printed 1/1")
+	eq(s2.get_max_hp("k2", db), 1, "kt-q: health back to 1 as well")
+
+	# Suppress unused-variable warnings for the fixture allies.
+	ok(a2 != null and a3 != null, "kt-r: fixture allies present")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sentry Gwynn (azeroth_215): "Your hero has elusive." Protect the Master's
+# controller-relative keyword aura with the recipient narrowed to the hero.
+# Elusive is "can't be PROPOSED as a defender" (601.2b) — protecting (602.2) is
+# a different gate and is unaffected.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_sentry_gwynn_hero_elusive() -> void:
+	_buf.append("\n-- Sentry Gwynn: your hero has elusive --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("gwynn_def", 3, 4, [], 5, "hero_keyword:elusive")
+	db.ally("grunt_def", 3, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var mine := _add_ally(state, "mine", "grunt_def", "p1")
+	mine.just_summoned = false
+	var atk := _add_ally(state, "atk", "grunt_def", "p2")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "gwynn", "gwynn_def", "p1")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	ok("p1_hero" in StackResolver.get_legal_defenders(state, "atk", db),
+		"sg-a: our hero is attackable before Gwynn lands")
+
+	var play := PendingAction.make("play_ally", "p1", {"card_id": "gwynn"})
+	ok(StackResolver.can_submit(state, play, db), "sg-b: Sentry Gwynn is playable")
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("gwynn").zone_id, "p1_ally_row", "sg-c: she enters the ally row")
+
+	ok(StackResolver._has_keyword(state.get_card("p1_hero"), "elusive", db, state),
+		"sg-d: our hero has elusive")
+	ok("p1_hero" not in StackResolver.get_legal_defenders(state, "atk", db),
+		"sg-e: our hero can no longer be proposed as a defender")
+
+	# The 601.2b submission gate agrees with the query helper.
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	var at_hero := PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "atk", "defender_id": "p1_hero"})
+	ok(not StackResolver.can_submit(state, at_hero, db),
+		"sg-f: an attack on our hero can't be submitted")
+	var at_ally := PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "atk", "defender_id": "mine"})
+	ok(StackResolver.can_submit(state, at_ally, db),
+		"sg-g: our allies are still legal defenders — attacks are funnelled at them")
+
+	# Scope, both ways: not our own allies, and not the opponent's hero.
+	ok(not StackResolver._has_keyword(mine, "elusive", db, state),
+		"sg-h: our allies are unaffected — the grant is the hero only")
+	ok(not StackResolver._has_keyword(state.get_card("p2_hero"), "elusive", db, state),
+		"sg-i: the OPPONENT's hero is unaffected — 'your hero', not all heroes")
+	ok("p2_hero" in StackResolver.get_legal_defenders(state, "mine", db),
+		"sg-j: and their hero is still a legal defender for us")
+
+	# Elusive restricts who may be CHOSEN as defender; protecting is 602.2.
+	ok("p1_hero" not in StackResolver.get_legal_protectors(state, "atk", "mine", db),
+		"sg-k: our hero isn't a protector without a grant (baseline)")
+	db.equipment("deflector_def", 3, "equipment:off_hand:4|hero_has_protector")
+	var defl := CardInstance.create("defl", "deflector_def", "p1", "p1_hero_row")
+	state.cards["defl"] = defl
+	state.zones["p1_hero_row"].card_ids.append("defl")
+	ok("p1_hero" in StackResolver.get_legal_protectors(state, "atk", "mine", db),
+		"sg-l: an elusive hero can still PROTECT (602.2 is a different gate)")
+
+	# The aura is on an ALLY body, so she is herself the only thing left to
+	# attack once the rest of the party is gone — killing her is how the
+	# opponent gets at the hero again.
+	GameLogic.move_card(state, "mine", "p1_graveyard")
+	eq(str(StackResolver.get_legal_defenders(state, "atk", db)), str(["gwynn"]),
+		"sg-m: Gwynn herself is then the opponent's only legal defender")
+
+	# Lifts when she leaves play.
+	GameLogic.move_card(state, "gwynn", "p1_graveyard")
+	ok("p1_hero" in StackResolver.get_legal_defenders(state, "atk", db),
+		"sg-n: the grant lifts the moment Gwynn leaves play")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

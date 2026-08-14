@@ -2012,6 +2012,22 @@ func _best_attack_exhaust_armor(state: GameState, db, player_id: String) -> Stri
 	return best
 
 
+# Nightbloom: "(1), [Activate] -> You may put a card from your hand into your
+# resource row face down and exhausted." Which card to bury, or "" to decline.
+#
+# The placement is pure ramp — it costs a card, so it is only worth it while the
+# hand can spare one. With two or fewer cards left the AI declines: at that point
+# the card in hand is likelier to be the play that matters than the resource
+# would be. Otherwise it buries the card it would miss least (the AI's own
+# discard pick, which is the same question asked the same way).
+func choose_hand_resource(state: GameState, db, player_id: String) -> String:
+	if not db:
+		return ""
+	if state.cards_in_zone(player_id + "_hand").size() <= 2:
+		return ""
+	return choose_discard_card(state, db, player_id)
+
+
 # Boneshanks death trigger: "When [this] is destroyed, destroy target ally."
 # The choice is MANDATORY if any ally is in play, so this never declines. Prefer
 # the most valuable OPPOSING ally; only if the opponent has none, destroy our own
@@ -2020,10 +2036,22 @@ func _best_attack_exhaust_armor(state: GameState, db, player_id: String) -> Stri
 func choose_death_target(state: GameState, db, player_id: String) -> String:
 	if not db:
 		return ""
-	var legal := StackResolver.get_death_target_targets(state, db)
+	var legal := StackResolver.get_active_death_target_targets(state, db)
 	if legal.is_empty():
 		return ""
 	var opp := "p2" if player_id == "p1" else "p1"
+	# Vexra Darkfall's pool is HEROES, not allies: "she deals 1 arcane damage to
+	# target hero for each card in its controller's hand." Always the opposing
+	# hero — the damage scales with the TARGET's own hand, so pointing it at
+	# ourselves is pure self-harm, and the choice is mandatory.
+	var death_key := ""
+	if not state.pending_death_triggers.is_empty():
+		death_key = str((state.pending_death_triggers[0] as Dictionary).get("key", ""))
+	if death_key == "deal_damage_hero_per_hand":
+		var opp_ps := state.players.get(opp) as PlayerState
+		if opp_ps and opp_ps.hero_instance_id in legal:
+			return opp_ps.hero_instance_id
+		return legal[0]
 	var enemy: Array[String] = []
 	var own:   Array[String] = []
 	for tid in legal:
@@ -2346,6 +2374,12 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 		if ap.get("effect", "") == "hand_to_deck_draw" \
 				and not _hand_is_dead(state, db, player_id):
 			continue
+		# Nightbloom: the placement costs a card out of hand, so don't tap her
+		# (and pay 1) for a choice we would only decline — choose_hand_resource
+		# is the single place that judgement lives.
+		if ap.get("effect", "") == "put_hand_card_as_resource" \
+				and choose_hand_resource(state, db, player_id) == "":
+			continue
 		# Ramstein's Lightning Bolts: the AoE is SYMMETRIC (it hits our own hero
 		# and allies too) and destroying the item is the cost, so firing it on a
 		# neutral board is a straight card loss. Simple gate for now: only when
@@ -2626,6 +2660,58 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": cp_target})
 				if StackResolver.can_submit(state, cp_act, db):
 					result.append(cp_act)
+		elif ap.get("effect", "") == "deal_damage_to_target" \
+				and str(ap.get("amount_raw", "")) == "sac_atk" \
+				and StackResolver.power_sacrifice_is_separate(ap):
+			# Mezzik Darkspark: "[Activate], Destroy an ally in your party ->
+			# Mezzik deals X shadow damage to target hero or ally, where X is the
+			# ATK of the destroyed ally." The sacrifice IS the damage, which
+			# inverts the usual sacrifice heuristic: Gertha and Besh'iah want the
+			# ally they'd miss least, this wants a HIGH-ATK one — so the pick is
+			# made target-first, per candidate sacrifice, and the power is only
+			# fired when the trade actually pays.
+			var mez_opp := "p2" if player_id == "p1" else "p1"
+			var mez_hero_id := ""
+			var mez_opp_ps := state.players.get(mez_opp) as PlayerState
+			if mez_opp_ps:
+				mez_hero_id = mez_opp_ps.hero_instance_id
+			var best_sac := ""
+			var best_tid := ""
+			var best_gain := 0.0
+			for own in state.cards_in_zone(player_id + "_ally_row"):
+				# Never eat Mezzik herself: she is the repeatable engine, and the
+				# 1 damage her own ATK buys is never the reason to spend her.
+				if own.instance_id == card.instance_id:
+					continue
+				var x := state.get_atk(own.instance_id, db)
+				if x <= 0:
+					continue
+				var sac_val := card_value_score(state, db, own.instance_id)
+				# Lethal on the opposing hero ends the game — nothing outranks it.
+				if mez_hero_id != "" and state.is_in_play(mez_hero_id) \
+						and state.get_current_hp(mez_hero_id, db) <= x:
+					best_sac = own.instance_id
+					best_tid = mez_hero_id
+					best_gain = INF
+					break
+				# Otherwise it must KILL something worth more than the body we
+				# feed it — chip damage for a whole ally is how this card is
+				# wasted. An ally of ours that is already dying is cheap by
+				# card_value_score, which is what makes cashing one in attractive.
+				for foe in state.cards_in_zone(mez_opp + "_ally_row"):
+					if state.get_current_hp(foe.instance_id, db) > x:
+						continue
+					var gain := card_value_score(state, db, foe.instance_id) - sac_val
+					if gain > best_gain:
+						best_gain = gain
+						best_sac = own.instance_id
+						best_tid = foe.instance_id
+			if best_sac != "" and best_tid != "" and best_gain > 0.0:
+				var mez_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_tid,
+						"sacrifice_id": best_sac})
+				if StackResolver.can_submit(state, mez_act, db):
+					result.append(mez_act)
 		elif ap.get("targets", "") in ["hero_or_ally"]:
 			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []

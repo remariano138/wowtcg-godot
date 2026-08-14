@@ -295,6 +295,9 @@ var _auto_pass_combat: bool = false
 # mode, until either a real decision appears for the human (pending choice,
 # opponent adds a chain link they must respond to) or their own next main
 # action window is reached — whichever comes first, that's the stop.
+# WHICH windows a single press may skip, and why, is documented in full at
+# _end_phase_has_consequences / _wrap_up_skippable_window. Read that before
+# widening or narrowing the burst.
 var _wrap_up_active: bool = false
 # "Nothing changed" tracking (mode-independent — runs ahead of Turbo/Tactical,
 # see _human_has_new_info): identity of the chain-top PendingAction and a
@@ -1185,6 +1188,61 @@ func _offscreen_has_play(pid: String) -> bool:
 	return has
 
 
+# ── WRAP-UP BURST: which windows a single Ctrl+Space is allowed to skip ────────
+#
+# Ctrl+Space means "I have nothing else to play — end my turn". Rules-wise that
+# turn ending spans FOUR priority windows (502.2 / 503.1):
+#
+#   1. your action window      ← the Ctrl+Space press itself
+#   2. opponent's action window
+#   3. your end-phase window   ← inferred from the same press (carry-through in
+#                                _maybe_turbo_pass / _do_turbo_pass)
+#   4. opponent's end-phase window   ← THE real decision, always theirs
+#   then the wrap-up step (503.2): discard to max hand size, no priority window
+#
+# Window 3 is safe to infer: you already declared you were done, and if the
+# opponent adds a link in window 2 the burst is killed (see _drain_passes) so
+# you get your sorcery-speed window back.
+#
+# Window 2 is where it gets subtle. Both of the opponent's windows offer them
+# the same options (they're the non-turn player, so instants only), and window 4
+# is strictly better FOR THEM — acting in window 2 hands you priority back at
+# sorcery speed, while in window 4 you can only answer with instants. So they'd
+# normally rather wait, and skipping window 2 costs them nothing.
+#
+# EXCEPT that the two windows are not separated by nothing: TurnManager._enter_end
+# resolves every end-of-turn trigger BEFORE opening window 4. Infernal's burn,
+# Venomstrike's victim sweep, Thysta's idle-turn burn — all of them land in the
+# gap. Window 2 is the LAST window in which those can be answered (rule 703.3 is
+# explicit for Venomstrike: kill it before the end phase and the burn never
+# happens). Skipping window 2 with such a card in play would silently eat a real
+# decision — and in hotseat, one the opponent never even sees.
+#
+# So: skip window 2 during a burst only when the end phase is inert.
+func _end_phase_has_consequences() -> bool:
+	if not _state or not _db:
+		return true   # can't tell → never skip
+	for pid in _state.players:
+		for card in _state.cards_in_play(pid):
+			var def := _db.get_def(card.card_def_id) as CardDef
+			if def and def.effects.find("end_of_turn_") != -1:
+				return true
+	return false
+
+
+# True when `pid`'s priority window is the opponent's action window (#2 above)
+# during one of our wrap-up bursts, with nothing end-of-turn riding on it.
+func _wrap_up_skippable_window(pid: String) -> bool:
+	return _wrap_up_active \
+		and _state.phase == "action" \
+		and pid != _state.turn_player \
+		and _state.pending_actions.is_empty() \
+		and not _state.combat_attack_window \
+		and not _state.combat_defend_window \
+		and not _state.in_protect_point \
+		and not _end_phase_has_consequences()
+
+
 # Stop the window for the off-screen ambusher: the router acts for them (their
 # playable instants highlight yellow; rules make everything else illegal
 # off-turn), but the renderer perspective is untouched — their hand stays
@@ -1529,6 +1587,8 @@ func _update_combat_window() -> void:
 		_combat_atk_id = ""
 		_combat_def_id = ""
 		_combat_name_hover_id = ""
+		if _combat_prompt_lbl and not _in_protect_mode:
+			_combat_prompt_lbl.text = ""
 		if _combat_window.visible:
 			_combat_window.visible = false
 			_refresh_card_input_shields()
@@ -1545,6 +1605,19 @@ func _update_combat_window() -> void:
 		else "Attacker:  %s") % _log_card(who[0])
 	_combat_def_lbl.text = ("Proposed defender:  %s" if proposed
 		else "Defender:  %s") % _log_card(who[1])
+	# The priority windows say their piece HERE, next to the step readout that
+	# already shows what follows them (attack window → protection → defend
+	# window) — they used to open the separate prompt window on top of it, which
+	# said the same thing with less context. The protect point owns this label
+	# while it is open (its own prompt + buttons), so don't tread on it.
+	if not _in_protect_mode:
+		match step:
+			"attack":
+				_combat_prompt_lbl.text = "You may respond before the protect point."
+			"defend":
+				_combat_prompt_lbl.text = "You may respond before damage is dealt."
+			_:
+				_combat_prompt_lbl.text = ""
 	if not _combat_window.visible:
 		_combat_window.visible = true
 		_refresh_card_input_shields()
@@ -2613,9 +2686,17 @@ func _update_pass_btn() -> void:
 		or _state.pending_unique_sacrifice_player == _local_player \
 		or _state.pending_form_sacrifice_player == _local_player \
 		or (_state.pending_control_discard_player != "" \
-			and _state.pending_control_discard_player != _local_player)
+			and _state.pending_control_discard_player != _local_player) \
+		or (_state.pending_resource_place_player != "" \
+			and _state.pending_resource_place_player != _local_player)
 
-	if _state.pending_control_discard_player == _local_player:
+	if _state.pending_resource_place_player == _local_player:
+		# Nightbloom: the pass button is the DECLINE option. Plain Space is fine
+		# here — unlike Infernal's give-up-control, declining costs nothing.
+		_pass_btn.disabled = false
+		_pass_btn.text     = "Don't place a resource  [Space]"
+		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
+	elif _state.pending_control_discard_player == _local_player:
 		# Infernal choice: the pass button is the DECLINE option (give control).
 		_pass_btn.disabled = false
 		_pass_btn.text     = "Give up control  [Ctrl+Space]"
@@ -2878,6 +2959,13 @@ func _try_pass(skip_confirm: bool = false) -> void:
 	# The quest ally-exhaust picker is modal: answer it (Confirm/Cancel) first.
 	if _in_ally_exhaust_mode:
 		return
+	# Nightbloom's optional placement: Space/pass declines it. No Ctrl gate —
+	# declining gives nothing away, unlike Infernal's give-up-control below.
+	if _state.pending_resource_place_player == _local_player:
+		_router.decline_hand_resource()
+		_refresh_ui()
+		_schedule_next_turn()
+		return
 	# Infernal choice pending for the human: Space/pass = decline the discard
 	# and give the opponent control of the source.
 	if _state.pending_control_discard_player == _local_player:
@@ -3068,7 +3156,8 @@ func _log_event(event: GameEvent) -> void:
 			_log_entry("[color=#fc8][b]%s ⚔ %s[/b][/color]" % [att, def])
 		"attack_window_opened":
 			_window_generation += 1
-			_set_status("⚔ Attack window — you may respond before protect")
+			# The readout lives in the Combat window (_update_combat_window),
+			# not in a prompt window of its own.
 			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			# The pass that resolved propose_combat may have been the human's, in
@@ -3077,7 +3166,7 @@ func _log_event(event: GameEvent) -> void:
 			_drain_passes()
 		"defend_window_opened":
 			_window_generation += 1
-			_set_status("⚔ Defend window — you may respond before damage")
+			# Readout lives in the Combat window — see attack_window_opened.
 			# Defender may now be a protector that swapped in during protect point,
 			# so re-highlight rather than assume the attack-window pair still holds.
 			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
@@ -3232,7 +3321,7 @@ func _do_ai_turn() -> void:
 		# stops for them (yellow highlights + their own pass button as the skip).
 		if not (_hotseat and pid != _local_player):
 			return   # local human's turn — wait for input
-		if _offscreen_has_play(pid):
+		if _offscreen_has_play(pid) and not _wrap_up_skippable_window(pid):
 			_enter_ambush_mode(pid)
 			return
 		events = StackResolver.pass_priority(_state, _db)
@@ -3424,6 +3513,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_pet_sacrifice(event.payload)
 		"control_discard_choice_opened":
 			_handle_control_discard(event.payload)
+		"resource_place_choice_opened":
+			_handle_resource_place_choice(event.payload)
 		"equipment_sacrifice_required":
 			_handle_equipment_sacrifice(event.payload)
 		"unique_sacrifice_required":
@@ -3906,6 +3997,29 @@ func _handle_control_discard(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
+# Nightbloom: "You may put a card from your hand into your resource row face down
+# and exhausted." Optional, and it comes out of a hand — so it is routed PRIVATE,
+# like a discard: an off-screen human picks with their hand still hidden (the
+# "peek" branch of _route_choice re-points the router at them).
+func _handle_resource_place_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var source_id: String = payload.get("source", "")
+	if _route_choice(player, "private") == "ai":
+		var ai: Object = _p1_ai if player == "p1" else _p2_ai
+		var pick_id := ""
+		if ai is BaseAI:
+			pick_id = (ai as BaseAI).choose_hand_resource(_state, _db, player)
+		var events := StackResolver.choose_hand_resource(_state, pick_id, _db) 				if pick_id != "" else StackResolver.decline_hand_resource(_state, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_resource_place_mode(source_id)
+		_set_status("%s: click a card to put into your resource row, or press Space to decline"
+				% _log_card(source_id))
+		_refresh_ui()
+
+
 func _handle_pet_sacrifice(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
 	var candidates: Array = payload.get("candidates", [])
@@ -4333,8 +4447,9 @@ func _handle_death_target(payload: Dictionary) -> void:
 		if ai_obj is BaseAI:
 			target_id = (ai_obj as BaseAI).choose_death_target(_state, _db, ctrl)
 		else:
-			# Non-BaseAI fallback: destroy the first legal ally.
-			var legal := StackResolver.get_death_target_targets(_state, _db)
+			# Non-BaseAI fallback: take the first legal target of whatever death
+			# trigger is open (Boneshanks an ally, Vexra Darkfall a hero).
+			var legal := StackResolver.get_active_death_target_targets(_state, _db)
 			target_id = legal[0] if not legal.is_empty() else ""
 		var events := StackResolver.choose_death_target(_state, target_id, _db)
 		EventBus.emit_events(events)
@@ -4651,8 +4766,9 @@ func _on_targeting_cancelled() -> void:
 	if _state and _state.pending_quest_ready_player != "":
 		_router.start_quest_ready_targeting(_state.pending_quest_ready_source)
 		return
-	# A Boneshanks death trigger is mandatory ("destroy target ally") whenever a
-	# legal ally exists — the player can't bow out. Restart targeting if still pending.
+	# A queued death trigger is mandatory whenever it still has a legal target
+	# (Boneshanks "destroy target ally", Vexra Darkfall "target hero") — the
+	# player can't bow out. Restart targeting if still pending.
 	if _state and _state.pending_death_target_player != "" \
 			and not _state.pending_death_triggers.is_empty():
 		var dtrig: Dictionary = _state.pending_death_triggers[0]
@@ -6223,6 +6339,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Form pay-return choice before advancing
 	if _state.pending_control_discard_player != "":
 		return  # wait for the discard-or-give-control choice before advancing
+	if _state.pending_resource_place_player != "":
+		return  # wait for Nightbloom's optional resource placement before advancing
 	if _state.pending_reveal_pick_player != "":
 		return  # wait for the reveal-and-pick quest choice before advancing
 	if _state.pending_trigger_target_player != "":
@@ -6319,6 +6437,7 @@ func _drain_passes() -> void:
 				or _state.pending_form_sacrifice_player != "" \
 				or _state.pending_form_return_player != "" or _in_form_return_mode \
 				or _state.pending_control_discard_player != "" \
+				or _state.pending_resource_place_player != "" \
 				or _state.pending_reveal_pick_player != "" \
 				or _state.pending_trigger_target_player != "" \
 				or _state.pending_death_target_player != "" \
@@ -6337,7 +6456,7 @@ func _drain_passes() -> void:
 		if pid_type == "human" and _hotseat and pid != _local_player:
 			# Hotseat off-screen human: auto-pass (hand hidden), unless they have
 			# a legal instant response — then stop the window for them.
-			if _offscreen_has_play(pid):
+			if _offscreen_has_play(pid) and not _wrap_up_skippable_window(pid):
 				_enter_ambush_mode(pid)
 				break
 			events = StackResolver.pass_priority(_state, _db)
@@ -6373,6 +6492,13 @@ func _drain_passes() -> void:
 				# instead of stopping. This is Turbo's whole job ("auto-pass all
 				# 'no legal play'"). In Tactical (no burst) we fall through to the
 				# hold below so the player can still watch the window open.
+				if chain_pending:
+					# The opponent ADDED a link during our wrap-up. Our "I'm done"
+					# was a statement about the board as it stood; it's stale now,
+					# so the burst dies here even though we auto-pass this window
+					# for want of a legal response. Once their link resolves we get
+					# a real sorcery-speed window back and must stop at it.
+					_wrap_up_active = false
 				if in_combat:
 					_log_entry("[color=#667]-- Turbo skipped %s (no legal response) --[/color]" \
 							% _describe_priority_stop_reason())
@@ -6447,6 +6573,9 @@ func _maybe_turbo_pass() -> void:
 	if _state.pending_control_discard_player != "":
 		_wrap_up_active = false
 		return
+	if _state.pending_resource_place_player != "":
+		_wrap_up_active = false
+		return
 	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
 		return
 	# Post-handoff hold: the incoming hotseat player was handed the screen FOR
@@ -6470,6 +6599,14 @@ func _maybe_turbo_pass() -> void:
 	# For a Ctrl+Space wrap-up burst, reaching this window again means the burst
 	# carried the human all the way to their own next real decision point — stop.
 	if _is_p1_main_action_window():
+		# A wrap-up burst carries THROUGH this window instead of stopping at it.
+		# See WRAP-UP BURST note above _wrap_up_active: Ctrl+Space already said
+		# "I'm done", and an opponent who actually acted would have killed the
+		# burst before we got here. Outside a burst (plain Turbo) this window
+		# always stops — passing it ends the turn, which needs an explicit press.
+		if _wrap_up_active:
+			call_deferred("_do_turbo_pass")
+			return
 		_wrap_up_active = false
 		return
 	# Opponent's action-phase wrap-up window (chain empty, no combat window): always
@@ -6582,6 +6719,7 @@ func _is_wrap_up_pass() -> bool:
 			or _state.turn_player != _local_player:
 		return false
 	if _state.pending_control_discard_player == _local_player \
+			or _state.pending_resource_place_player == _local_player \
 			or _state.pending_pet_sacrifice_player == _local_player \
 			or _state.pending_equip_sacrifice_player == _local_player \
 			or _state.pending_unique_sacrifice_player == _local_player:
@@ -6629,7 +6767,9 @@ func _do_turbo_pass() -> void:
 	# Re-check at fire time — state may have changed since the deferred was scheduled.
 	if _stop_for_end_window and phase == "end" and _state.pending_actions.is_empty():
 		return   # held wrap-up window for the just-seated hotseat player
-	if _is_p1_main_action_window():
+	# Same wrap-up carry-through as _maybe_turbo_pass: a live burst passes this
+	# window rather than stopping at it (see WRAP-UP BURST above _wrap_up_active).
+	if _is_p1_main_action_window() and not _wrap_up_active:
 		_wrap_up_active = false
 		return
 	# Hold only when something changed AND you have a legal response. With no

@@ -229,6 +229,13 @@ var pending_form_return_cost: int = 0
 # (unlike pending_discard, which is mandatory).
 var pending_control_discard_player: String = ""
 var pending_control_discard_ids: Array[String] = []  # source instance_ids, resolved front-first
+# Nightbloom: "You MAY put a card from your hand into your resource row face down
+# and exhausted." An optional choice made at resolution (709.2b) — declining is a
+# legal resolution, like the control discard above. Rule 412.1c: a resource put
+# there by an effect does NOT count toward the one-per-turn placement, so this
+# never touches resource_placed_this_turn.
+var pending_resource_place_player: String = ""
+var pending_resource_place_source: String = ""
 # Reveal-and-pick quest reward (Big Game Hunter, Kibler's Exotic Pets, Zapped
 # Giants): "Reveal the top N cards; put a revealed <type> card into your hand and
 # the rest on the bottom of your deck." The revealed cards stay physically at the
@@ -476,6 +483,12 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 			for ally in cards_in_zone(inst.controller + "_ally_row"):
 				party_damage += ally.damage_taken
 			atk += per_dmg * party_damage
+		elif parts[0] == "buff_while_party_size":
+			# Kailis Truearc: "+A ATK and +H health while there are N or more
+			# allies in your party." Both halves are one conditional grant, so
+			# they share `_party_size_buff` with get_max_hp — the ATK and the
+			# health can never disagree about whether the condition is met.
+			atk += _party_size_buff(inst, parts, 2)
 		elif parts[0] == "atk_vs_exhausted_defender":
 			# Bala Silentblade: "+N ATK while attacking an exhausted hero or
 			# ally." Live continuous modifier — only while this card is the
@@ -675,7 +688,31 @@ func get_max_hp(instance_id: String, db) -> int:
 	var hp := def.printed_health + inst.sum_stat("health")
 	hp += _aura_health_mods(inst, db)
 	hp += _attachment_stat_mods(inst, db, 2)
+	# This card's own printed conditional self-modifier, health half (Kailis
+	# Truearc's `buff_while_party_size`) — the same live read as get_atk's, so
+	# both stats switch on and off together. A shrinking party can therefore put
+	# an already-damaged card at or below 0 HP; that state-based death is swept
+	# at the priority gate (StackResolver.drain_state_based_deaths).
+	for segment in def.effects.split("|"):
+		var parts := segment.split(":")
+		if parts[0] == "buff_while_party_size":
+			hp += _party_size_buff(inst, parts, 3)
 	return max(hp, 0)
+
+
+# One conditional self-grant shared by get_atk and get_max_hp:
+# `buff_while_party_size:N:ATK:HP` — "+ATK ATK and +HP health while there are N
+# or more allies in your party" (Kailis Truearc). The party is the controller's
+# ally_row read LIVE, so it counts the source itself (she is an ally in your
+# party) and totems too (305.3a), never the hero, and never the opponent's
+# board. `field` picks which half to return: 2 = ATK, 3 = health.
+func _party_size_buff(inst: CardInstance, parts: PackedStringArray, field: int) -> int:
+	if parts.size() <= field:
+		return 0
+	var needed := int(parts[1])
+	if cards_in_zone(inst.controller + "_ally_row").size() < needed:
+		return 0
+	return int(parts[field])
 
 
 # Rule 503.2a max hand size, with live attachment modifiers: Arcane Intellect

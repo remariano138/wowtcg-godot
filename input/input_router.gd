@@ -35,6 +35,8 @@ signal discard_mode_started(count: int)
 signal discard_mode_ended()
 signal control_discard_mode_started(source_id: String)
 signal control_discard_mode_ended()
+signal resource_place_mode_started(source_id: String)
+signal resource_place_mode_ended()
 signal pet_sacrifice_mode_started(candidate_ids: Array)
 signal pet_sacrifice_mode_ended()
 signal equipment_sacrifice_mode_started(candidate_ids: Array)
@@ -87,6 +89,7 @@ var _targeting_dmg_type:    String = ""   # damage type icon key (or "" for cros
 var preferred_strike_weapon: String = ""
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
 var _in_control_discard_mode: bool = false  # true while player chooses: discard OR give control (Infernal)
+var _in_resource_place_mode: bool = false  # true while player chooses a hand card to bury as a resource (Nightbloom)
 var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet to sacrifice
 var _in_equip_sacrifice_mode: bool = false  # true while player must choose equipment to destroy
 var _equip_sacrifice_candidates: Array[String] = []
@@ -228,6 +231,12 @@ func handle_card_click(instance_id: String) -> void:
 	# control; declining goes through decline_control_discard() (pass button) ──
 	if _in_control_discard_mode:
 		_handle_control_discard_click(instance_id)
+		return
+
+	# ── Resource-place mode (Nightbloom): click a hand card to bury it as a
+	# face-down exhausted resource; declining goes through the pass button ──
+	if _in_resource_place_mode:
+		_handle_resource_place_click(instance_id)
 		return
 
 	# ── Targeting mode: click selects the target ─────────────────────────────
@@ -426,6 +435,49 @@ func _end_control_discard_mode_if_done() -> void:
 		_in_control_discard_mode = false
 		_highlight_color = Color(0.2, 1.0, 0.3)
 		control_discard_mode_ended.emit()
+	refresh_highlights()
+
+
+# ── Resource-place mode (Nightbloom: put a hand card into your resource row) ──
+#
+# Optional, unlike the mandatory discard — so the highlight stays GREEN and the
+# pass button offers the decline. Everything else is blocked by the engine while
+# the choice is pending, exactly as for the control discard.
+
+func start_resource_place_mode(source_id: String) -> void:
+	_in_resource_place_mode = true
+	refresh_highlights()
+	resource_place_mode_started.emit(source_id)
+
+
+func _handle_resource_place_click(instance_id: String) -> void:
+	var card := state.get_card(instance_id)
+	if not card or card.controller != local_player:
+		return
+	var zone := state.zones.get(card.zone_id) as Zone
+	if not zone or zone.zone_type != "hand":
+		return
+	var events := StackResolver.choose_hand_resource(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_end_resource_place_mode()
+
+
+# Player declined the optional placement ("You MAY put a card...").
+func decline_hand_resource() -> void:
+	if not _in_resource_place_mode:
+		return
+	var events := StackResolver.decline_hand_resource(state, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_end_resource_place_mode()
+
+
+func _end_resource_place_mode() -> void:
+	_in_resource_place_mode = false
+	resource_place_mode_ended.emit()
 	refresh_highlights()
 
 
@@ -847,7 +899,10 @@ func start_trigger_targeting(card_id: String, dmg_type: String, dmg_amount: int)
 	start_targeting(card_id, "choose_trigger_target", dmg_type, dmg_amount)
 
 
-# Convenience wrapper for a death-triggered "destroy target ally" choice (Boneshanks).
+# Convenience wrapper for a death-triggered targeted choice — Boneshanks
+# ("destroy target ally") or Vexra Darkfall ("target hero"). The pool comes from
+# the queued trigger itself (get_active_death_target_targets), so one flow covers
+# both and any future death trigger with its own pool.
 func start_death_target_targeting(card_id: String) -> void:
 	start_targeting(card_id, "choose_death_target", "", 0)
 
@@ -1126,7 +1181,7 @@ func _handle_trigger_targeting_click(instance_id: String) -> void:
 func _handle_death_target_targeting_click(instance_id: String) -> void:
 	# Boneshanks death trigger. Mandatory, direct-call resolution (no chain) —
 	# like the totem choice. Resolving may open the next queued death trigger.
-	if instance_id in StackResolver.get_death_target_targets(state, db):
+	if instance_id in StackResolver.get_active_death_target_targets(state, db):
 		var events := StackResolver.choose_death_target(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
@@ -1654,6 +1709,14 @@ func get_playable_card_ids() -> Array:
 			cd_ids.append(card.instance_id)
 		return cd_ids
 
+	# Resource-place mode (Nightbloom): any local hand card may be buried
+	# (declining goes through the pass button, not a card click).
+	if _in_resource_place_mode and state.pending_resource_place_player == local_player:
+		var rp_ids: Array = []
+		for card in state.cards_in_zone(local_player + "_hand"):
+			rp_ids.append(card.instance_id)
+		return rp_ids
+
 	# Discard mode: all local hand cards are valid discard choices.
 	if _in_discard_mode and state.pending_discard_player == local_player:
 		var discard_ids: Array = []
@@ -1678,7 +1741,7 @@ func get_playable_card_ids() -> Array:
 			"choose_trigger_target":
 				return StackResolver.get_turn_start_trigger_targets(state, db)
 			"choose_death_target":
-				return StackResolver.get_death_target_targets(state, db)
+				return StackResolver.get_active_death_target_targets(state, db)
 			"choose_quest_ferocity":
 				return StackResolver.get_quest_ferocity_targets(state, db)
 			"choose_quest_ready":

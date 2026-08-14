@@ -9,19 +9,14 @@
       "_card_name": "Torek's Assault"
     },
     {
-      "card_def_id": "dark_portal_309",
-      "count": 2,
-      "_card_name": "Thwarting Kolkar Aggression"
-    },
-    {
       "card_def_id": "azeroth_355",
       "count": 1,
       "_card_name": "Kibler's Exotic Pets"
     },
     {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
+      "card_def_id": "dark_portal_309",
+      "count": 2,
+      "_card_name": "Thwarting Kolkar Aggression"
     },
     {
       "card_def_id": "dark_portal_316",
@@ -39,9 +34,19 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
+    },
+    {
       "card_def_id": "azeroth_331",
-      "count": 2,
+      "count": 1,
       "_card_name": "Krol Blade"
+    },
+    {
+      "card_def_id": "azeroth_312",
+      "count": 1,
+      "_card_name": "Annihilator"
     },
     {
       "card_def_id": "azeroth_311",
@@ -52,16 +57,6 @@
       "card_def_id": "azeroth_284",
       "count": 2,
       "_card_name": "Devilsaur Leggings"
-    },
-    {
-      "card_def_id": "azeroth_259",
-      "count": 1,
-      "_card_name": "Skorn, Mistress of Shadow"
-    },
-    {
-      "card_def_id": "azeroth_41",
-      "count": 1,
-      "_card_name": "Multi-Shot"
     },
     {
       "card_def_id": "azeroth_35",
@@ -79,9 +74,14 @@
       "_card_name": "Berserking"
     },
     {
-      "card_def_id": "azeroth_45",
+      "card_def_id": "azeroth_259",
       "count": 1,
-      "_card_name": "Rayder"
+      "_card_name": "Skorn, Mistress of Shadow"
+    },
+    {
+      "card_def_id": "azeroth_41",
+      "count": 1,
+      "_card_name": "Multi-Shot"
     },
     {
       "card_def_id": "azeroth_235",
@@ -94,6 +94,11 @@
       "_card_name": "Protect the Master"
     },
     {
+      "card_def_id": "azeroth_45",
+      "count": 1,
+      "_card_name": "Rayder"
+    },
+    {
       "card_def_id": "azeroth_246",
       "count": 2,
       "_card_name": "Kagra of the Crossroads"
@@ -102,6 +107,21 @@
       "card_def_id": "azeroth_36",
       "count": 3,
       "_card_name": "Bloodclaw"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 3,
+      "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "azeroth_153",
+      "count": 1,
+      "_card_name": "Into the Fray"
+    },
+    {
+      "card_def_id": "azeroth_231",
+      "count": 1,
+      "_card_name": "Brigg"
     },
     {
       "card_def_id": "dark_portal_34",
@@ -114,26 +134,6 @@
       "_card_name": "Arcane Shot"
     },
     {
-      "card_def_id": "azeroth_155",
-      "count": 2,
-      "_card_name": "Skewer"
-    },
-    {
-      "card_def_id": "azeroth_168",
-      "count": 1,
-      "_card_name": "Shattering Blow"
-    },
-    {
-      "card_def_id": "dark_portal_40",
-      "count": 2,
-      "_card_name": "Trophy Kill"
-    },
-    {
-      "card_def_id": "azeroth_260",
-      "count": 3,
-      "_card_name": "Taz'dingo"
-    },
-    {
       "card_def_id": "azeroth_244",
       "count": 1,
       "_card_name": "Jin'lak Nightfang"
@@ -144,14 +144,29 @@
       "_card_name": "Ravenous Bite"
     },
     {
+      "card_def_id": "azeroth_274",
+      "count": 1,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "dark_portal_40",
+      "count": 2,
+      "_card_name": "Trophy Kill"
+    },
+    {
+      "card_def_id": "azeroth_260",
+      "count": 2,
+      "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_156",
+      "count": 1,
+      "_card_name": "Burn Away"
+    },
+    {
       "card_def_id": "azeroth_264",
       "count": 2,
       "_card_name": "Vesh'ral"
-    },
-    {
-      "card_def_id": "azeroth_236",
-      "count": 1,
-      "_card_name": "Fa'tafi"
     },
     {
       "card_def_id": "dark_portal_224",
@@ -159,24 +174,9 @@
       "_card_name": "Morik"
     },
     {
-      "card_def_id": "azeroth_248",
-      "count": 3,
-      "_card_name": "Ka'tali Stonetusk"
-    },
-    {
-      "card_def_id": "azeroth_274",
-      "count": 1,
-      "_card_name": "Zorm Stonefury"
-    },
-    {
-      "card_def_id": "azeroth_153",
-      "count": 1,
-      "_card_name": "Into the Fray"
-    },
-    {
-      "card_def_id": "azeroth_229",
-      "count": 1,
-      "_card_name": "Besh'iah"
+      "card_def_id": "azeroth_155",
+      "count": 2,
+      "_card_name": "Skewer"
     },
     {
       "card_def_id": "azeroth_269",
@@ -184,9 +184,19 @@
       "_card_name": "Watcher Mal'wi"
     },
     {
-      "card_def_id": "azeroth_231",
+      "card_def_id": "dark_portal_226",
       "count": 2,
-      "_card_name": "Brigg"
+      "_card_name": "Nyn'jah"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 1,
+      "_card_name": "Fa'tafi"
+    },
+    {
+      "card_def_id": "azeroth_229",
+      "count": 1,
+      "_card_name": "Besh'iah"
     }
   ],
   "recommended_ai_id": "ai_generic",

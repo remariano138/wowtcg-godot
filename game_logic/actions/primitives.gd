@@ -138,6 +138,67 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 		card.just_summoned = false
 		card.used_this_turn = false
 
+	# Nyn'jah: "You control that equipment while Nyn'jah remains in your party."
+	# Borrowed control is conditional, so the link is re-checked after every zone
+	# move — the same place the 400.5 attachment sweep lives, and for the same
+	# reason: it makes the rule hold by construction for every present and future
+	# way a card can leave play or change controller (destroyed, bounced, exiled,
+	# taken over by Infernal), instead of one hook per removal effect.
+	events.append_array(_check_borrowed_control(state, card))
+
+	# Uniqueness re-check queue (414.3 / 414.3a / 414.3b). A card that has just
+	# arrived in a play ROW may put its controller over a slot's capacity, over
+	# pet capacity, or onto a second same-named Unique card — and it makes no
+	# difference how it got there, which is why the queue is fed here rather than
+	# at each effect that puts cards into play. Only the two rows where those
+	# rules apply are queued (414.1); the resource row and the attached zone can
+	# never violate any of them. The checks themselves need a database, which a
+	# primitive has none of, so this records WHAT to look at and
+	# StackResolver.drain_uniqueness_checks does the looking.
+	if to_zone_id != from_zone_id \
+			and (to_zone_id.ends_with("_ally_row") or to_zone_id.ends_with("_hero_row")) \
+			and card_id not in state.pending_uniqueness_ids:
+		state.pending_uniqueness_ids.append(card_id)
+
+	return events
+
+
+# Re-check the borrowed-control links touching `card` after it moved.
+# Two directions, both settled here so no caller has to know about either:
+#   • `card` is a THIEF — every card it holds reverts to its owner unless the
+#     thief is still in play AND still shares a controller with what it took
+#     (leaving play or losing control of the thief both break "in your party").
+#   • `card` is a STOLEN card that left play — the link is simply forgotten.
+static func _check_borrowed_control(state: GameState, card: CardInstance) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+
+	if card.stolen_by != "" and not state.is_in_play(card.instance_id):
+		var thief := state.get_card(card.stolen_by)
+		if thief:
+			thief.stolen_ids.erase(card.instance_id)
+		card.stolen_by = ""
+		# It left play, so control is moot — but reset it so the card can never
+		# come back under the wrong player (400.6a's "starts clean").
+		card.controller = card.owner
+
+	if card.stolen_ids.is_empty():
+		return events
+
+	var thief_in_play := state.is_in_play(card.instance_id)
+	for held_id in card.stolen_ids.duplicate():
+		var held := state.get_card(held_id)
+		if not held:
+			card.stolen_ids.erase(held_id)
+			continue
+		if thief_in_play and held.controller == card.controller:
+			continue   # link intact
+		card.stolen_ids.erase(held_id)
+		held.stolen_by = ""
+		var old_ctrl := held.controller
+		held.controller = held.owner
+		if state.is_in_play(held_id) and old_ctrl != held.owner:
+			events.append_array(move_card(state, held_id, held.owner + "_hero_row"))
+			events.append(GameEvent.control_changed(held_id, old_ctrl, held.owner))
 	return events
 
 

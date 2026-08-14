@@ -358,6 +358,10 @@ func _ready() -> void:
 		_test_ai_bhenn_freezes_proposal,
 		_test_karkas_bounces_ally,
 		_test_karkas_self_bounce_decline_and_fizzle,
+		_test_nynjah_steals_equipment,
+		_test_nynjah_control_reverts,
+		_test_nynjah_targeting_and_slot_conflict,
+		_test_uniqueness_is_state_based,
 		_test_mya_creates_token,
 		_test_token_destroyed_ceases_to_exist,
 		_test_token_bounce_ceases_to_exist,
@@ -21596,3 +21600,242 @@ func _test_skewer_attacking_bonus_and_ai() -> void:
 	st.combat_attacker = "p2_hero"
 	ok(ai.combat_instant_action(st, db, "p1") == null,
 		"skb-g: hero attacker -> Skewer held")
+
+
+func _test_nynjah_steals_equipment() -> void:
+	_buf.append("\n-- Nyn'jah: ready and take control of opposing equipment --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("nynjah_def", 3, 3, [], 4, "on_enter:steal_equipment")
+	db.weapon("krol_def", 3, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_resources(state, "p2", 5)
+	_add_card_to_hand(state, "nynjah", "nynjah_def", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p2_hero_row"].card_ids.append("krol")
+	krol.is_exhausted = true
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"nyn-a: enter-play choice pending after Nyn'jah resolves")
+	ok(state.pending_enter_play_effect.get("optional", false),
+		"nyn-b: the trigger is optional (you may)")
+	ok("krol" in StackResolver.get_enter_play_steal_targets(state, db, "p1"),
+		"nyn-c: opposing equipment is a legal target")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "nynjah", "target_id": "krol"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not krol.is_exhausted, "nyn-d: the equipment is readied")
+	eq(krol.controller, "p1",       "nyn-e: p1 controls it (401.3)")
+	eq(krol.owner, "p2",            "nyn-f: p2 still OWNS it")
+	eq(krol.zone_id, "p1_hero_row", "nyn-g: it moved to the new controller's hero row (FAQ)")
+	eq(krol.stolen_by, "nynjah",    "nyn-h: the control link points at Nyn'jah")
+	ok("krol" in state.get_card("nynjah").stolen_ids, "nyn-i: and back at the equipment")
+
+	# "It functions normally" â€” the new controller's hero can strike with it,
+	# the old one can't (the weapon is no longer in their hero row).
+	ok("krol" in StackResolver.get_strikeable_weapons(state, "p1", "p1_hero", db),
+		"nyn-j: p1's hero can now strike with the stolen weapon")
+	ok(StackResolver.get_strikeable_weapons(state, "p2", "p2_hero", db).is_empty(),
+		"nyn-k: p2's hero can no longer strike with it")
+
+
+func _test_nynjah_control_reverts() -> void:
+	_buf.append("\n-- Nyn'jah: control lasts only while she remains in your party --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("nynjah_def", 3, 3, [], 4, "on_enter:steal_equipment")
+	db.weapon("krol_def", 3, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_card_to_hand(state, "nynjah", "nynjah_def", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p2_hero_row"].card_ids.append("krol")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "nynjah", "target_id": "krol"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(krol.controller, "p1", "nynr-a: stolen")
+
+	# Nyn'jah dies -> the equipment goes home. It did not leave play, so its
+	# damage/exhaustion are untouched (400.6a applies to leaving play only).
+	krol.is_exhausted = true
+	GameLogic.destroy_card(state, "nynjah")
+	eq(krol.controller, "p2",       "nynr-b: control reverts to the OWNER")
+	eq(krol.zone_id, "p2_hero_row", "nynr-c: back in the owner's hero row")
+	eq(krol.stolen_by, "",          "nynr-d: the link is cleared")
+	ok(krol.is_exhausted, "nynr-e: it stayed in play, so it is still exhausted")
+
+	# The other direction: the stolen card itself is destroyed while held. It
+	# goes to its OWNER's graveyard and the thief's link is forgotten.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	_add_card_to_hand(s2, "nynjah2", "nynjah_def", "p1")
+	var krol2 := CardInstance.create("krol2", "krol_def", "p2", "p2_hero_row")
+	s2.cards["krol2"] = krol2
+	s2.zones["p2_hero_row"].card_ids.append("krol2")
+	StackResolver.submit_action(s2, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.submit_action(s2, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "nynjah2", "target_id": "krol2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	GameLogic.destroy_card(s2, "krol2")
+	eq(krol2.zone_id, "p2_graveyard", "nynr-f: a destroyed stolen card goes to its OWNER's graveyard")
+	ok(s2.get_card("nynjah2").stolen_ids.is_empty(), "nynr-g: the thief's link is cleared")
+
+
+func _test_nynjah_targeting_and_slot_conflict() -> void:
+	_buf.append("\n-- Nyn'jah: opposing-only pool, no prompt with no target, 414.3 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("nynjah_def", 3, 3, [], 4, "on_enter:steal_equipment")
+	db.weapon("krol_def", 3, 3, 1)
+	db.weapon("axe_def", 2, 2, 2)
+
+	# Only the ally controller's own equipment is in play -> no legal target,
+	# so the trigger silently doesn't fire.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_card_to_hand(state, "nynjah", "nynjah_def", "p1")
+	var mine := CardInstance.create("mine", "krol_def", "p1", "p1_hero_row")
+	state.cards["mine"] = mine
+	state.zones["p1_hero_row"].card_ids.append("mine")
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(StackResolver.get_enter_play_steal_targets(state, db, "p1").is_empty(),
+		"nynt-a: your own equipment is NOT a legal target")
+	ok(state.pending_enter_play_effect.is_empty(),
+		"nynt-b: no opposing equipment -> no prompt at all")
+
+	# Stealing a Melee weapon while already holding one violates 414.3 for the
+	# NEW controller, exactly as playing a second one would.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	_add_card_to_hand(s2, "nynjah2", "nynjah_def", "p1")
+	var own := CardInstance.create("own", "axe_def", "p1", "p1_hero_row")
+	s2.cards["own"] = own
+	s2.zones["p1_hero_row"].card_ids.append("own")
+	var theirs := CardInstance.create("theirs", "krol_def", "p2", "p2_hero_row")
+	s2.cards["theirs"] = theirs
+	s2.zones["p2_hero_row"].card_ids.append("theirs")
+	StackResolver.submit_action(s2, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.submit_action(s2, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "nynjah2", "target_id": "theirs"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	eq(s2.pending_equip_sacrifice_player, "p1",
+		"nynt-c: the new controller must resolve the slot conflict (414.3)")
+	# Destroying the stolen one sends it to its owner's graveyard, not ours.
+	StackResolver.choose_equipment_sacrifice(s2, "theirs", db)
+	eq(theirs.zone_id, "p2_graveyard",
+		"nynt-d: the sacrificed stolen weapon goes to its OWNER's graveyard")
+	eq(own.zone_id, "p1_hero_row", "nynt-e: our own weapon stays")
+	ok(s2.get_card("nynjah2").stolen_ids.is_empty(), "nynt-f: link cleared")
+
+	# Announced target leaves play before resolution -> 706 fizzle.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 5)
+	_add_card_to_hand(s3, "nynjah3", "nynjah_def", "p1")
+	var gone := CardInstance.create("gone", "krol_def", "p2", "p2_hero_row")
+	s3.cards["gone"] = gone
+	s3.zones["p2_hero_row"].card_ids.append("gone")
+	StackResolver.submit_action(s3, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.submit_action(s3, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "nynjah3", "target_id": "gone"}), db)
+	GameLogic.destroy_card(s3, "gone")
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(gone.zone_id, "p2_graveyard", "nynt-g: the target left play in the response window")
+	ok(s3.get_card("nynjah3").stolen_ids.is_empty(), "nynt-h: the steal fizzled (706)")
+
+
+func _test_uniqueness_is_state_based() -> void:
+	_buf.append("\n-- Uniqueness is state-based: checked on zone entry, not on play --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("nynjah_def", 3, 3, [], 4, "on_enter:steal_equipment")
+	db.weapon("krol_def", 3, 3, 1)
+	db.weapon("axe_def", 2, 2, 2)
+
+	# p1 steals p2's weapon; p2 equips a replacement (legal â€” they control none
+	# while it is away); Nyn'jah then dies and the original comes home. That
+	# return is a control change, not a play, so nothing about it goes through a
+	# play_equipment resolution â€” the queue fed by move_card is what catches it.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	_add_card_to_hand(state, "nynjah", "nynjah_def", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p2", "p2_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p2_hero_row"].card_ids.append("krol")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "nynjah"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "nynjah", "target_id": "krol"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(krol.controller, "p1", "usb-a: stolen")
+	eq(state.pending_equip_sacrifice_player, "",
+		"usb-b: p1 holds only the stolen weapon, so no conflict yet")
+
+	# p2 equips a replacement Melee weapon while theirs is away â€” legal.
+	var spare := CardInstance.create("spare", "axe_def", "p2", "p2_hero_row")
+	state.cards["spare"] = spare
+	state.zones["p2_hero_row"].card_ids.append("spare")
+	state.pending_uniqueness_ids.clear()
+
+	# Nyn'jah dies -> the weapon reverts to p2, who now controls two Melee
+	# weapons and must destroy one (414.3). Under the old per-resolution checks
+	# this slipped through entirely.
+	GameLogic.destroy_card(state, "nynjah")
+	eq(krol.zone_id, "p2_hero_row", "usb-c: the weapon reverted to its owner")
+	ok("krol" in state.pending_uniqueness_ids,
+		"usb-d: the reverting card was queued by move_card")
+	StackResolver.drain_uniqueness_checks(state, db)
+	eq(state.pending_equip_sacrifice_player, "p2",
+		"usb-e: the OWNER must now resolve the slot conflict")
+	ok("krol" in state.pending_equip_sacrifice_ids
+			and "spare" in state.pending_equip_sacrifice_ids,
+		"usb-f: both weapons are offered â€” either may be the one destroyed")
+
+	# A pending choice stops the drain: queued violations wait their turn rather
+	# than clobbering the open one.
+	state.pending_uniqueness_ids.append("spare")
+	StackResolver.drain_uniqueness_checks(state, db)
+	ok("spare" in state.pending_uniqueness_ids,
+		"usb-g: the queue is untouched while a sacrifice choice is pending")
+	StackResolver.choose_equipment_sacrifice(state, "krol", db)
+	eq(krol.zone_id, "p2_graveyard", "usb-h: destroyed to its owner's graveyard")
+	eq(state.pending_equip_sacrifice_player, "", "usb-i: conflict resolved")

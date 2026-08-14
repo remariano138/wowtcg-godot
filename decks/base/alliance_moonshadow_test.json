@@ -4,9 +4,14 @@
   "hero_card_def_id": "azeroth_6",
   "card_entries": [
     {
-      "card_def_id": "azeroth_342",
+      "card_def_id": "azeroth_340",
       "count": 1,
-      "_card_name": "The Missing Diplomat"
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
     },
     {
       "card_def_id": "dark_portal_289",
@@ -19,19 +24,14 @@
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
-      "card_def_id": "azeroth_340",
-      "count": 1,
-      "_card_name": "The Defias Brotherhood"
-    },
-    {
-      "card_def_id": "azeroth_351",
-      "count": 2,
-      "_card_name": "A Donation of Wool"
-    },
-    {
       "card_def_id": "azeroth_350",
       "count": 2,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
     },
     {
       "card_def_id": "azeroth_352",
@@ -39,19 +39,19 @@
       "_card_name": "In Dreams"
     },
     {
-      "card_def_id": "azeroth_332",
-      "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
-    },
-    {
       "card_def_id": "dark_portal_267",
       "count": 1,
       "_card_name": "Ramstein's Lightning Bolts"
     },
     {
-      "card_def_id": "azeroth_23",
+      "card_def_id": "azeroth_332",
       "count": 1,
-      "_card_name": "Innervate"
+      "_card_name": "Rod of the Ogre Magi"
+    },
+    {
+      "card_def_id": "dark_portal_170",
+      "count": 2,
+      "_card_name": "Jeleane Nightbreeze"
     },
     {
       "card_def_id": "azeroth_28",
@@ -59,14 +59,19 @@
       "_card_name": "Nature's Swiftness"
     },
     {
+      "card_def_id": "azeroth_23",
+      "count": 1,
+      "_card_name": "Innervate"
+    },
+    {
       "card_def_id": "azeroth_31",
       "count": 1,
       "_card_name": "Starfire"
     },
     {
-      "card_def_id": "dark_portal_170",
+      "card_def_id": "dark_portal_160",
       "count": 2,
-      "_card_name": "Jeleane Nightbreeze"
+      "_card_name": "\"Chipper\" Ironbane"
     },
     {
       "card_def_id": "azeroth_181",
@@ -79,24 +84,9 @@
       "_card_name": "Braxiss the Sleeper"
     },
     {
-      "card_def_id": "dark_portal_160",
-      "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
-    },
-    {
-      "card_def_id": "azeroth_196",
-      "count": 1,
-      "_card_name": "Lafiel"
-    },
-    {
       "card_def_id": "azeroth_222",
       "count": 2,
       "_card_name": "Warden Tonarin"
-    },
-    {
-      "card_def_id": "dark_portal_196",
-      "count": 2,
-      "_card_name": "Warden Ravella"
     },
     {
       "card_def_id": "dark_portal_157",
@@ -109,21 +99,6 @@
       "_card_name": "Crazy Igvand"
     },
     {
-      "card_def_id": "dark_portal_156",
-      "count": 1,
-      "_card_name": "Bretander of the Claw"
-    },
-    {
-      "card_def_id": "azeroth_187",
-      "count": 1,
-      "_card_name": "Hannah the Unstoppable"
-    },
-    {
-      "card_def_id": "azeroth_171",
-      "count": 2,
-      "_card_name": "Vanquish"
-    },
-    {
       "card_def_id": "dark_portal_141",
       "count": 2,
       "_card_name": "First to Fall"
@@ -134,49 +109,9 @@
       "_card_name": "Galahandra Keeper of the Silent Grove"
     },
     {
-      "card_def_id": "azeroth_217",
-      "count": 1,
-      "_card_name": "Sha'lin Nightwind"
-    },
-    {
-      "card_def_id": "azeroth_210",
-      "count": 2,
-      "_card_name": "Nerra Lifeboon"
-    },
-    {
       "card_def_id": "azeroth_197",
       "count": 4,
       "_card_name": "Latro Abiectus"
-    },
-    {
-      "card_def_id": "azeroth_175",
-      "count": 1,
-      "_card_name": "Anika Berlyn"
-    },
-    {
-      "card_def_id": "azeroth_221",
-      "count": 2,
-      "_card_name": "Tristan Rapidstrike"
-    },
-    {
-      "card_def_id": "azeroth_194",
-      "count": 1,
-      "_card_name": "Lady Courtney Noel"
-    },
-    {
-      "card_def_id": "dark_portal_173",
-      "count": 1,
-      "_card_name": "Kavai the Wanderer"
-    },
-    {
-      "card_def_id": "azeroth_209",
-      "count": 1,
-      "_card_name": "Moira Darkheart"
-    },
-    {
-      "card_def_id": "azeroth_27",
-      "count": 2,
-      "_card_name": "Natural Selection"
     },
     {
       "card_def_id": "azeroth_24",
@@ -187,6 +122,71 @@
       "card_def_id": "azeroth_160",
       "count": 2,
       "_card_name": "Fall Back"
+    },
+    {
+      "card_def_id": "dark_portal_196",
+      "count": 2,
+      "_card_name": "Warden Ravella"
+    },
+    {
+      "card_def_id": "azeroth_217",
+      "count": 1,
+      "_card_name": "Sha'lin Nightwind"
+    },
+    {
+      "card_def_id": "azeroth_194",
+      "count": 1,
+      "_card_name": "Lady Courtney Noel"
+    },
+    {
+      "card_def_id": "azeroth_27",
+      "count": 2,
+      "_card_name": "Natural Selection"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_221",
+      "count": 2,
+      "_card_name": "Tristan Rapidstrike"
+    },
+    {
+      "card_def_id": "azeroth_209",
+      "count": 1,
+      "_card_name": "Moira Darkheart"
+    },
+    {
+      "card_def_id": "azeroth_187",
+      "count": 1,
+      "_card_name": "Hannah the Unstoppable"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
+    },
+    {
+      "card_def_id": "azeroth_196",
+      "count": 1,
+      "_card_name": "Lafiel"
+    },
+    {
+      "card_def_id": "dark_portal_156",
+      "count": 1,
+      "_card_name": "Bretander of the Claw"
+    },
+    {
+      "card_def_id": "azeroth_175",
+      "count": 1,
+      "_card_name": "Anika Berlyn"
+    },
+    {
+      "card_def_id": "dark_portal_173",
+      "count": 1,
+      "_card_name": "Kavai the Wanderer"
     }
   ],
   "recommended_ai_id": "ai_generic",

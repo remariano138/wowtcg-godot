@@ -9,21 +9,6 @@
       "_card_name": "Operation Recombobulation"
     },
     {
-      "card_def_id": "azeroth_348",
-      "count": 1,
-      "_card_name": "Big Game Hunter"
-    },
-    {
-      "card_def_id": "azeroth_342",
-      "count": 1,
-      "_card_name": "The Missing Diplomat"
-    },
-    {
-      "card_def_id": "dark_portal_316",
-      "count": 3,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
       "card_def_id": "azeroth_347",
       "count": 1,
       "_card_name": "Battle of Darrowshire"
@@ -39,9 +24,24 @@
       "_card_name": "A Donation of Wool"
     },
     {
+      "card_def_id": "azeroth_348",
+      "count": 1,
+      "_card_name": "Big Game Hunter"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 3,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
       "card_def_id": "azeroth_350",
       "count": 1,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
     },
     {
       "card_def_id": "azeroth_331",
@@ -59,16 +59,6 @@
       "_card_name": "Ramstein's Lightning Bolts"
     },
     {
-      "card_def_id": "azeroth_199",
-      "count": 1,
-      "_card_name": "Lhurg Venomblade"
-    },
-    {
-      "card_def_id": "azeroth_151",
-      "count": 1,
-      "_card_name": "From the Shadows"
-    },
-    {
       "card_def_id": "azeroth_92",
       "count": 1,
       "_card_name": "Cold Blood"
@@ -79,14 +69,14 @@
       "_card_name": "Jeleane Nightbreeze"
     },
     {
-      "card_def_id": "azeroth_213",
+      "card_def_id": "azeroth_199",
       "count": 1,
-      "_card_name": "Randipan"
+      "_card_name": "Lhurg Venomblade"
     },
     {
-      "card_def_id": "azeroth_173",
+      "card_def_id": "azeroth_151",
       "count": 1,
-      "_card_name": "Acolyte Demia"
+      "_card_name": "From the Shadows"
     },
     {
       "card_def_id": "dark_portal_129",
@@ -99,9 +89,14 @@
       "_card_name": "\"Chipper\" Ironbane"
     },
     {
-      "card_def_id": "dark_portal_177",
+      "card_def_id": "azeroth_213",
       "count": 1,
-      "_card_name": "\"Lowdown\" Luppo Shadefizzle"
+      "_card_name": "Randipan"
+    },
+    {
+      "card_def_id": "azeroth_173",
+      "count": 1,
+      "_card_name": "Acolyte Demia"
     },
     {
       "card_def_id": "azeroth_176",
@@ -114,24 +109,19 @@
       "_card_name": "Warden Tonarin"
     },
     {
-      "card_def_id": "azeroth_212",
-      "count": 4,
-      "_card_name": "Parvink"
+      "card_def_id": "azeroth_99",
+      "count": 2,
+      "_card_name": "Gouge"
     },
     {
-      "card_def_id": "azeroth_187",
+      "card_def_id": "dark_portal_177",
       "count": 1,
-      "_card_name": "Hannah the Unstoppable"
+      "_card_name": "\"Lowdown\" Luppo Shadefizzle"
     },
     {
       "card_def_id": "dark_portal_85",
       "count": 2,
       "_card_name": "Prey on the Weak"
-    },
-    {
-      "card_def_id": "azeroth_165",
-      "count": 2,
-      "_card_name": "Quick Strike"
     },
     {
       "card_def_id": "azeroth_184",
@@ -154,9 +144,14 @@
       "_card_name": "Coup de Grace"
     },
     {
-      "card_def_id": "azeroth_214",
+      "card_def_id": "azeroth_212",
+      "count": 4,
+      "_card_name": "Parvink"
+    },
+    {
+      "card_def_id": "azeroth_165",
       "count": 2,
-      "_card_name": "Ryn Dreamstrider"
+      "_card_name": "Quick Strike"
     },
     {
       "card_def_id": "azeroth_190",
@@ -164,24 +159,29 @@
       "_card_name": "Kena Shadowbrand"
     },
     {
-      "card_def_id": "azeroth_200",
-      "count": 1,
-      "_card_name": "Liba Wobblebonk"
-    },
-    {
       "card_def_id": "dark_portal_184",
       "count": 1,
       "_card_name": "Mya, Dragonling Wrangler"
     },
     {
-      "card_def_id": "azeroth_99",
-      "count": 2,
-      "_card_name": "Gouge"
-    },
-    {
       "card_def_id": "dark_portal_196",
       "count": 3,
       "_card_name": "Warden Ravella"
+    },
+    {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
+    },
+    {
+      "card_def_id": "azeroth_187",
+      "count": 1,
+      "_card_name": "Hannah the Unstoppable"
+    },
+    {
+      "card_def_id": "azeroth_200",
+      "count": 1,
+      "_card_name": "Liba Wobblebonk"
     }
   ],
   "recommended_ai_id": "ai_generic",

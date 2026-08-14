@@ -4,14 +4,14 @@
   "hero_card_def_id": "azeroth_3",
   "card_entries": [
     {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
+    },
+    {
       "card_def_id": "azeroth_348",
       "count": 2,
       "_card_name": "Big Game Hunter"
-    },
-    {
-      "card_def_id": "azeroth_342",
-      "count": 1,
-      "_card_name": "The Missing Diplomat"
     },
     {
       "card_def_id": "dark_portal_289",
@@ -19,19 +19,9 @@
       "_card_name": "Crown of the Earth"
     },
     {
-      "card_def_id": "azeroth_352",
-      "count": 2,
-      "_card_name": "In Dreams"
-    },
-    {
       "card_def_id": "dark_portal_316",
       "count": 2,
       "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
-      "card_def_id": "azeroth_351",
-      "count": 2,
-      "_card_name": "A Donation of Wool"
     },
     {
       "card_def_id": "azeroth_350",
@@ -44,14 +34,19 @@
       "_card_name": "Sunken Treasure"
     },
     {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 2,
+      "_card_name": "In Dreams"
+    },
+    {
       "card_def_id": "azeroth_331",
       "count": 2,
       "_card_name": "Krol Blade"
-    },
-    {
-      "card_def_id": "azeroth_311",
-      "count": 1,
-      "_card_name": "Ancient Bone Bow"
     },
     {
       "card_def_id": "dark_portal_271",
@@ -59,24 +54,19 @@
       "_card_name": "Blackcrow"
     },
     {
+      "card_def_id": "azeroth_311",
+      "count": 1,
+      "_card_name": "Ancient Bone Bow"
+    },
+    {
       "card_def_id": "azeroth_284",
       "count": 2,
       "_card_name": "Devilsaur Leggings"
     },
     {
-      "card_def_id": "azeroth_38",
-      "count": 1,
-      "_card_name": "Fury"
-    },
-    {
       "card_def_id": "azeroth_32",
       "count": 1,
       "_card_name": "Aimed Shot"
-    },
-    {
-      "card_def_id": "azeroth_34",
-      "count": 1,
-      "_card_name": "Aspect of the Hawk"
     },
     {
       "card_def_id": "dark_portal_170",
@@ -89,9 +79,24 @@
       "_card_name": "Rapid Fire"
     },
     {
+      "card_def_id": "azeroth_34",
+      "count": 1,
+      "_card_name": "Aspect of the Hawk"
+    },
+    {
+      "card_def_id": "azeroth_38",
+      "count": 1,
+      "_card_name": "Fury"
+    },
+    {
       "card_def_id": "azeroth_45",
       "count": 2,
       "_card_name": "Rayder"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     },
     {
       "card_def_id": "azeroth_42",
@@ -99,9 +104,9 @@
       "_card_name": "Old Bones"
     },
     {
-      "card_def_id": "dark_portal_160",
+      "card_def_id": "azeroth_222",
       "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
+      "_card_name": "Warden Tonarin"
     },
     {
       "card_def_id": "dark_portal_34",
@@ -114,6 +119,11 @@
       "_card_name": "Arcane Shot"
     },
     {
+      "card_def_id": "azeroth_197",
+      "count": 1,
+      "_card_name": "Latro Abiectus"
+    },
+    {
       "card_def_id": "azeroth_165",
       "count": 2,
       "_card_name": "Quick Strike"
@@ -124,24 +134,9 @@
       "_card_name": "Trophy Kill"
     },
     {
-      "card_def_id": "azeroth_196",
-      "count": 1,
-      "_card_name": "Lafiel"
-    },
-    {
-      "card_def_id": "dark_portal_173",
-      "count": 1,
-      "_card_name": "Kavai the Wanderer"
-    },
-    {
-      "card_def_id": "azeroth_210",
-      "count": 2,
-      "_card_name": "Nerra Lifeboon"
-    },
-    {
-      "card_def_id": "azeroth_197",
-      "count": 1,
-      "_card_name": "Latro Abiectus"
+      "card_def_id": "dark_portal_196",
+      "count": 4,
+      "_card_name": "Warden Ravella"
     },
     {
       "card_def_id": "azeroth_209",
@@ -154,16 +149,6 @@
       "_card_name": "Margaret Fowl"
     },
     {
-      "card_def_id": "dark_portal_196",
-      "count": 4,
-      "_card_name": "Warden Ravella"
-    },
-    {
-      "card_def_id": "azeroth_222",
-      "count": 2,
-      "_card_name": "Warden Tonarin"
-    },
-    {
       "card_def_id": "azeroth_214",
       "count": 2,
       "_card_name": "Ryn Dreamstrider"
@@ -172,6 +157,21 @@
       "card_def_id": "azeroth_221",
       "count": 2,
       "_card_name": "Tristan Rapidstrike"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
+    },
+    {
+      "card_def_id": "azeroth_196",
+      "count": 1,
+      "_card_name": "Lafiel"
+    },
+    {
+      "card_def_id": "dark_portal_173",
+      "count": 1,
+      "_card_name": "Kavai the Wanderer"
     }
   ],
   "recommended_ai_id": "ai_generic",

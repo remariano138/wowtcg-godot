@@ -4148,18 +4148,25 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_router.start_enter_play_targeting(card_id, dmg_type, amount)
 			_refresh_ui()
 		return
-	# Sister Rot rides the same branch with the ability pool instead.
+	# Sister Rot rides the same branch with the ability pool instead. So does
+	# Nyn'jah's steal, whose pool is opposing-only to begin with — the AI's
+	# "most expensive opposing target" heuristic is exactly right for it (the
+	# steal costs nothing and is strictly better the bigger the equipment).
 	if enter_eff == "destroy_armor" or enter_eff == "destroy_armor_or_weapon" \
-			or enter_eff == "destroy_ability":
+			or enter_eff == "destroy_ability" or enter_eff == "steal_equipment":
 		if ctrl_type != "human":
 			var opp2 := "p2" if ctrl == "p1" else "p1"
 			var best_id2 := ""
 			var best_cost2 := -1
 			var include_weapons := enter_eff == "destroy_armor_or_weapon"
-			var cands2: Array[String] = \
-				StackResolver.get_enter_play_ability_targets(_state, _db) \
-				if enter_eff == "destroy_ability" \
-				else StackResolver.get_enter_play_equipment_targets(_state, _db, include_weapons)
+			var cands2: Array[String] = []
+			if enter_eff == "destroy_ability":
+				cands2 = StackResolver.get_enter_play_ability_targets(_state, _db)
+			elif enter_eff == "steal_equipment":
+				cands2 = StackResolver.get_enter_play_steal_targets(_state, _db, ctrl)
+			else:
+				cands2 = StackResolver.get_enter_play_equipment_targets(
+					_state, _db, include_weapons)
 			for tid in cands2:
 				var t2 := _state.get_card(tid)
 				if not t2 or t2.controller != opp2:

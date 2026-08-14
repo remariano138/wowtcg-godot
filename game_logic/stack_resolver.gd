@@ -173,7 +173,54 @@ static func submit_action(state: GameState, action: PendingAction,
 	return events
 
 
+# Uniqueness (414.3 slots / 414.3a Unique names / 414.3b Pets and Form-Aspect
+# tags) is a STATE-based condition: it asks what a player controls in play, not
+# how it got there. So instead of a check bolted onto each effect that puts a
+# card into play, GameLogic.move_card queues every card that arrives in a play
+# ROW and this drains the queue — one mechanism covering a card resolving off the
+# chain, a token being minted, an enter-play effect, and a control change
+# (Infernal, Nyn'jah's steal and the reversion when she leaves play).
+#
+# Drained at the priority gate, which is the state-based-check moment: nothing
+# can happen between a violation appearing and the next call here. A choice
+# already pending stops the drain — the queue keeps its entries and is looked at
+# again once that choice resolves, so several violations queue up and are
+# answered one at a time.
+static func drain_uniqueness_checks(state: GameState, db = null) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	while not state.pending_uniqueness_ids.is_empty():
+		if state.pending_pet_sacrifice_player != "" \
+				or state.pending_equip_sacrifice_player != "" \
+				or state.pending_unique_sacrifice_player != "" \
+				or state.pending_form_sacrifice_player != "":
+			break
+		var card_id: String = state.pending_uniqueness_ids.pop_front()
+		# Each check is self-guarding (wrong card type / no violation → no
+		# events), so the queue carries no per-card knowledge of which rule
+		# could possibly apply to what.
+		events.append_array(_check_equipment_uniqueness(state, card_id, db))
+		events.append_array(_check_pet_uniqueness(state, card_id, db))
+		events.append_array(_check_unique_uniqueness(state, card_id, db))
+		events.append_array(_check_form_uniqueness(state, card_id, db))
+	return events
+
+
 static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
+	# The drain brackets the pass: leading, to catch anything a direct-call
+	# choice queued since the last gate; trailing, because the resolution this
+	# pass may have triggered is where cards usually enter play — which keeps the
+	# prompt in the same call as the play that caused it, exactly as the old
+	# per-resolution checks did.
+	var events: Array[GameEvent] = []
+	events.append_array(drain_uniqueness_checks(state, db))
+	events.append_array(_pass_priority(state, db))
+	events.append_array(drain_uniqueness_checks(state, db))
+	return events
+
+
+static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# A pending discard-or-give-control choice (Infernal) must be resolved via
 	# choose_control_discard / decline_control_discard before priority can move.
 	if state.pending_control_discard_player != "":
@@ -2106,13 +2153,29 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							}
 							events.append(GameEvent.enter_play_target_required(
 								card_id, "exhaust", 0))
+					"steal_equipment":
+						# Nyn'jah: "When Nyn'jah enters play, you may ready target
+						# opposing equipment. You control that equipment while
+						# Nyn'jah remains in your party." Optional; the pool is
+						# OPPOSING equipment only (Hur's pool, narrowed by
+						# controller), so no target → the trigger doesn't fire.
+						if not get_enter_play_steal_targets(
+								state, db, card.controller).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "steal_equipment",
+								"dmg_type": "steal",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "steal", 0))
 
 	events.append_array(fire_opposing_ally_enter_watchers(state, card_id, db))
 
-	# Check pet uniqueness (414.3b) — must happen after the card is in play.
-	events.append_array(_check_pet_uniqueness(state, card_id, db))
-	# Check name-based (Unique tag) uniqueness (414.3a) — Lady Jaina Proudmoore.
-	events.append_array(_check_unique_uniqueness(state, card_id, db))
+	# Pet (414.3b) and Unique-name (414.3a) uniqueness are NOT checked here: the
+	# ally is in a play row now, so move_card has queued it and
+	# drain_uniqueness_checks will look at it before priority moves again.
 
 	return events
 
@@ -2140,10 +2203,8 @@ static func _resolve_play_equipment(state: GameState,
 	# Rule 304.1 / 303.1: equipment enters play in its controller's hero row.
 	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
 
-	# Check equipment slot uniqueness (414.3) — must happen after it's in play.
-	events.append_array(_check_equipment_uniqueness(state, card_id, db))
-	# Check name-based (Unique tag) uniqueness (414.3a) — e.g. a Unique weapon.
-	events.append_array(_check_unique_uniqueness(state, card_id, db))
+	# Slot (414.3) and Unique-name (414.3a) uniqueness are checked from the
+	# move_card queue — see drain_uniqueness_checks.
 
 	return events
 
@@ -2334,8 +2395,8 @@ static func _resolve_play_ongoing_ability(state: GameState,
 	# effect) until removed from play — it does not resolve-and-graveyard
 	# like a non-ongoing ability.
 	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
-	# Form (1) tag-count uniqueness (414.3b) — after the card is in play.
-	events.append_array(_check_form_uniqueness(state, card_id, db))
+	# Form/Aspect (1) tag-count uniqueness (414.3b) is checked from the move_card
+	# queue — see drain_uniqueness_checks.
 	return events
 
 
@@ -6776,9 +6837,11 @@ static func decline_control_discard(state: GameState,
 		source.just_summoned = true
 		events.append_array(GameLogic.move_card(state, source_id, new_ctrl + "_ally_row"))
 		events.append(GameEvent.control_changed(source_id, old_ctrl, new_ctrl))
-		# The source may be a Pet (Infernal is) — new controller's pet capacity
-		# can now be violated exactly as if a second pet entered play.
-		events.append_array(_check_pet_uniqueness(state, source_id, db))
+		# The source may be a Pet (Infernal is) — the new controller's pet
+		# capacity can now be violated exactly as if a second pet entered play.
+		# The move above queued it; drain it now rather than waiting for the next
+		# gate, since this is a direct call and no resolution follows it.
+		events.append_array(drain_uniqueness_checks(state, db))
 	_advance_control_discard_queue(state, events)
 	return events
 
@@ -7400,6 +7463,11 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 			["return_to_hand_ally", "exhaust_ally"] \
 			and target_id not in get_death_target_targets(state, db):
 		return false
+	# Nyn'jah: "target OPPOSING equipment" — the pool is controller-relative.
+	if String(state.pending_enter_play_effect.get("effect", "")) == "steal_equipment" \
+			and target_id not in get_enter_play_steal_targets(
+				state, db, source_card.controller):
+		return false
 	return true
 
 
@@ -7432,6 +7500,22 @@ static func get_enter_play_equipment_targets(state: GameState, db,
 			if not _weapon_info(def).is_empty():
 				continue
 		result.append(eq_id)
+	return result
+
+
+# Legal targets for Nyn'jah's enter-play trigger: in-play equipment — armor,
+# weapons and items alike (Zygore's pool) — controlled by an OPPONENT of
+# `controller`, subject to the standard targeting restrictions (untargetable).
+# "Ready target opposing equipment" does not require the equipment to BE
+# exhausted: readying a ready card is simply a no-op and the control clause is
+# what the card is played for, so a ready weapon is a legal target.
+static func get_enter_play_steal_targets(state: GameState, db,
+		controller: String) -> Array[String]:
+	var result: Array[String] = []
+	for eq_id in get_enter_play_equipment_targets(state, db, true):
+		var card := state.get_card(eq_id)
+		if card and card.controller != controller:
+			result.append(eq_id)
 	return result
 
 
@@ -7519,6 +7603,36 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			# 601.3 recheck — Exhaustion's interrupt on an Instant Ally body.
 			if target_id in get_death_target_targets(state, db):
 				events.append_array(GameLogic.exhaust_card(state, target_id))
+		"steal_equipment":
+			# Nyn'jah — 706 re-check: fizzle unless the target is still a legal
+			# in-play equipment controlled by an opponent (an equipment that was
+			# destroyed, became Untargetable, or already changed hands in the
+			# response window is no longer a legal target).
+			var thief := state.get_card(source_id)
+			if not thief or not state.is_in_play(source_id):
+				return events   # 709.2c: no party to take it into
+			if target_id not in get_enter_play_steal_targets(state, db, thief.controller):
+				return events
+			var eq := state.get_card(target_id)
+			# "Ready target opposing equipment" — a no-op on a ready one.
+			events.append_array(GameLogic.ready_card(state, target_id))
+			# "You control that equipment while Nyn'jah remains in your party"
+			# (rule 401.3). Per the FAQ the equipment moves to the new
+			# controller's hero row and functions normally there, whatever its
+			# faction/class icons — nothing in the engine gates an IN-PLAY card
+			# on deckbuilding restrictions, so that falls out for free.
+			var old_ctrl := eq.controller
+			eq.controller = thief.controller
+			eq.stolen_by  = source_id
+			thief.stolen_ids.append(target_id)
+			events.append_array(GameLogic.move_card(
+				state, target_id, thief.controller + "_hero_row"))
+			events.append(GameEvent.control_changed(target_id, old_ctrl, thief.controller))
+			# 414.3: it counts against the new controller's slots like any other
+			# equipment — the same sacrifice choice a second Melee weapon opens,
+			# and a stolen card destroyed that way goes to its OWNER's graveyard.
+			# The move above queued it; the drain at the end of this resolution's
+			# pass_priority opens the choice.
 	return events
 
 

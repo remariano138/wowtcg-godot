@@ -4,16 +4,6 @@
   "hero_card_def_id": "azeroth_15",
   "card_entries": [
     {
-      "card_def_id": "azeroth_360",
-      "count": 2,
-      "_card_name": "Your Fortune Awaits You"
-    },
-    {
-      "card_def_id": "dark_portal_316",
-      "count": 3,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
@@ -29,14 +19,24 @@
       "_card_name": "A Donation of Wool"
     },
     {
-      "card_def_id": "azeroth_350",
-      "count": 2,
-      "_card_name": "Chasing A-Me 01"
-    },
-    {
       "card_def_id": "azeroth_344",
       "count": 1,
       "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 2,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 3,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
     },
     {
       "card_def_id": "azeroth_332",
@@ -54,24 +54,29 @@
       "_card_name": "Mooncloth Robe"
     },
     {
-      "card_def_id": "azeroth_61",
-      "count": 1,
-      "_card_name": "World in Flames"
-    },
-    {
       "card_def_id": "azeroth_54",
       "count": 1,
       "_card_name": "Flamestrike"
     },
     {
-      "card_def_id": "azeroth_225",
-      "count": 2,
-      "_card_name": "Arnold Flem"
+      "card_def_id": "azeroth_61",
+      "count": 1,
+      "_card_name": "World in Flames"
     },
     {
       "card_def_id": "azeroth_235",
       "count": 1,
       "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_234",
+      "count": 2,
+      "_card_name": "Deacon Johanna"
+    },
+    {
+      "card_def_id": "azeroth_225",
+      "count": 2,
+      "_card_name": "Arnold Flem"
     },
     {
       "card_def_id": "azeroth_53",
@@ -84,11 +89,6 @@
       "_card_name": "Moko Hunts-at-Dawn"
     },
     {
-      "card_def_id": "azeroth_234",
-      "count": 2,
-      "_card_name": "Deacon Johanna"
-    },
-    {
       "card_def_id": "azeroth_248",
       "count": 2,
       "_card_name": "Ka'tali Stonetusk"
@@ -99,9 +99,39 @@
       "_card_name": "Kagra of the Crossroads"
     },
     {
+      "card_def_id": "azeroth_52",
+      "count": 2,
+      "_card_name": "Fire Blast"
+    },
+    {
+      "card_def_id": "azeroth_274",
+      "count": 2,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "azeroth_48",
+      "count": 2,
+      "_card_name": "Blink"
+    },
+    {
+      "card_def_id": "azeroth_240",
+      "count": 2,
+      "_card_name": "Guardian Steelhorn"
+    },
+    {
       "card_def_id": "azeroth_260",
       "count": 4,
       "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_264",
+      "count": 4,
+      "_card_name": "Vesh'ral"
+    },
+    {
+      "card_def_id": "azeroth_228",
+      "count": 2,
+      "_card_name": "Benethor Draigo"
     },
     {
       "card_def_id": "azeroth_230",
@@ -114,39 +144,9 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "azeroth_52",
-      "count": 2,
-      "_card_name": "Fire Blast"
-    },
-    {
-      "card_def_id": "azeroth_236",
-      "count": 2,
-      "_card_name": "Fa'tafi"
-    },
-    {
-      "card_def_id": "azeroth_274",
-      "count": 2,
-      "_card_name": "Zorm Stonefury"
-    },
-    {
       "card_def_id": "azeroth_262",
       "count": 1,
       "_card_name": "Vaerik Proudhoof"
-    },
-    {
-      "card_def_id": "azeroth_264",
-      "count": 4,
-      "_card_name": "Vesh'ral"
-    },
-    {
-      "card_def_id": "azeroth_48",
-      "count": 2,
-      "_card_name": "Blink"
-    },
-    {
-      "card_def_id": "azeroth_228",
-      "count": 2,
-      "_card_name": "Benethor Draigo"
     },
     {
       "card_def_id": "azeroth_249",
@@ -154,9 +154,9 @@
       "_card_name": "Kulan Earthguard"
     },
     {
-      "card_def_id": "azeroth_240",
+      "card_def_id": "azeroth_236",
       "count": 2,
-      "_card_name": "Guardian Steelhorn"
+      "_card_name": "Fa'tafi"
     }
   ],
   "recommended_ai_id": "ai_generic",

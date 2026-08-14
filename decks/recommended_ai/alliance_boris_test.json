@@ -4,26 +4,6 @@
   "hero_card_def_id": "azeroth_1",
   "card_entries": [
     {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
-    },
-    {
-      "card_def_id": "azeroth_355",
-      "count": 3,
-      "_card_name": "Kibler's Exotic Pets"
-    },
-    {
-      "card_def_id": "azeroth_342",
-      "count": 1,
-      "_card_name": "The Missing Diplomat"
-    },
-    {
-      "card_def_id": "dark_portal_316",
-      "count": 3,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
       "card_def_id": "azeroth_340",
       "count": 2,
       "_card_name": "The Defias Brotherhood"
@@ -34,9 +14,29 @@
       "_card_name": "A Donation of Wool"
     },
     {
+      "card_def_id": "azeroth_355",
+      "count": 3,
+      "_card_name": "Kibler's Exotic Pets"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 3,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
       "card_def_id": "azeroth_350",
       "count": 3,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
     },
     {
       "card_def_id": "azeroth_332",
@@ -49,9 +49,19 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_77",
+      "count": 1,
+      "_card_name": "Dispel Magic"
+    },
+    {
       "card_def_id": "azeroth_174",
       "count": 2,
       "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 2,
+      "_card_name": "\"Chipper\" Ironbane"
     },
     {
       "card_def_id": "azeroth_173",
@@ -62,16 +72,6 @@
       "card_def_id": "azeroth_179",
       "count": 1,
       "_card_name": "Braxiss the Sleeper"
-    },
-    {
-      "card_def_id": "azeroth_77",
-      "count": 1,
-      "_card_name": "Dispel Magic"
-    },
-    {
-      "card_def_id": "dark_portal_160",
-      "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
     },
     {
       "card_def_id": "azeroth_176",
@@ -89,9 +89,29 @@
       "_card_name": "Tracker Gallen"
     },
     {
+      "card_def_id": "azeroth_183",
+      "count": 2,
+      "_card_name": "Freya Lightsworn"
+    },
+    {
+      "card_def_id": "azeroth_180",
+      "count": 4,
+      "_card_name": "Crazy Igvand"
+    },
+    {
+      "card_def_id": "azeroth_197",
+      "count": 2,
+      "_card_name": "Latro Abiectus"
+    },
+    {
       "card_def_id": "azeroth_212",
       "count": 2,
       "_card_name": "Parvink"
+    },
+    {
+      "card_def_id": "azeroth_192",
+      "count": 4,
+      "_card_name": "Kor Cindervein"
     },
     {
       "card_def_id": "azeroth_171",
@@ -104,29 +124,9 @@
       "_card_name": "Tristan Rapidstrike"
     },
     {
-      "card_def_id": "azeroth_183",
-      "count": 2,
-      "_card_name": "Freya Lightsworn"
-    },
-    {
-      "card_def_id": "azeroth_180",
-      "count": 4,
-      "_card_name": "Crazy Igvand"
-    },
-    {
-      "card_def_id": "azeroth_192",
-      "count": 4,
-      "_card_name": "Kor Cindervein"
-    },
-    {
-      "card_def_id": "azeroth_197",
-      "count": 2,
-      "_card_name": "Latro Abiectus"
-    },
-    {
-      "card_def_id": "azeroth_175",
-      "count": 4,
-      "_card_name": "Anika Berlyn"
+      "card_def_id": "azeroth_214",
+      "count": 1,
+      "_card_name": "Ryn Dreamstrider"
     },
     {
       "card_def_id": "azeroth_210",
@@ -134,19 +134,19 @@
       "_card_name": "Nerra Lifeboon"
     },
     {
-      "card_def_id": "azeroth_214",
-      "count": 1,
-      "_card_name": "Ryn Dreamstrider"
+      "card_def_id": "azeroth_200",
+      "count": 3,
+      "_card_name": "Liba Wobblebonk"
+    },
+    {
+      "card_def_id": "azeroth_175",
+      "count": 4,
+      "_card_name": "Anika Berlyn"
     },
     {
       "card_def_id": "azeroth_218",
       "count": 1,
       "_card_name": "Stylean Silversteel"
-    },
-    {
-      "card_def_id": "azeroth_200",
-      "count": 3,
-      "_card_name": "Liba Wobblebonk"
     }
   ],
   "recommended_ai_id": "ai_generic",

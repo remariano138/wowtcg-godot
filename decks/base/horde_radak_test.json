@@ -4,16 +4,6 @@
   "hero_card_def_id": "azeroth_13",
   "card_entries": [
     {
-      "card_def_id": "azeroth_355",
-      "count": 2,
-      "_card_name": "Kibler's Exotic Pets"
-    },
-    {
-      "card_def_id": "dark_portal_316",
-      "count": 3,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
@@ -24,11 +14,6 @@
       "_card_name": "Battle of Darrowshire"
     },
     {
-      "card_def_id": "azeroth_350",
-      "count": 2,
-      "_card_name": "Chasing A-Me 01"
-    },
-    {
       "card_def_id": "azeroth_351",
       "count": 2,
       "_card_name": "A Donation of Wool"
@@ -37,6 +22,21 @@
       "card_def_id": "azeroth_344",
       "count": 1,
       "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_355",
+      "count": 2,
+      "_card_name": "Kibler's Exotic Pets"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 3,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
     },
     {
       "card_def_id": "azeroth_332",
@@ -59,9 +59,9 @@
       "_card_name": "Elder Moorf"
     },
     {
-      "card_def_id": "azeroth_225",
+      "card_def_id": "azeroth_125",
       "count": 2,
-      "_card_name": "Arnold Flem"
+      "_card_name": "Grimdron"
     },
     {
       "card_def_id": "azeroth_134",
@@ -69,9 +69,9 @@
       "_card_name": "Steal Essence"
     },
     {
-      "card_def_id": "azeroth_125",
+      "card_def_id": "azeroth_225",
       "count": 2,
-      "_card_name": "Grimdron"
+      "_card_name": "Arnold Flem"
     },
     {
       "card_def_id": "azeroth_252",
@@ -89,14 +89,14 @@
       "_card_name": "Kagra of the Crossroads"
     },
     {
+      "card_def_id": "azeroth_274",
+      "count": 2,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
       "card_def_id": "azeroth_260",
       "count": 4,
       "_card_name": "Taz'dingo"
-    },
-    {
-      "card_def_id": "azeroth_230",
-      "count": 4,
-      "_card_name": "Blood Guard Mal'wani"
     },
     {
       "card_def_id": "dark_portal_114",
@@ -109,16 +109,6 @@
       "_card_name": "Sarmoth"
     },
     {
-      "card_def_id": "azeroth_236",
-      "count": 2,
-      "_card_name": "Fa'tafi"
-    },
-    {
-      "card_def_id": "azeroth_262",
-      "count": 2,
-      "_card_name": "Vaerik Proudhoof"
-    },
-    {
       "card_def_id": "azeroth_264",
       "count": 4,
       "_card_name": "Vesh'ral"
@@ -129,14 +119,24 @@
       "_card_name": "Benethor Draigo"
     },
     {
-      "card_def_id": "azeroth_274",
+      "card_def_id": "azeroth_230",
+      "count": 4,
+      "_card_name": "Blood Guard Mal'wani"
+    },
+    {
+      "card_def_id": "azeroth_262",
       "count": 2,
-      "_card_name": "Zorm Stonefury"
+      "_card_name": "Vaerik Proudhoof"
     },
     {
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 2,
+      "_card_name": "Fa'tafi"
     }
   ],
   "recommended_ai_id": "ai_generic",

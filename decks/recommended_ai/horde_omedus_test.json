@@ -4,21 +4,6 @@
   "hero_card_def_id": "azeroth_12",
   "card_entries": [
     {
-      "card_def_id": "dark_portal_304",
-      "count": 3,
-      "_card_name": "A New Plague"
-    },
-    {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
-    },
-    {
-      "card_def_id": "dark_portal_316",
-      "count": 3,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
       "card_def_id": "azeroth_345",
       "count": 2,
       "_card_name": "Torek's Assault"
@@ -29,11 +14,6 @@
       "_card_name": "Battle of Darrowshire"
     },
     {
-      "card_def_id": "azeroth_350",
-      "count": 2,
-      "_card_name": "Chasing A-Me 01"
-    },
-    {
       "card_def_id": "azeroth_351",
       "count": 2,
       "_card_name": "A Donation of Wool"
@@ -42,6 +22,26 @@
       "card_def_id": "azeroth_344",
       "count": 1,
       "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 3,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "dark_portal_304",
+      "count": 3,
+      "_card_name": "A New Plague"
+    },
+    {
+      "card_def_id": "azeroth_352",
+      "count": 1,
+      "_card_name": "In Dreams"
     },
     {
       "card_def_id": "azeroth_327",
@@ -69,9 +69,9 @@
       "_card_name": "Dispel Magic"
     },
     {
-      "card_def_id": "azeroth_225",
+      "card_def_id": "azeroth_234",
       "count": 1,
-      "_card_name": "Arnold Flem"
+      "_card_name": "Deacon Johanna"
     },
     {
       "card_def_id": "azeroth_87",
@@ -84,9 +84,9 @@
       "_card_name": "Samuel Grey"
     },
     {
-      "card_def_id": "azeroth_234",
+      "card_def_id": "azeroth_225",
       "count": 1,
-      "_card_name": "Deacon Johanna"
+      "_card_name": "Arnold Flem"
     },
     {
       "card_def_id": "azeroth_248",
@@ -99,16 +99,6 @@
       "_card_name": "Kagra of the Crossroads"
     },
     {
-      "card_def_id": "azeroth_260",
-      "count": 3,
-      "_card_name": "Taz'dingo"
-    },
-    {
-      "card_def_id": "azeroth_247",
-      "count": 1,
-      "_card_name": "Karkas Deathhowl"
-    },
-    {
       "card_def_id": "azeroth_82",
       "count": 3,
       "_card_name": "Mind Spike"
@@ -119,39 +109,29 @@
       "_card_name": "Zorm Stonefury"
     },
     {
-      "card_def_id": "dark_portal_204",
-      "count": 1,
-      "_card_name": "Dark Cleric Ismantal"
-    },
-    {
-      "card_def_id": "azeroth_171",
-      "count": 2,
-      "_card_name": "Vanquish"
-    },
-    {
-      "card_def_id": "azeroth_172",
-      "count": 1,
-      "_card_name": "Withdraw"
-    },
-    {
       "card_def_id": "azeroth_251",
       "count": 4,
       "_card_name": "Mias the Putrid"
     },
     {
-      "card_def_id": "azeroth_236",
-      "count": 2,
-      "_card_name": "Fa'tafi"
+      "card_def_id": "dark_portal_136",
+      "count": 1,
+      "_card_name": "Cannibalize"
     },
     {
-      "card_def_id": "dark_portal_233",
-      "count": 2,
-      "_card_name": "Sister Rot"
+      "card_def_id": "azeroth_260",
+      "count": 3,
+      "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_253",
-      "count": 2,
-      "_card_name": "Ophelia Barrows"
+      "card_def_id": "dark_portal_204",
+      "count": 1,
+      "_card_name": "Dark Cleric Ismantal"
+    },
+    {
+      "card_def_id": "azeroth_172",
+      "count": 1,
+      "_card_name": "Withdraw"
     },
     {
       "card_def_id": "azeroth_264",
@@ -169,9 +149,29 @@
       "_card_name": "Benethor Draigo"
     },
     {
-      "card_def_id": "dark_portal_136",
+      "card_def_id": "azeroth_247",
       "count": 1,
-      "_card_name": "Cannibalize"
+      "_card_name": "Karkas Deathhowl"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_253",
+      "count": 2,
+      "_card_name": "Ophelia Barrows"
+    },
+    {
+      "card_def_id": "dark_portal_233",
+      "count": 2,
+      "_card_name": "Sister Rot"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 2,
+      "_card_name": "Fa'tafi"
     }
   ],
   "recommended_ai_id": "ai_generic",

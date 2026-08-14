@@ -95,6 +95,16 @@ func turn_events_of(event_type: String) -> Array:
 			result.append(e)
 	return result
 
+# ── Uniqueness re-check queue (rules 414.3 / 414.3a / 414.3b) ─────────────────
+# Uniqueness is a STATE-based condition, not an on-play trigger: what matters is
+# what a player controls in play, however it got there. So the queue is fed by
+# the one place cards arrive in a play row — GameLogic.move_card — and drained by
+# StackResolver.drain_uniqueness_checks at the resolver's gates. That covers a
+# card resolving out of the chain, a token being minted, an enter-play effect and
+# a CONTROL CHANGE (Infernal, Nyn'jah's steal and its reversion) with one
+# mechanism, instead of a per-effect check each new card has to remember.
+var pending_uniqueness_ids: Array[String] = []
+
 # ── Interrupt stack (rule 409 / 410) ──────────────────────────────────────────
 # A stack of proposed-but-not-yet-resolved actions. Last in, first resolved.
 # PendingAction class is defined in Phase 4 (stack_resolver.gd).

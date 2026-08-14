@@ -38,6 +38,18 @@ var created_on_turn: int = 0
 var attached_to: String = ""           # instance_id of host card; empty if not an attachment
 var attachments: Array[String] = []    # instance_ids of cards attached to this card
 
+# ── Borrowed control (Nyn'jah — rule 401.3) ───────────────────────────────────
+# "You control that equipment while Nyn'jah remains in your party": control of a
+# stolen card is conditional on a LINK to the card that took it, so both ends are
+# recorded and kept in sync by the zone-move primitive (GameLogic.move_card),
+# exactly like the attachment relationship above.
+#   stolen_by      — on the stolen card: instance_id of the thief holding it.
+#   stolen_ids     — on the thief: instance_ids of every card it currently holds.
+# When the link breaks (the thief leaves play, or stops being in the same party
+# because its own controller changed) control reverts to the card's OWNER.
+var stolen_by: String = ""
+var stolen_ids: Array[String] = []
+
 # ── Turn/game flags ────────────────────────────────────────────────────────────
 var is_exhausted: bool = false
 var face_down: bool = false
@@ -122,6 +134,8 @@ func to_dict() -> Dictionary:
 		"created_on_turn":  created_on_turn,
 		"attached_to":      attached_to,
 		"attachments":      attachments.duplicate(),
+		"stolen_by":        stolen_by,
+		"stolen_ids":       stolen_ids.duplicate(),
 		"is_exhausted":     is_exhausted,
 		"face_down":        face_down,
 		"just_summoned":    just_summoned,
@@ -145,6 +159,8 @@ static func from_dict(d: Dictionary) -> CardInstance:
 	inst.created_on_turn = d.get("created_on_turn", 0)
 	inst.attached_to     = d.get("attached_to", "")
 	inst.attachments.assign(d.get("attachments", []))
+	inst.stolen_by       = d.get("stolen_by", "")
+	inst.stolen_ids.assign(d.get("stolen_ids", []))
 	inst.is_exhausted    = d.get("is_exhausted", false)
 	inst.face_down       = d.get("face_down", false)
 	inst.just_summoned   = d.get("just_summoned", false)

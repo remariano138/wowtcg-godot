@@ -4,21 +4,6 @@
   "hero_card_def_id": "azeroth_9",
   "card_entries": [
     {
-      "card_def_id": "azeroth_360",
-      "count": 2,
-      "_card_name": "Your Fortune Awaits You"
-    },
-    {
-      "card_def_id": "dark_portal_316",
-      "count": 2,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
-      "card_def_id": "azeroth_361",
-      "count": 2,
-      "_card_name": "Zapped Giants"
-    },
-    {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
@@ -34,14 +19,29 @@
       "_card_name": "A Donation of Wool"
     },
     {
-      "card_def_id": "azeroth_350",
-      "count": 2,
-      "_card_name": "Chasing A-Me 01"
-    },
-    {
       "card_def_id": "azeroth_344",
       "count": 1,
       "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_361",
+      "count": 2,
+      "_card_name": "Zapped Giants"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 2,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 2,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 2,
+      "_card_name": "Chasing A-Me 01"
     },
     {
       "card_def_id": "azeroth_331",
@@ -49,14 +49,14 @@
       "_card_name": "Krol Blade"
     },
     {
-      "card_def_id": "azeroth_285",
-      "count": 1,
-      "_card_name": "Draconian Deflector"
-    },
-    {
       "card_def_id": "azeroth_290",
       "count": 1,
       "_card_name": "Golem Skull Helm"
+    },
+    {
+      "card_def_id": "azeroth_285",
+      "count": 1,
+      "_card_name": "Draconian Deflector"
     },
     {
       "card_def_id": "dark_portal_235",
@@ -69,6 +69,11 @@
       "_card_name": "Elder Moorf"
     },
     {
+      "card_def_id": "azeroth_234",
+      "count": 2,
+      "_card_name": "Deacon Johanna"
+    },
+    {
       "card_def_id": "azeroth_242",
       "count": 2,
       "_card_name": "Hierophant Caydiem"
@@ -77,11 +82,6 @@
       "card_def_id": "azeroth_252",
       "count": 1,
       "_card_name": "Moko Hunts-at-Dawn"
-    },
-    {
-      "card_def_id": "azeroth_234",
-      "count": 2,
-      "_card_name": "Deacon Johanna"
     },
     {
       "card_def_id": "azeroth_248",
@@ -94,9 +94,29 @@
       "_card_name": "Kagra of the Crossroads"
     },
     {
+      "card_def_id": "azeroth_240",
+      "count": 4,
+      "_card_name": "Guardian Steelhorn"
+    },
+    {
+      "card_def_id": "azeroth_274",
+      "count": 1,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
       "card_def_id": "azeroth_260",
       "count": 4,
       "_card_name": "Taz'dingo"
+    },
+    {
+      "card_def_id": "azeroth_165",
+      "count": 2,
+      "_card_name": "Quick Strike"
+    },
+    {
+      "card_def_id": "azeroth_264",
+      "count": 2,
+      "_card_name": "Vesh'ral"
     },
     {
       "card_def_id": "azeroth_230",
@@ -109,39 +129,19 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "azeroth_165",
-      "count": 2,
-      "_card_name": "Quick Strike"
-    },
-    {
-      "card_def_id": "azeroth_236",
-      "count": 1,
-      "_card_name": "Fa'tafi"
-    },
-    {
       "card_def_id": "azeroth_262",
       "count": 4,
       "_card_name": "Vaerik Proudhoof"
     },
     {
-      "card_def_id": "azeroth_264",
-      "count": 2,
-      "_card_name": "Vesh'ral"
-    },
-    {
-      "card_def_id": "azeroth_240",
-      "count": 4,
-      "_card_name": "Guardian Steelhorn"
-    },
-    {
-      "card_def_id": "azeroth_274",
-      "count": 1,
-      "_card_name": "Zorm Stonefury"
-    },
-    {
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
+    },
+    {
+      "card_def_id": "azeroth_236",
+      "count": 1,
+      "_card_name": "Fa'tafi"
     }
   ],
   "recommended_ai_id": "ai_generic",

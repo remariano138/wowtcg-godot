@@ -4008,28 +4008,23 @@ func _handle_reveal_pick(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
-# AI reveal-pick: keep the highest-cost card, tie-broken by total stats. When
-# `hostile` (the AI is choosing which card the OPPONENT keeps — The Princess
-# Trapped), the ranking inverts: hand them the worst card revealed.
+# AI reveal-pick: keep the MOST VALUABLE card, using the AI's shared value
+# heuristic (BaseAI.sort_valuable_cards — cost + rarity + 0.2*(ATK+HP), then the
+# keyword tiebreaks, then random) rather than raw cost. The revealed cards are in
+# the deck, so allies score on printed ATK/HP. When `hostile` (the AI is choosing
+# which card the OPPONENT keeps — The Princess Trapped), the ranking inverts:
+# hand them the LEAST valuable card revealed.
 func _pick_ai_reveal(candidates: Array, hostile: bool = false) -> String:
 	if candidates.is_empty():
 		return ""
-	var best: String = candidates[0]
-	var best_score := -999999
+	var ids: Array[String] = []
 	for cid: String in candidates:
-		var card := _state.get_card(cid)
-		if not card:
-			continue
-		var def: CardDef = _db.get_def(card.card_def_id) if _db else null
-		if not def:
-			continue
-		var score: int = def.cost * 100 + def.printed_atk + def.printed_health
-		if hostile:
-			score = -score
-		if score > best_score:
-			best_score = score
-			best = cid
-	return best
+		if _state.get_card(cid):
+			ids.append(cid)
+	if ids.is_empty():
+		return ""
+	var ranked := BaseAI.sort_valuable_cards(_state, _db, ids)
+	return ranked[-1] if hostile else ranked[0]
 
 
 func _handle_enter_play_target(payload: Dictionary) -> void:

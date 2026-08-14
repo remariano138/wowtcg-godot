@@ -55,6 +55,11 @@ extends RefCounted
 #       card's condition needs the hero to actually be defending — 602.3), when
 #       the incoming hit is worth the card: attacker ATK > 3 or our hero is
 #       below 10 HP. See evasion_action().
+# Total resources below which the AI won't pay a quest's "destroy this quest"
+# completion cost (Into the Maw of Madness) — the quest is a resource itself, so
+# completing it is a permanent -1 ramp for one card.
+const DESTROY_SELF_QUEST_MIN_RESOURCES := 6
+
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
 	"azeroth_33":  "combat_instant_dmg",   # Arcane Shot — 1 arcane damage + draw a card
@@ -1476,6 +1481,18 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if gate_def and "qmode:each_player_destroys_ally" in gate_def.effects:
 					var qc_opp := "p2" if player_id == "p1" else "p1"
 					if state.cards_in_zone(qc_opp + "_ally_row").is_empty():
+						continue
+			# "Destroy this quest to complete it" (Into the Maw of Madness): the
+			# quest is a RESOURCE while it sits face-up, so the cost is a card
+			# AND a permanent -1 resource. Early on that ramp is worth more than
+			# a card, and a full hand would discard the draw at wrap-up (503.2a).
+			if db:
+				var ds_def := db.get_def(card.card_def_id) as CardDef
+				if ds_def and StackResolver.quest_cost_destroys_self(ds_def):
+					if state.get_total_resources(player_id) < DESTROY_SELF_QUEST_MIN_RESOURCES:
+						continue
+					var ds_hand := state.cards_in_zone(player_id + "_hand").size()
+					if ds_hand >= state.get_max_hand_size(player_id, db):
 						continue
 			# Graveyard-target rewards: announce targets with the completion.
 			# Target choice is an overridable hook (see _choose_graveyard_targets).

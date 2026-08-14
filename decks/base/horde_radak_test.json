@@ -4,6 +4,11 @@
   "hero_card_def_id": "azeroth_13",
   "card_entries": [
     {
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
+    },
+    {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
@@ -17,11 +22,6 @@
       "card_def_id": "azeroth_351",
       "count": 2,
       "_card_name": "A Donation of Wool"
-    },
-    {
-      "card_def_id": "azeroth_344",
-      "count": 1,
-      "_card_name": "For the Horde!"
     },
     {
       "card_def_id": "azeroth_355",

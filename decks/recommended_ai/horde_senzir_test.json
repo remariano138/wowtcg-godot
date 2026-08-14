@@ -4,13 +4,23 @@
   "hero_card_def_id": "azeroth_14",
   "card_entries": [
     {
+      "card_def_id": "azeroth_344",
+      "count": 1,
+      "_card_name": "For the Horde!"
+    },
+    {
+      "card_def_id": "azeroth_353",
+      "count": 1,
+      "_card_name": "Into the Maw of Madness"
+    },
+    {
       "card_def_id": "azeroth_345",
       "count": 2,
       "_card_name": "Torek's Assault"
     },
     {
       "card_def_id": "azeroth_355",
-      "count": 1,
+      "count": 2,
       "_card_name": "Kibler's Exotic Pets"
     },
     {
@@ -20,23 +30,13 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 4,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
-      "card_def_id": "azeroth_358",
-      "count": 1,
-      "_card_name": "Sunken Treasure"
     },
     {
       "card_def_id": "azeroth_350",
       "count": 1,
       "_card_name": "Chasing A-Me 01"
-    },
-    {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
     },
     {
       "card_def_id": "azeroth_331",
@@ -50,7 +50,7 @@
     },
     {
       "card_def_id": "azeroth_311",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ancient Bone Bow"
     },
     {
@@ -64,9 +64,9 @@
       "_card_name": "Bestial Wrath"
     },
     {
-      "card_def_id": "dark_portal_134",
+      "card_def_id": "dark_portal_240",
       "count": 1,
-      "_card_name": "Berserking"
+      "_card_name": "Warcaller Zin'bawa"
     },
     {
       "card_def_id": "azeroth_154",
@@ -97,6 +97,11 @@
       "card_def_id": "azeroth_45",
       "count": 1,
       "_card_name": "Rayder"
+    },
+    {
+      "card_def_id": "azeroth_37",
+      "count": 1,
+      "_card_name": "Eagle Eye"
     },
     {
       "card_def_id": "azeroth_246",

@@ -86,7 +86,8 @@ static func submit_action(state: GameState, action: PendingAction,
 				ps.resource_placed_this_turn = true
 		"use_quest":
 			# Pay the quest's resource cost from the player's resource row.
-			# The quest itself does NOT exhaust — it flips face-down on resolution.
+			# The quest itself does NOT exhaust — it flips face-down on resolution
+			# (or was already destroyed here as its cost, see below).
 			var quest_id: String = action.params.get("quest_id", "")
 			if quest_id != "" and db:
 				var q_card := state.get_card(quest_id)
@@ -101,6 +102,16 @@ static func submit_action(state: GameState, action: PendingAction,
 						if get_quest_ally_exhaust_requirement(def) > 0:
 							for aid in action.params.get("ally_ids", []):
 								events.append_array(GameLogic.exhaust_card(state, str(aid)))
+						# "Destroy this quest to complete it" (Into the Maw of
+						# Madness) is a 412.2 cost too, so the quest hits the
+						# graveyard NOW and only the reward rides the chain: an
+						# opponent who interrupts the link cancels the draw and
+						# the cost stays paid. Un-destroying is impossible, so
+						# the announcement can't be taken back (can_retract).
+						if quest_cost_destroys_self(def):
+							events.append_array(_destroy_card_trigger(
+									state, quest_id, quest_id, db))
+							action.params["_cost_paid_irreversibly"] = true
 		"use_ally_power":
 			# Pay the ally power's resource cost at submission time, same as play_ally.
 			var ap_card_id: String = action.params.get("card_id", "")
@@ -3014,6 +3025,31 @@ static func _resolve_play_instant(state: GameState,
 						var draw_n := int(parts[1]) if parts.size() > 1 else 1
 						for _i in draw_n:
 							events.append_array(_draw_one(state, action.source_player))
+					"reveal_pick":
+						# Eagle Eye: "Look at the top four cards of your deck. Put
+						# one into your hand and the rest on the bottom of your
+						# deck." The quest-reward reveal-pick machinery reached from
+						# a HAND card — same segment grammar, same flags, same
+						# _reveal_pick helper, so the browser UI and the AI's pick
+						# quality come along unchanged. Looking at the deck is not a
+						# draw (410.6b), so an empty deck is a harmless no-op rather
+						# than a loss. The pending choice hard-blocks can_submit /
+						# pass_priority until it is answered, exactly as on a quest.
+						var rp_type := parts[1].strip_edges() if parts.size() > 1 else "Any"
+						var rp_n := int(parts[2]) if parts.size() > 2 else 1
+						var rp_chooser := action.source_player
+						var rp_to_top := false
+						var rp_private := false
+						for rp_i in range(3, parts.size()):
+							match parts[rp_i].strip_edges():
+								"opponent":
+									rp_chooser = _other_player(state, action.source_player)
+								"to_top":
+									rp_to_top = true
+								"private":
+									rp_private = true
+						events.append_array(_reveal_pick(state, action.source_player,
+								rp_type, rp_n, db, rp_chooser, rp_to_top, rp_private))
 					"graveyard_to_play":
 						# Ancestral Spirit: "Put target ally card from your graveyard
 						# into play if its cost <= the number of resources you have.
@@ -5977,6 +6013,27 @@ static func get_quest_ally_exhaust_requirement(def: CardDef) -> int:
 	return 0
 
 
+# Completion COST paid by destroying the quest itself (Into the Maw of Madness:
+# "Destroy Into the Maw of Madness to complete this quest"). Unlike the
+# sacrifice_self EXTRACOST on an activated power — which is deliberately paid at
+# resolution so a source killed in response no-ops it — this is a hand-card-style
+# additional cost paid at ANNOUNCEMENT (rule 412.2, like The Love Potion's
+# exhaust): the quest is already in the graveyard while the reward sits on the
+# chain, so an opponent interrupting the link cancels the reward and the cost
+# stays paid. It also makes the announcement non-retractable (see can_retract) —
+# a destroyed card can't be un-destroyed.
+#
+# Note the quest is a RESOURCE while it sits face-up in the resource row, so this
+# cost is permanently -1 resource on top of the card itself.
+static func quest_cost_destroys_self(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges() == "complete_cost_destroy_self":
+			return true
+	return false
+
+
 # Allies that could pay an "exhaust N allies" quest cost: every READY card in the
 # player's ally row (totems included — they are allies in the party).
 static func get_quest_exhaust_candidates(state: GameState,
@@ -6167,7 +6224,13 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 		db = null) -> Array[GameEvent]:
 	var quest_id: String = action.params.get("quest_id", "")
 	var card := state.get_card(quest_id)
-	if not card or card.face_down:
+	var q_def0 := db.get_def(card.card_def_id) as CardDef if (card and db) else null
+	# A quest whose completion cost was destroying ITSELF (Into the Maw of Madness)
+	# is already in the graveyard by now — it was paid at announcement (412.2), so
+	# the "already used" guard and the face-down flip below are both meaningless
+	# for it. What still resolves off the chain is the reward.
+	var destroy_self := q_def0 != null and quest_cost_destroys_self(q_def0)
+	if not card or (card.face_down and not destroy_self):
 		return [GameEvent.make("action_fizzled", {
 			"action_type": "use_quest", "reason": "quest_already_used",
 		})]
@@ -6175,7 +6238,8 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 	var events: Array[GameEvent] = []
 
 	# Flip the quest face-down — it becomes a blank resource (no longer completable).
-	card.face_down = true
+	if not destroy_self:
+		card.face_down = true
 	events.append(GameEvent.make("quest_completed", {
 		"quest_id": quest_id,
 		"player":   action.source_player,

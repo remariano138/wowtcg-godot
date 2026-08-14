@@ -540,7 +540,11 @@ func _on_game_event(event: GameEvent) -> void:
 					cn.show_card_back()
 		"quest_completed":
 			var cn := card_nodes.get(event.payload.get("quest_id", "")) as CardNode
-			if cn:
+			# A quest whose completion cost was destroying itself (Into the Maw of
+			# Madness) is in a graveyard by the time this fires — there is no
+			# face-down resource to show, and flipping the graveyard node would
+			# hide a card that is public information there.
+			if cn and _zone_of_card(event.payload.get("quest_id", "")) in RESOURCE_ZONES:
 				cn.show_card_back()
 			# face_down is part of the pile key, but completing a quest changes no
 			# pose (the cost is paid by OTHER resources), so nothing else regroups

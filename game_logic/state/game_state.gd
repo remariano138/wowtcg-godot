@@ -459,6 +459,19 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 		elif parts[0] == "atk_per_damage_self":
 			var per_damage := int(parts[1]) if parts.size() > 1 else 1
 			atk += per_damage * inst.damage_taken
+		elif parts[0] == "atk_per_damage_party":
+			# Warcaller Zin'bawa: "+N ATK for each damage on allies in your
+			# party." Live read of every card in the controller's ally_row —
+			# the source itself included (he is an ally in your party), totems
+			# too (305.3a). Heroes are not allies, so hero damage never counts,
+			# and the scan is controller-scoped, so opposing damage doesn't
+			# either. Never cached: the bonus moves the instant damage lands,
+			# is healed, or an ally leaves play — mid-combat included.
+			var per_dmg := int(parts[1]) if parts.size() > 1 else 1
+			var party_damage := 0
+			for ally in cards_in_zone(inst.controller + "_ally_row"):
+				party_damage += ally.damage_taken
+			atk += per_dmg * party_damage
 		elif parts[0] == "atk_vs_exhausted_defender":
 			# Bala Silentblade: "+N ATK while attacking an exhausted hero or
 			# ally." Live continuous modifier — only while this card is the

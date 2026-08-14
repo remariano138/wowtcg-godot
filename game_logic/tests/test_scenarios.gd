@@ -82,6 +82,9 @@ func _ready() -> void:
 		_test_chasing_ame_graveyard_to_hand,
 		_test_chasing_ame_blocked_and_filtered,
 		_test_love_potion_exhaust_cost,
+		_test_maw_of_madness_destroy_cost,
+		_test_maw_of_madness_reward_cancelled,
+		_test_ai_maw_of_madness_gate,
 		_test_sunken_treasure_equipment_to_hand,
 		_test_finkle_einhorn_graveyard_to_play,
 		_test_ancestral_spirit_reanimate,
@@ -92,6 +95,8 @@ func _ready() -> void:
 		_test_reveal_pick_no_match_all_to_bottom,
 		_test_reveal_pick_blocks_other_actions,
 		_test_reveal_pick_to_top,
+		_test_eagle_eye_look_at_four,
+		_test_eagle_eye_blocks_and_short_deck,
 		_test_princess_trapped_opponent_chooses,
 		_test_darrowshire_rfg_three_allies,
 		_test_darrowshire_blocked_with_too_few_allies,
@@ -175,6 +180,7 @@ func _ready() -> void:
 		_test_from_the_shadows_all_allies_elusive,
 		_test_protect_the_master_pet_protector,
 		_test_hootie_opposing_atk_aura,
+		_test_warcaller_zinbawa_atk_per_party_damage,
 		_test_brigg_destroys_damaged_ally,
 		_test_ai_brigg_combat_math,
 		_test_war_stomp_mass_exhaust,
@@ -4167,6 +4173,126 @@ func _test_chasing_ame_graveyard_to_hand() -> void:
 # the completion and exhausted on chain entry (rule 412.2), so they must be
 # ready allies of the completer, must be two DISTINCT ones, and come back ready
 # if the completion is retracted.
+func _test_maw_of_madness_destroy_cost() -> void:
+	_buf.append("\n-- Into the Maw of Madness: destroy the quest as its completion cost --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("maw_def", 0, "complete_cost_destroy_self|draw:1")
+	db.ally("body_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var quest := CardInstance.create("maw_inst", "maw_def", "p1", "p1_resource_row")
+	state.cards["maw_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("maw_inst")
+	var top := CardInstance.create("deck_top", "body_def", "p1", "p1_deck")
+	state.cards["deck_top"] = top
+	state.zones["p1_deck"].card_ids.append("deck_top")
+
+	ok(StackResolver.quest_cost_destroys_self(db.get_def("maw_def")),
+		"maw-a: self-destroy completion cost parsed")
+	# The face-up quest is itself a resource, so p1 has three.
+	eq(state.get_available_resources("p1"), 3, "maw-b: the face-up quest counts as a resource")
+	ok(StackResolver.can_use_quest_no_target_check(state, "maw_inst", "p1", db),
+		"maw-c: completable with no resources to pay")
+
+	# Announce: rule 412.2 — the cost is paid NOW, so the quest is already in the
+	# graveyard while only the reward rides the chain.
+	ok(not StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "maw_inst"}), db).is_empty(), "maw-d: completion submits")
+	eq(state.get_card("maw_inst").zone_id, "p1_graveyard",
+		"maw-e: quest destroyed at announcement (412.2)")
+	eq(state.get_available_resources("p1"), 2,
+		"maw-f: completing costs a resource permanently")
+	eq(state.get_card("deck_top").zone_id, "p1_deck",
+		"maw-g: the reward has NOT happened yet — it is still on the chain")
+	ok(not StackResolver.can_retract(state, "p1"),
+		"maw-h: a destroyed quest can't be un-destroyed, so the announce is final")
+
+	# Both pass → the reward resolves.
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("deck_top").zone_id, "p1_hand", "maw-i: reward drew a card")
+	eq(state.get_card("maw_inst").zone_id, "p1_graveyard",
+		"maw-j: quest stays in the graveyard (never a face-down resource)")
+	ok(not state.get_card("maw_inst").face_down,
+		"maw-k: no face-down flip — the card is not in the resource row")
+
+
+func _test_maw_of_madness_reward_cancelled() -> void:
+	_buf.append("\n-- Into the Maw of Madness: cancelling the reward leaves the cost paid --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("maw_def", 0, "complete_cost_destroy_self|draw:1")
+	db.ally("body_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var quest := CardInstance.create("maw_inst", "maw_def", "p1", "p1_resource_row")
+	state.cards["maw_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("maw_inst")
+	var top := CardInstance.create("deck_top", "body_def", "p1", "p1_deck")
+	state.cards["deck_top"] = top
+	state.zones["p1_deck"].card_ids.append("deck_top")
+
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "maw_inst"}), db)
+	# Stand in for an opponent's interrupt (rule 711): the link is removed from the
+	# chain before it resolves. The cost is NOT refunded (711.2).
+	state.pending_actions.clear()
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("deck_top").zone_id, "p1_deck",
+		"mawc-a: an interrupted reward draws nothing")
+	eq(state.get_card("maw_inst").zone_id, "p1_graveyard",
+		"mawc-b: the quest stays destroyed — costs paid are not refunded (711.2)")
+
+	# And it can't be completed twice: the card is no longer a face-up resource.
+	ok(not StackResolver.can_submit(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "maw_inst"}), db), "mawc-c: a destroyed quest can't be re-completed")
+
+
+func _test_ai_maw_of_madness_gate() -> void:
+	_buf.append("\n-- AI: Into the Maw of Madness is held while the resource is worth more --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("maw_def", 0, "complete_cost_destroy_self|draw:1")
+	db.ally("body_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.phase = "action"
+	state.turn_player = "p1"
+	state.priority_player = "p1"
+	_add_resources(state, "p1", 3)
+	var quest := CardInstance.create("maw_inst", "maw_def", "p1", "p1_resource_row")
+	state.cards["maw_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("maw_inst")
+	var top := CardInstance.create("deck_top", "body_def", "p1", "p1_deck")
+	state.cards["deck_top"] = top
+	state.zones["p1_deck"].card_ids.append("deck_top")
+
+	var ai := BaseAI.new()
+	var has_quest := func() -> bool:
+		for a in ai.get_reasonable_actions(state, db, "p1"):
+			if a.action_type == "use_quest" and a.params.get("quest_id", "") == "maw_inst":
+				return true
+		return false
+	ok(not has_quest.call(), "aimaw-a: held at 4 resources — ramp beats a card")
+
+	# Top up past the threshold (the quest itself is one of them).
+	_add_resources(state, "p1", 3)
+	ok(has_quest.call(), "aimaw-b: completed once resources are no longer scarce")
+
+	# A full hand would discard the drawn card at wrap-up (503.2a) — not worth it.
+	for i in state.get_max_hand_size("p1", db):
+		var h := CardInstance.create("hand_%d" % i, "body_def", "p1", "p1_hand")
+		state.cards[h.instance_id] = h
+		state.zones["p1_hand"].card_ids.append(h.instance_id)
+	ok(not has_quest.call(), "aimaw-c: held on a full hand")
+
+
 func _test_love_potion_exhaust_cost() -> void:
 	_buf.append("\n-- The Love Potion: exhaust two allies as a completion cost --")
 	var db := MockDB.new()
@@ -4473,6 +4599,113 @@ func _test_reveal_pick_takes_matching_card() -> void:
 		if ev.event_type == "reveal_pick_resolved" and ev.payload.get("card_id", "") == "d_eq":
 			resolved = true
 	ok(resolved, "revealpick-h: reveal_pick_resolved emitted")
+
+
+func _eagle_eye_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# Eagle Eye (azeroth_37), 2, Instant Ability — Beast Mastery: "Look at the top
+	# four cards of your deck. Put one into your hand and the rest on the bottom
+	# of your deck."
+	db.instant("eagle_def", 2, "reveal_pick:Any:4:private", "Beast Mastery")
+	db.ally("ally_def", 2, 2, [], 3)
+	return db
+
+
+func _test_eagle_eye_look_at_four() -> void:
+	_buf.append("\n-- Eagle Eye: look at top 4, one to hand, rest to bottom in order --")
+	var db := _eagle_eye_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	_add_card_to_hand(state, "eagle", "eagle_def", "p1")
+
+	# Deck top→down: four cards seen, a fifth that must NOT be revealed.
+	for cid in ["d1", "d2", "d3", "d4", "d_bottom"]:
+		var c := CardInstance.create(cid, "ally_def", "p1", "p1_deck")
+		state.cards[cid] = c
+		state.zones["p1_deck"].card_ids.append(cid)
+
+	var events := StackResolver.submit_action(state, PendingAction.make(
+		"play_instant", "p1", {"card_id": "eagle"}), db)
+	events.append_array(StackResolver.pass_priority(state, db))
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	eq(state.pending_reveal_pick_player, "p1", "eagle-a: pending choice belongs to p1")
+	eq(state.pending_reveal_pick_chooser, "p1", "eagle-b: the caster makes the pick")
+	# "Any" — every revealed card is selectable.
+	eq(state.pending_reveal_pick_ids, ["d1", "d2", "d3", "d4"],
+		"eagle-c: all four revealed cards are selectable")
+	ok(state.pending_reveal_pick_private, "eagle-d: 'look at' is private, not a reveal")
+	ok(not state.pending_reveal_pick_to_top, "eagle-e: the pick goes to hand, not the deck top")
+	var opened := false
+	for ev in events:
+		if ev.event_type == "reveal_pick_opened":
+			opened = true
+	ok(opened, "eagle-f: reveal_pick_opened emitted")
+	eq(state.get_card("d_bottom").zone_id, "p1_deck", "eagle-g: the 5th card was not looked at")
+	# Looking at the deck is not a draw (410.6b) — nobody is decked by this.
+	ok(state.decked_players.is_empty(), "eagle-h: looking at cards is not a draw")
+
+	# Keep the third card.
+	var res := StackResolver.choose_reveal_pick(state, "d3", db)
+	eq(state.pending_reveal_pick_player, "", "eagle-i: pending cleared after the pick")
+	eq(state.get_card("d3").zone_id, "p1_hand", "eagle-j: the chosen card is in hand")
+	# The rest go to the bottom, below d_bottom, in revealed order.
+	eq(state.zones["p1_deck"].card_ids, ["d_bottom", "d1", "d2", "d4"],
+		"eagle-k: the rest are pushed to the bottom in revealed order")
+	var resolved := false
+	for ev in res:
+		if ev.event_type == "reveal_pick_resolved" and ev.payload.get("card_id", "") == "d3":
+			resolved = true
+	ok(resolved, "eagle-l: reveal_pick_resolved emitted")
+	# Eagle Eye is a plain (non-ongoing) Ability: it resolves to the graveyard.
+	eq(state.get_card("eagle").zone_id, "p1_graveyard", "eagle-m: Eagle Eye is in the graveyard")
+
+
+func _test_eagle_eye_blocks_and_short_deck() -> void:
+	_buf.append("\n-- Eagle Eye: pending pick blocks priority; short/empty deck --")
+	var db := _eagle_eye_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "eagle", "eagle_def", "p1")
+	_add_card_to_hand(state, "eagle2", "eagle_def", "p1")
+
+	# Only two cards in the deck — a short deck reveals what it has, not four.
+	for cid in ["s1", "s2"]:
+		var c := CardInstance.create(cid, "ally_def", "p1", "p1_deck")
+		state.cards[cid] = c
+		state.zones["p1_deck"].card_ids.append(cid)
+
+	StackResolver.submit_action(state, PendingAction.make(
+		"play_instant", "p1", {"card_id": "eagle"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_reveal_pick_ids, ["s1", "s2"], "eagle-n: a short deck reveals only what it has")
+
+	# The pending choice hard-blocks everything else until it is answered.
+	ok(not StackResolver.can_submit(state, PendingAction.make(
+		"play_instant", "p1", {"card_id": "eagle2"}), db),
+		"eagle-o: can_submit is blocked while the pick is pending")
+	var passes := StackResolver.pass_priority(state, db)
+	ok(passes.is_empty(), "eagle-p: pass_priority is blocked while the pick is pending")
+	eq(state.pending_reveal_pick_player, "p1", "eagle-q: the choice is still pending")
+
+	StackResolver.choose_reveal_pick(state, "s1", db)
+	eq(state.get_card("s1").zone_id, "p1_hand", "eagle-r: the pick landed in hand")
+	eq(state.zones["p1_deck"].card_ids, ["s2"], "eagle-s: the other card went to the bottom")
+
+	# An EMPTY deck is a harmless no-op: nothing to look at, no choice, no loss.
+	state.zones["p1_deck"].card_ids.clear()
+	state.get_card("s2").zone_id = "p1_rfg"
+	state.zones["p1_rfg"].card_ids.append("s2")
+	StackResolver.submit_action(state, PendingAction.make(
+		"play_instant", "p1", {"card_id": "eagle2"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.zones["p1_deck"].card_ids.size(), 0, "eagle-t: the deck is empty")
+	eq(state.pending_reveal_pick_player, "", "eagle-u: no choice opens on an empty deck")
+	ok(state.decked_players.is_empty(), "eagle-v: an empty deck alone is not a loss")
 
 
 func _test_reveal_pick_to_top() -> void:
@@ -20384,6 +20617,66 @@ func _test_hootie_opposing_atk_aura() -> void:
 	# Sanity: the aura had nothing to do with the ally itself, so a card that
 	# arrives after the source is gone is unaffected as well.
 	eq(hootie.zone_id, "p2_graveyard", "hoot-o: Hootie really left play")
+
+
+# Warcaller Zin'bawa (dark_portal_240): "+1 ATK for each damage on allies in
+# your party." A live self-modifier read off the controller's ally_row — the
+# source included, totems included (305.3a), heroes and the opponent's board
+# excluded. Never cached, so it tracks damage, healing and allies leaving play.
+func _test_warcaller_zinbawa_atk_per_party_damage() -> void:
+	_buf.append("\n-- Warcaller Zin'bawa: +1 ATK per damage on allies in your party --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_240", 0, 5, ["protector"], 3,
+		"requires_hero_race:Troll|atk_per_damage_party:1")
+	db.ally("grunt_def", 3, 5, [], 2)
+	db.totem("totem_def", 1, "ongoing|totem:fire", 3)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var zin := _add_ally(state, "zin", "dark_portal_240", "p1")
+	var grunt := _add_ally(state, "grunt", "grunt_def", "p1")
+	var theirs := _add_ally(state, "theirs", "grunt_def", "p2")
+
+	eq(state.get_atk("zin", db), 0, "zin-a: 0 printed ATK on an undamaged board")
+	ok("zin" in StackResolver.get_legal_attackers(state, "p1", db),
+		"zin-b: a 0-ATK ALLY is still a legal attacker (only heroes are gated)")
+
+	# Damage on another ally in our party.
+	GameLogic.deal_damage(state, "p2_hero", "grunt", 2, db)
+	eq(state.get_atk("zin", db), 2, "zin-c: +1 per damage on a friendly ally")
+
+	# Damage on himself counts too — he is an ally in your party.
+	GameLogic.deal_damage(state, "p2_hero", "zin", 1, db)
+	eq(state.get_atk("zin", db), 3, "zin-d: his own damage counts as well")
+
+	# Our HERO is not an ally, and the opponent's board is not our party.
+	GameLogic.deal_damage(state, "p2_hero", "p1_hero", 4, db)
+	GameLogic.deal_damage(state, "p1_hero", "theirs", 3, db)
+	eq(state.get_atk("zin", db), 3,
+		"zin-e: hero damage and opposing ally damage are both ignored")
+	eq(state.get_atk("grunt", db), 3, "zin-f: the bonus is his alone, not a party aura")
+	eq(theirs.damage_taken, 3, "zin-g: the opposing ally really is damaged")
+
+	# A Totem is an ability ALLY (305.3a) and sits in the ally_row, so its
+	# damage counts like any other ally's.
+	var totem := CardInstance.create("tot", "totem_def", "p1", "p1_ally_row")
+	state.cards["tot"] = totem
+	state.zones["p1_ally_row"].card_ids.append("tot")
+	GameLogic.deal_damage(state, "p2_hero", "tot", 2, db)
+	eq(state.get_atk("zin", db), 5, "zin-h: damage on a friendly totem counts too")
+
+	# Live read: healing shrinks it, and an ally leaving play takes its damage
+	# with it. Nothing is cached anywhere.
+	GameLogic.heal(state, "grunt", 1, db)
+	eq(state.get_atk("zin", db), 4, "zin-i: healing an ally lowers the bonus")
+	GameLogic.move_card(state, "grunt", "p1_graveyard")
+	eq(state.get_atk("zin", db), 3, "zin-j: an ally leaving play removes its damage")
+	eq(grunt.zone_id, "p1_graveyard", "zin-k: the ally really left play")
+
+	# It is a real ATK total, so combat uses it: 3 ATK now kills a 3-health body.
+	eq(state.get_atk_if_attacking("zin", db), 3,
+		"zin-l: the attack forecast sees the same live total")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

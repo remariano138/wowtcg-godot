@@ -677,6 +677,26 @@ static func shuffle_hand_into_deck_and_draw(state: GameState,
 	return events
 
 
+# ── shuffle_graveyard_into_deck ───────────────────────────────────────────────
+# Blueleaf Tubers: "Shuffle your graveyard into your deck." Every card in a
+# player's graveyard is owned by that player (415.9d puts a destroyed card in its
+# OWNER's graveyard), so this needs no per-card owner check — the whole zone goes
+# home. Not a draw and not a search: nobody looks at anything, so 410.6b can't
+# fire here and no reveal is owed.
+static func shuffle_graveyard_into_deck(state: GameState,
+		player_id: String) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	for card in state.cards_in_zone(player_id + "_graveyard").duplicate():
+		events.append_array(move_card(state, card.instance_id, player_id + "_deck"))
+	var deck := state.zones.get(player_id + "_deck") as Zone
+	if deck:
+		deck.card_ids.shuffle()
+	# Emitted even on an empty graveyard: shuffling a deck nobody added to is
+	# still a shuffle, and the order genuinely changes.
+	events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
+	return events
+
+
 # ── discard_card ───────────────────────────────────────────────────────────────
 # Rule 415.9e: reveal a card from hand, then put it into its owner's graveyard.
 # Only works on cards in hand. Use this for effects that say "discard a card".

@@ -125,6 +125,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var flash := instant_protector_action(state, db, player_id)
 	if flash != null:
 		return flash
+	# Dragonkin Menace (BaseAI) — ready a spent protector while attacked.
+	var ready_quest := ready_protector_quest_action(state, db, player_id)
+	if ready_quest != null:
+		return ready_quest
 	var dodge := evasion_action(state, db, player_id)
 	if dodge != null:
 		return dodge
@@ -2118,6 +2122,91 @@ func _hand_is_dead(state: GameState, db, player_id: String) -> bool:
 # Hidden Enemies: pick the ally that gains ferocity this turn — our highest-ATK
 # summoning-sick ally, else (forced pick) our highest-value legal ally, else
 # whatever is legal.
+# ── Dragonkin Menace: ready a spent protector mid-attack ──────────────────────
+# "During an opponent's turn, pay (3) to complete this quest. Reward: Ready a
+# hero or ally in your party." The completion is legal at any priority in the
+# opponent's turn, so the AI has to be told WHEN it is worth 3 resources. The
+# heuristic is deliberately narrow: an opposing attack is underway and we hold
+# an EXHAUSTED PROTECTOR. Readying it during the attack window puts it back on
+# its feet before the protect point (602.2), so it blocks this attack; readying
+# it later still buys a block against the opponent's next attack this turn.
+#
+# This deliberately misses the card's other use — refunding a spent [Activate]
+# power for a second use in one round. Whether a second use is worth 3 resources
+# is card-specific and hard to judge, while a re-usable protector is almost
+# always good, so only the protector case is modeled.
+func ready_protector_quest_action(state: GameState, db,
+		player_id: String) -> PendingAction:
+	if not db or state.turn_player == player_id:
+		return null
+	if not _opposing_attack_underway(state, player_id):
+		return null
+	# Something worth readying: an exhausted PROTECTOR ally in our own party.
+	var have_protector := false
+	for cid in StackResolver.get_quest_ready_candidates(state, player_id):
+		var card := state.get_card(cid)
+		if card and card.zone_id == player_id + "_ally_row" 				and StackResolver._has_keyword(card, "protector", db, state):
+			have_protector = true
+			break
+	if not have_protector:
+		return null
+	for quest in state.cards_in_zone(player_id + "_resource_row"):
+		if quest.face_down:
+			continue
+		var def := db.get_def(quest.card_def_id) as CardDef
+		if not def or def.card_type != "Quest":
+			continue
+		if not StackResolver.requires_opponent_turn(def):
+			continue
+		if not ("ready_party_character" in def.effects):
+			continue
+		var action := PendingAction.make("use_quest", player_id,
+				{"quest_id": quest.instance_id})
+		if StackResolver.can_submit(state, action, db):
+			return action
+	return null
+
+
+# Is the opponent attacking us right now — a combat proposal of theirs still on
+# the chain, or an open attack/defend window whose attacker is theirs?
+func _opposing_attack_underway(state: GameState, player_id: String) -> bool:
+	for pending in state.pending_actions:
+		var p := pending as PendingAction
+		if p and p.action_type == "propose_combat" and p.source_player != player_id:
+			return true
+	if state.combat_attack_window or state.combat_defend_window:
+		var attacker := state.get_card(state.combat_attacker)
+		if attacker and attacker.controller != player_id:
+			return true
+	return false
+
+
+func choose_quest_ready_target(state: GameState, db,
+		player_id: String) -> String:
+	var legal := StackResolver.get_quest_ready_candidates(state, player_id)
+	if legal.is_empty():
+		return ""
+	# A spent PROTECTOR is what the quest is for (see ready_protector_quest_action):
+	# readying one during the opponent's turn buys another block this combat.
+	var protectors: Array[String] = []
+	var others: Array[String] = []
+	var hero := state.get_hero(player_id)
+	var hero_id: String = hero.instance_id if hero else ""
+	for cid in legal:
+		if cid == hero_id:
+			continue   # the hero is the last resort — see below
+		var card := state.get_card(cid)
+		if card and StackResolver._has_keyword(card, "protector", db, state):
+			protectors.append(cid)
+		else:
+			others.append(cid)
+	if not protectors.is_empty():
+		return sort_valuable_cards(state, db, protectors)[0]
+	if not others.is_empty():
+		return sort_valuable_cards(state, db, others)[0]
+	return legal[0]
+
+
 func choose_quest_ferocity_target(state: GameState, db,
 		player_id: String) -> String:
 	var best := _best_ferocity_target(state, db, player_id, true)

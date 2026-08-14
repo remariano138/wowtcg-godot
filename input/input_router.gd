@@ -858,6 +858,13 @@ func start_quest_ferocity_targeting(quest_id: String) -> void:
 	start_targeting(quest_id, "choose_quest_ferocity", "", 0)
 
 
+# Convenience wrapper for Dragonkin Menace's "ready a hero or ally in your party"
+# reward pick. Mandatory — Esc is absorbed while this targeting is active. The
+# pool is a CHOICE rather than a target, so Untargetable characters are offered.
+func start_quest_ready_targeting(quest_id: String) -> void:
+	start_targeting(quest_id, "choose_quest_ready", "", 0)
+
+
 # A New Plague: mandatory "destroy an ally in your party" pick (red highlights,
 # like the pet sacrifice).
 func start_plague_destroy_mode(candidate_ids: Array) -> void:
@@ -1062,6 +1069,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"choose_trigger_target":       _handle_trigger_targeting_click(instance_id)
 		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
 		"choose_quest_ferocity":     _handle_quest_ferocity_targeting_click(instance_id)
+		"choose_quest_ready":        _handle_quest_ready_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
@@ -1129,6 +1137,15 @@ func _handle_quest_ferocity_targeting_click(instance_id: String) -> void:
 	# Hidden Enemies reward pick. Mandatory, direct-call resolution (no chain).
 	if instance_id in StackResolver.get_quest_ferocity_targets(state, db):
 		var events := StackResolver.choose_quest_ferocity_target(state, instance_id, db)
+		cancel_targeting()
+		EventBus.emit_events(events)
+		quest_flow_resolved.emit()
+
+
+func _handle_quest_ready_targeting_click(instance_id: String) -> void:
+	# Dragonkin Menace reward pick. Mandatory, direct-call resolution (no chain).
+	if instance_id in StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player):
+		var events := StackResolver.choose_quest_ready_target(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
 		quest_flow_resolved.emit()
@@ -1664,6 +1681,8 @@ func get_playable_card_ids() -> Array:
 				return StackResolver.get_death_target_targets(state, db)
 			"choose_quest_ferocity":
 				return StackResolver.get_quest_ferocity_targets(state, db)
+			"choose_quest_ready":
+				return StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player)
 			"choose_attack_exhaust":
 				return StackResolver.get_attack_exhaust_targets(state, db)
 			"play_instant":

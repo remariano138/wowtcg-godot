@@ -504,6 +504,15 @@ static func quest_ferocity_target_required(quest_id: String,
 		"quest_id": quest_id, "player": player_id,
 	})
 
+# Dragonkin Menace: the completer must choose a hero or ally in their own party
+# to ready. A CHOICE, not a target — every character in the party is eligible,
+# Untargetable ones included.
+static func quest_ready_target_required(quest_id: String,
+		player_id: String) -> GameEvent:
+	return make("quest_ready_target_required", {
+		"quest_id": quest_id, "player": player_id,
+	})
+
 static func ferocity_granted(card_id: String, source_id: String) -> GameEvent:
 	return make("ferocity_granted", {
 		"card_id": card_id, "source_id": source_id,

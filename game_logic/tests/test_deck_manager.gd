@@ -22,6 +22,7 @@ func _ready() -> void:
 	_test_roundtrip_serialization()
 	_test_ai_profiles()
 	_test_make_ai_for_deck()
+	_test_tokens_csv_loads()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -72,6 +73,25 @@ func _test_validate_rejects_bad_decks() -> void:
 	deck.card_entries.append(DeckCardEntry.make("azeroth_197", 50))
 	_check(DeckManager.validate_deck(deck).is_empty(), "hero + 60 cards -> valid")
 	_check(DeckManager.load_deck("no_such_deck") == null, "unknown deck id -> null")
+
+
+# Every token an effect can mint must actually resolve in the real database.
+# A malformed tokens.csv row fails the column-count check and is SKIPPED with a
+# push_warning, so the token would silently not exist and the effect that creates
+# it would no-op — this is the only place that catches that.
+func _test_tokens_csv_loads() -> void:
+	var db := _make_db()
+	for token_id in ["token_mechanical_dragonling", "token_tooga",
+			"token_mechanical_yeti"]:
+		var def := db.get_def(token_id) as CardDef
+		if def == null:
+			_check(false, "%s resolves in the database" % token_id)
+			continue
+		_check(def.is_token, "%s is flagged as a token" % token_id)
+		_check(def.card_type == "Ally", "%s is an Ally (got '%s')"
+			% [token_id, def.card_type])
+		_check(def.printed_atk == 1 and def.printed_health == 1,
+			"%s is 1/1 (got %d/%d)" % [token_id, def.printed_atk, def.printed_health])
 
 
 func _make_db() -> CardDatabase:

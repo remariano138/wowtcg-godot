@@ -309,6 +309,10 @@ var quest_mode_queue: Array = []               # [{player, quest_id, mode}] — 
 # Hidden Enemies "Target ally has ferocity this turn": completer picks the ally.
 var pending_quest_ferocity_player: String = ""
 var pending_quest_ferocity_source: String = ""  # quest instance id (buff source / UI)
+# Dragonkin Menace "Reward: Ready a hero or ally in your party": the completer
+# CHOOSES one of their own characters (not a target — Untargetable is irrelevant).
+var pending_quest_ready_player: String = ""
+var pending_quest_ready_source: String = ""     # quest instance id (UI)
 # A New Plague "each player destroys an ally in his party": each player with an
 # ally picks their own sacrifice; completer first, drained front-first.
 var pending_plague_destroy_player: String = ""

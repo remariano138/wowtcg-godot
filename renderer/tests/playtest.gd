@@ -3285,6 +3285,12 @@ func _on_game_event(event: GameEvent) -> void:
 					event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
 			_drain_passes()
+		"deck_shuffled":
+			# Every in-game shuffle goes through this event (a 413.2 post-search
+			# shuffle, Crown of the Earth, Blueleaf Tubers). Setup and mulligan
+			# shuffle the deck without emitting it, so this never fires on a
+			# screen the player isn't watching a shuffle on.
+			SoundManager.play_random("SFX_DeckShuffle")
 		"card_moved":
 			# A card drawn from deck needs a fresh CardNode spawned at the hand anchor.
 			var to_zone: String   = event.payload.get("to", "")
@@ -3437,6 +3443,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_quest_choice(event.payload)
 		"quest_ferocity_target_required":
 			_handle_quest_ferocity_target(event.payload)
+		"quest_ready_target_required":
+			_handle_quest_ready_target(event.payload)
 		"plague_destroy_required":
 			_handle_plague_destroy(event.payload)
 		"quest_facedown_required":
@@ -4485,6 +4493,30 @@ func _handle_quest_ferocity_target(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
+# Dragonkin Menace: the completer readies a hero or ally in their own party.
+# Board-public (everything involved is in play), so the off-screen hotseat
+# player is prompted inline like every other public choice.
+func _handle_quest_ready_target(payload: Dictionary) -> void:
+	var player: String   = payload.get("player", "")
+	var quest_id: String = payload.get("quest_id", "")
+	if _route_choice(player, "public") == "ai":
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		var target_id := ""
+		if ai_obj is BaseAI:
+			target_id = (ai_obj as BaseAI).choose_quest_ready_target(_state, _db, player)
+		else:
+			var legal := StackResolver.get_quest_ready_candidates(_state, player)
+			target_id = legal[0] if not legal.is_empty() else ""
+		var events := StackResolver.choose_quest_ready_target(_state, target_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_quest_ready_targeting(quest_id)
+		_set_status("🐉 Select a hero or ally in your party to ready")
+		_refresh_ui()
+
+
 # A New Plague: the pending player destroys an ally in their own party.
 func _handle_plague_destroy(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
@@ -4614,6 +4646,10 @@ func _on_targeting_cancelled() -> void:
 	# cancel somehow fired while it is pending, restart targeting.
 	if _state and _state.pending_quest_ferocity_player != "":
 		_router.start_quest_ferocity_targeting(_state.pending_quest_ferocity_source)
+		return
+	# Dragonkin Menace's ready pick is mandatory too — restart it on a stray cancel.
+	if _state and _state.pending_quest_ready_player != "":
+		_router.start_quest_ready_targeting(_state.pending_quest_ready_source)
 		return
 	# A Boneshanks death trigger is mandatory ("destroy target ally") whenever a
 	# legal ally exists — the player can't bow out. Restart targeting if still pending.

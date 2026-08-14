@@ -5998,6 +5998,21 @@ static func get_quest_ally_count_requirement(def: CardDef) -> int:
 	return 0
 
 
+# Counterattack!-style condition: an OPPONENT's party must hold strictly more
+# allies than the completer's. The mirror of require_ally_count (The Defias
+# Brotherhood) — same "While …, pay (N) to complete this quest" wording, so like
+# that gate it is checked at ANNOUNCEMENT only: it restricts using the completion
+# power, it is not a target, and nothing re-checks it at resolution.
+# "Allies in a party" is the ally_row, totems included (305.3a).
+static func quest_requires_opponent_more_allies(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges() == "require_opponent_more_allies":
+			return true
+	return false
+
+
 # Extra completion COST paid in exhausted allies (The Love Potion: "Exhaust two
 # allies in your party and pay (1) to complete this quest"). Returns 0 when the
 # quest has no such cost. The allies are announced WITH the completion (like the
@@ -6075,6 +6090,21 @@ static func requires_turn_player(def: CardDef) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		if entry.strip_edges() == "require_turn_player":
+			return true
+	return false
+
+
+# "During an opponent's turn" (Dragonkin Menace) — the mirror of
+# require_turn_player, and a real printed restriction rather than an engine-only
+# lockout. Like that gate it restricts the TURN and nothing else: the completion
+# stays instant-speed, so it is legal in the opponent's combat windows and in
+# response to a link already on the chain — which is the whole card, since a
+# character readied outside your own turn is one that can protect again.
+static func requires_opponent_turn(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges() == "require_opponent_turn":
 			return true
 	return false
 
@@ -6182,6 +6212,14 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 	if ally_req > 0 \
 			and state.cards_in_zone(action.source_player + "_ally_row").size() < ally_req:
 		return false
+	# Counterattack!: "While there are more allies in an opponent's party than in
+	# yours" — strictly more, so an equal board doesn't qualify. In a duel there
+	# is exactly one opponent, so nothing is chosen.
+	if quest_requires_opponent_more_allies(def):
+		var own_allies := state.cards_in_zone(action.source_player + "_ally_row").size()
+		var opp_id := _other_player(state, action.source_player)
+		if state.cards_in_zone(opp_id + "_ally_row").size() <= own_allies:
+			return false
 	# Torek's Assault-style condition: opposing hero damaged by our ally this
 	# turn. Read from the turn event log (see game_logic/turn_state_flags.md);
 	# the snapshot fields answer "was the source OUR ally at the moment the
@@ -6200,6 +6238,10 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 			return false
 	# Engine-only deviation — see data/rules_deviations.md.
 	if quest_requires_turn_player(def) and state.turn_player != action.source_player:
+		return false
+	# Dragonkin Menace: "During an opponent's turn" — the printed mirror of the
+	# gate above.
+	if requires_opponent_turn(def) and state.turn_player == action.source_player:
 		return false
 	# Graveyard-target rewards: targets are announced with the completion (rule 601-style
 	# targeting) and must be legal now. Blocked entirely when too few candidates exist.
@@ -6256,7 +6298,7 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 						state, action.source_player, quest_id, def, db))
 			else:
 				events.append_array(_apply_quest_reward(state, action.source_player, def.effects, db,
-						action.params.get("target_ids", [])))
+						action.params.get("target_ids", []), quest_id))
 
 	return events
 
@@ -6265,12 +6307,26 @@ static func _resolve_use_quest(state: GameState, action: PendingAction,
 # Effects that require player input (discard_from_hand) set pending state and emit
 # a choice event; the caller must handle that event before continuing.
 static func _apply_quest_reward(state: GameState, player_id: String,
-		effects_str: String, db, target_ids: Array = []) -> Array[GameEvent]:
+		effects_str: String, db, target_ids: Array = [],
+		quest_id: String = "") -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	if effects_str == "":
 		return events
 	for entry in effects_str.split("|"):
 		var parts := entry.strip_edges().split(":")
+		# Argument-less reward segments are handled before the size guard below,
+		# which exists so the flag segments that live alongside a reward
+		# (require_turn_player, complete_cost_destroy_self…) are skipped here.
+		if parts[0].strip_edges() == "shuffle_graveyard_into_deck":
+			# Blueleaf Tubers: "Reward: Shuffle your graveyard into your deck."
+			events.append_array(
+				GameLogic.shuffle_graveyard_into_deck(state, player_id))
+			continue
+		if parts[0].strip_edges() == "ready_party_character":
+			# Dragonkin Menace: "Reward: Ready a hero or ally in your party."
+			# Opens a mandatory choice unless the party holds nothing exhausted.
+			events.append_array(_open_quest_ready_choice(state, player_id, quest_id))
+			continue
 		if parts.size() < 2:
 			continue
 		match parts[0].strip_edges():
@@ -6507,7 +6563,8 @@ static func _quest_choice_pending(state: GameState) -> bool:
 	return state.pending_quest_choice_player != "" \
 		or state.pending_quest_ferocity_player != "" \
 		or state.pending_plague_destroy_player != "" \
-		or state.pending_quest_facedown_player != ""
+		or state.pending_quest_facedown_player != "" \
+		or state.pending_quest_ready_player != ""
 
 
 # Inner mode strings ("draw:1", "ally_ferocity_this_turn", …) in printed order.
@@ -6580,6 +6637,52 @@ static func get_quest_ferocity_targets(state: GameState, db) -> Array[String]:
 			if _is_legal_target(state, card.instance_id, db):
 				targets.append(card.instance_id)
 	return targets
+
+
+# Dragonkin Menace's pool: "a hero or ally in your party" — the completer's own
+# hero plus every card in their ally_row (totems included, 305.3a). This is a
+# CHOICE, not a target: nothing is announced, so 706 Untargetable does not apply
+# and an Untargetable character is perfectly eligible. Only EXHAUSTED characters
+# are offered — readying a ready character is a no-op, and an all-ready party
+# means the reward has nothing to do at all.
+static func get_quest_ready_candidates(state: GameState,
+		player_id: String) -> Array[String]:
+	var result: Array[String] = []
+	var hero := state.get_hero(player_id)
+	if hero and hero.is_exhausted:
+		result.append(hero.instance_id)
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		if card.is_exhausted:
+			result.append(card.instance_id)
+	return result
+
+
+# Open the ready choice as the reward resolves (709.2b — the choice belongs to
+# resolution, not to the announcement). Nothing exhausted in the party → the
+# reward simply does nothing and no choice point opens.
+static func _open_quest_ready_choice(state: GameState, player_id: String,
+		quest_id: String) -> Array[GameEvent]:
+	if get_quest_ready_candidates(state, player_id).is_empty():
+		return []
+	state.pending_quest_ready_player = player_id
+	state.pending_quest_ready_source = quest_id
+	return [GameEvent.quest_ready_target_required(quest_id, player_id)]
+
+
+# Entry point: the completer picked the character in their party to ready.
+# Direct call (NOT the chain) like every other quest sub-choice; can_submit /
+# pass_priority hard-block while pending.
+static func choose_quest_ready_target(state: GameState, card_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_quest_ready_player == "":
+		return []
+	if card_id not in get_quest_ready_candidates(state, state.pending_quest_ready_player):
+		return []
+	state.pending_quest_ready_player = ""
+	state.pending_quest_ready_source = ""
+	var events: Array[GameEvent] = GameLogic.ready_card(state, card_id)
+	events.append_array(_run_quest_mode_queue(state, db))
+	return events
 
 
 # A player's face-up Quest cards in their resource row (Kolkar candidates).

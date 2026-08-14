@@ -82,6 +82,9 @@ func _ready() -> void:
 		_test_chasing_ame_graveyard_to_hand,
 		_test_chasing_ame_blocked_and_filtered,
 		_test_love_potion_exhaust_cost,
+		_test_are_we_there_yeti,
+		_test_blueleaf_tubers_shuffles_graveyard,
+		_test_blueleaf_tubers_empty_graveyard,
 		_test_maw_of_madness_destroy_cost,
 		_test_maw_of_madness_reward_cancelled,
 		_test_ai_maw_of_madness_gate,
@@ -101,6 +104,9 @@ func _ready() -> void:
 		_test_darrowshire_rfg_three_allies,
 		_test_darrowshire_blocked_with_too_few_allies,
 		_test_defias_brotherhood_requires_four_allies,
+		_test_counterattack_requires_bigger_opposing_party,
+		_test_dragonkin_menace_opponent_turn_and_ready,
+		_test_dragonkin_menace_ai_readies_protector,
 		_test_toreks_assault_requires_hero_damaged_by_ally,
 		_test_find_lethal,
 		_test_find_lethal_baseline_in_ai_actions,
@@ -4173,6 +4179,120 @@ func _test_chasing_ame_graveyard_to_hand() -> void:
 # the completion and exhausted on chain entry (rule 412.2), so they must be
 # ready allies of the completer, must be two DISTINCT ones, and come back ready
 # if the completion is retracted.
+func _test_are_we_there_yeti() -> void:
+	_buf.append("\n-- Are We There, Yeti?: three 1/1 Mechanical Yeti tokens --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("yeti_quest_def", 6, "create_token:yeti_token:3")
+	db.token("yeti_token", 1, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var quest := CardInstance.create("quest", "yeti_quest_def", "p1", "p1_resource_row")
+	state.cards["quest"] = quest
+	state.zones["p1_resource_row"].card_ids.append("quest")
+	# Six resources plus the face-up quest itself.
+	_add_resources(state, "p1", 6)
+
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "quest"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	var yetis := _tokens_in(state, "p1_ally_row")
+	eq(yetis.size(), 3, "yeti-a: all three tokens entered play from ONE reward")
+	eq(state.cards_in_zone("p2_ally_row").size(), 0, "yeti-b: opponent gets none")
+	for y in yetis:
+		eq(state.get_atk(y.instance_id, db), 1, "yeti-c: 1 ATK")
+		eq(state.get_max_hp(y.instance_id, db), 1, "yeti-d: 1 health")
+		ok(y.just_summoned, "yeti-e: summoning sick — no ferocity")
+		ok(y.is_token, "yeti-f: is a token")
+	# Distinct instances, not three references to one card.
+	var ids := {}
+	for y in yetis:
+		ids[y.instance_id] = true
+	eq(ids.size(), 3, "yeti-g: three distinct instances")
+
+	# Not Unique (unlike Tooga), so no sacrifice choice was opened by the trio.
+	eq(state.pending_unique_sacrifice_player, "",
+		"yeti-h: Mechanical Yeti is not Unique — three coexist")
+
+	# Leaving play voids a token rather than filling the graveyard.
+	StackResolver._destroy_card_trigger(state, yetis[0].instance_id, "", db)
+	eq(state.get_card(yetis[0].instance_id).zone_id, "p1_rfg",
+		"yeti-i: a destroyed token ceases to exist")
+	eq(state.cards_in_zone("p1_graveyard").size(), 0, "yeti-j: nothing in the graveyard")
+
+
+func _test_blueleaf_tubers_shuffles_graveyard() -> void:
+	_buf.append("\n-- Blueleaf Tubers: shuffle your graveyard into your deck --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("tubers_def", 2, "shuffle_graveyard_into_deck")
+	db.ally("body_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var quest := CardInstance.create("tubers_inst", "tubers_def", "p1", "p1_resource_row")
+	state.cards["tubers_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("tubers_inst")
+	# Three cards in p1's graveyard, one in p2's (never touched), one already in deck.
+	for gid in ["g1", "g2", "g3"]:
+		var g := CardInstance.create(gid, "body_def", "p1", "p1_graveyard")
+		state.cards[gid] = g
+		state.zones["p1_graveyard"].card_ids.append(gid)
+	var eg := CardInstance.create("eg1", "body_def", "p2", "p2_graveyard")
+	state.cards["eg1"] = eg
+	state.zones["p2_graveyard"].card_ids.append("eg1")
+	var d1 := CardInstance.create("d1", "body_def", "p1", "p1_deck")
+	state.cards["d1"] = d1
+	state.zones["p1_deck"].card_ids.append("d1")
+
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "tubers_inst"}), db)
+	var events := StackResolver.pass_priority(state, db)
+	events.append_array(StackResolver.pass_priority(state, db))
+
+	ok(state.get_card("tubers_inst").face_down, "blt-a: quest flipped face-down")
+	eq(state.zones["p1_graveyard"].card_ids.size(), 0, "blt-b: p1's graveyard is empty")
+	eq(state.zones["p1_deck"].card_ids.size(), 4, "blt-c: all three joined the deck")
+	for gid in ["g1", "g2", "g3"]:
+		eq(state.get_card(gid).zone_id, "p1_deck", "blt-d: %s is in the deck" % gid)
+	eq(state.zones["p2_graveyard"].card_ids, ["eg1"] as Array[String],
+		"blt-e: the opponent's graveyard is untouched")
+	var shuffled := false
+	for e in events:
+		if e.event_type == "deck_shuffled" and e.payload.get("player", "") == "p1":
+			shuffled = true
+	ok(shuffled, "blt-f: deck_shuffled emitted (drives the shuffle SFX)")
+
+
+func _test_blueleaf_tubers_empty_graveyard() -> void:
+	_buf.append("\n-- Blueleaf Tubers: empty graveyard is a harmless shuffle --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("tubers_def", 2, "shuffle_graveyard_into_deck")
+	db.ally("body_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	var quest := CardInstance.create("tubers_inst", "tubers_def", "p1", "p1_resource_row")
+	state.cards["tubers_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("tubers_inst")
+
+	# Nothing in the graveyard AND nothing in the deck: the reward looks at no
+	# card and draws none, so an empty deck must NOT deck the player (410.6b).
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "tubers_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("tubers_inst").face_down, "blte-a: quest completed")
+	eq(state.zones["p1_deck"].card_ids.size(), 0, "blte-b: deck still empty")
+	ok(state.decked_players.is_empty(), "blte-c: shuffling is not a draw — nobody is decked")
+
+
 func _test_maw_of_madness_destroy_cost() -> void:
 	_buf.append("\n-- Into the Maw of Madness: destroy the quest as its completion cost --")
 	var db := MockDB.new()
@@ -5242,6 +5362,187 @@ func _test_defias_brotherhood_requires_four_allies() -> void:
 		"sc26b-e: reward drew exactly two cards")
 	ok(state.get_card("defias_inst").face_down,
 		"sc26b-f: quest flipped face-down after completion")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dragonkin Menace: opponent's-turn-only completion, ready a party character
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_dragonkin_menace_opponent_turn_and_ready() -> void:
+	_buf.append("\n-- Dragonkin Menace: complete on the opponent's turn, ready a party character --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("dragonkin_def", 3, "require_opponent_turn|ready_party_character")
+	db.ally("prot_def", 2, 3, ["protector"], 3)
+	db.ally("untarget_def", 2, 2, ["untargetable"], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var quest := CardInstance.create("dragon_inst", "dragonkin_def", "p1", "p1_resource_row")
+	state.cards["dragon_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("dragon_inst")
+
+	var prot := _add_ally(state, "p1_prot", "prot_def", "p1")
+	prot.is_exhausted = true
+	var sneaky := _add_ally(state, "p1_untarget", "untarget_def", "p1")
+	sneaky.is_exhausted = true
+
+	# p1's own turn — the printed "During an opponent's turn" gate blocks it.
+	ok(not StackResolver.can_use_quest_no_target_check(state, "dragon_inst", "p1", db),
+		"dkm-a: blocked during the completer's own turn")
+
+	# The opponent's turn, with p1 holding priority (a window in p2's turn).
+	state.turn_player     = "p2"
+	state.priority_player = "p1"
+	ok(StackResolver.can_use_quest_no_target_check(state, "dragon_inst", "p1", db),
+		"dkm-b: legal during the opponent's turn")
+
+	# Pool: our own EXHAUSTED characters only. An Untargetable ally is eligible —
+	# this is a choice, not a target (706 doesn't apply).
+	var pool := StackResolver.get_quest_ready_candidates(state, "p1")
+	ok("p1_untarget" in pool, "dkm-c: Untargetable ally is choosable")
+	ok("p1_prot" in pool, "dkm-d: exhausted protector is choosable")
+	ok(not ("p1_hero" in pool), "dkm-e: a READY hero is not offered")
+	ok(StackResolver.get_quest_ready_candidates(state, "p2").is_empty(),
+		"dkm-f: the opponent's party is never in the pool")
+
+	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "dragon_inst"})
+	ok(not StackResolver.submit_action(state, complete, db).is_empty(),
+		"dkm-g: completion submits")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.pending_quest_ready_player, "p1", "dkm-h: ready choice opened for the completer")
+	# The pending choice hard-blocks everything until answered.
+	var passes_before := state.consecutive_passes
+	StackResolver.pass_priority(state, db)
+	eq(state.consecutive_passes, passes_before,
+		"dkm-i: priority can't pass while the ready choice is pending")
+
+	StackResolver.choose_quest_ready_target(state, "p1_prot", db)
+	ok(not state.get_card("p1_prot").is_exhausted, "dkm-j: chosen protector readied")
+	ok(state.get_card("p1_untarget").is_exhausted, "dkm-k: only the chosen one readied")
+	eq(state.pending_quest_ready_player, "", "dkm-l: choice cleared")
+	ok(state.get_card("dragon_inst").face_down, "dkm-m: quest flipped face-down")
+
+
+func _test_dragonkin_menace_ai_readies_protector() -> void:
+	_buf.append("\n-- Dragonkin Menace: AI completes it while attacked, to reuse a protector --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("dragonkin_def", 3, "require_opponent_turn|ready_party_character")
+	db.ally("prot_def", 2, 3, ["protector"], 3)
+	db.ally("plain_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var quest := CardInstance.create("dragon_inst", "dragonkin_def", "p1", "p1_resource_row")
+	state.cards["dragon_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("dragon_inst")
+
+	var prot := _add_ally(state, "p1_prot", "prot_def", "p1")
+	prot.is_exhausted = true
+	_add_ally(state, "p2_attacker", "plain_def", "p2")
+
+	var ai := BaseAI.new()
+
+	# The opponent's turn, but nobody is attacking — hold the resources.
+	state.turn_player     = "p2"
+	state.priority_player = "p1"
+	ok(ai.ready_protector_quest_action(state, db, "p1") == null,
+		"dkm-ai-a: not completed with no attack underway")
+
+	# p2 attacks: attack window open, our protector spent → complete it.
+	state.combat_attack_window = true
+	state.combat_attacker = "p2_attacker"
+	state.combat_defender = "p1_hero"
+	var act := ai.ready_protector_quest_action(state, db, "p1")
+	ok(act != null and act.params.get("quest_id", "") == "dragon_inst",
+		"dkm-ai-b: completed while an opposing attack is underway")
+
+	# Same board with the protector READY — nothing to ready, so hold.
+	prot.is_exhausted = false
+	ok(ai.ready_protector_quest_action(state, db, "p1") == null,
+		"dkm-ai-c: not completed with no exhausted protector")
+
+	# The pick prefers the protector over a plain exhausted ally.
+	prot.is_exhausted = true
+	var plain := _add_ally(state, "p1_plain", "plain_def", "p1")
+	plain.is_exhausted = true
+	eq(ai.choose_quest_ready_target(state, db, "p1"), "p1_prot",
+		"dkm-ai-d: AI readies the protector")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Counterattack!: completable only while an opponent's party is strictly bigger
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_counterattack_requires_bigger_opposing_party() -> void:
+	_buf.append("\n-- Counterattack!: opponent must have more allies than you --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("counter_def", 3, "require_opponent_more_allies|draw:2")
+	db.ally("filler_ally_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var quest := CardInstance.create("counter_inst", "counter_def", "p1", "p1_resource_row")
+	state.cards["counter_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("counter_inst")
+
+	ok(StackResolver.quest_requires_opponent_more_allies(db.get_def("counter_def")),
+		"ctr-a: condition parsed off the recipe")
+
+	# Empty boards — 0 vs 0 is not "more".
+	ok(not StackResolver.can_use_quest_no_target_check(state, "counter_inst", "p1", db),
+		"ctr-b: blocked with both parties empty")
+
+	# 1 vs 1 — a tie still doesn't qualify ("more than", strictly).
+	_add_ally(state, "p1_ally", "filler_ally_def", "p1")
+	_add_ally(state, "p2_ally", "filler_ally_def", "p2")
+	ok(not StackResolver.can_use_quest_no_target_check(state, "counter_inst", "p1", db),
+		"ctr-c: blocked on an equal board")
+
+	# Our own bigger party doesn't qualify either — the condition is one-way.
+	_add_ally(state, "p1_ally_2", "filler_ally_def", "p1")
+	ok(not StackResolver.can_use_quest_no_target_check(state, "counter_inst", "p1", db),
+		"ctr-d: blocked while OUR party is the bigger one")
+
+	# 3 opposing allies vs our 2 — legal. A totem counts as an ally in the party.
+	_add_ally(state, "p2_ally_2", "filler_ally_def", "p2")
+	_add_ally(state, "p2_ally_3", "filler_ally_def", "p2")
+	ok(StackResolver.can_use_quest_no_target_check(state, "counter_inst", "p1", db),
+		"ctr-e: legal once the opposing party is strictly bigger")
+
+	for i in 20:
+		var did := "ctr_deck_%d" % i
+		var dc := CardInstance.create(did, "filler_ally_def", "p1", "p1_deck")
+		state.cards[did] = dc
+		state.zones["p1_deck"].card_ids.append(did)
+
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+	var res_before: int = state.get_available_resources("p1")
+	var complete := PendingAction.make("use_quest", "p1", {"quest_id": "counter_inst"})
+	ok(not StackResolver.submit_action(state, complete, db).is_empty(),
+		"ctr-f: completion submits")
+	eq(state.get_available_resources("p1"), res_before - 3,
+		"ctr-g: cost of 3 paid at announcement")
+
+	# The gate is a completion condition, not a target: an opposing ally leaving
+	# play while the reward sits on the chain does NOT fizzle it (same as The
+	# Defias Brotherhood's party-size gate).
+	GameLogic.destroy_card(state, "p2_ally_3")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before + 2,
+		"ctr-h: reward drew two cards")
+	ok(state.get_card("counter_inst").face_down,
+		"ctr-i: quest flipped face-down after completion")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

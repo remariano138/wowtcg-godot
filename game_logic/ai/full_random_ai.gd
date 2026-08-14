@@ -39,6 +39,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var flash := instant_protector_action(state, db, player_id)
 	if flash != null:
 		return flash
+	# Dragonkin Menace (BaseAI) — ready a spent protector while attacked.
+	var ready_quest := ready_protector_quest_action(state, db, player_id)
+	if ready_quest != null:
+		return ready_quest
 	# Escape Artist (BaseAI) — deterministic too.
 	var escape := escape_artist_action(state, db, player_id)
 	if escape != null:

@@ -55,7 +55,7 @@
     },
     {
       "card_def_id": "azeroth_284",
-      "count": 2,
+      "count": 1,
       "_card_name": "Devilsaur Leggings"
     },
     {
@@ -64,14 +64,14 @@
       "_card_name": "Bestial Wrath"
     },
     {
-      "card_def_id": "azeroth_40",
-      "count": 1,
-      "_card_name": "Master of the Hunt"
-    },
-    {
       "card_def_id": "dark_portal_134",
       "count": 1,
       "_card_name": "Berserking"
+    },
+    {
+      "card_def_id": "azeroth_154",
+      "count": 1,
+      "_card_name": "Lust for Battle"
     },
     {
       "card_def_id": "azeroth_259",
@@ -100,8 +100,13 @@
     },
     {
       "card_def_id": "azeroth_246",
-      "count": 2,
+      "count": 1,
       "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_238",
+      "count": 1,
+      "_card_name": "Gartok Skullsplitter"
     },
     {
       "card_def_id": "azeroth_36",
@@ -110,7 +115,7 @@
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 3,
+      "count": 2,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
@@ -149,6 +154,16 @@
       "_card_name": "Zorm Stonefury"
     },
     {
+      "card_def_id": "azeroth_232",
+      "count": 2,
+      "_card_name": "Confessor Mildred"
+    },
+    {
+      "card_def_id": "dark_portal_212",
+      "count": 1,
+      "_card_name": "Grunt Baranka"
+    },
+    {
       "card_def_id": "dark_portal_40",
       "count": 2,
       "_card_name": "Trophy Kill"
@@ -159,13 +174,8 @@
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_156",
-      "count": 1,
-      "_card_name": "Burn Away"
-    },
-    {
       "card_def_id": "azeroth_264",
-      "count": 2,
+      "count": 1,
       "_card_name": "Vesh'ral"
     },
     {
@@ -185,8 +195,13 @@
     },
     {
       "card_def_id": "dark_portal_226",
-      "count": 2,
+      "count": 1,
       "_card_name": "Nyn'jah"
+    },
+    {
+      "card_def_id": "azeroth_230",
+      "count": 1,
+      "_card_name": "Blood Guard Mal'wani"
     },
     {
       "card_def_id": "azeroth_236",
@@ -197,6 +212,11 @@
       "card_def_id": "azeroth_229",
       "count": 1,
       "_card_name": "Besh'iah"
+    },
+    {
+      "card_def_id": "azeroth_275",
+      "count": 1,
+      "_card_name": "Zygore Bladebreaker"
     }
   ],
   "recommended_ai_id": "ai_generic",

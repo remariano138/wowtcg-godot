@@ -1749,12 +1749,12 @@ func get_playable_card_ids() -> Array:
 				else:
 					ap_ready_ok = not card.is_exhausted and not card.just_summoned
 				# Powers are instant-speed (rule 701) — legal in any priority window.
-				# Only sorcery-speed ("on_your_turn") powers require the action phase.
+				# "Use only on your turn" (701.1) narrows the turn and nothing else.
 				if ap_ready_ok \
 						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 						and state.priority_player == local_player \
-						and (not StackResolver._power_effect_is(def, "on_your_turn") \
-							or (state.phase == "action" and state.pending_actions.is_empty())):
+						and (not StackResolver.requires_turn_player(def) \
+							or state.turn_player == local_player):
 					result.append(card.instance_id)
 			else:
 				# graveyard_ally powers (Ophelia Barrows) pick their target in the
@@ -1925,14 +1925,14 @@ func get_context_actions(instance_id: String) -> Array:
 						else:
 							ap_ready_ok = not card.is_exhausted and not card.just_summoned
 						# Powers are instant-speed (rule 701) — legal in any priority
-						# window. Only sorcery-speed ("on_your_turn") powers need the
-						# action phase.
+						# window. "Use only on your turn" (701.1) narrows the turn and
+						# nothing else.
 						ap_enabled = ap_ready_ok \
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 							and StackResolver._can_pay_extra_power_cost(state, local_player, ap_extra_cost, db) \
 							and state.priority_player == local_player \
-							and (not StackResolver._power_effect_is(def, "on_your_turn") \
-								or (state.phase == "action" and state.pending_actions.is_empty()))
+							and (not StackResolver.requires_turn_player(def) \
+								or state.turn_player == local_player)
 					else:
 						var ap_action := PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id})

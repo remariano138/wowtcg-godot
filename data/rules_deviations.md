@@ -57,9 +57,9 @@ activated powers are normally usable on either player's turn by default
 opponent's attack/defend window).
 
 **Deviation:** restricted to Rayder's controller's own turn, via the
-existing `on_your_turn` effects segment (reused from the genuine "use only
-on your turn" printed-text convention, e.g. Acolyte Demia — see
-`StackResolver._can_use_ally_power`).
+existing `require_turn_player` effects segment (reused from the genuine "use
+only on your turn" printed-text convention, e.g. Acolyte Demia — see
+`StackResolver.requires_turn_player`).
 
 **Why:** the buff only affects allies "while attacking," which can only
 happen on the controller's turn in a duel — so activating it off-turn is
@@ -72,8 +72,8 @@ both the AI and Turbo autoskip.
 
 **How to apply this pattern to future cards:** if an ally/equipment
 activated power's only effect is conditioned on something that's only ever
-true on the controller's turn (e.g. "while attacking"), add `on_your_turn`
-to its `effects` string and add an entry here. Note this reuses the same
+true on the controller's turn (e.g. "while attacking"), add
+`require_turn_player` to its `effects` string and add an entry here. Note this reuses the same
 flag as genuine "use only on your turn" printed text (Acolyte Demia) —
 the effects string alone doesn't distinguish printed restriction from
 engine deviation, which is exactly why this file exists.
@@ -89,8 +89,8 @@ activated powers are usable on either player's turn by default (see the
 `StackResolver._can_use_ally_power`).
 
 **Deviation:** restricted to Ryn's controller's own turn, via the existing
-`on_your_turn` effects segment — the same treatment as Rayder and For the
-Horde! above.
+`require_turn_player` effects segment — the same treatment as Rayder and For
+the Horde! above.
 
 **Why:** identical to Rayder's, with the buff pointed at a single target
 instead of the party. The bonus only applies "while attacking," and in a
@@ -101,11 +101,13 @@ to keep evaluating a dead action in every non-turn priority window. The
 multiplayer formats where an off-turn ally could be attacking don't exist
 in this digital version.
 
-**Note:** `on_your_turn` is stricter than "your turn" alone — it also
-requires the action phase and an empty chain, so Ryn cannot be activated
-in response to a link even on his controller's turn. That is accepted for
-the same reason: the buff has nothing to affect while a chain is
-resolving.
+**Scope of the restriction:** the turn and nothing else. Per rule 701.1 a
+"use only on your turn" power stays instant-speed, so Ryn can be activated
+during his controller's own combat windows and in response to a link on the
+chain — which is exactly when a "+2 ATK while attacking" buff is worth
+using. (The stricter "non-combat action phase + empty chain" reading is the
+separate *Basic* restriction, 701.1a, a printed keyword no card in this pool
+carries; the engine deliberately has no flag for it.)
 
 ---
 
@@ -296,64 +298,59 @@ complexity with no observable difference.
 
 ---
 
-## Donna Calister (`azeroth_181`)
+## Combat triggered effects — drained one at a time
 
-**Printed text:** "When an opposing hero or ally attacks, ready Donna Calister."
+**Rule 602.1 / 602.3:** each ends with the same sentence — "a priority window …
+opens. Any waiting triggered effects are added to the chain, and then the turn
+player gets priority." So every waiting combat trigger is added to the chain
+together, in one PPP, in rule-708.1a order, and they then resolve top-down.
 
-**Rule 703 / 708:** in paper play this triggered power creates a triggered
-effect that goes on the chain as the attack happens, resolving with a priority
-window.
+The rulebook's worked example (602.3) is Grunt Baranka:
 
-**Deviation:** the engine resolves it immediately in
-`StackResolver._resolve_propose_combat`, right after `combat_started` is emitted
-and before the strike point / attack window. `_ready_on_opposing_attack` scans
-the non-attacking player's ally_row + hero_row for the data-driven
-`ready_on_opposing_attack` effect flag and calls `GameLogic.ready_card` on each.
-No pending choice — the effect is non-targeted with no cost, so there is nothing
-to decide. Readying before the attack window means she is available to protect
-the very combat that triggered her (the intended use).
+> You attack Grunt Baranka with High Overlord Saurfang. Immediately after the
+> protect point, both powers trigger. Saurfang's effect is added to the chain
+> first because it's your turn, so Baranka's resolves first.
 
-**Why:** the effect has no target and no cost, and no implemented card responds
-to the trigger before it resolves, so a chain-based implementation would add
-complexity with no observable difference.
+**Deviation:** `StackResolver` announces combat triggers **one at a time**
+(`GameState.pending_combat_triggers` → `advance_combat_triggers`), keeping the
+window open and announcing the next only once the previous link has fully
+resolved. This is the same deviation the start-of-turn queue already makes, for
+the same reason — see "Start-of-turn triggered effects — drained one at a time"
+above.
 
-**How to apply this pattern to future cards:** a "when an opposing hero/ally
-attacks, ready this" trigger uses the `ready_on_opposing_attack` effects flag —
-no card id is hardcoded in `stack_resolver.gd`.
+**Why:** it is strictly friendlier and never changes a legal line. It does,
+however, invert the RESOLUTION ORDER of two simultaneous triggers relative to the
+example: with both on the chain at once the turn player's is announced first and
+therefore resolves LAST, whereas announced sequentially the turn player's is
+announced first and resolves FIRST. Nothing shipped exercises this — Saurfang is
+not implemented, and no two implemented combat triggers can fire off one combat —
+but a future "when an ally enters combat with this" card would make it visible,
+and that is the point at which the queue should announce the whole batch in one
+PPP instead.
 
----
+**Not a deviation any more:** Morik (`dark_portal_224`), Donna Calister
+(`azeroth_181`) and Berserking (`dark_portal_134`) used to resolve inline in
+`_resolve_propose_combat` on the grounds that they were free, non-targeted and
+choiceless. They are ordinary chain links now, so all three are respondable and
+707.3-correct — killing Morik in response no longer stops the draws. Donna still
+readies in time to protect the combat that triggered her, since the attack window
+(where her link resolves) closes before the protect point.
 
-## Morik (`dark_portal_224`)
+**How to apply this pattern to future cards:** add the effects key to
+`StackResolver.COMBAT_TRIGGERS` with its `moment` ("attack"/"defend") and `scope`
+("self" for "when THIS attacks/defends", "board" for a watcher, whose condition
+then goes in `_combat_trigger_watches`), plus a `match` arm in
+`_resolve_combat_trigger`. Do NOT resolve a combat trigger inline in
+`_resolve_propose_combat` / `_open_defend_window` — that is the bug this
+framework replaced. Note the strike points (602.1/602.3) and the protect point
+(602.2) are deliberately NOT part of this: the rules say of each, in so many
+words, "none of this uses the chain".
 
-**Printed text:** "When Morik attacks, each player draws a card."
-
-**Rule 703 / 708:** in paper play this triggered power creates a triggered effect
-that goes on the chain as the attack happens, resolving with a priority window
-before the cards are drawn.
-
-**Deviation:** the engine resolves it immediately in
-`StackResolver._resolve_propose_combat`, right after `combat_started` is emitted
-and before the strike point / attack window — the same site and for the same
-reason as Donna Calister above. `_fire_attack_draw_each_player` reads the
-data-driven `on_attack_draw_each_player:N` flag off the ATTACKER's own def, so it
-fires only when the flagged card is itself attacking.
-
-**Why:** the effect has no target, no cost and no choice, so a chain-based
-implementation would add complexity with no observable difference. The only
-visible consequence of the timing is that both players hold the drawn card
-during the attack/defend windows and may play it there — which is what the
-printed timing gives you anyway, since the trigger resolves before those windows
-open.
-
-**Draw order:** "each player" is resolved in turn order — the attacker's
-controller first, then the opponent. This only matters when both players would
-be decked by the same trigger; the forced draws go through `GameLogic.draw_one`,
-so the decked rule (410.6b) applies normally and attacking with Morik on an
-empty deck loses you the game.
-
-**How to apply this pattern to future cards:** an on-attack, non-targeted,
-costless trigger belongs inline at this site behind its own effects flag — do
-not hardcode a card id in `stack_resolver.gd`.
+**Still resolved outside the chain:** the "you may pay COST" attack points
+(Windseer Tarus, Windfury Totem) and the optional targeted attack-exhaust points
+(Chops / Voss Treebender / Gartok Skullsplitter). These are genuine triggered
+effects and belong on the chain too, but each carries a direct-call choice with
+its own UI and AI flow — see their own entries above and below.
 
 ---
 
@@ -408,7 +405,7 @@ cost and drop this deviation.
 **Card:** Hypnotic Blade (`azeroth_327`, 2-cost Weapon—Dagger). Printed text:
 "3, [Activate], Exhaust your hero → Target player discards a card. Use only
 on your turn." Recipe
-`equipment:melee_weapon:0|weapon:1|power_weapon|activated_power:3:discard_opponent:1:::exhaust_hero|on_your_turn`.
+`equipment:melee_weapon:0|weapon:1|power_weapon|activated_power:3:discard_opponent:1:::exhaust_hero|require_turn_player`.
 
 **Deviation:** the printed text targets any player — including yourself. The
 `discard_opponent` effect (shared with Mias the Putrid, whose printed text has
@@ -425,9 +422,12 @@ drop this deviation. Enforcement site: `_resolve_use_ally_power`
 
 ## Attack-exhaust triggers — resolved immediately, not on the chain
 
-**Cards:** Chops (`dark_portal_32`), Voss Treebender (`azeroth_266`). Printed
-text: "When [this] attacks, you may exhaust target hero or ally." Recipe flag
-`on_attack_exhaust_target`.
+**Cards:** Chops (`dark_portal_32`), Voss Treebender (`azeroth_266`) — "When
+[this] attacks, you may exhaust target hero or ally", recipe flag
+`on_attack_exhaust_target`; Gartok Skullsplitter (`azeroth_238`) — "When Gartok
+Skullsplitter attacks, you may exhaust target armor", recipe flag
+`on_attack_exhaust_armor`. Only the target pool differs; both open the same
+point and this deviation covers both.
 
 **Deviation:** by the rules this is a triggered effect (703/708) that should
 be ADDED TO THE CHAIN as the attack window opens (602.1) — targeted at

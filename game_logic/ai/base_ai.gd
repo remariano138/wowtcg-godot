@@ -1941,10 +1941,12 @@ func choose_ready_on_strike(state: GameState, db, _player_id: String) -> bool:
 # exhaust the most dangerous READY legal protector on the defending side: prefer
 # one whose retaliation would kill our attacker, else the highest-ATK one.
 # Exhausting anything else (e.g. the defender) buys nothing — decline instead.
-func choose_attack_exhaust(state: GameState, db, _player_id: String) -> String:
+func choose_attack_exhaust(state: GameState, db, player_id: String) -> String:
 	var attacker_id := state.combat_attacker
 	if attacker_id == "" or not db:
 		return ""
+	if state.pending_attack_exhaust_kind == "armor":
+		return _best_attack_exhaust_armor(state, db, player_id)
 	var protectors := StackResolver.get_legal_protectors(
 		state, attacker_id, state.combat_defender, db)
 	var targetable := StackResolver.get_attack_exhaust_targets(state, db)
@@ -1961,6 +1963,31 @@ func choose_attack_exhaust(state: GameState, db, _player_id: String) -> String:
 			best       = pid
 			best_atk   = p_atk
 			best_kills = kills
+	return best
+
+
+# Gartok Skullsplitter: "When Gartok Skullsplitter attacks, you may exhaust
+# target armor." Exhausting armor spends its damage prevention for the turn
+# (717.2c — only READY armor may be exhausted at the prevention point), so the
+# only worthwhile target is a ready armor on the DEFENDING side, and the best
+# one is the highest DEF (that is exactly what it denies). Exhausted armor is
+# already spent and our own armor is ours to keep, so decline otherwise.
+func _best_attack_exhaust_armor(state: GameState, db, player_id: String) -> String:
+	var opp := "p2" if player_id == "p1" else "p1"
+	var legal := StackResolver.get_attack_exhaust_targets(state, db)
+	var best := ""
+	var best_def := 0
+	for cid in legal:
+		var card := state.get_card(cid)
+		if not card or card.controller != opp or card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var dv := int(StackResolver._equipment_info(def).get("def", 0))
+		if dv > best_def:
+			best     = cid
+			best_def = dv
 	return best
 
 

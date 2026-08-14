@@ -287,6 +287,17 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 			# Rule 602.1/602.3: combat window transitions take priority over phase advance.
 			state.consecutive_passes = 0
 			state.priority_player    = state.turn_player
+			# Rule 602.1 / 602.3 / 708.1: combat triggered effects are drained one
+			# at a time, exactly like start-of-turn triggers. The chain is empty
+			# and everyone has passed, so the link that was on it has fully
+			# resolved — announce the next trigger and keep the WINDOW open rather
+			# than moving on to the protect point / conclusion.
+			if (state.combat_attack_window or state.combat_defend_window) \
+					and not state.pending_combat_triggers.is_empty():
+				var next_combat := advance_combat_triggers(state, db)
+				if not next_combat.is_empty():
+					events.append_array(next_combat)
+					return events
 			if state.combat_attack_window:
 				state.combat_attack_window = false
 				events.append_array(_close_attack_window(state, db))
@@ -1887,6 +1898,8 @@ static func _resolve(state: GameState, action: PendingAction,
 			return _resolve_choose_enter_play_target(state, action, db)
 		"resolve_turn_start_trigger":
 			return _resolve_turn_start_trigger(state, action, db)
+		"resolve_combat_trigger":
+			return _resolve_combat_trigger(state, action, db)
 
 	# Unknown action type — should not happen if can_submit gate is correct.
 	return [GameEvent.make("action_fizzled", {
@@ -3403,14 +3416,7 @@ static func choose_strike(state: GameState, weapon_id: String,
 				return events
 
 	# Open the window this strike point was holding up.
-	if side == "attack":
-		state.combat_attack_window = true
-		events.append(GameEvent.attack_window_opened(
-			state.combat_attacker, state.combat_defender))
-	else:
-		state.combat_defend_window = true
-		events.append(GameEvent.defend_window_opened(
-			state.combat_attacker, state.combat_defender))
+	events.append_array(_open_combat_window(state, side, db))
 	return events
 
 
@@ -3504,14 +3510,7 @@ static func choose_ready_on_strike(state: GameState, pay: bool,
 		events.append(GameEvent.readied_on_strike(player_id, weapon_id, cost))
 
 	# Open the combat window this strike (and its ready point) was holding up.
-	if side == "attack":
-		state.combat_attack_window = true
-		events.append(GameEvent.attack_window_opened(
-			state.combat_attacker, state.combat_defender))
-	else:
-		state.combat_defend_window = true
-		events.append(GameEvent.defend_window_opened(
-			state.combat_attacker, state.combat_defender))
+	events.append_array(_open_combat_window(state, side, db))
 	return events
 
 
@@ -3986,15 +3985,15 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		db = null) -> bool:
 	# Requires priority and action phase. A non-empty chain is allowed: activated ally
 	# powers are instant-speed (rule 701.3) and may respond to something already on the
-	# chain (e.g. Freya Lightsworn healing in response to Ta'zo's damage power). The
-	# empty-chain gate applies only to "on_your_turn" (sorcery-speed) powers below.
+	# chain (e.g. Freya Lightsworn healing in response to Ta'zo's damage power).
 	# No "turn_player" restriction either — ally powers without "use only on your turn"
 	# work on either player's turn (e.g. Grimdron blocking in an opponent's window).
 	# Powers are instant-speed (rule 701): usable in ANY priority window, not only
 	# the action phase. Do NOT gate on state.phase here — that wrongly blocked
 	# powers during the ready/draw/end priority windows (e.g. Kavai during the
-	# opponent's ready step). The action-phase restriction belongs ONLY to
-	# sorcery-speed ("on_your_turn") powers, enforced below.
+	# opponent's ready step). "Use only on your turn" narrows the TURN and nothing
+	# else (701.1); only the printed *Basic* keyword (701.1a) would add the phase
+	# and empty-chain gates, and no card in the pool has it.
 	if state.priority_player != action.source_player:
 		return false
 	var card_id: String = action.params.get("card_id", "")
@@ -4014,17 +4013,12 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	var ap := _ally_activated_power(def)
 	if ap.is_empty():
 		return false
-	# "Use only on your turn" (e.g. Acolyte Demia) — same convention as hero
-	# powers (_power_effect_is(def, "on_your_turn")), as a standalone segment.
-	# Also used for engine-only deviations where the printed text has no such
-	# restriction but it's true by construction (e.g. Rayder — see
-	# data/rules_deviations.md).
-	if _power_effect_is(def, "on_your_turn"):
+	# "Use only on your turn" (e.g. Acolyte Demia) — the shared turn-player gate,
+	# same convention as hero powers and quests. Per rule 701.1 this restricts the
+	# TURN ONLY: the power stays instant-speed, so it is still legal in a combat
+	# window and in response to a link on the chain. See requires_turn_player.
+	if requires_turn_player(def):
 		if state.turn_player != action.source_player:
-			return false
-		if state.phase != "action":
-			return false
-		if not state.pending_actions.is_empty():
 			return false
 	var extra_cost_str: String = ap.get("extra_cost", "")
 	var once_per_turn: bool = power_has_extra_cost(extra_cost_str, "once_per_turn")
@@ -4740,27 +4734,6 @@ static func _protect_locked(state: GameState, player_id: String, db) -> bool:
 	return false
 
 
-# Donna Calister (azeroth_181): "When an opposing hero or ally attacks, ready
-# Donna Calister." Called as a combat step starts. Readies every exhausted
-# in-play card carrying the `ready_on_opposing_attack` effect flag whose
-# controller is NOT the attacking player (i.e. the attacker is "opposing" to
-# them). Non-targeted, no cost — resolved immediately rather than via the chain.
-static func _ready_on_opposing_attack(state: GameState, attacker_id: String,
-		db) -> Array[GameEvent]:
-	var events: Array[GameEvent] = []
-	if not db:
-		return events
-	var attacker := state.get_card(attacker_id)
-	if not attacker:
-		return events
-	var defender_side := _other_player(state, attacker.controller)
-	for zone_suffix in ["_ally_row", "_hero_row"]:
-		for card in state.cards_in_zone(defender_side + zone_suffix):
-			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "ready_on_opposing_attack"):
-				events.append_array(GameLogic.ready_card(state, card.instance_id))
-	return events
-
-
 # Apply a damaged-target restriction rider (Frostbolt / Frost Shock). field is a
 # "+"-joined list of restriction names (e.g. "cannot_attack+cannot_protect").
 # Each becomes a restriction Buff lasting until the end of this turn (turns:1),
@@ -5003,11 +4976,37 @@ static func _open_defend_window(state: GameState, db = null) -> Array[GameEvent]
 	if not state.is_in_play(state.combat_attacker) \
 			or not state.is_in_play(state.combat_defender):
 		return _do_combat_conclusion(state, db)
+	# Rule 602.3: the proposed defender becomes the defender NOW, so "when this
+	# defends" powers (Grunt Baranka) trigger here — "immediately after the
+	# protect point", as the rulebook's own example for her puts it. The effects
+	# go on the chain as the defend window opens, below.
+	_collect_combat_triggers(state, db, "defend")
 	var strike := _open_strike_point(state, state.combat_defender, "defend", db)
 	if not strike.is_empty():
 		return strike
-	state.combat_defend_window = true
-	return [GameEvent.defend_window_opened(state.combat_attacker, state.combat_defender)]
+	return _open_combat_window(state, "defend", db)
+
+
+# Open an attack or defend window and add any waiting triggered effects to the
+# chain (602.1 / 602.3 — both say exactly that). The ONE place a combat window
+# opens: the strike point, the ready-on-strike point, the ready-on-attack point
+# and the attack-exhaust point all hold a window up and then hand it here, so a
+# combat trigger can never be skipped by whichever of them happened to fire.
+static func _open_combat_window(state: GameState, side: String,
+		db = null) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if side == "attack":
+		state.combat_attack_window = true
+		events.append(GameEvent.attack_window_opened(
+			state.combat_attacker, state.combat_defender))
+	else:
+		state.combat_defend_window = true
+		events.append(GameEvent.defend_window_opened(
+			state.combat_attacker, state.combat_defender))
+	# Drained one at a time — pass_priority announces the next once this link has
+	# resolved, and closes the window only when the queue is empty.
+	events.append_array(advance_combat_triggers(state, db))
+	return events
 
 
 # ── Combat — resolution ────────────────────────────────────────────────────────
@@ -5043,21 +5042,11 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	state.combat_defender = defender_id
 	events.append_array(GameLogic.exhaust_card(state, attacker_id))
 	events.append(GameEvent.combat_started(attacker_id, defender_id))
-	# Donna Calister: "When an opposing hero or ally attacks, ready Donna
-	# Calister." Triggers off the attack (any attacker), for the non-attacking
-	# side. Non-targeted, no cost — resolved immediately as the combat step
-	# starts (before the strike point / attack window) so she's ready to
-	# protect this same combat. See data/rules_deviations.md "Donna Calister".
-	events.append_array(_ready_on_opposing_attack(state, attacker_id, db))
-	# Berserking: "When your hero attacks, remove all berserk counters from
-	# Berserking. Your hero has +1 ATK this combat for each counter you removed."
-	# Fires as the combat step starts, before the strike point / attack window —
-	# no cost, no choice, so it resolves inline rather than on the chain.
-	events.append_array(_fire_berserking_on_attack(state, attacker_id, db))
-	# Morik: "When Morik attacks, each player draws a card." Non-targeted,
-	# mandatory and free, so it resolves inline as the combat step starts —
-	# nothing goes on the chain. See data/rules_deviations.md "Morik".
-	events.append_array(_fire_attack_draw_each_player(state, attacker_id, db))
+	# Rule 602.1: "when this attacks" powers TRIGGER now (Morik, Donna Calister,
+	# Berserking), but the effects they create are added to the chain as the
+	# attack window opens, below — they are respondable links, not inline
+	# resolutions. See the combat-trigger framework section.
+	_collect_combat_triggers(state, db, "attack")
 	# Rule 602.1: the attacking player can strike with weapons now (and only
 	# now), before the attack window opens. Doesn't use the chain.
 	var strike := _open_strike_point(state, attacker_id, "attack", db)
@@ -5083,78 +5072,9 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	if not exhaust_pt.is_empty():
 		events.append_array(exhaust_pt)
 		return events
-	state.combat_attack_window = true
-	events.append(GameEvent.attack_window_opened(attacker_id, defender_id))
+	events.append_array(_open_combat_window(state, "attack", db))
 	return events
 
-
-# Berserking (`berserk_counter_on_hero_damage` + `berserk_atk_on_hero_attack:N`):
-# when the controller's HERO attacks, every Berserking they control dumps its
-# berserk counters into a "+N ATK this combat" grant on that hero. Only the hero
-# attacking triggers it — an attacking ally leaves the counters alone.
-static func _fire_berserking_on_attack(state: GameState, attacker_id: String,
-		db) -> Array[GameEvent]:
-	var events: Array[GameEvent] = []
-	if not db:
-		return events
-	var atk := state.get_card(attacker_id)
-	if not atk:
-		return events
-	var ps := state.players.get(atk.controller) as PlayerState
-	if not ps or ps.hero_instance_id != attacker_id:
-		return events
-	for card in state.cards_in_zone(atk.controller + "_hero_row"):
-		var def := db.get_def(card.card_def_id) as CardDef
-		if not def or def.effects == "":
-			continue
-		var per := 0
-		for seg in def.effects.split("|"):
-			var p := seg.strip_edges().split(":")
-			if p[0].strip_edges() == "berserk_atk_on_hero_attack":
-				per = int(p[1]) if p.size() > 1 else 1
-				break
-		if per <= 0:
-			continue
-		var removed := int(card.counters.get("berserk", 0))
-		if removed <= 0:
-			continue
-		card.counters.erase("berserk")
-		events.append(GameEvent.counter_changed(card.instance_id, "berserk", removed, 0))
-		state.combat_atk_bonus[attacker_id] = \
-			int(state.combat_atk_bonus.get(attacker_id, 0)) + per * removed
-	return events
-
-
-# Morik (`on_attack_draw_each_player:N`): "When Morik attacks, each player draws
-# a card." Fires only when the flagged card is ITSELF the attacker (an attacking
-# hero or another ally leaves it alone). Draws go in turn order — the attacker's
-# controller first, then the opponent — through GameLogic.draw_one, so the decked
-# rule (410.6b) applies to this forced draw like any other.
-static func _fire_attack_draw_each_player(state: GameState, attacker_id: String,
-		db) -> Array[GameEvent]:
-	var events: Array[GameEvent] = []
-	if not db:
-		return events
-	var atk := state.get_card(attacker_id)
-	if not atk:
-		return events
-	var def := db.get_def(atk.card_def_id) as CardDef
-	if not def or def.effects == "":
-		return events
-	var amount := 0
-	for seg in def.effects.split("|"):
-		var p := seg.strip_edges().split(":")
-		if p[0].strip_edges() == "on_attack_draw_each_player":
-			amount = int(p[1]) if p.size() > 1 else 1
-			break
-	if amount <= 0:
-		return events
-	for pid in [atk.controller, _other_player(state, atk.controller)]:
-		if pid == "":
-			continue
-		for _i in range(amount):
-			events.append_array(_draw_one(state, pid))
-	return events
 
 
 # Opens a ready-on-attack point (Windseer Tarus) for the attacker's controller if
@@ -5251,17 +5171,18 @@ static func choose_ready_on_attack(state: GameState, pay: bool,
 	if not exhaust_pt.is_empty():
 		events.append_array(exhaust_pt)
 		return events
-	state.combat_attack_window = true
-	events.append(GameEvent.attack_window_opened(
-		state.combat_attacker, state.combat_defender))
+	events.append_array(_open_combat_window(state, "attack", db))
 	return events
 
 
-# Opens an attack-exhaust point (Chops / Voss Treebender) for the attacker's
-# controller if the attacker has the `on_attack_exhaust_target` flag. The choice
-# is optional ("you may"), so it always opens when the flag is present — the
-# player may decline. Returns [] when the attacker has no such power, so the
-# caller falls through to opening the attack window directly.
+# Opens an attack-exhaust point for the attacker's controller if the attacker
+# carries one of the attack-exhaust flags: `on_attack_exhaust_target` (Chops /
+# Voss Treebender — "target hero or ally") or `on_attack_exhaust_armor` (Gartok
+# Skullsplitter — "target armor"). Only the target POOL differs, so both open
+# the same point and record which pool applies. The choice is optional ("you
+# may"), so it always opens when the flag is present — the player may decline.
+# Returns [] when the attacker has no such power, so the caller falls through to
+# opening the attack window directly.
 static func _open_attack_exhaust_point(state: GameState, attacker_id: String,
 		db) -> Array[GameEvent]:
 	if not db:
@@ -5272,15 +5193,20 @@ static func _open_attack_exhaust_point(state: GameState, attacker_id: String,
 	var def := db.get_def(atk.card_def_id) as CardDef
 	if not def or def.effects == "":
 		return []
-	var has_flag := false
+	var kind := ""
 	for seg in def.effects.split("|"):
-		if seg.strip_edges().split(":")[0].strip_edges() == "on_attack_exhaust_target":
-			has_flag = true
+		match seg.strip_edges().split(":")[0].strip_edges():
+			"on_attack_exhaust_target":
+				kind = "character"
+			"on_attack_exhaust_armor":
+				kind = "armor"
+		if kind != "":
 			break
-	if not has_flag:
+	if kind == "":
 		return []
 	state.pending_attack_exhaust_player    = atk.controller
 	state.pending_attack_exhaust_source_id = attacker_id
+	state.pending_attack_exhaust_kind      = kind
 	return [GameEvent.attack_exhaust_opened(atk.controller, attacker_id)]
 
 
@@ -5296,26 +5222,53 @@ static func choose_attack_exhaust(state: GameState, target_id: String,
 		return []
 	var player_id := state.pending_attack_exhaust_player
 	var source_id := state.pending_attack_exhaust_source_id
+	# The pool is re-checked BEFORE the pending state is cleared, since
+	# get_attack_exhaust_targets() reads the kind off it.
+	var legal := get_attack_exhaust_targets(state, db)
 	state.pending_attack_exhaust_player    = ""
 	state.pending_attack_exhaust_source_id = ""
+	state.pending_attack_exhaust_kind      = "character"
 
 	var events: Array[GameEvent] = []
-	if target_id != "" and _is_legal_target(state, target_id, db):
+	if target_id != "" and target_id in legal:
 		events.append_array(GameLogic.exhaust_card(state, target_id))
 		events.append(GameEvent.attack_exhaust_resolved(player_id, source_id, target_id))
 
 	# Open the attack window this exhaust point was holding up.
-	state.combat_attack_window = true
-	events.append(GameEvent.attack_window_opened(
-		state.combat_attacker, state.combat_defender))
+	events.append_array(_open_combat_window(state, "attack", db))
 	return events
 
 
-# Legal targets for the attack-exhaust trigger: every hero and ally in play
-# ("target hero or ally"), subject to standard targeting restrictions — the
-# same set as a start-of-turn trigger.
+# Legal targets for the pending attack-exhaust trigger. "character" (Chops /
+# Voss Treebender): every hero and ally in play, subject to standard targeting
+# restrictions — the same set as a start-of-turn trigger. "armor" (Gartok
+# Skullsplitter): every in-play ARMOR card of either player, 706-legal.
 static func get_attack_exhaust_targets(state: GameState, db) -> Array[String]:
+	if state.pending_attack_exhaust_kind == "armor":
+		var ids: Array[String] = []
+		for cid in get_destroy_kind_candidates(state, db, "equipment"):
+			if _is_armor_equipment(state, cid, db) and _is_legal_target(state, cid, db):
+				ids.append(cid)
+		return ids
 	return get_turn_start_trigger_targets(state, db)
+
+
+# Armor subtypes (rule 304 — the printed type line reads "Armor — <subtype>").
+# Every Equipment card is armor, a weapon or an item; the subtype is what tells
+# them apart, so a weapon (Sword, Axe…) and an item (Item) are never armor.
+const ARMOR_SUBTYPES := ["cloth", "leather", "mail", "plate", "shield"]
+
+
+static func _is_armor_equipment(state: GameState, card_id: String, db) -> bool:
+	if not _is_in_play_equipment(state, card_id, db):
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return false
+	return def.card_subtype.strip_edges().to_lower() in ARMOR_SUBTYPES
 
 
 # Entry point for the protect-point decision (NOT chain-based — called directly
@@ -5371,6 +5324,7 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state.combat_protector = ""
 		state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
 		state.combat_atk_bonus.clear()        # "this combat" grants end too (Berserking)
+		state.pending_combat_triggers.clear() # undrained triggers die with the step
 		events.append(GameEvent.combat_cancelled(attacker_id, defender_id, reason))
 		events.append(GameEvent.combat_concluded(attacker_id, defender_id, 0, 0, true))
 		_clear_damage_prevention(state)   # threat gone — unspent block expires
@@ -5403,6 +5357,7 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	state.combat_protector = ""
 	state.combat_struck_weapons.clear()   # 303.2a — associations end with the combat step
 	state.combat_atk_bonus.clear()        # "this combat" grants end too (Berserking)
+	state.pending_combat_triggers.clear() # undrained triggers die with the step
 	events.append(GameEvent.combat_concluded(attacker_id, defender_id, atk_dmg, def_dmg))
 
 	# Trigger key facts, captured BEFORE damage lands (a combatant's zone / role
@@ -6044,17 +5999,32 @@ static func quest_requires_hero_damaged_by_ally(def: CardDef) -> bool:
 	return false
 
 
-# Engine-only restriction (NOT in the printed rules — see data/rules_deviations.md):
-# some quests are only ever useful on the controller's own turn (e.g. For the
-# Horde!, whose reward only affects attacking allies). Restricting completion
-# to the turn player also lets the AI skip evaluating them off-turn.
-static func quest_requires_turn_player(def: CardDef) -> bool:
+# "Use only on your turn" (rule 701.1) — the ONE turn-player gate, shared by
+# quests, hero powers, ally powers and equipment powers.
+#
+# Per 701.1 that printed restriction means exactly "your turn" and NOTHING more:
+# the power stays instant-speed, so it is legal in a combat window and in
+# response to a link already on the chain. The stricter "non-combat action phase
+# + priority + empty chain" reading is the separate *Basic* restriction (701.1a),
+# which is a printed keyword no card in the pool carries — so it deliberately has
+# no flag here. Do not re-add a phase or empty-chain check to this gate.
+#
+# The same flag also carries an engine-only restriction (NOT in the printed
+# rules — see data/rules_deviations.md) for cards whose effect can only ever
+# matter on the controller's own turn (For the Horde!, Rayder, Ryn Dreamstrider);
+# restricting them to the turn player lets Turbo and the AI skip them off-turn.
+static func requires_turn_player(def: CardDef) -> bool:
 	if not def or def.effects == "":
 		return false
 	for entry in def.effects.split("|"):
 		if entry.strip_edges() == "require_turn_player":
 			return true
 	return false
+
+
+# Back-compat alias — quests reach the same gate.
+static func quest_requires_turn_player(def: CardDef) -> bool:
+	return requires_turn_player(def)
 
 
 # All graveyard cards matching a requirement, from player_id's point of view.
@@ -7004,6 +6974,11 @@ static func can_retract(state: GameState, player_id: String) -> bool:
 	var top: PendingAction = state.pending_actions.back()
 	if top.source_player != player_id:
 		return false
+	# A triggered effect is put on the chain by the GAME (708.1), not announced by
+	# its controller — there is nothing to take back, and letting the turn player
+	# "retract" their own Morik or Searing Totem link would delete the trigger.
+	if top.action_type in ["resolve_turn_start_trigger", "resolve_combat_trigger"]:
+		return false
 	# An additional cost paid in destroyed permanents (Sever the Cord's
 	# sacrifice) can't be refunded, so the announcement can't be taken back.
 	return not top.params.get("_cost_paid_irreversibly", false)
@@ -7105,9 +7080,9 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 		db = null) -> bool:
 	# Hero powers are instants by default (rule 701.3) — usable any time player has
 	# priority, INCLUDING in response to something already on the chain (so a player
-	# can react to e.g. Ta'zo's damage power). Powers with "on_your_turn" in effects
-	# are sorcery-speed: they also require turn player + action phase + empty chain
-	# (that empty-chain gate is applied in the "on_your_turn" block below).
+	# can react to e.g. Ta'zo's damage power). Powers with "require_turn_player"
+	# ("Use only on your turn", 701.1) additionally require the turn player — and
+	# nothing else; they stay instant-speed. See requires_turn_player.
 	if state.priority_player != action.source_player:
 		return false
 	var ps := state.players.get(action.source_player) as PlayerState
@@ -7123,11 +7098,10 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 	var def := db.get_def(hero.card_def_id) as CardDef
 	if not def or def.card_type != "Hero":
 		return false
-	# "on_your_turn" in effects = "Use only on your turn": action phase, turn player, chain empty.
-	if _power_effect_is(def, "on_your_turn"):
-		if state.phase != "action" or state.turn_player != action.source_player:
-			return false
-		if not state.pending_actions.is_empty():
+	# "Use only on your turn" (rule 701.1): turn player ONLY — the power stays
+	# instant-speed. See requires_turn_player.
+	if requires_turn_player(def):
+		if state.turn_player != action.source_player:
 			return false
 	# Must be able to afford the cost.
 	var cost: int = max(def.cost, 0)
@@ -7892,6 +7866,288 @@ static func get_turn_start_trigger_targets(state: GameState, db) -> Array[String
 		for ally in state.cards_in_zone(pid + "_ally_row"):
 			if _is_legal_target(state, ally.instance_id, db):
 				result.append(ally.instance_id)
+	return result
+
+
+# ── Combat-step triggered effects (rules 602.1 / 602.3 / 708.1) ───────────────
+#
+# The combat-step twin of the start-of-turn trigger framework above, and it works
+# the same way for the same reason. 602.1 and 602.3 each end with the identical
+# sentence: "a priority window … opens. ANY WAITING TRIGGERED EFFECTS ARE ADDED
+# TO THE CHAIN, and then the turn player gets priority." So a "when this attacks"
+# / "when this defends" power triggers as the step reaches that point, but the
+# effect it creates goes on the chain and is RESPONDABLE — it does not resolve
+# inline as the step passes through.
+#
+# The rulebook's own worked example for this is Grunt Baranka (602.3):
+#
+#   "You attack Grunt Baranka with High Overlord Saurfang. Immediately after the
+#    protect point, both powers trigger. Saurfang's effect is added to the chain
+#    first because it's your turn, so Baranka's resolves first."
+#
+# — which only makes sense with both effects on the chain, in 708.1a order, with
+# a window in between. That example is why this queue exists at all; before it,
+# every combat trigger in the engine resolved inline as a documented deviation.
+#
+#   attack/defend window opens (flag set, *_window_opened emitted)
+#     → _collect_combat_triggers builds the queue in 708.1a order
+#     → advance_combat_triggers announces the FRONT trigger onto the chain
+#     → normal priority window; either player may respond
+#     → link resolves (_resolve_combat_trigger)
+#     → chain empties, both pass → pass_priority calls advance_* for the NEXT
+#       trigger, and only closes the window once the queue is empty
+#
+# Draining one at a time (rather than 708.1a's "add every waiting trigger in one
+# PPP") matches what the start-of-turn queue already does — see
+# data/rules_deviations.md "Start-of-turn trigger order". It preserves the
+# example's resolution ORDER (the turn player's trigger is announced first and so
+# resolves last only when both are on the chain at once; announced sequentially,
+# the turn player's still resolves first) — see data/rules_deviations.md
+# "Combat trigger order".
+#
+# Adding a combat trigger: add the effects key to COMBAT_ATTACK_TRIGGERS (fires
+# when the flagged card is the ATTACKER) or COMBAT_DEFEND_TRIGGERS (fires when it
+# is the DEFENDER), plus a match arm in _resolve_combat_trigger. It is then
+# respondable and 707.3-correct for free. Do NOT resolve a combat trigger inline
+# in _resolve_propose_combat / _open_defend_window — that is the bug this
+# framework replaced.
+#
+# NOT part of this framework, deliberately:
+#   • The strike points (602.1 / 602.3) and the protect point (602.2). The rules
+#     say of each, in so many words, "none of this uses the chain". They are not
+#     triggered effects at all.
+#   • "You may pay COST" attack points (Windseer Tarus, Windfury Totem) and the
+#     optional targeted attack-exhaust points (Chops / Voss / Gartok). These ARE
+#     triggered effects and belong on the chain too, but each carries a
+#     direct-call choice with its own UI and AI flow; they stay as they are for
+#     now and remain listed in data/rules_deviations.md.
+
+# The registry. `moment` is when the power triggers — "attack" (602.1, as the
+# combat step starts) or "defend" (602.3, as the defender becomes a defender).
+# `scope` is WHICH card carries the power:
+#   "self"  — the card in that combat role itself ("when THIS attacks/defends")
+#   "board" — any in-play card watching the combat from the side ("when your hero
+#             attacks", "when an OPPOSING hero or ally attacks"). The per-key
+#             condition then lives in _combat_trigger_watches.
+const COMBAT_TRIGGERS := {
+	# Morik: "When Morik attacks, each player draws a card."
+	"on_attack_draw_each_player":                   {"moment": "attack", "scope": "self"},
+	# Berserking: "When your hero attacks, remove all berserk counters…"
+	"berserk_atk_on_hero_attack":                   {"moment": "attack", "scope": "board"},
+	# Donna Calister: "When an opposing hero or ally attacks, ready Donna Calister."
+	"ready_on_opposing_attack":                     {"moment": "attack", "scope": "board"},
+	# Grunt Baranka: "When Grunt Baranka defends against an ally, destroy her…"
+	"on_defend_vs_ally_destroy_self_and_attackers": {"moment": "defend", "scope": "self"},
+}
+
+
+# Does this card's power actually trigger off the current combat? The trigger
+# CONDITION — everything the card text says between "when" and the comma — checked
+# once, as the queue is built, which is when the power triggers (708.1). A key
+# with no extra condition beyond its scope simply isn't listed here.
+static func _combat_trigger_watches(state: GameState, watcher: CardInstance,
+		key: String) -> bool:
+	var attacker := state.get_card(state.combat_attacker)
+	if not attacker:
+		return false
+	match key:
+		# Grunt Baranka: "When [she] defends against an ALLY". An attacking HERO
+		# never triggers her — which is the card's real limit, since a hero attack
+		# is exactly what a 2/2 Protector otherwise wants to stop.
+		"on_defend_vs_ally_destroy_self_and_attackers":
+			return _is_ally(state, state.combat_attacker)
+		# "When YOUR HERO attacks" — the attacker must be this player's own hero.
+		"berserk_atk_on_hero_attack":
+			var ps := state.players.get(watcher.controller) as PlayerState
+			return ps != null and ps.hero_instance_id == state.combat_attacker
+		# "When an OPPOSING hero or ally attacks" — any attack by the other side.
+		"ready_on_opposing_attack":
+			return attacker.controller != watcher.controller
+	return true
+
+
+# Build the queue for one combat moment. Nothing fires here — the powers trigger,
+# and the effects they create are announced onto the chain by
+# advance_combat_triggers as the window opens (708.1).
+#
+# Order is 708.1a: the turn player's triggers first, then the opponent's; within
+# a player, board order (the same stand-in for "that player chooses the order"
+# the start-of-turn queue uses).
+static func _collect_combat_triggers(state: GameState, db, moment: String) -> void:
+	state.pending_combat_triggers.clear()
+	if not db:
+		return
+	var role_card_id := state.combat_attacker if moment == "attack" else state.combat_defender
+	var collected: Array = []
+	var ordered_pids: Array = [state.turn_player]
+	for pid in state.players:
+		if pid != state.turn_player:
+			ordered_pids.append(pid)
+	for pid in ordered_pids:
+		for card in state.cards_in_play(pid):
+			var def := db.get_def(card.card_def_id) as CardDef
+			if not def or def.effects == "":
+				continue
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				var key := parts[0].strip_edges()
+				var spec: Dictionary = COMBAT_TRIGGERS.get(key, {})
+				if spec.is_empty() or spec.get("moment", "") != moment:
+					continue
+				if spec.get("scope", "self") == "self" and card.instance_id != role_card_id:
+					# "When THIS attacks/defends" — only the card in that role.
+					continue
+				if not _combat_trigger_watches(state, card, key):
+					continue
+				var args: Array = []
+				for i in range(1, parts.size()):
+					args.append(parts[i].strip_edges())
+				collected.append({
+					"card_id":    card.instance_id,
+					"controller": card.controller,
+					"key":        key,
+					"args":       args,
+				})
+	state.pending_combat_triggers = collected
+
+
+# Announce the next queued combat trigger onto the chain. Skips any whose source
+# has left play (707.1 — a power on a card that is gone never triggers) and any
+# whose trigger condition no longer holds. Returns [] once the queue is empty.
+static func advance_combat_triggers(state: GameState, db) -> Array[GameEvent]:
+	while not state.pending_combat_triggers.is_empty():
+		var trigger: Dictionary = state.pending_combat_triggers.pop_front()
+		if not state.is_in_play(String(trigger.get("card_id", ""))):
+			continue
+		return _announce_combat_trigger(state, trigger, db)
+	return []
+
+
+# Put a combat trigger on the chain as a `resolve_combat_trigger` link and hand
+# priority to the turn player (rule 410 / 602.1 / 602.3).
+static func _announce_combat_trigger(state: GameState, trigger: Dictionary,
+		_db) -> Array[GameEvent]:
+	var source_id: String  = trigger.get("card_id", "")
+	var controller: String = trigger.get("controller", "")
+	var params := {
+		"card_id": source_id,
+		"key":     trigger.get("key", ""),
+		"args":    trigger.get("args", []),
+	}
+	# 709.2d: what the link needs that isn't re-readable at resolution is captured
+	# now. Baranka's "all attacking allies" is deliberately NOT captured — 707.3
+	# aside, "attacking" is a live role, and an attacker removed from combat in
+	# the response window is no longer attacking anything.
+	var link := PendingAction.make("resolve_combat_trigger", controller, params)
+	state.pending_actions.push_back(link)
+	state.consecutive_passes = 0
+	state.priority_player    = state.turn_player   # rule 410
+	return [GameEvent.make("action_proposed", {
+		"action_type": "resolve_combat_trigger",
+		"player":      controller,
+		"card_id":     source_id,
+	})]
+
+
+# Resolve a combat trigger. One dispatch for every combat-step triggered effect.
+#
+# As with start-of-turn triggers, the SOURCE is deliberately not required to still
+# be in play (707.3 — an effect exists independently of its source). Killing Morik
+# in the response window does not stop the draws. Where a clause is genuinely
+# impossible without the source, 709.2c applies: the link resolves and only as
+# much as possible happens.
+static func _resolve_combat_trigger(state: GameState, action: PendingAction,
+		db = null) -> Array[GameEvent]:
+	var source_id: String  = action.params.get("card_id", "")
+	var key: String        = action.params.get("key", "")
+	var args: Array        = action.params.get("args", [])
+	var controller: String = action.source_player
+	var events: Array[GameEvent] = []
+
+	match key:
+		# Morik: "When Morik attacks, each player draws a card." Draws go in turn
+		# order — the attacker's controller first, then the opponent — through
+		# GameLogic.draw_one, so the decked rule (410.6b) applies to this forced
+		# draw like any other.
+		"on_attack_draw_each_player":
+			var amount := int(args[0]) if args.size() > 0 else 1
+			if amount <= 0:
+				return events
+			for pid in [controller, _other_player(state, controller)]:
+				if pid == "":
+					continue
+				for _i in range(amount):
+					events.append_array(_draw_one(state, pid))
+
+		# Berserking: "remove all berserk counters from Berserking. Your hero has
+		# +1 ATK this combat for each counter you removed." The counters are read
+		# at RESOLUTION (709.2b) — damage dealt to the hero in the response window
+		# adds a counter that this link then cashes in. `combat_atk_bonus` is
+		# cleared with the combat step, so the grant lasts exactly "this combat".
+		"berserk_atk_on_hero_attack":
+			var per := int(args[0]) if args.size() > 0 else 1
+			var berserk_src := state.get_card(source_id)
+			var ps := state.players.get(controller) as PlayerState
+			if per > 0 and berserk_src and ps and ps.hero_instance_id != "":
+				var removed := int(berserk_src.counters.get("berserk", 0))
+				if removed > 0:
+					berserk_src.counters.erase("berserk")
+					events.append(GameEvent.counter_changed(
+						source_id, "berserk", removed, 0))
+					state.combat_atk_bonus[ps.hero_instance_id] = \
+						int(state.combat_atk_bonus.get(ps.hero_instance_id, 0)) \
+						+ per * removed
+
+		# Donna Calister: "When an opposing hero or ally attacks, ready Donna
+		# Calister." Resolves during the ATTACK window, which closes before the
+		# protect point (602.2) — so she is ready in time to protect this same
+		# combat, which is the entire point of the card.
+		"ready_on_opposing_attack":
+			if state.is_in_play(source_id):
+				events.append_array(GameLogic.ready_card(state, source_id))
+
+		# Grunt Baranka: "When Grunt Baranka defends against an ally, destroy her.
+		# If you do, destroy all attacking allies."
+		#
+		# 709.2f is the whole card: "destroy her" is an ACTION, and the following
+		# "if you do" sentence checks whether that action was actually performed.
+		# The rulebook's example is Dramla Lifebender, whose replacement effect
+		# removes her from the game instead of destroying her — "Baranka's 'if you
+		# do' is not satisfied, and so the attacking ally is not destroyed." So the
+		# rider is gated on a real card_destroyed event for her, not on her merely
+		# being gone: a replaced destruction, or a Baranka already killed in the
+		# response window, both leave the attackers alive.
+		"on_defend_vs_ally_destroy_self_and_attackers":
+			if not state.is_in_play(source_id):
+				return events   # 709.2c — the destroy can't happen, so neither can the rider
+			var destroy_events := _destroy_card_trigger(state, source_id, source_id, db)
+			events.append_array(destroy_events)
+			var destroyed := false
+			for ev in destroy_events:
+				if ev.event_type == "card_destroyed" \
+						and String(ev.payload.get("card", "")) == source_id:
+					destroyed = true
+					break
+			if not destroyed:
+				return events
+			# "All attacking allies" — read LIVE at resolution, so an attacker
+			# removed from combat or already dead in the response window is not
+			# destroyed. One attacker per combat in this engine's combat model.
+			for attacker_id in _attacking_ally_ids(state):
+				events.append_array(_destroy_card_trigger(state, attacker_id, source_id, db))
+
+	return events
+
+
+# Every ally currently ATTACKING (602.3b). The engine's combat model has a single
+# attacker, so this is at most one card — it is a list because the cards that read
+# it say "all attacking allies", and a future multi-attacker model changes only
+# this function.
+static func _attacking_ally_ids(state: GameState) -> Array[String]:
+	var result: Array[String] = []
+	if state.combat_attacker != "" and state.is_in_play(state.combat_attacker) \
+			and _is_ally(state, state.combat_attacker):
+		result.append(state.combat_attacker)
 	return result
 
 

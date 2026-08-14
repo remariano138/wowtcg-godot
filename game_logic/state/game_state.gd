@@ -167,6 +167,11 @@ var pending_whelp_bounce_cost: int = 0
 # (direct call, like the ready-on-attack point). "" = none pending.
 var pending_attack_exhaust_player: String = ""
 var pending_attack_exhaust_source_id: String = ""
+# Which pool the pending point targets: "character" (Chops / Voss — any hero or
+# ally) or "armor" (Gartok Skullsplitter — "you may exhaust target armor").
+# Read by StackResolver.get_attack_exhaust_targets(), so the UI and AI ask for
+# "the legal targets" without knowing which trigger opened the point.
+var pending_attack_exhaust_kind: String = "character"
 # Armor prevention point (rule 717.2c): opened at the moment a damage packet
 # would be dealt to a hero whose controller has ready DEF>0 equipment — at
 # combat conclusion, or just before a hero-damaging chain link resolves. The
@@ -265,6 +270,26 @@ var pending_reveal_pick_private: bool = false
 # per 709.2b they are made as the link resolves (Infernal's discard).
 var pending_turn_start_triggers: Array = []
 var pending_trigger_target_player: String = ""  # must pick a target for triggers[0]; "" = none
+
+# ── Combat-step triggered effects (rule 602.1 / 602.3 / 708.1) ───────────────
+# The combat-step twin of pending_turn_start_triggers, and it exists for the same
+# reason: "when this attacks" / "when this defends" powers TRIGGER as the combat
+# step reaches that point, but per 708.1 the effects they create are added to the
+# chain as the ensuing window opens — 602.1 and 602.3 both say so in as many
+# words ("Any waiting triggered effects are added to the chain, and then the turn
+# player gets priority"). They are therefore respondable, exactly like a
+# start-of-turn trigger, and NOT resolved inline as the step passes through.
+#
+# Each entry is a dict {card_id, controller, key, args} in rule-708.1a order (the
+# turn player's triggers first), so the queue carries no per-card knowledge — the
+# whole dispatch is one match in StackResolver._resolve_combat_trigger.
+#
+# Drained ONE AT A TIME by StackResolver.advance_combat_triggers, called as the
+# attack/defend window opens and again from pass_priority's window-close branch:
+# the window stays OPEN while the queue drains, so each trigger gets a real
+# priority window before the next is announced. Only once the queue is empty does
+# the window actually close (protect point / conclusion).
+var pending_combat_triggers: Array = []
 
 # ── Quest reward "Choose one … you may choose both" (Hidden Enemies / A New
 # Plague / Thwarting Kolkar Aggression / Crown of the Earth) ──────────────────

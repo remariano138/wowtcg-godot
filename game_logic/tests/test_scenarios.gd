@@ -110,7 +110,7 @@ func _ready() -> void:
 		_test_ally_heal_power_targets_friendlies,
 		_test_react_to_hero_power_with_heal,
 		_test_react_to_hero_power_with_heal_legal_on_chain,
-		_test_on_your_turn_power_blocked_on_chain,
+		_test_use_only_on_your_turn_restricts_turn_only,
 		_test_instant_ally_timing_and_protect,
 		_test_ai_flashes_instant_protector,
 		_test_ai_holds_instant_protector,
@@ -268,6 +268,9 @@ func _ready() -> void:
 		_test_wazzuli_party_heal,
 		_test_stylean_enter_play_party_heal,
 		_test_morik_attack_draws_each_player,
+		_test_baranka_defends_vs_ally_trades,
+		_test_baranka_only_vs_ally_and_via_protect,
+		_test_baranka_if_you_do_gate,
 		_test_windseer_ready_on_attack,
 		_test_windseer_ready_declined_and_unaffordable,
 		_test_windfury_totem_party_ready,
@@ -305,6 +308,8 @@ func _ready() -> void:
 		_test_attack_exhaust_decline_keeps_protect,
 		_test_attack_exhaust_defender_combat_proceeds,
 		_test_ai_attack_exhaust_choice,
+		_test_gartok_exhausts_armor,
+		_test_gartok_pool_and_ai,
 		_test_bala_atk_vs_exhausted,
 		_test_bala_bonus_turns_on_mid_combat,
 		_test_mark_of_the_wild_attach_buff,
@@ -3689,7 +3694,7 @@ func _test_sarmoth_elusive_no_taunt() -> void:
 func _test_boris_heal_x() -> void:
 	_buf.append("\n-- Scenario 15: Boris Brightbeard heal-X hero power --")
 	var db := MockDB.new()
-	db.hero("boris_def", 26, 0, "heal_x_from_target:holy|on_your_turn")
+	db.hero("boris_def", 26, 0, "heal_x_from_target:holy|require_turn_player")
 	db.hero("p2_hero", 30)
 	db.ally("igvand_def", 2, 6, [], 3)   # Crazy Igvand: 2 ATK, 6 HP, cost 3
 
@@ -3750,7 +3755,7 @@ func _test_boris_heal_x() -> void:
 func _test_radak_pet_sacrifice() -> void:
 	_buf.append("\n-- Scenario 16: Radak sacrifices Sarmoth (cost 3) for 3 shadow damage --")
 	var db := MockDB.new()
-	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|on_your_turn")
+	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|require_turn_player")
 	db.pet("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
 	db.ally("target_def", 2, 5, [], 2)
 
@@ -3822,7 +3827,7 @@ func _test_radak_pet_sacrifice() -> void:
 func _test_radak_no_pets() -> void:
 	_buf.append("\n-- Scenario 17: Radak probe rejected with no Pets in play --")
 	var db := MockDB.new()
-	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|on_your_turn")
+	db.hero("radak_def", 30, 0, "radak_pet_sacrifice:shadow|require_turn_player")
 	db.ally("normal_ally_def", 2, 3, [], 2)
 
 	var state := _base_state(db, "radak_def", "p2_hero")
@@ -3863,7 +3868,7 @@ func _test_radak_no_pets() -> void:
 func _test_timmo_destroy_exhausted_ally() -> void:
 	_buf.append("\n-- Scenario 17b: Timmo destroys only exhausted allies; hero destroy ends game --")
 	var db := MockDB.new()
-	db.hero("timmo_def", 27, 0, "destroy_exhausted_ally|on_your_turn")
+	db.hero("timmo_def", 27, 0, "destroy_exhausted_ally|require_turn_player")
 	db.hero("p2_hero", 30)
 	db.ally("victim_def", 2, 3, [], 2)
 
@@ -5846,13 +5851,13 @@ func _test_react_to_hero_power_with_heal_legal_on_chain() -> void:
 # be added to a non-empty chain even by the turn player holding priority.
 # ══════════════════════════════════════════════════════════════════════════════
 
-func _test_on_your_turn_power_blocked_on_chain() -> void:
-	_buf.append("\n-- Scenario 33d: on_your_turn ally power blocked while chain non-empty --")
+func _test_use_only_on_your_turn_restricts_turn_only() -> void:
+	_buf.append("\n-- Scenario 33d: \"use only on your turn\" restricts the TURN only (701.1) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
-	# Non-targeted on_your_turn power (draw) so no target machinery is involved.
-	db.ally("sorc_def", 2, 3, [], 2, "activated_power:0:draw:1|on_your_turn")
+	# Non-targeted turn-gated power (draw) so no target machinery is involved.
+	db.ally("sorc_def", 2, 3, [], 2, "activated_power:0:draw:1|require_turn_player")
 	db.instant("bolt_def", 1, "deal_damage_to_target:1:fire")
 
 	var state := _base_state(db, "p1_hero", "p2_hero")   # p1 is turn/priority
@@ -5862,16 +5867,28 @@ func _test_on_your_turn_power_blocked_on_chain() -> void:
 
 	var pow := PendingAction.make("use_ally_power", "p1", {"card_id": "sorc"})
 	ok(StackResolver.can_submit(state, pow, db),
-		"sc33d-a: on_your_turn power legal with an empty chain")
+		"sc33d-a: turn-gated power legal with an empty chain")
 
-	# Put an instant on the chain; the sorcery-speed power is now illegal.
+	# Rule 701.1: "Use only on your turn" is NOT the Basic restriction (701.1a).
+	# The power stays instant-speed, so a link on the chain does not block it.
 	var bolt := CardInstance.create("bolt", "bolt_def", "p1", "p1_hand")
 	state.cards["bolt"] = bolt
 	state.zones["p1_hand"].card_ids.append("bolt")
 	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
 		{"card_id": "bolt", "target_id": "p2_hero"}), db)
+	ok(StackResolver.can_submit(state, pow, db),
+		"sc33d-b: turn-gated power still legal in response to a link on the chain")
+
+	# Same for a combat window on the controller's own turn.
+	state.combat_attack_window = true
+	ok(StackResolver.can_submit(state, pow, db),
+		"sc33d-c: turn-gated power legal during a combat window on your own turn")
+	state.combat_attack_window = false
+
+	# The one thing it DOES restrict: the opponent's turn.
+	state.turn_player = "p2"
 	ok(not StackResolver.can_submit(state, pow, db),
-		"sc33d-b: on_your_turn power rejected once the chain is non-empty")
+		"sc33d-d: turn-gated power rejected on the opponent's turn")
 
 
 # ── Shared setup for the Tristan Rapidstrike (Instant Ally) scenarios ──────────
@@ -6300,7 +6317,7 @@ func _test_deacon_johanna_once_per_turn() -> void:
 # cost (rule 405.3 — capped at exactly fatal) can be paid.
 # ══════════════════════════════════════════════════════════════════════════════
 
-const DEMIA_EFFECTS := "activated_power:1:deal_damage_to_target:1:shadow:hero_or_ally:put_damage_self:1|on_your_turn"
+const DEMIA_EFFECTS := "activated_power:1:deal_damage_to_target:1:shadow:hero_or_ally:put_damage_self:1|require_turn_player"
 
 func _test_acolyte_demia_power() -> void:
 	_buf.append("\n-- Scenario 36: Acolyte Demia — activate, put 1 damage on self, deal 1 shadow --")
@@ -6496,7 +6513,7 @@ func _test_rayder_party_buff_while_attacking() -> void:
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
-	db.ally("rayder_def", 2, 2, [], 2, "activated_power:0:party_buff_atk_attacking:2|on_your_turn")
+	db.ally("rayder_def", 2, 2, [], 2, "activated_power:0:party_buff_atk_attacking:2|require_turn_player")
 	db.ally("grunt_def", 1, 1)
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
@@ -7726,7 +7743,7 @@ func _test_mind_damage_discard() -> void:
 # SCENARIO 40h — Dark Cleric Ismantal: "4, [Activate]: deals 1 shadow damage to
 # target hero or ally. That character's controller discards a card for each
 # damage dealt. Use only on your turn." (activated_power + discard_per_damage +
-# on_your_turn). Reuses the ally-power path.
+# "use only on your turn"). Reuses the ally-power path.
 # ══════════════════════════════════════════════════════════════════════════════
 
 func _test_ismantal_ally_power_discard() -> void:
@@ -7735,7 +7752,7 @@ func _test_ismantal_ally_power_discard() -> void:
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
 	db.ally("ismantal_def", 1, 3, [], 3,
-		"activated_power:4:deal_damage_to_target:1:shadow:hero_or_ally|discard_per_damage:1|on_your_turn")
+		"activated_power:4:deal_damage_to_target:1:shadow:hero_or_ally|discard_per_damage:1|require_turn_player")
 	db.ally("grunt_def", 3, 5, [], 3)
 	db.ally("junk_def", 1, 1, [], 1)
 
@@ -7758,7 +7775,7 @@ func _test_ismantal_ally_power_discard() -> void:
 	var opp_turn := state.duplicate(true) as GameState
 	opp_turn.turn_player = "p2"
 	ok(not StackResolver.can_submit(opp_turn, use, db),
-		"sc40h-b: power illegal on the opponent's turn (on_your_turn)")
+		"sc40h-b: power illegal on the opponent's turn (use only on your turn)")
 
 	StackResolver.submit_action(state, use, db)
 	StackResolver.pass_priority(state, db)
@@ -10305,7 +10322,14 @@ func _test_berserking() -> void:
 		{"attacker_id": "p1_hero", "defender_id": "p2_hero"})
 	StackResolver.submit_action(state, atk_action, db)
 	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal resolves -> attack window
+	# 602.1 / 708.1: the power triggers as the combat step starts, but its effect
+	# goes on the chain and resolves in the attack window.
+	eq(state.pending_actions.size(), 1, "bk-f0: the trigger is on the chain")
+	eq(int(bers.counters.get("berserk", 0)), 2,
+		"bk-f1: counters still there while the link is pending")
 	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # trigger resolves
 	eq(int(bers.counters.get("berserk", 0)), 0, "bk-f: all counters removed")
 	eq(state.get_atk("p1_hero", db), 2, "bk-f2: attacking hero has +2 ATK this combat")
 
@@ -13257,7 +13281,7 @@ func _test_ai_power_weapon_never_strikes() -> void:
 # discard machinery (target auto = opponent, see data/rules_deviations.md).
 # ══════════════════════════════════════════════════════════════════════════════
 
-const BLADE_EXTRA := "power_weapon|activated_power:3:discard_opponent:1:::exhaust_hero|on_your_turn"
+const BLADE_EXTRA := "power_weapon|activated_power:3:discard_opponent:1:::exhaust_hero|require_turn_player"
 
 
 func _test_hypnotic_blade_discard() -> void:
@@ -14161,15 +14185,29 @@ func _test_morik_attack_draws_each_player() -> void:
 	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
 		{"attacker_id": "morik", "defender_id": "p2_hero"}), db)
 	StackResolver.pass_priority(state, db)
-	StackResolver.pass_priority(state, db)   # combat starts → trigger fires
+	StackResolver.pass_priority(state, db)   # combat starts → trigger goes on the chain
 
-	eq(state.zones["p1_hand"].card_ids.size(), 1, "mk-b: attacker's controller drew 1")
-	eq(state.zones["p2_hand"].card_ids.size(), 1, "mk-c: opponent drew 1 as well")
-	eq(state.zones["p1_deck"].card_ids.size(), 4, "mk-d: p1 deck down by 1")
-	eq(state.zones["p2_deck"].card_ids.size(), 4, "mk-e: p2 deck down by 1")
+	# 602.1 / 708.1: the power triggers as the combat step starts, but the effect
+	# is ADDED TO THE CHAIN as the attack window opens — it does not resolve
+	# inline, and either player may respond before the draws happen.
+	ok(state.combat_attack_window, "mk-b: attack window is open")
+	eq(state.pending_actions.size(), 1, "mk-c: the trigger is on the chain")
+	eq(state.pending_actions[0].action_type, "resolve_combat_trigger",
+		"mk-d: link is a resolve_combat_trigger")
+	eq(state.zones["p1_hand"].card_ids.size(), 0, "mk-e: nobody has drawn yet")
+	ok(not StackResolver.can_retract(state, "p1"),
+		"mk-f: a triggered effect can't be retracted by its controller")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # trigger resolves
+
+	eq(state.zones["p1_hand"].card_ids.size(), 1, "mk-g: attacker's controller drew 1")
+	eq(state.zones["p2_hand"].card_ids.size(), 1, "mk-h: opponent drew 1 as well")
+	eq(state.zones["p1_deck"].card_ids.size(), 4, "mk-i: p1 deck down by 1")
+	eq(state.zones["p2_deck"].card_ids.size(), 4, "mk-j: p2 deck down by 1")
 	ok(state.combat_attack_window,
-		"mk-f: trigger resolved inline — attack window open, nothing on the chain")
-	ok(state.pending_actions.is_empty(), "mk-g: chain is empty")
+		"mk-k: the window stays open after the trigger resolves")
+	ok(state.pending_actions.is_empty(), "mk-l: chain is empty again")
 
 	# A DIFFERENT attacker must not fire Morik's trigger (it keys on the attacker
 	# itself, not on Morik being in play).
@@ -14187,8 +14225,10 @@ func _test_morik_attack_draws_each_player() -> void:
 	StackResolver.pass_priority(state2, db)
 
 	eq(state2.zones["p1_hand"].card_ids.size(), 0,
-		"mk-h: another ally attacking draws nothing")
-	eq(state2.zones["p2_hand"].card_ids.size(), 0, "mk-i: opponent drew nothing either")
+		"mk-m: another ally attacking draws nothing")
+	eq(state2.zones["p2_hand"].card_ids.size(), 0, "mk-n: opponent drew nothing either")
+	ok(state2.pending_actions.is_empty(),
+		"mk-o: no trigger was queued for a different attacker")
 
 	# The forced draw is a real draw — attacking with Morik on an empty deck
 	# decks you (410.6b).
@@ -14202,8 +14242,182 @@ func _test_morik_attack_draws_each_player() -> void:
 		{"attacker_id": "morik", "defender_id": "p2_hero"}), db)
 	StackResolver.pass_priority(state3, db)
 	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)
+	StackResolver.pass_priority(state3, db)   # trigger resolves → forced draw
 
-	ok("p1" in state3.decked_players, "mk-j: attacking on an empty deck decks the attacker")
+	ok("p1" in state3.decked_players, "mk-p: attacking on an empty deck decks the attacker")
+
+
+
+# -- Grunt Baranka (dark_portal_212) -------------------------------------------
+# "Protector. When Grunt Baranka defends against an ally, destroy her. If you do,
+# destroy all attacking allies."
+#
+# The rulebook's own worked example for combat triggers on the chain (602.3), and
+# for the "if you do" clause (709.2f, the Dramla Lifebender example).
+
+func _test_baranka_defends_vs_ally_trades() -> void:
+	_buf.append("\n-- Grunt Baranka: defending against an ally trades both --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bruiser_def", 5, 5, [], 4)
+	db.ally("baranka_def", 2, 2, (["protector"] as Array[String]), 2,
+		"on_defend_vs_ally_destroy_self_and_attackers")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bruiser", "bruiser_def", "p1")
+	_add_ally(state, "baranka", "baranka_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "baranka"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # proposal resolves -> attack window
+
+	ok(state.combat_attack_window, "gb-a: attack window open")
+	ok(state.pending_actions.is_empty(),
+		"gb-b: nothing on the chain yet - she triggers at 602.3, not 602.1")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend window
+
+	# 602.3: she becomes the defender, her power triggers, and the effect is added
+	# to the chain as the defend window opens - "immediately after the protect
+	# point", exactly as the rulebook's example puts it.
+	ok(state.combat_defend_window, "gb-c: defend window open")
+	eq(state.pending_actions.size(), 1, "gb-d: her trigger is on the chain")
+	eq(state.pending_actions[0].action_type, "resolve_combat_trigger",
+		"gb-e: link is a resolve_combat_trigger")
+	ok(state.is_in_play("baranka"), "gb-f: she is still alive while the link is pending")
+	ok(state.is_in_play("bruiser"), "gb-g: the attacker is too")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # trigger resolves
+
+	ok(not state.is_in_play("baranka"), "gb-h: she destroyed herself")
+	eq(state.cards["baranka"].zone_id, "p2_graveyard",
+		"gb-i: she went to her owner's graveyard")
+	ok(not state.is_in_play("bruiser"),
+		"gb-j: 'if you do' satisfied - the attacking ally is destroyed")
+	eq(state.cards["bruiser"].zone_id, "p1_graveyard",
+		"gb-k: the attacker went to ITS owner's graveyard")
+	# She dies to her own power, not to combat damage: a 5/5 attacker never gets
+	# to the conclusion, and neither does her 2 ATK.
+	eq(state.get_card("p1_hero").damage_taken, 0, "gb-l: no combat damage anywhere")
+
+
+func _test_baranka_only_vs_ally_and_via_protect() -> void:
+	_buf.append("\n-- Grunt Baranka: ally-only condition, and the protect path --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bruiser_def", 5, 5, [], 4)
+	db.ally("baranka_def", 2, 2, (["protector"] as Array[String]), 2,
+		"on_defend_vs_ally_destroy_self_and_attackers")
+
+	# (1) An attacking HERO does not trigger her - "defends against an ALLY".
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "baranka", "baranka_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+	state.get_card("p1_hero").is_exhausted = false
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "baranka"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(state, db)
+
+	ok(state.combat_defend_window, "gb-m: defend window open vs a hero attacker")
+	ok(state.pending_actions.is_empty(),
+		"gb-n: a hero attacker triggers nothing - she only fires against allies")
+	ok(state.is_in_play("baranka"), "gb-o: she is not destroyed")
+
+	# (2) She triggers just as well when she got the defender role by PROTECTING
+	# (602.2 -> 602.3: the protector becomes the proposed defender, then the
+	# defender). This is the rulebook example's own shape.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "bruiser", "bruiser_def", "p1")
+	_add_ally(state2, "baranka", "baranka_def", "p2")
+	state2.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)   # attack window closes -> protect point
+
+	ok(state2.in_protect_point, "gb-p: protect point opened for p2")
+	StackResolver.choose_protector(state2, "baranka", db)
+
+	eq(state2.combat_defender, "baranka", "gb-q: she is now the defender")
+	eq(state2.pending_actions.size(), 1,
+		"gb-r: protecting into the defender role triggers her too")
+
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+
+	ok(not state2.is_in_play("baranka"), "gb-s: she destroyed herself")
+	ok(not state2.is_in_play("bruiser"), "gb-t: and took the attacking ally with her")
+	eq(state2.get_card("p2_hero").damage_taken, 0,
+		"gb-u: the hero she protected takes nothing")
+
+
+func _test_baranka_if_you_do_gate() -> void:
+	_buf.append("\n-- Grunt Baranka: the 'if you do' clause (709.2f) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bruiser_def", 5, 5, [], 4)
+	db.ally("baranka_def", 2, 2, (["protector"] as Array[String]), 2,
+		"on_defend_vs_ally_destroy_self_and_attackers")
+
+	# Killing her in the response window means the "destroy her" action is never
+	# performed, so per 709.2f its "if you do" rider is not satisfied - the
+	# attacking ally survives. (Same reasoning as the rulebook's Dramla
+	# Lifebender example, where a replacement effect removes her from the game
+	# instead of destroying her.)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bruiser", "bruiser_def", "p1")
+	_add_ally(state, "baranka", "baranka_def", "p2")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "baranka"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(state, db)
+
+	eq(state.pending_actions.size(), 1, "gb-v: her trigger is on the chain")
+	# Respond by killing her - only possible because the trigger is a real chain
+	# link with a real priority window, which is the whole point of 708.1.
+	GameLogic.destroy_card(state, "baranka")
+	ok(not state.is_in_play("baranka"), "gb-w: she died in the response window")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # trigger resolves into a dead source
+
+	ok(state.is_in_play("bruiser"),
+		"gb-x: 'if you do' not satisfied - the attacking ally survives")
+
+	# The mirror case: the ATTACKER leaves combat in the response window. She
+	# still destroys herself (707.3 - the effect is independent of its source),
+	# but there is no attacking ally left to destroy.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state2, "bruiser", "bruiser_def", "p1")
+	_add_ally(state2, "baranka", "baranka_def", "p2")
+	state2.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "baranka"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(state2, db)
+
+	GameLogic.destroy_card(state2, "bruiser")
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+
+	ok(not state2.is_in_play("baranka"),
+		"gb-y: she still destroys herself with the attacker gone (707.3)")
 
 
 func _test_windseer_ready_on_attack() -> void:
@@ -14786,7 +15000,7 @@ func _test_melgwy_pingzot_fire_ping() -> void:
 
 # ── Powers are instant-speed (rule 701): usable in ANY priority window, not just
 # the action phase. Only summoning sickness (activated/tap powers) and the
-# sorcery-speed "on_your_turn" restriction limit when a power fires. Regression
+# "use only on your turn" turn restriction limit when a power fires. Regression
 # for the bug where an instant-speed power was greyed during the opponent's
 # ready step (Kavai during p2's ready step, chain empty, p1 with priority). ─────
 
@@ -14796,11 +15010,11 @@ func _test_power_usable_in_nonaction_priority_window() -> void:
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
 	# Instant-speed activated power (Grimdron-style: [Activate], suffers summoning
-	# sickness). A sorcery-speed twin carries the "on_your_turn" segment.
+	# sickness). A turn-gated twin carries the require_turn_player segment.
 	db.pet("grim_def", 0, 1, [], 1,
 		"activated_power:1:deal_damage_to_target:1:fire:hero_or_ally")
 	db.pet("sorcery_def", 0, 1, [], 1,
-		"activated_power:1:deal_damage_to_target:1:fire:hero_or_ally|on_your_turn")
+		"activated_power:1:deal_damage_to_target:1:fire:hero_or_ally|require_turn_player")
 	db.ally("dummy_def", 0, 3, [], 0)
 
 	var state := _base_state(db, "p1_hero", "p2_hero")
@@ -14828,10 +15042,10 @@ func _test_power_usable_in_nonaction_priority_window() -> void:
 	ok(StackResolver.can_submit(state, grim_act, db),
 		"pw-a: instant-speed power usable during the opponent's ready step")
 
-	# pw-b: sorcery-speed ("on_your_turn") power is NOT legal outside the action
-	# phase, even with priority.
+	# pw-b: a turn-gated ("use only on your turn") power is NOT legal on the
+	# opponent's turn, even with priority.
 	ok(not StackResolver.can_submit(state, sorcery_act, db),
-		"pw-b: sorcery-speed power blocked outside the action phase")
+		"pw-b: turn-gated power blocked on the opponent's turn")
 
 	# pw-c: summoning sickness still gates an [Activate] power in the same window.
 	grim.just_summoned = true
@@ -15339,6 +15553,105 @@ func _test_attack_exhaust_defender_combat_proceeds() -> void:
 	StackResolver.pass_priority(state, db)   # conclusion
 	eq(state.get_card("victim").damage_taken, 3, "ax-b: defender took combat damage")
 	eq(state.get_card("chops").damage_taken, 2, "ax-b2: attacker took damage back")
+
+
+# Gartok Skullsplitter: "When Gartok Skullsplitter attacks, you may exhaust
+# target armor." Same point as Chops/Voss, different pool — exhausting the
+# defender's armor before the attack window spends its DEF, so the prevention
+# point (717.2c) never opens at the conclusion and the hit lands in full.
+func _test_gartok_exhausts_armor() -> void:
+	_buf.append("\n-- Gartok Skullsplitter: attack trigger exhausts target armor --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("gartok_def", 2, 1, [], 1, "on_attack_exhaust_armor")
+	db.equipment("plate_def", 4, "equipment:head:2", "Plate")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "gartok", "gartok_def", "p1")
+	var armor := CardInstance.create("plate", "plate_def", "p2", "p2_hero_row")
+	state.cards["plate"] = armor
+	state.zones["p2_hero_row"].card_ids.append("plate")
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "gartok", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> exhaust point
+
+	eq(state.pending_attack_exhaust_player, "p1", "ga-a: exhaust point opened for p1")
+	eq(state.pending_attack_exhaust_kind, "armor", "ga-a2: pool is the armor pool")
+	ok(not state.combat_attack_window, "ga-a3: attack window held until the choice")
+	ok("plate" in StackResolver.get_attack_exhaust_targets(state, db),
+		"ga-a4: the opposing armor is a legal target")
+
+	StackResolver.choose_attack_exhaust(state, "plate", db)
+	ok(state.get_card("plate").is_exhausted, "ga-b: armor exhausted by the trigger")
+	ok(state.combat_attack_window, "ga-b2: attack window opened after the choice")
+	eq(state.pending_attack_exhaust_kind, "character",
+		"ga-b3: pending kind reset after the choice")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # conclusion
+	eq(state.pending_prevention_player, "",
+		"ga-c: no prevention point — the only armor is exhausted")
+	eq(state.get_card("p2_hero").damage_taken, 2, "ga-c2: hero took the hit in full")
+
+
+# The pool is ARMOR only (rule 304: a weapon and an Item are Equipment but not
+# armor), heroes/allies are never legal, and the AI spends the trigger on the
+# defender's biggest READY armor — declining when there is nothing to deny.
+func _test_gartok_pool_and_ai() -> void:
+	_buf.append("\n-- Gartok Skullsplitter: pool restriction + AI choice --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("gartok_def", 2, 1, [], 1, "on_attack_exhaust_armor")
+	db.ally("plain_def", 2, 2)
+	db.equipment("plate_def", 4, "equipment:head:3", "Plate")
+	db.equipment("leather_def", 1, "equipment:feet:1", "Leather")
+	db.equipment("trinket_def", 3, "equipment:trinket:0:2", "Item")
+	db.weapon("blade_def", 3, 3, 1)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "gartok", "gartok_def", "p1")
+	_add_ally(state, "plain", "plain_def", "p2")
+	for entry in [["plate", "plate_def", "p2"], ["leather", "leather_def", "p2"],
+			["trinket", "trinket_def", "p2"], ["blade", "blade_def", "p2"],
+			["own_plate", "plate_def", "p1"]]:
+		var owner: String = entry[2]
+		var inst := CardInstance.create(entry[0], entry[1], owner, owner + "_hero_row")
+		state.cards[entry[0]] = inst
+		state.zones[owner + "_hero_row"].card_ids.append(entry[0])
+	state.players["p1"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "gartok", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> exhaust point
+
+	var legal := StackResolver.get_attack_exhaust_targets(state, db)
+	ok("plate" in legal and "leather" in legal, "gp-a: both armors are legal")
+	ok("own_plate" in legal, "gp-a2: our own armor is legal too ('target armor')")
+	ok("trinket" not in legal, "gp-b: an Item is not armor")
+	ok("blade" not in legal, "gp-b2: a weapon is not armor")
+	ok("p2_hero" not in legal and "plain" not in legal,
+		"gp-b3: heroes and allies are not armor")
+
+	# AI: the biggest ready armor on the DEFENDING side, never our own.
+	var ai := BaseAI.new()
+	eq(ai.choose_attack_exhaust(state, db, "p1"), "plate",
+		"gp-c: AI exhausts the opponent's highest-DEF armor")
+
+	# With every opposing armor already exhausted there is nothing to deny.
+	state.get_card("plate").is_exhausted   = true
+	state.get_card("leather").is_exhausted = true
+	eq(ai.choose_attack_exhaust(state, db, "p1"), "",
+		"gp-d: AI declines rather than exhausting its own armor")
+	StackResolver.choose_attack_exhaust(state, "", db)
+	ok(state.combat_attack_window, "gp-d2: attack window opened after the decline")
 
 
 # AI: exhausts the most dangerous ready opposing protector; declines when the

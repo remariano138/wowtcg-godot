@@ -946,12 +946,21 @@ func _repopulate_deck_opt(player_key: String, cat_index: int) -> void:
 	var opt := _p1_deck_opt if player_key == "p1" else _p2_deck_opt
 	var stored: Array[String] = []
 	opt.clear()
+	# Sorted by the DISPLAY NAME, not the deck_id: the ids are filename stems
+	# ("horde_shaman_grennan_stormspeaker") while the dropdown shows the hero
+	# name, and DeckLibraryIndex.all() concatenates three per-category sorted
+	# lists — so without this the visible order looks arbitrary.
+	var entries: Array = []
 	for deck_id in _deck_ids_for_category(cat_index):
 		var deck_def := DeckManager.load_deck(deck_id)
 		if deck_def == null:
 			continue
-		stored.append(deck_id)
-		opt.add_item(deck_def.display_name)
+		entries.append({"id": deck_id, "name": deck_def.display_name})
+	entries.sort_custom(func(a, b) -> bool:
+		return String(a["name"]).naturalnocasecmp_to(String(b["name"])) < 0)
+	for entry in entries:
+		stored.append(String(entry["id"]))
+		opt.add_item(String(entry["name"]))
 	stored.append(DECK_RANDOM)
 	opt.add_item("Random")
 	opt.selected = stored.size() - 1   # default to Random

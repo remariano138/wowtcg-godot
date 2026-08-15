@@ -366,12 +366,55 @@ static func _collect_turn_start_triggers(state: GameState, db) -> void:
 				var args: Array = []
 				for i in range(1, parts.size()):
 					args.append(parts[i].strip_edges())
+				if not _heal_trigger_has_work(state, card, key, db):
+					continue
 				state.pending_turn_start_triggers.append({
 					"card_id":    card.instance_id,
 					"controller": card.controller,
 					"key":        key,
 					"args":       args,
 				})
+
+
+# Pure-heal turn-start triggers are SKIPPED when nothing in their scope carries
+# damage. A heal on an undamaged target does literally nothing (GameLogic.heal
+# no-ops and emits no event), so putting the trigger on the chain would only ask
+# both players to pass through a link that cannot change the game state.
+# Deviation from 500.2/708.1 in favour of fluid play — see
+# data/rules_deviations.md "Empty heal triggers".
+# Note this is judged as the queue is built, so a heal is not queued on account
+# of damage another trigger deals later in the SAME ready step (Searing Totem
+# pinging the would-be heal target). Every other key is always queued.
+static func _heal_trigger_has_work(state: GameState, card: CardInstance, key: String, db) -> bool:
+	match key:
+		"heal_at_turn_start", "heal_at_each_turn_start":
+			return card.damage_taken > 0
+		"heal_party_each_turn", "heal_party_at_turn_start":
+			return _party_has_damage(state, card.controller)
+		"turn_start_heal_hero_and_pets":
+			# Spirit Bond: no Pet → the trigger does nothing at all either.
+			var any_pet := false
+			var damaged := false
+			for ally in state.cards_in_zone(card.controller + "_ally_row"):
+				var adef := db.get_def(ally.card_def_id) as CardDef if db else null
+				if adef and adef.card_subtype == "Pet":
+					any_pet = true
+					if ally.damage_taken > 0:
+						damaged = true
+			if not any_pet:
+				return false
+			var sb_hero := state.get_hero(card.controller)
+			return damaged or (sb_hero != null and sb_hero.damage_taken > 0)
+		_:
+			return true
+
+
+static func _party_has_damage(state: GameState, pid: String) -> bool:
+	for ally in state.cards_in_zone(pid + "_ally_row"):
+		if ally.damage_taken > 0:
+			return true
+	var hero := state.get_hero(pid)
+	return hero != null and hero.damage_taken > 0
 
 
 # Parse the effects string and fire any end-of-turn triggers.

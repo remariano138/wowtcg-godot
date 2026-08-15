@@ -142,6 +142,11 @@ var _p2_deck_ids: Array[String] = []
 var _p1_ai_types: Array[String] = []   # dropdown index -> type string ("human", "recommended", or an ai_id)
 var _p2_ai_types: Array[String] = []
 var _avoid_mirror_cb: CheckBox
+# Layout aid only: the zone outline rectangles (resource grid, hero/ally rows).
+# Off by default — they exist to work out the board layout, not to play with.
+var _draw_zones_cb: CheckBox
+var _draw_zones := false
+var _zone_frames: Array[Panel] = []
 var _menu_error_label: Label
 var _status:     Label
 var _priority_label: Label
@@ -255,6 +260,7 @@ var _gy_max:           int = 1
 var _gy_view_only:     bool = false     # true = examine mode (no selection, no router call)
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
+var _gy_quest_shuffle_mode: bool = false  # true = Poison Water's graveyard→deck pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). See _gy_filter_active.
 var _gy_reveal_card_type: String = ""   # reveal-pick: required card type, kept so the choice can be re-opened if a pick is refused
@@ -850,6 +856,12 @@ func _build_menu() -> void:
 	_avoid_mirror_cb.button_pressed = true
 	inner.add_child(_avoid_mirror_cb)
 
+	_draw_zones_cb = CheckBox.new()
+	_draw_zones_cb.text = "Draw zones"
+	_draw_zones_cb.tooltip_text = "Outline the resource / hero / ally zone rectangles (layout aid)"
+	_draw_zones_cb.button_pressed = _draw_zones
+	inner.add_child(_draw_zones_cb)
+
 	_menu_error_label = Label.new()
 	_menu_error_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
 	_menu_error_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1051,6 +1063,11 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 			_show_menu_error("%s deck '%s' is not legal:\n%s"
 				% [pick[0], pick[1], "\n".join(auth_errors)])
 			return
+	# Zone outlines are a layout aid, not gameplay — the menu decides, and the
+	# frames themselves are built once in _ready, so this only flips visibility.
+	if _draw_zones_cb:
+		_draw_zones = _draw_zones_cb.button_pressed
+	_apply_zone_frame_visibility()
 	_log.clear()
 	_log_in_mulligan = false
 	_pending_exhaust.clear()
@@ -1731,6 +1748,12 @@ func _draw_zone_grids() -> void:
 			_draw_zone_grid(base_centre, spec["cols"], spec["rows"], spec["color"])
 
 
+func _apply_zone_frame_visibility() -> void:
+	for frame in _zone_frames:
+		if is_instance_valid(frame):
+			frame.visible = _draw_zones
+
+
 func _draw_zone_grid(base_centre: Vector2, cols: int, rows: int, color: Color) -> void:
 	var cell: float = BoardRenderer.CARD_SLOT
 	var size := Vector2(cols * cell, rows * cell)
@@ -1746,7 +1769,9 @@ func _draw_zone_grid(base_centre: Vector2, cols: int, rows: int, color: Color) -
 	sb.set_border_width_all(2)
 	sb.border_color = color
 	frame.add_theme_stylebox_override("panel", sb)
+	frame.visible = _draw_zones   # layout aid — off unless the menu asked for it
 	add_child(frame)
+	_zone_frames.append(frame)
 
 	# No interior cell lines: a zone reads as ONE rectangle. The per-slot grid was
 	# drawing attention to the empty cells rather than to the cards, and the slots
@@ -3662,6 +3687,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_quest_ready_target(event.payload)
 		"plague_destroy_required":
 			_handle_plague_destroy(event.payload)
+		"quest_shuffle_required":
+			_handle_quest_shuffle(event.payload)
 		"quest_facedown_required":
 			_handle_quest_facedown(event.payload)
 		"ferocity_granted":
@@ -4780,6 +4807,46 @@ func _handle_plague_destroy(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
+# Poison Water: the completer picks any number of cards in their OWN graveyard
+# to shuffle back into their deck. Multi-select in the graveyard browser (min 0,
+# max the whole graveyard) — "any number" includes zero, so Cancel/Esc is not a
+# decline but the empty pick, which still resolves the mode. Board-public (a
+# graveyard is open information), so the off-seat hotseat player is routed
+# "public": no hand hiding, no handoff.
+func _handle_quest_shuffle(payload: Dictionary) -> void:
+	var player: String  = payload.get("player", "")
+	var card_ids: Array = payload.get("card_ids", [])
+	if _route_choice(player, "public") == "ai":
+		var picks: Array = []
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			picks = (ai_obj as BaseAI).choose_quest_graveyard_shuffle(_state, _db, player)
+		else:
+			picks = card_ids.duplicate()
+		var events := StackResolver.choose_quest_graveyard_shuffle(_state, picks, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Poison Water — shuffle any number of these cards into your deck",
+			0, card_ids.size())
+	_gy_quest_shuffle_mode = true
+	_gy_confirm_btn.text = "Shuffle them in (C)"
+	_gy_cancel_btn.text  = "Shuffle none (Esc)"
+	_set_status("💧 Choose any number of cards in your graveyard to shuffle back")
+	_refresh_ui()
+
+
+# Shared exit for the Poison Water browser: an empty array is a legal answer.
+func _resolve_quest_shuffle_choice(picks: Array) -> void:
+	_gy_quest_shuffle_mode = false
+	_close_gy_dialog()
+	var events := StackResolver.choose_quest_graveyard_shuffle(_state, picks, _db)
+	EventBus.emit_events(events)
+	_on_quest_flow_resolved()
+
+
 # Kolkar: the TARGET player turns one of their face-up quests face down.
 func _handle_quest_facedown(payload: Dictionary) -> void:
 	var player: String  = payload.get("player", "")
@@ -4806,6 +4873,11 @@ func _handle_quest_facedown(payload: Dictionary) -> void:
 # pending sub-choice already restarted its own mode via its handler.
 func _on_quest_flow_resolved() -> void:
 	if not StackResolver._quest_choice_pending(_state):
+		# A prompt describes an action still owed; once it has been taken the
+		# prompt must go (the sacrifice/discard mode-ended handlers do the same).
+		# Only when nothing is pending — a following sub-choice has already set
+		# its own prompt by the time we get here.
+		_set_status("")
 		if _in_choice_peek:
 			_exit_choice_peek_mode()
 		elif _hotseat and _router.local_player != _local_player:
@@ -5223,6 +5295,13 @@ func _make_gy_card_button(instance_id: String) -> Button:
 		var tex: Texture2D = load(tex_path)
 		btn.icon = tex
 		btn.expand_icon = true
+		# Alt+hover examine inside the browser: these are HUD Buttons, not
+		# CardNodes, so the renderer is told which texture the mouse is over
+		# (see BoardRenderer.set_ui_hover_texture). A disabled (non-pickable)
+		# reveal-pick card still gets it — examining it is the whole point.
+		btn.mouse_filter = Control.MOUSE_FILTER_STOP
+		btn.mouse_entered.connect(func() -> void: _renderer.set_ui_hover_texture(tex))
+		btn.mouse_exited.connect(func() -> void: _renderer.clear_ui_hover_texture(tex))
 	else:
 		btn.text = "%s\n(%d) %s" % [def.card_name if def else instance_id,
 				def.cost if def else 0, def.card_type if def else ""]
@@ -5251,6 +5330,9 @@ func _update_gy_confirm() -> void:
 
 func _on_gy_confirm_pressed() -> void:
 	if _gy_view_only or _gy_confirm_btn.disabled:
+		return
+	if _gy_quest_shuffle_mode:
+		_resolve_quest_shuffle_choice(_gy_selected.duplicate())
 		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
@@ -5329,6 +5411,11 @@ func _on_gy_cancel_pressed() -> void:
 		return
 	if _gy_reveal_mode:
 		return  # mandatory reveal-pick — no cancel
+	if _gy_quest_shuffle_mode:
+		# Mandatory mode, but "any number" includes zero — Esc/Cancel is the
+		# empty pick, which still resolves it (and still shuffles the deck).
+		_resolve_quest_shuffle_choice([])
+		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice("")   # "you may" — Esc/Cancel declines the fetch
 		return
@@ -5358,10 +5445,12 @@ func _close_gy_dialog() -> void:
 	_gy_confirm_heal = 0
 	_gy_reveal_mode = false
 	_gy_recomb_mode = false
+	_gy_quest_shuffle_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
 	_gy_dialog.visible = false
 	_gy_dimmer.visible = false
+	_renderer.clear_ui_hover_texture()   # the browser's cards are gone with it
 	_set_board_block(false)
 	_gy_view_only = false
 	_gy_peek_active = false
@@ -5602,8 +5691,13 @@ func _set_board_block(blocked: bool, allowed_ids: Array = []) -> void:
 # responds to a click, so a missed click can never start e.g. attacker targeting.
 # Callers that opt in MUST release the block (`_set_board_block(false)`) when they
 # tear the popup down.
+# `card_tex` (optional): a card image shown between the header and the buttons.
+# Used where the choice is ABOUT one specific card the player would otherwise
+# only see named in text (Track Humanoids' look at the top of the deck). It is
+# Alt+hover examinable like any card in a popup — see set_ui_hover_texture.
 func _build_choice_popup(header_text: String, header_color: Color, buttons: Array,
-		block_board: bool = false, allowed_ids: Array = []) -> Panel:
+		block_board: bool = false, allowed_ids: Array = [],
+		card_tex: Texture2D = null) -> Panel:
 	if block_board:
 		_set_board_block(true, allowed_ids)
 	const PAD        := 26
@@ -5636,10 +5730,17 @@ func _build_choice_popup(header_text: String, header_color: Color, buttons: Arra
 	row_w += max(buttons.size() - 1, 0) * BTN_GAP
 	var row_h: int = maxi(BTN_H, max_lines * BTN_LINE_H + 16)
 
+	const IMG_W := 200
+	const IMG_H := 280
+	const IMG_GAP := 18
+	var img_block: int = (IMG_H + IMG_GAP) if card_tex else 0
+
 	var header_w: int = header_text.length() * 8 + 40
 	var content_w: int = max(row_w, header_w)
+	if card_tex:
+		content_w = max(content_w, IMG_W)
 	var panel_w: int = content_w + PAD * 2
-	var panel_h: int = PAD * 2 + HEADER_H + HEADER_GAP + row_h
+	var panel_h: int = PAD * 2 + HEADER_H + HEADER_GAP + img_block + row_h
 
 	var panel := Panel.new()
 	panel.size     = Vector2(panel_w, panel_h)
@@ -5656,9 +5757,22 @@ func _build_choice_popup(header_text: String, header_color: Color, buttons: Arra
 	header.position = Vector2(PAD, PAD)
 	panel.add_child(header)
 
+	if card_tex:
+		var img := TextureRect.new()
+		img.texture      = card_tex
+		img.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		img.expand_mode  = TextureRect.EXPAND_IGNORE_SIZE
+		img.size         = Vector2(IMG_W, IMG_H)
+		img.position     = Vector2((panel_w - IMG_W) * 0.5, PAD + HEADER_H + HEADER_GAP)
+		img.mouse_filter = Control.MOUSE_FILTER_STOP
+		img.mouse_entered.connect(func() -> void: _renderer.set_ui_hover_texture(card_tex))
+		img.mouse_exited.connect(func() -> void: _renderer.clear_ui_hover_texture(card_tex))
+		img.tree_exiting.connect(func() -> void: _renderer.clear_ui_hover_texture(card_tex))
+		panel.add_child(img)
+
 	@warning_ignore("integer_division")
 	var btn_x := (panel_w - row_w) / 2
-	var btn_y := PAD + HEADER_H + HEADER_GAP
+	var btn_y := PAD + HEADER_H + HEADER_GAP + img_block
 	for i in buttons.size():
 		var btn := Button.new()
 		btn.text = str(buttons[i].get("text", ""))
@@ -6373,10 +6487,16 @@ func _show_track_look_inline(payload: Dictionary) -> void:
 	var card_id: String = payload.get("card", "")
 	var card := _state.get_card(card_id)
 	var card_name := "the top card"
+	var card_tex: Texture2D = null
 	if card and _db:
 		var def: CardDef = _db.get_def(card.card_def_id)
 		if def:
 			card_name = def.card_name
+			# The decision is entirely about this one card, so show it rather
+			# than only naming it (Alt+hover magnifies it like any other card).
+			var tex_path := "res://" + def.image_path.replace("\\", "/") if def.image_path != "" else ""
+			if tex_path != "" and ResourceLoader.exists(tex_path):
+				card_tex = load(tex_path)
 
 	var who: String = payload.get("player", "")
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
@@ -6391,7 +6511,8 @@ func _show_track_look_inline(payload: Dictionary) -> void:
 			"callback": func() -> void: _resolve_track_look(true),
 		},
 	]
-	_track_look_nodes.append(_build_choice_popup(header_text, Color(0.6, 0.8, 0.45), buttons, true))
+	_track_look_nodes.append(_build_choice_popup(
+			header_text, Color(0.6, 0.8, 0.45), buttons, true, [], card_tex))
 
 
 func _resolve_track_look(to_bottom: bool) -> void:
@@ -6457,10 +6578,11 @@ func _handle_game_over(payload: Dictionary) -> void:
 # Compact per-player stat block for the Game Over dialog.
 func _stats_summary() -> String:
 	var lines := PackedStringArray()
-	lines.append("            Drawn   Played")
+	lines.append("            Drawn   Played   Dmg prevented")
 	for pid in ["p1", "p2"]:
-		lines.append("%-8s  %5d   %6d" % [
-			pid.to_upper(), _stats.drawn(pid), _stats.played(pid)])
+		lines.append("%-8s  %5d   %6d   %13d" % [
+			pid.to_upper(), _stats.drawn(pid), _stats.played(pid),
+			_stats.prevented(pid)])
 	return "\n".join(lines)
 
 

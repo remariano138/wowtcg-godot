@@ -760,6 +760,20 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 			if action.params.get("_skip_target_check", false):
 				return true
 			return action.params.get("target_id", "") in rz_cands
+		# Graveyard-fetch ability (Call the Spirit): the target is an ally CARD
+		# in the caster's graveyard, announced with the play. Ancestral Spirit's
+		# branch minus the resource cap — nothing enters play, so there is
+		# nothing to afford. Mandatory single target, so an empty pool makes the
+		# card unplayable (706.2).
+		if def and _ability_fetches_from_graveyard(def):
+			var gh_req := get_graveyard_search_requirement(def)
+			var gh_cands := get_graveyard_search_candidates(
+					state, action.source_player, gh_req, db)
+			if gh_cands.is_empty():
+				return false
+			if action.params.get("_skip_target_check", false):
+				return true
+			return action.params.get("target_id", "") in gh_cands
 		# Graveyard-exile ability (Cannibalize): "Remove any number of ally
 		# cards in graveyards from the game." ANY NUMBER includes zero, so
 		# unlike the reanimate branch an empty candidate pool does NOT make the
@@ -926,6 +940,12 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		var scan_pid := player_id if player_id != "" else state.turn_player
 		var req := get_graveyard_search_requirement(def)
 		return not get_graveyard_search_candidates(state, scan_pid, req, db).is_empty()
+	# Call the Spirit: same, minus the cost cap — one ally card in the caster's
+	# own graveyard is all it needs, and with none the card goes dark.
+	if _ability_fetches_from_graveyard(def):
+		var f_pid := player_id if player_id != "" else state.turn_player
+		var f_req := get_graveyard_search_requirement(def)
+		return not get_graveyard_search_candidates(state, f_pid, f_req, db).is_empty()
 	# Sever the Cord: an additional cost that can't be paid makes the card
 	# unplayable (412.2) — it goes dark with no ally in the caster's party.
 	if play_cost_sacrifices_ally(def):
@@ -1012,6 +1032,20 @@ static func _ability_reanimates_from_graveyard(def: CardDef) -> bool:
 		return false
 	var req := get_graveyard_search_requirement(def)
 	return req.get("dest", "") == "play"
+
+
+# Call the Spirit: a hand Ability whose target is an ally card in the caster's
+# graveyard, fetched to hand (a `graveyard_to_hand` requirement segment). The
+# same segment also appears on a hero power (Sen'zir) and on quest rewards,
+# neither of which routes through the ability play path — but an
+# `activated_power` segment is excluded explicitly, exactly as for the exile
+# flavour below, so a future ally carrying both can't be mistaken for a spell.
+static func _ability_fetches_from_graveyard(def: CardDef) -> bool:
+	if not def or def.effects == "":
+		return false
+	if _has_effect_flag_prefix(def, "activated_power"):
+		return false
+	return get_graveyard_search_requirement(def).get("dest", "") == "hand"
 
 
 # Cannibalize: a hand Ability that exiles cards OUT of graveyards (a
@@ -3181,6 +3215,23 @@ static func _resolve_play_instant(state: GameState,
 									rp_private = true
 						events.append_array(_reveal_pick(state, action.source_player,
 								rp_type, rp_n, db, rp_chooser, rp_to_top, rp_private))
+					"graveyard_to_hand":
+						# Call the Spirit: "Put target ally card from your graveyard
+						# into your hand." Ancestral Spirit's announce-a-graveyard-
+						# card shape with the destination changed — the single target
+						# was announced at play time and is re-checked here (706-style:
+						# still an ally card in the caster's graveyard), so a target
+						# exiled in response (Cannibalize, Ophelia) fizzles the fetch.
+						# Nothing enters play, so there is no controller change and no
+						# enter-play trigger.
+						var gh_req := get_graveyard_search_requirement(def)
+						var gh_cands := get_graveyard_search_candidates(
+								state, action.source_player, gh_req, db)
+						if target_id in gh_cands:
+							events.append_array(GameLogic.move_card(
+									state, target_id, action.source_player + "_hand"))
+							events.append(GameEvent.card_returned_from_graveyard(
+									target_id, action.source_player))
 					"graveyard_to_play":
 						# Ancestral Spirit: "Put target ally card from your graveyard
 						# into play if its cost <= the number of resources you have.
@@ -6945,7 +6996,8 @@ static func _quest_choice_pending(state: GameState) -> bool:
 		or state.pending_quest_ferocity_player != "" \
 		or state.pending_plague_destroy_player != "" \
 		or state.pending_quest_facedown_player != "" \
-		or state.pending_quest_ready_player != ""
+		or state.pending_quest_ready_player != "" \
+		or state.pending_quest_shuffle_player != ""
 
 
 # Inner mode strings ("draw:1", "ally_ferocity_this_turn", …) in printed order.
@@ -7005,7 +7057,11 @@ static func quest_mode_available(state: GameState, player_id: String,
 		"opponent_quest_face_down":
 			return not _face_up_quests(state, _other_player(state, player_id), db).is_empty()
 		_:
-			# draw / hand_to_deck_draw — always available.
+			# draw / hand_to_deck_draw / shuffle_graveyard_pick — always
+			# available. Poison Water's shuffle is "any NUMBER of cards",
+			# and zero is a number: the mode is legally choosable on an empty
+			# graveyard, it simply does nothing. Marking it unavailable there
+			# would also silently knock out the Tauren "choose both".
 			return true
 
 
@@ -7062,6 +7118,42 @@ static func choose_quest_ready_target(state: GameState, card_id: String,
 	state.pending_quest_ready_player = ""
 	state.pending_quest_ready_source = ""
 	var events: Array[GameEvent] = GameLogic.ready_card(state, card_id)
+	events.append_array(_run_quest_mode_queue(state, db))
+	return events
+
+
+# Poison Water's pool: every card in the completer's OWN graveyard, any type.
+# A CHOICE, not a target — nothing is announced, so 706 Untargetable does not
+# apply (and a card in a graveyard is not in play to begin with).
+static func get_quest_shuffle_candidates(state: GameState,
+		player_id: String) -> Array[String]:
+	var result: Array[String] = []
+	for card in state.cards_in_zone(player_id + "_graveyard"):
+		result.append(card.instance_id)
+	return result
+
+
+# Entry point: the completer picked the subset of their graveyard to shuffle
+# back. Direct call (NOT the chain) like every other quest sub-choice;
+# can_submit / pass_priority hard-block while pending. An EMPTY array is a legal
+# answer ("any number" includes zero) and still shuffles the deck.
+static func choose_quest_graveyard_shuffle(state: GameState, card_ids: Array,
+		db) -> Array[GameEvent]:
+	if state.pending_quest_shuffle_player == "":
+		return []
+	var player_id := state.pending_quest_shuffle_player
+	var pool := get_quest_shuffle_candidates(state, player_id)
+	var picked: Array[String] = []
+	for cid in card_ids:
+		# Re-checked at run time: a card that left the graveyard while an
+		# earlier mode resolved is simply dropped, and a duplicate id can't
+		# move the same card twice.
+		if cid in pool and cid not in picked:
+			picked.append(cid)
+	state.pending_quest_shuffle_player = ""
+	state.pending_quest_shuffle_source = ""
+	var events: Array[GameEvent] = GameLogic.shuffle_cards_into_deck(
+			state, player_id, picked)
 	events.append_array(_run_quest_mode_queue(state, db))
 	return events
 
@@ -7166,6 +7258,18 @@ static func _run_quest_mode_queue(state: GameState, db) -> Array[GameEvent]:
 					events.append_array(_draw_one(state, player_id))
 			"hand_to_deck_draw":
 				events.append_array(_hand_to_deck_draw(state, player_id))
+			"shuffle_graveyard_pick":
+				# Poison Water. WHICH cards is a resolution choice (709.2b), so
+				# the pool is read here, not at completion. An empty graveyard
+				# opens no choice point at all — there is nothing to pick from
+				# and nothing to shuffle back.
+				if get_quest_shuffle_candidates(state, player_id).is_empty():
+					continue
+				state.pending_quest_shuffle_player = player_id
+				state.pending_quest_shuffle_source = quest_id
+				events.append(GameEvent.quest_shuffle_required(quest_id, player_id,
+						get_quest_shuffle_candidates(state, player_id)))
+				return events
 			"ally_ferocity_this_turn":
 				# Re-check at run time (the board may have changed while an
 				# earlier mode resolved) — no legal ally left, the mode fizzles.

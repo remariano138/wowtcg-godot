@@ -94,6 +94,8 @@ func _ready() -> void:
 		_test_ancestral_spirit_reanimate,
 		_test_ancestral_spirit_gates,
 		_test_ancestral_spirit_ai_picks_best,
+		_test_call_the_spirit_fetches_ally,
+		_test_call_the_spirit_gates_and_ai,
 		_test_missing_diplomat_deck_search,
 		_test_reveal_pick_takes_matching_card,
 		_test_reveal_pick_no_match_all_to_bottom,
@@ -281,6 +283,7 @@ func _ready() -> void:
 		_test_searing_totem_instant_timing,
 		_test_earthbind_totem_ready_lock,
 		_test_healing_stream_totem_heals_party,
+		_test_empty_heal_triggers_are_not_queued,
 		_test_watcher_malwi_pings_entering_opposing_ally,
 		_test_watcher_malwi_ignores_own_allies,
 		_test_watcher_malwi_pings_entering_totem,
@@ -406,6 +409,8 @@ func _ready() -> void:
 		_test_innervate_draws_three,
 		_test_hidden_enemies_choice,
 		_test_a_new_plague,
+		_test_poison_water_shuffle_pick,
+		_test_poison_water_empty_pick_and_gates,
 		_test_kolkar_facedown,
 		_test_crown_of_the_earth,
 		_test_quest_choice_ai_hooks,
@@ -5296,6 +5301,114 @@ func _test_ancestral_spirit_ai_picks_best() -> void:
 		if a.action_type == "play_ability" and a.params.get("card_id", "") == "ancestral":
 			chosen = a.params.get("target_id", "")
 	eq(chosen, "gy_mid", "anc-i: AI reanimates the cost-3 ally over the cost-1 one")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Call the Spirit: "Put target ally card from your graveyard into
+# your hand." Ancestral Spirit's announce-a-graveyard-card shape, destination
+# hand — no cost cap, nothing enters play.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const CALL_SPIRIT_FX := "graveyard_to_hand:Ally:1:1:own"
+
+
+func _test_call_the_spirit_fetches_ally() -> void:
+	_buf.append("\n-- Call the Spirit: fetch an ally card back to hand --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("call_def", 2, CALL_SPIRIT_FX)
+	db.ally("bear_def", 2, 4, [], 8)          # cost 8 — no cap on a fetch
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 2)
+	_add_card_to_hand(st, "call", "call_def", "p1")
+	var dead := CardInstance.create("dead_bear", "bear_def", "p1", "p1_graveyard")
+	st.cards["dead_bear"] = dead
+	st.zones["p1_graveyard"].card_ids.append("dead_bear")
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("call_def"))
+	eq(req.get("dest", ""), "hand", "cts-a: dest=hand")
+	ok(not req.get("max_cost_dynamic", false), "cts-a2: no cost cap")
+	ok(StackResolver.can_play_ability_no_target_check(st, "call", "p1", db),
+		"cts-b: probe highlights (candidate in graveyard)")
+
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "call", "target_id": "dead_bear"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	eq(st.get_card("dead_bear").zone_id, "p1_hand", "cts-c: ally card is in hand")
+	ok(not st.is_in_play("dead_bear"), "cts-c2: nothing entered play")
+	ok("call" in st.zones["p1_graveyard"].card_ids, "cts-d: the ability went to the graveyard")
+	eq(st.zones["p1_hand"].card_ids.size(), 1, "cts-e: hand size unchanged (spell out, ally in)")
+
+
+func _test_call_the_spirit_gates_and_ai() -> void:
+	_buf.append("\n-- Call the Spirit: own-graveyard/type gates, fizzle, AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("call_def", 2, CALL_SPIRIT_FX)
+	db.ability("spell_def", 1, "")
+	db.ally("cheap_def", 1, 1, [], 1)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 2)
+	_add_card_to_hand(st, "call", "call_def", "p1")
+	# An ability card of ours and an ally in the OPPONENT's graveyard — neither
+	# is a legal target ("ally card", "your graveyard").
+	var junk := CardInstance.create("junk", "spell_def", "p1", "p1_graveyard")
+	st.cards["junk"] = junk
+	st.zones["p1_graveyard"].card_ids.append("junk")
+	var opp := CardInstance.create("opp_cheap", "cheap_def", "p2", "p2_graveyard")
+	st.cards["opp_cheap"] = opp
+	st.zones["p2_graveyard"].card_ids.append("opp_cheap")
+
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "call", "target_id": "junk"}), db),
+		"cts-f: a non-ally card in our graveyard is illegal")
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "call", "target_id": "opp_cheap"}), db),
+		"cts-g: the opponent's graveyard is illegal")
+	ok(not StackResolver.can_play_ability_no_target_check(st, "call", "p1", db),
+		"cts-h: probe dark with no legal candidate (mandatory target, 706.2)")
+
+	# Target exiled in response → the fetch fizzles, the spell is still spent.
+	var mine := CardInstance.create("mine", "cheap_def", "p1", "p1_graveyard")
+	st.cards["mine"] = mine
+	st.zones["p1_graveyard"].card_ids.append("mine")
+	ok(StackResolver.can_play_ability_no_target_check(st, "call", "p1", db),
+		"cts-i: probe lights up once an ally card is there")
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "call", "target_id": "mine"}), db)
+	GameLogic.move_card(st, "mine", "p1_rfg")   # answered on the chain
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("mine").zone_id, "p1_rfg", "cts-j: exiled target stayed gone")
+	eq(st.zones["p1_hand"].card_ids.size(), 0, "cts-k: fetch fizzled, nothing gained")
+	ok("call" in st.zones["p1_graveyard"].card_ids, "cts-l: the spell was still spent")
+
+	# AI takes the most valuable ally card back.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.ability("call_def", 2, CALL_SPIRIT_FX)
+	db2.ally("small_def", 1, 2, [], 1)
+	db2.ally("mid_def", 2, 3, [], 5)
+	var s2 := _base_state(db2, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 2)
+	_add_card_to_hand(s2, "call", "call_def", "p1")
+	for pair in [["gy_small", "small_def"], ["gy_mid", "mid_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		s2.cards[pair[0]] = c
+		s2.zones["p1_graveyard"].card_ids.append(pair[0])
+	var ai := BaseAI.new()
+	var chosen := ""
+	for a in ai.get_reasonable_actions(s2, db2, "p1"):
+		if a.action_type == "play_ability" and a.params.get("card_id", "") == "call":
+			chosen = a.params.get("target_id", "")
+	eq(chosen, "gy_mid", "cts-m: AI fetches the cost-5 ally over the cost-1 one")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14783,6 +14896,54 @@ func _test_healing_stream_totem_heals_party() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — a pure heal trigger whose scope carries no damage is not queued at
+# all (deviation, see data/rules_deviations.md "Empty heal triggers"): the link
+# would be provably inert, so both players would be passing through nothing.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_empty_heal_triggers_are_not_queued() -> void:
+	_buf.append("\n-- Empty heal triggers are not queued --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("stream_def", 1, "ongoing|totem:water|heal_party_each_turn:1")
+	db.ally("katali_def", 2, 3, [], 3, "heal_at_turn_start:1")
+	db.ally("grunt_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "stream", "stream_def", "p1")
+	var katali := _add_ally(state, "katali", "katali_def", "p1")
+	_add_ally(state, "grunt", "grunt_def", "p1")
+
+	# (a) Nothing damaged anywhere → neither trigger is queued, and nothing is
+	# announced onto the chain for the players to pass through.
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(state.pending_turn_start_triggers.size(), 0,
+		"eh-a: undamaged board queues no heal trigger")
+	eq(state.pending_actions.size(), 0, "eh-a2: and no chain link is announced")
+
+	# (b) Damage the party ally: the party heal has work, the self-heal doesn't,
+	# so exactly ONE link is announced (the queue is empty behind it).
+	state.get_card("grunt").damage_taken = 1
+	state.turn_player = "p1"
+	TurnManager._enter_ready(state, db)
+	eq(state.pending_actions.size(), 1, "eh-b: the trigger with work is announced")
+	eq(state.pending_turn_start_triggers.size(), 0,
+		"eh-b2: the inert self-heal is not queued behind it")
+	_drain_turn_start_triggers(state, db)
+	eq(state.get_card("grunt").damage_taken, 0, "eh-b3: the party heal resolved")
+
+	# (c) Damage on the source itself queues its own self-heal, and it resolves.
+	state.get_card("grunt").damage_taken = 0
+	katali.damage_taken = 2
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	# Both triggers now have work (the totem's party includes Ka'tali): 2 → 0.
+	eq(katali.damage_taken, 0, "eh-c: heals with work still resolve normally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Watcher Mal'wi — when an opposing ally enters play, deal 1 ranged damage to it
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -20894,6 +21055,143 @@ func _test_hidden_enemies_choice() -> void:
 	StackResolver.choose_quest_ferocity_target(s2, "sick2", db2)
 	ok(StackResolver._has_keyword(s2.get_card("sick2"), "ferocity", db2),
 		"he-s: single-mode ferocity applied")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Poison Water: "Choose one: Shuffle any number of cards from your
+# graveyard into your deck; or draw a card. Tauren → both."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _pw_state(db: MockDB, race: String) -> GameState:
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	(db._defs["p1_hero"] as CardDef).tags = race
+	db.quest("pw_def", 3,
+		"qmode:shuffle_graveyard_pick|qmode:draw:1|qchoice_both_race:Tauren")
+	db.ally("filler_def", 1, 1)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var q := CardInstance.create("pw_inst", "pw_def", "p1", "p1_resource_row")
+	state.cards["pw_inst"] = q
+	state.zones["p1_resource_row"].card_ids.append("pw_inst")
+	return state
+
+
+func _pw_put(state: GameState, ids: Array, zone: String, owner: String) -> void:
+	for cid in ids:
+		var c := CardInstance.create(cid, "filler_def", owner, zone)
+		state.cards[cid] = c
+		state.zones[zone].card_ids.append(cid)
+
+
+func _pw_complete(state: GameState, db) -> void:
+	StackResolver.submit_action(state,
+		PendingAction.make("use_quest", "p1", {"quest_id": "pw_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+
+func _test_poison_water_shuffle_pick() -> void:
+	_buf.append("\n-- Scenario: Poison Water (shuffle a chosen subset back) --")
+	var db := MockDB.new()
+	var state := _pw_state(db, "Tauren Warrior")
+	_pw_put(state, ["g1", "g2", "g3"], "p1_graveyard", "p1")
+	_pw_put(state, ["eg1"], "p2_graveyard", "p2")
+	_pw_put(state, ["d1", "d2"], "p1_deck", "p1")
+
+	_pw_complete(state, db)
+	ok(state.pending_quest_choice_can_both, "pw-a: Tauren hero — may choose both")
+
+	# Both, shuffle first — the draw waits until the subset is picked.
+	var events := StackResolver.choose_quest_modes(state,
+		["shuffle_graveyard_pick", "draw:1"], db)
+	ok(not events.is_empty(), "pw-b: both-pick accepted")
+	eq(state.pending_quest_shuffle_player, "p1", "pw-c: graveyard subset choice pending")
+	eq(state.zones["p1_hand"].card_ids.size(), 0, "pw-d: draw queued, not yet resolved")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"pw-e: pass_priority hard-blocked while the pick is pending")
+	ok(not StackResolver.can_submit(state,
+		PendingAction.make("place_resource", "p1", {"card_id": "d1"}), db),
+		"pw-f: can_submit hard-blocked while the pick is pending")
+
+	# A subset (not the whole graveyard), plus junk the resolver must drop:
+	# the opponent's graveyard card and a duplicate id.
+	var shuffle_events := StackResolver.choose_quest_graveyard_shuffle(
+		state, ["g1", "g3", "g3", "eg1"], db)
+	# Both picked cards joined the deck — but the queued draw then runs off the
+	# freshly shuffled deck, so either may already have been drawn back out.
+	# Leaving the graveyard for the deck is what the shuffle owed.
+	ok(state.get_card("g1").zone_id in ["p1_deck", "p1_hand"],
+		"pw-g: picked card left the graveyard for the deck")
+	ok(state.get_card("g3").zone_id in ["p1_deck", "p1_hand"],
+		"pw-h: second picked card left the graveyard for the deck")
+	eq(state.get_card("g2").zone_id, "p1_graveyard", "pw-i: unpicked card stayed in the graveyard")
+	eq(state.get_card("eg1").zone_id, "p2_graveyard",
+		"pw-j: the opponent's graveyard is not a legal pick")
+	eq(state.zones["p1_graveyard"].card_ids, ["g2"] as Array[String],
+		"pw-k1: exactly the picked cards left the graveyard")
+	eq(state.zones["p1_deck"].card_ids.size() + state.zones["p1_hand"].card_ids.size(), 4,
+		"pw-k: deck grew by exactly two (duplicate id counted once)")
+	var shuffled := false
+	for e in shuffle_events:
+		if e.event_type == "deck_shuffled" and e.payload.get("player", "") == "p1":
+			shuffled = true
+	ok(shuffled, "pw-l: deck_shuffled emitted (drives the shuffle SFX)")
+	eq(state.zones["p1_hand"].card_ids.size(), 1, "pw-m: queued draw resolved after the pick")
+	ok(state.pending_quest_shuffle_player == "" and state.quest_mode_queue.is_empty(),
+		"pw-n: choice flow fully drained")
+
+
+func _test_poison_water_empty_pick_and_gates() -> void:
+	_buf.append("\n-- Scenario: Poison Water — zero is a number, empty graveyard, AI --")
+	# "Any number" includes zero: the empty pick is legal and still resolves.
+	var db := MockDB.new()
+	var state := _pw_state(db, "Tauren Warrior")
+	_pw_put(state, ["g1", "g2"], "p1_graveyard", "p1")
+	_pw_put(state, ["d1"], "p1_deck", "p1")
+	_pw_complete(state, db)
+	StackResolver.choose_quest_modes(state, ["shuffle_graveyard_pick"], db)
+	eq(state.pending_quest_shuffle_player, "p1", "pw-o: pick opened")
+	ok(not StackResolver.choose_quest_graveyard_shuffle(state, [], db).is_empty(),
+		"pw-p: the empty pick is accepted (and still shuffles)")
+	eq(state.zones["p1_graveyard"].card_ids.size(), 2, "pw-q: nothing left the graveyard")
+	eq(state.pending_quest_shuffle_player, "", "pw-r: choice resolved, not left pending")
+
+	# An empty graveyard opens no choice point at all — but the mode is still
+	# legally choosable (and must not knock out the Tauren "choose both").
+	var db2 := MockDB.new()
+	var s2 := _pw_state(db2, "Tauren Warrior")
+	_pw_put(s2, ["d1", "d2"], "p1_deck", "p1")
+	_pw_complete(s2, db2)
+	ok(s2.pending_quest_choice_can_both,
+		"pw-s: empty graveyard still allows the both-pick")
+	StackResolver.choose_quest_modes(s2, ["shuffle_graveyard_pick", "draw:1"], db2)
+	eq(s2.pending_quest_shuffle_player, "", "pw-t: no choice point on an empty graveyard")
+	eq(s2.zones["p1_hand"].card_ids.size(), 1, "pw-u: the queue ran on to the draw")
+
+	# AI: recycling costs a card, so it is only taken over the draw when the
+	# deck is nearly out (410.6b).
+	var ai := BaseAI.new()
+	var db3 := MockDB.new()
+	var s3 := _pw_state(db3, "Human Warrior")   # non-Tauren: one mode only
+	_pw_put(s3, ["g1", "g2"], "p1_graveyard", "p1")
+	var fat: Array = []
+	for i in 20:
+		fat.append("fat%d" % i)
+	_pw_put(s3, fat, "p1_deck", "p1")
+	_pw_complete(s3, db3)
+	eq(ai.choose_quest_modes(s3, db3, "p1"), ["draw:1"],
+		"pw-v: AI draws while the deck is healthy")
+
+	var db4 := MockDB.new()
+	var s4 := _pw_state(db4, "Human Warrior")
+	_pw_put(s4, ["g1", "g2"], "p1_graveyard", "p1")
+	_pw_put(s4, ["d1", "d2"], "p1_deck", "p1")
+	_pw_complete(s4, db4)
+	eq(ai.choose_quest_modes(s4, db4, "p1"), ["shuffle_graveyard_pick"],
+		"pw-w: AI recycles when the deck is nearly out")
+	eq(ai.choose_quest_graveyard_shuffle(s4, db4, "p1").size(), 2,
+		"pw-x: AI takes the whole graveyard back")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

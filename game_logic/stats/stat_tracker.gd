@@ -20,15 +20,24 @@ extends RefCounted
 #                  equipment). Placing a resource is NOT a play and is excluded
 #                  (it is a separate action; see submit_action). Fed by the
 #                  dedicated "card_played" event.
+#   damage_prevented — damage points that never landed on a player's characters
+#                  because something prevented them (rule 717.2): armor exhausted
+#                  at the prevention point, and the automatic shields (Brother
+#                  Rhone, Bestial Wrath). Counted for the player who BENEFITED —
+#                  the prevented packet's target's controller — so it reads as
+#                  "how much did my armor save me". Unpreventable damage
+#                  (Lionheart Helm, Annihilator) emits nothing and so counts 0.
 
 # player_id ("p1"/"p2") → count
-var cards_drawn:  Dictionary = {"p1": 7, "p2": 7}
-var cards_played: Dictionary = {"p1": 0, "p2": 0}
+var cards_drawn:      Dictionary = {"p1": 7, "p2": 7}
+var cards_played:     Dictionary = {"p1": 0, "p2": 0}
+var damage_prevented: Dictionary = {"p1": 0, "p2": 0}
 
 
 func reset() -> void:
-	cards_drawn  = {"p1": 7, "p2": 7}
-	cards_played = {"p1": 0, "p2": 0}
+	cards_drawn      = {"p1": 7, "p2": 7}
+	cards_played     = {"p1": 0, "p2": 0}
+	damage_prevented = {"p1": 0, "p2": 0}
 
 
 # Hand this every GameEvent as it is emitted. Cheap and idempotent per event.
@@ -46,6 +55,9 @@ func record_event(event: GameEvent) -> void:
 				_unbump(cards_drawn, _player_of_zone(from_zone))
 		"card_played":
 			_bump(cards_played, event.payload.get("player", ""))
+		"damage_prevented":
+			_add(damage_prevented, event.payload.get("controller", ""),
+				int(event.payload.get("amount", 0)))
 
 
 func drawn(player_id: String) -> int:
@@ -56,10 +68,20 @@ func played(player_id: String) -> int:
 	return int(cards_played.get(player_id, 0))
 
 
+func prevented(player_id: String) -> int:
+	return int(damage_prevented.get(player_id, 0))
+
+
 func _bump(counter: Dictionary, player_id: String) -> void:
 	if player_id == "":
 		return
 	counter[player_id] = int(counter.get(player_id, 0)) + 1
+
+
+func _add(counter: Dictionary, player_id: String, amount: int) -> void:
+	if player_id == "" or amount <= 0:
+		return
+	counter[player_id] = int(counter.get(player_id, 0)) + amount
 
 
 func _unbump(counter: Dictionary, player_id: String) -> void:

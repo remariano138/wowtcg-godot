@@ -577,8 +577,9 @@ func start_ability_graveyard_selection(card_id: String) -> void:
 
 
 # Detect a hand Ability whose targets are graveyard CARDS — reanimate
-# (Ancestral Spirit, dest "play") or exile (Cannibalize, dest "rfg"). Both open
-# the graveyard browser instead of board targeting.
+# (Ancestral Spirit, dest "play"), exile (Cannibalize, dest "rfg") or fetch to
+# hand (Call the Spirit, dest "hand"). All open the graveyard browser instead
+# of board targeting.
 func _ability_uses_graveyard_browser(card_id: String) -> bool:
 	return _ability_graveyard_dest(card_id) != ""
 
@@ -593,7 +594,9 @@ func _ability_graveyard_dest(card_id: String) -> String:
 	if not def:
 		return ""
 	var dest: String = StackResolver.get_graveyard_search_requirement(def).get("dest", "")
-	return dest if dest in ["play", "rfg"] else ""
+	# "hand" = Call the Spirit's fetch; like the reanimate it announces a single
+	# card as `target_id`, so only the "rfg" branch below needs to differ.
+	return dest if dest in ["play", "rfg", "hand"] else ""
 
 
 # UI confirmed a selection: submit the quest completion (or hero power) with
@@ -629,8 +632,8 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 		var ability_id := _gy_select_ability_id
 		_gy_select_ability_id = ""
 		# Exile abilities (Cannibalize) announce EVERY chosen card as
-		# `target_ids`; reanimate abilities (Ancestral Spirit) announce the
-		# single chosen card as `target_id`.
+		# `target_ids`; single-card abilities (Ancestral Spirit's reanimate,
+		# Call the Spirit's fetch) announce the chosen card as `target_id`.
 		var rz_params := {"card_id": ability_id}
 		if _ability_graveyard_dest(ability_id) == "rfg":
 			rz_params["target_ids"] = selected_ids.duplicate()

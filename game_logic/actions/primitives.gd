@@ -356,7 +356,7 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 	# TARGET's own def.
 	if bool(opts.get("combat_attack", false)) \
 			and blocks_all_combat_damage(state, db, source_id, target_id):
-		events.append(GameEvent.damage_prevented(target_id, amount, 0))
+		events.append(GameEvent.damage_prevented(target_id, amount, 0, target.controller))
 		return {"amount": 0, "events": events}
 
 	# (a2) Instance-scoped prevention shields granted by an effect (Bestial
@@ -367,7 +367,7 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 	# sweep clears it. Like every shield it is skipped entirely for
 	# unpreventable damage, which returned above without consuming anything.
 	if _has_prevent_all_shield(target):
-		events.append(GameEvent.damage_prevented(target_id, amount, 0))
+		events.append(GameEvent.damage_prevented(target_id, amount, 0, target.controller))
 		return {"amount": 0, "events": events}
 
 	# (b) Rule 717.2c: exhausted armor prevents damage dealt to the controller's
@@ -380,7 +380,7 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 		target_ps.damage_prevention -= absorbed
 		amount -= absorbed
 		events.append(GameEvent.damage_prevented(
-			target_id, absorbed, target_ps.damage_prevention))
+			target_id, absorbed, target_ps.damage_prevention, target.controller))
 
 	return {"amount": amount, "events": events}
 
@@ -693,6 +693,25 @@ static func shuffle_graveyard_into_deck(state: GameState,
 		deck.card_ids.shuffle()
 	# Emitted even on an empty graveyard: shuffling a deck nobody added to is
 	# still a shuffle, and the order genuinely changes.
+	events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
+	return events
+
+
+# ── shuffle_cards_into_deck ───────────────────────────────────────────────────
+# Poison Water: "Shuffle any number of cards from your graveyard into your deck."
+# The chosen-subset flavour of shuffle_graveyard_into_deck above — same owner
+# reasoning (415.9d: every card in a player's graveyard is owned by that player,
+# so no per-card owner check is needed), same "not a draw and not a search", and
+# the same unconditional deck_shuffled event: shuffling on an EMPTY pick is
+# still a shuffle, and the deck order genuinely changes.
+static func shuffle_cards_into_deck(state: GameState, player_id: String,
+		card_ids: Array) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	for cid in card_ids:
+		events.append_array(move_card(state, cid, player_id + "_deck"))
+	var deck := state.zones.get(player_id + "_deck") as Zone
+	if deck:
+		deck.card_ids.shuffle()
 	events.append(GameEvent.make("deck_shuffled", {"player": player_id}))
 	return events
 

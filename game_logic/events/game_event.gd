@@ -258,11 +258,13 @@ static func prevention_opened(player_id: String, amount: int,
 		"target": target_id,
 	})
 
-static func damage_prevented(target_id: String, amount: int, remaining: int) -> GameEvent:
+static func damage_prevented(target_id: String, amount: int, remaining: int,
+		controller: String = "") -> GameEvent:
 	return make("damage_prevented", {
-		"target_id": target_id,
-		"amount":    amount,      # damage points absorbed by the pool
-		"remaining": remaining,   # pool left after absorbing
+		"target_id":  target_id,
+		"amount":     amount,      # damage points absorbed by the pool
+		"remaining":  remaining,   # pool left after absorbing
+		"controller": controller,  # target's controller — who the prevention benefited
 	})
 
 static func hero_power_used(player_id: String, hero_id: String) -> GameEvent:
@@ -535,6 +537,15 @@ static func quest_ready_target_required(quest_id: String,
 		player_id: String) -> GameEvent:
 	return make("quest_ready_target_required", {
 		"quest_id": quest_id, "player": player_id,
+	})
+
+# Poison Water: the completer must choose which cards in their own graveyard
+# (any number, zero included) are shuffled into their deck. card_ids = the whole
+# graveyard, i.e. the pool to pick from.
+static func quest_shuffle_required(quest_id: String, player_id: String,
+		card_ids: Array) -> GameEvent:
+	return make("quest_shuffle_required", {
+		"quest_id": quest_id, "player": player_id, "card_ids": card_ids,
 	})
 
 static func ferocity_granted(card_id: String, source_id: String) -> GameEvent:

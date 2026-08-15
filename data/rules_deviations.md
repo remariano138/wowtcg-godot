@@ -111,6 +111,35 @@ carries; the engine deliberately has no flag for it.)
 
 ---
 
+## Empty heal triggers are not queued
+
+**Rules:** 500.2 / 708.1 — a start-of-turn triggered power triggers and its
+effect is added to the chain, whether or not it will change anything. 709.2c
+then resolves "as much as possible", which for a heal on an undamaged character
+is nothing.
+
+**Engine:** `TurnManager._heal_trigger_has_work` drops a *pure heal*
+start-of-turn trigger from `pending_turn_start_triggers` when nothing in its
+scope carries damage — the source itself (`heal_at_turn_start` /
+`heal_at_each_turn_start`, e.g. Ka'tali Stonetusk, Ja'zaron), the controller's
+party (`heal_party_each_turn` / `heal_party_at_turn_start`, Healing Stream
+Totem, Wazzuli Wildmender), or the hero and Pets (Spirit Bond's
+`turn_start_heal_hero_and_pets`, which is also dropped with no Pet in play,
+since the printed condition already fails).
+
+**Why:** the link is provably inert — `GameLogic.heal` no-ops and emits no
+event on an undamaged target — so all the chain link buys is a round of passes
+in every ready step of a healthy board. Nothing can be gained from responding
+to it either: an opponent cannot make an undamaged character *more* healed.
+
+**Consequence worth knowing:** the check is made once, as the queue is built,
+so a heal is not queued on account of damage another trigger deals later in the
+same ready step (a Searing Totem pinging the would-be heal target). No trigger
+other than these is ever skipped — an inert *damage* or draw trigger is still
+queued normally, because those can matter to the responder.
+
+---
+
 ## Start-of-turn triggered effects — drained one at a time
 
 **Rules:** 500.2 — "when a turn, phase, or step starts, any powers or modifiers
@@ -730,8 +759,9 @@ than change this one.
 
 **Cards:** Hidden Enemies (`dark_portal_302`), A New Plague (`dark_portal_304`),
 Thwarting Kolkar Aggression (`dark_portal_309`), Crown of the Earth
-(`dark_portal_289`) — the "Choose one: …; or draw a card. If your hero is
-[Race], you may choose both" quests (`qmode:` recipes).
+(`dark_portal_289`), Poison Water (`dark_portal_305`) — the "Choose one: …; or
+draw a card. If your hero is [Race], you may choose both" quests (`qmode:`
+recipes).
 
 **Deviation:** a mode whose requirement can't currently be met — no ally in
 play for Hidden Enemies' ferocity target, no ally in the completer's party for
@@ -740,6 +770,11 @@ be chosen (greyed out for humans, filtered for the AI) rather than chosen and
 fizzled. With only one mode available, "you may choose both" is also off. A
 chosen mode is still re-checked when its turn in the queue comes (the board may
 have changed while the earlier mode resolved) and silently fizzles then.
+
+Poison Water's shuffle mode is deliberately NOT gated this way: "shuffle any
+NUMBER of cards" includes zero, so the mode is legally choosable on an empty
+graveyard (it simply does nothing) and must not knock out the Tauren "choose
+both". It just opens no choice point when there is nothing to pick from.
 
 **Why:** picking an effect that visibly does nothing is a trap choice with no
 strategic content in the duel format; the printed outcome (fizzle) and the

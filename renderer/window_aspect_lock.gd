@@ -15,7 +15,11 @@ const ASPECT := 16.0 / 9.0
 # layout legibly anyway.
 const MIN_WIDTH := 960
 # Fraction of the usable screen the window takes on first run.
-const START_FILL := 0.9
+const START_FILL := 1.0
+# Height of the OS title bar. `Window.size`/`position` describe the CLIENT area,
+# so a window sized to the full usable height would push its own title bar (and
+# that much of the board) off the top of the screen.
+const TITLE_BAR_H := 32
 
 # Guards against re-entry: our own resize re-emits size_changed.
 var _adjusting: bool = false
@@ -37,15 +41,21 @@ func _ready() -> void:
 # Largest 16:9 window that fits comfortably on the current screen, centred.
 func _fit_to_screen(win: Window) -> void:
 	var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
-	var w: float = min(float(win.size.x), usable.size.x * START_FILL)
+	# Sized from the SCREEN only — never clamped to the window's current size, or
+	# the project's 1920x1080 default would be a ceiling and the window could only
+	# ever shrink to fit, never grow to fill a larger display.
+	var avail_w: float = usable.size.x * START_FILL
+	var avail_h: float = (usable.size.y - TITLE_BAR_H) * START_FILL
+	var w: float = avail_w
 	var h: float = w / ASPECT
-	if h > usable.size.y * START_FILL:
-		h = usable.size.y * START_FILL
+	if h > avail_h:
+		h = avail_h
 		w = h * ASPECT
 	_adjusting = true
 	win.mode = Window.MODE_WINDOWED
 	win.size = Vector2i(int(w), int(h))
-	win.position = usable.position + (usable.size - win.size) / 2
+	win.position = usable.position + Vector2i(0, TITLE_BAR_H) \
+		+ (Vector2i(usable.size.x, usable.size.y - TITLE_BAR_H) - win.size) / 2
 	_adjusting = false
 
 

@@ -4,24 +4,24 @@
   "hero_card_def_id": "azeroth_10",
   "card_entries": [
     {
-      "card_def_id": "azeroth_344",
-      "count": 1,
-      "_card_name": "For the Horde!"
-    },
-    {
-      "card_def_id": "azeroth_351",
+      "card_def_id": "azeroth_345",
       "count": 2,
-      "_card_name": "A Donation of Wool"
+      "_card_name": "Torek's Assault"
     },
     {
       "card_def_id": "azeroth_361",
-      "count": 4,
+      "count": 2,
       "_card_name": "Zapped Giants"
     },
     {
-      "card_def_id": "azeroth_360",
+      "card_def_id": "azeroth_355",
+      "count": 2,
+      "_card_name": "Kibler's Exotic Pets"
+    },
+    {
+      "card_def_id": "dark_portal_305",
       "count": 1,
-      "_card_name": "Your Fortune Awaits You"
+      "_card_name": "Poison Water"
     },
     {
       "card_def_id": "dark_portal_316",
@@ -29,13 +29,8 @@
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
-      "card_def_id": "azeroth_350",
-      "count": 3,
-      "_card_name": "Chasing A-Me 01"
-    },
-    {
       "card_def_id": "azeroth_352",
-      "count": 2,
+      "count": 1,
       "_card_name": "In Dreams"
     },
     {
@@ -59,9 +54,19 @@
       "_card_name": "War Stomp"
     },
     {
+      "card_def_id": "azeroth_154",
+      "count": 1,
+      "_card_name": "Lust for Battle"
+    },
+    {
       "card_def_id": "azeroth_106",
       "count": 1,
       "_card_name": "Chain Lightning"
+    },
+    {
+      "card_def_id": "dark_portal_234",
+      "count": 1,
+      "_card_name": "Stone Guard Rashun"
     },
     {
       "card_def_id": "azeroth_114",
@@ -79,14 +84,9 @@
       "_card_name": "Earthbind Totem"
     },
     {
-      "card_def_id": "dark_portal_234",
+      "card_def_id": "azeroth_116",
       "count": 1,
-      "_card_name": "Stone Guard Rashun"
-    },
-    {
-      "card_def_id": "dark_portal_236",
-      "count": 1,
-      "_card_name": "Thysta Spiritlasher"
+      "_card_name": "Searing Totem"
     },
     {
       "card_def_id": "azeroth_153",
@@ -95,13 +95,8 @@
     },
     {
       "card_def_id": "azeroth_266",
-      "count": 2,
+      "count": 4,
       "_card_name": "Voss Treebender"
-    },
-    {
-      "card_def_id": "azeroth_109",
-      "count": 2,
-      "_card_name": "Frost Shock"
     },
     {
       "card_def_id": "dark_portal_199",
@@ -114,8 +109,13 @@
       "_card_name": "Guardian Steelhorn"
     },
     {
+      "card_def_id": "azeroth_157",
+      "count": 2,
+      "_card_name": "Call the Spirit"
+    },
+    {
       "card_def_id": "azeroth_226",
-      "count": 3,
+      "count": 4,
       "_card_name": "Bala Silentblade"
     },
     {
@@ -129,19 +129,9 @@
       "_card_name": "Lightning Bolt"
     },
     {
-      "card_def_id": "dark_portal_94",
-      "count": 1,
-      "_card_name": "Flame Shock"
-    },
-    {
       "card_def_id": "dark_portal_210",
-      "count": 1,
+      "count": 2,
       "_card_name": "Ghank"
-    },
-    {
-      "card_def_id": "azeroth_171",
-      "count": 1,
-      "_card_name": "Vanquish"
     },
     {
       "card_def_id": "dark_portal_100",
@@ -149,18 +139,18 @@
       "_card_name": "Shock and Soothe"
     },
     {
+      "card_def_id": "dark_portal_213",
+      "count": 2,
+      "_card_name": "Guardian Steppestrider"
+    },
+    {
       "card_def_id": "azeroth_249",
       "count": 4,
       "_card_name": "Kulan Earthguard"
     },
     {
-      "card_def_id": "dark_portal_239",
-      "count": 1,
-      "_card_name": "Vanda Skydaughter"
-    },
-    {
       "card_def_id": "azeroth_275",
-      "count": 1,
+      "count": 2,
       "_card_name": "Zygore Bladebreaker"
     }
   ],

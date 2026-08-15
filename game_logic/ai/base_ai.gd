@@ -59,6 +59,9 @@ extends RefCounted
 # completion cost (Into the Maw of Madness) — the quest is a resource itself, so
 # completing it is a permanent -1 ramp for one card.
 const DESTROY_SELF_QUEST_MIN_RESOURCES := 6
+# Poison Water: recycle the graveyard instead of drawing only once the deck is
+# down to this many cards (410.6b — being decked is an instant loss).
+const GRAVEYARD_RECYCLE_DECK_FLOOR := 10
 
 const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_165": "combat_instant_dmg",   # Quick Strike — 2 melee damage
@@ -1622,9 +1625,11 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 					if _modal_mode_playable(modal_modes[m_idx]):
 						result.append(m_act)
 				continue
-			if def and StackResolver.get_graveyard_search_requirement(def).get("dest", "") == "play":
+			if def and StackResolver.get_graveyard_search_requirement(def).get("dest", "")\
+					in ["play", "hand"]:
 				# Ancestral Spirit: reanimate the best affordable ally in our
-				# own graveyard.
+				# own graveyard. Call the Spirit (dest "hand") fetches one back
+				# to hand instead — same announce, same "best body" pick.
 				var rz_act := _reanimate_action(state, db, player_id, card.instance_id, action_type)
 				if rz_act:
 					result.append(rz_act)
@@ -2331,7 +2336,24 @@ func _quest_mode_useful(state: GameState, db, player_id: String,
 			return true   # available implies an opposing quest to deny
 		"hand_to_deck_draw":
 			return _hand_is_dead(state, db, player_id)
+		"shuffle_graveyard_pick":
+			# Poison Water. Recycling the graveyard is only worth giving up a
+			# card for when the deck is about to run out (410.6b — the next
+			# required draw off an empty deck loses the game outright).
+			return state.cards_in_zone(player_id + "_graveyard").size() > 0 \
+				and state.cards_in_zone(player_id + "_deck").size() \
+					<= GRAVEYARD_RECYCLE_DECK_FLOOR
 	return false
+
+
+# Poison Water: which graveyard cards to shuffle back. The mode is only ever
+# taken to refill a dying deck (see _quest_mode_useful), so the answer is "all
+# of them" — judging which cards are worth having back needs a curve/board model
+# the AI doesn't have, and every extra card is another turn of not being decked.
+# Overridable; a future AI should replace it rather than tune it.
+func choose_quest_graveyard_shuffle(state: GameState, _db,
+		player_id: String) -> Array:
+	return StackResolver.get_quest_shuffle_candidates(state, player_id)
 
 
 # Shared "is this hand worth cycling?" test behind every hand_to_deck_draw
@@ -4229,6 +4251,10 @@ func _chain_lightning_plan_compact(state: GameState, db, amounts: Array[int],
 # Ancestral Spirit: pick the highest-cost affordable ally card in our own
 # graveyard to bring back (its cost — capped at our resources — is a fair proxy
 # for board value; the reanimated ally arrives at 1 HP but is still a body).
+# Shared with Call the Spirit's fetch-to-hand, where the same "best body" pick
+# applies and the candidate pool simply carries no cost cap — the fetched card
+# is paid for later, so nothing here has to check affordability. Hand size is
+# not a concern either: the spell leaves the hand as the fetched card enters it.
 func _reanimate_action(state: GameState, db, player_id: String,
 		card_id: String, action_type: String) -> PendingAction:
 	var card := state.get_card(card_id)

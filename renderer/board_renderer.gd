@@ -55,6 +55,7 @@ var _perspective_player: String = ""
 
 # ── Card inspector (Alt + hover) ───────────────────────────────────────────────
 var _inspector: TextureRect = null        # large card image overlay
+var _ui_hover_tex: Texture2D = null       # card texture hovered inside a HUD popup
 var _hovered_card_id: String = ""         # instance_id of card under cursor
 
 # ── Graveyard peek (Alt + hover over a graveyard pile) ──────────────────────────
@@ -313,7 +314,43 @@ func hide_inspector() -> void:
 		_inspector.visible = false
 
 
+# Alt+hover inside a HUD popup (the graveyard/reveal browser, the Track Humanoids
+# look, …). Those dialogs paint their cards as plain Buttons/TextureRects in the
+# HUD, not as CardNodes, so `_hovered_card_id` never sees them — the popup tells
+# the renderer which texture the mouse is over instead, and the inspector treats
+# it exactly like a hovered board card.
+func set_ui_hover_texture(tex: Texture2D) -> void:
+	_ui_hover_tex = tex
+	if _inspector and Input.is_key_pressed(KEY_ALT):
+		_try_show_inspector()
+
+
+# Passing the texture makes the clear a no-op if some other element has already
+# claimed the hover (mouse_exited can arrive after the next mouse_entered).
+func clear_ui_hover_texture(tex: Texture2D = null) -> void:
+	if tex != null and _ui_hover_tex != tex:
+		return
+	_ui_hover_tex = null
+	if _inspector:
+		_inspector.visible = false
+
+
+func _show_inspector_texture_at_mouse(tex: Texture2D) -> void:
+	_inspector.texture = tex
+	var mouse:   Vector2 = get_viewport().get_mouse_position()
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	var sz:      Vector2 = _inspector.size
+	_inspector.position = Vector2(
+		clamp(mouse.x + 24, 0.0, vp_size.x - sz.x),
+		clamp(mouse.y - sz.y * 0.5, 0.0, vp_size.y - sz.y))
+	_inspector.visible = true
+
+
 func _try_show_inspector() -> void:
+	if _ui_hover_tex:
+		_close_graveyard_peek()
+		_show_inspector_texture_at_mouse(_ui_hover_tex)
+		return
 	if _hovered_card_id == "":
 		_inspector.visible = false
 		_close_graveyard_peek()
@@ -328,14 +365,7 @@ func _try_show_inspector() -> void:
 	if not cn or not cn._tex_rect or not cn._tex_rect.texture:
 		_inspector.visible = false
 		return
-	_inspector.texture = cn._tex_rect.texture
-	var mouse:   Vector2 = get_viewport().get_mouse_position()
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	var sz:      Vector2 = _inspector.size
-	_inspector.position = Vector2(
-		clamp(mouse.x + 24, 0.0, vp_size.x - sz.x),
-		clamp(mouse.y - sz.y * 0.5, 0.0, vp_size.y - sz.y))
-	_inspector.visible = true
+	_show_inspector_texture_at_mouse(cn._tex_rect.texture)
 
 
 # Alt+hover over any card in a graveyard pile opens the (non-modal) examine

@@ -262,6 +262,7 @@ var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no d
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
 var _gy_quest_shuffle_mode: bool = false  # true = Poison Water's graveyard→deck pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
+var _gy_circle_mode:   bool = false    # true = Circle of Life deck search (choose_circle_of_life; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
 var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). See _gy_filter_active.
 var _gy_reveal_card_type: String = ""   # reveal-pick: required card type, kept so the choice can be re-opened if a pick is refused
 var _gy_filter_active: bool = false   # true = _gy_selectable is authoritative, INCLUDING when empty (reveal-pick with no matching card ⇒ nothing is pickable). Without this an empty dict read as "all selectable" and let the player submit an illegal pick, which the engine refuses — leaving the choice pending forever and hard-locking the turn.
@@ -352,6 +353,8 @@ var _in_strike_ready_mode: bool = false
 var _strike_ready_nodes: Array[Node] = []
 var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
+var _in_feral_rage_mode: bool = false
+var _feral_rage_nodes: Array[Node] = []
 var _in_track_look_mode: bool = false
 var _track_look_nodes: Array[Node] = []
 var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
@@ -2204,6 +2207,7 @@ func _refresh_ui() -> void:
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_strike_ready_mode and not _in_whelp_bounce_mode \
+			and not _in_feral_rage_mode \
 			and not _in_track_look_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
@@ -3674,6 +3678,11 @@ func _on_game_event(event: GameEvent) -> void:
 		"whelp_bounce_opened":
 			_window_generation += 1
 			_handle_whelp_bounce(event.payload)
+		"feral_rage_opened":
+			_window_generation += 1
+			_handle_feral_rage(event.payload)
+		"feral_rage_resolved", "feral_rage_declined":
+			_refresh_ui()
 		"track_look_opened":
 			_window_generation += 1
 			_handle_track_look(event.payload)
@@ -3739,6 +3748,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_death_target(event.payload)
 		"recomb_choice_opened":
 			_handle_recomb_choice(event.payload)
+		"circle_choice_opened":
+			_handle_circle_choice(event.payload)
 		"mulligan_phase_started":
 			_handle_mulligan_started(event.payload)
 		"mulligan_committed":
@@ -4622,6 +4633,35 @@ func _handle_recomb_choice(payload: Dictionary) -> void:
 	_refresh_ui()
 
 
+# Circle of Life (azeroth_19): an ally was destroyed, so ITS controller — either
+# player, the trigger is symmetric — may search his own deck for a same-named
+# ally card and put it into play exhausted. A DECK is private information, so
+# unlike the Recombobulation fetch this routes "private": the off-seat hotseat
+# player gets the peek path rather than the cards being shown to the room.
+func _handle_circle_choice(payload: Dictionary) -> void:
+	var player: String    = payload.get("player", "")
+	var card_name: String = payload.get("card_name", "")
+	var card_ids: Array   = payload.get("card_ids", [])
+	if _route_choice(player, "private") == "ai":
+		var pick := ""
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			pick = (ai_obj as BaseAI).choose_circle_of_life(_state, _db, player, card_name)
+		var events := StackResolver.choose_circle_of_life(_state, pick, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Circle of Life — search your deck for another %s" % card_name,
+			0, 1)
+	_gy_circle_mode = true
+	_gy_confirm_btn.text = "Put into play (C)"
+	_gy_cancel_btn.text = "Decline (Esc)"
+	_set_status("%s was destroyed — put another into play exhausted, or decline" % card_name)
+	_refresh_ui()
+
+
 func _handle_death_target(payload: Dictionary) -> void:
 	var card_id: String = payload.get("card_id", "")
 	var ctrl: String    = payload.get("player", "")
@@ -5400,6 +5440,9 @@ func _on_gy_confirm_pressed() -> void:
 	if _gy_recomb_mode:
 		_resolve_recomb_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
 		return
+	if _gy_circle_mode:
+		_resolve_circle_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
+		return
 	if _gy_reveal_mode:
 		var pick: String = _gy_selected[0] if not _gy_selected.is_empty() else ""
 		var payload := {
@@ -5482,6 +5525,9 @@ func _on_gy_cancel_pressed() -> void:
 	if _gy_recomb_mode:
 		_resolve_recomb_choice("")   # "you may" — Esc/Cancel declines the fetch
 		return
+	if _gy_circle_mode:
+		_resolve_circle_choice("")   # "may" + 413.3 — Esc/Cancel fails to find
+		return
 	var was_view_only := _gy_view_only
 	_close_gy_dialog()
 	if not was_view_only:
@@ -5502,12 +5548,26 @@ func _resolve_recomb_choice(pick: String) -> void:
 	_schedule_next_turn()
 
 
+# Shared exit for the Circle of Life browser: "" declines. Another queued search
+# re-opens the browser through circle_choice_opened, so this only has to hand
+# input back to the seated player and resume driving.
+func _resolve_circle_choice(pick: String) -> void:
+	_close_gy_dialog()
+	var events := StackResolver.choose_circle_of_life(_state, pick, _db)
+	_exit_choice_peek_mode()
+	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+
+
 func _close_gy_dialog() -> void:
 	_dismiss_gy_confirm_popup()
 	_gy_ask_confirm = false
 	_gy_confirm_heal = 0
 	_gy_reveal_mode = false
 	_gy_recomb_mode = false
+	_gy_circle_mode = false
 	_gy_quest_shuffle_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
@@ -6455,6 +6515,50 @@ func _show_whelp_bounce_inline(payload: Dictionary) -> void:
 	_whelp_bounce_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
 
 
+# ── Feral Rage draw point ──────────────────────────────────────────────────────
+# "When your hero is dealt combat damage while in bear form, you may pay (1). If
+# you do, draw a card." Board-public like the whelp bounce (paying a resource is
+# visible; only the drawn card is private, and that lands in a hand the renderer
+# already hides), so any human decides inline, the off-screen hotseat player
+# included. One offer per in-play copy — the engine re-opens this for the next.
+func _handle_feral_rage(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pay: bool = ai.choose_feral_rage(_state, _db, player) if ai else false
+		var events := StackResolver.choose_feral_rage(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_feral_rage_inline(payload)
+
+
+func _show_feral_rage_inline(payload: Dictionary) -> void:
+	_in_feral_rage_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_pass_btn.visible   = false
+	_cancel_btn.visible = false
+
+	var cost: int   = payload.get("cost", 0)
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var header_text := "%sFeral Rage — pay %d to draw a card?" % [prefix, cost]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: draw a card" % cost,
+			"callback": func() -> void: _resolve_feral_rage(true),
+		},
+		{
+			"text": "Decline",
+			"callback": func() -> void: _resolve_feral_rage(false),
+		},
+	]
+
+	_feral_rage_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
+
+
 # Form pay-return choice (Bear/Cat Form death trigger). Board-public like the
 # whelp bounce: AI seats auto-resolve (always pay — see BaseAI.choose_form_return),
 # any human gets the inline pay/decline popup.
@@ -6606,6 +6710,24 @@ func _resolve_whelp_bounce(pay: bool) -> void:
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_whelp_bounce(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	# Combat already concluded; nothing reopens a window. Resume the normal flow.
+	_schedule_next_turn()
+	_drain_passes()
+
+
+func _resolve_feral_rage(pay: bool) -> void:
+	_in_feral_rage_mode = false
+	for n in _feral_rage_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_feral_rage_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_pass_btn.visible = true
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_feral_rage(_state, pay, _db)
 	EventBus.emit_events(events)
 	_refresh_ui()
 	# Combat already concluded; nothing reopens a window. Resume the normal flow.

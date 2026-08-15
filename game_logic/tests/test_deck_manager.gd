@@ -23,6 +23,7 @@ func _ready() -> void:
 	_test_ai_profiles()
 	_test_make_ai_for_deck()
 	_test_tokens_csv_loads()
+	_test_form_state_flags()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -42,13 +43,13 @@ func _test_library_scan() -> void:
 	_check(index.recommended_ai.size() == 8, "library finds 8 recommended_ai decks (got %d)" % index.recommended_ai.size())
 	_check(index.base.size() == 3, "library finds 3 base decks (got %d)" % index.base.size())
 	_check(index.custom.size() == 2, "custom category has 2 decks (Elendril, Thangal)")
-	_check(index.custom.has("alliance_elendril_test"), "alliance_elendril_test discovered in custom")
-	_check(index.custom.has("horde_thangal_test"), "horde_thangal_test discovered in custom")
+	_check(index.custom.has("alliance_hunter_elendril"), "alliance_hunter_elendril discovered in custom")
+	_check(index.custom.has("horde_druid_thangal"), "horde_druid_thangal discovered in custom")
 	_check(index.all().size() == 13, "all() aggregates categories (8 + 3 + 2)")
-	_check(index.recommended_ai.has("alliance_litori_test"), "alliance_litori_test discovered")
-	_check(index.recommended_ai.has("horde_tazo_test"), "horde_tazo_test discovered")
-	_check(index.base.has("alliance_dizdemona_test"), "dizdemona (Warlock) is in base, not recommended_ai")
-	_check(index.base.has("horde_radak_test"), "radak (Warlock) is in base, not recommended_ai")
+	_check(index.recommended_ai.has("alliance_mage_litori_frostburn"), "alliance_mage_litori_frostburn discovered")
+	_check(index.recommended_ai.has("horde_mage_tazo"), "horde_mage_tazo discovered")
+	_check(index.base.has("alliance_warlock_dizdemona"), "dizdemona (Warlock) is in base, not recommended_ai")
+	_check(index.base.has("horde_warlock_radak_doombringer"), "radak (Warlock) is in base, not recommended_ai")
 
 
 func _test_load_all_decks() -> void:
@@ -117,7 +118,7 @@ func _test_authorize_rejects_illegal_decks() -> void:
 	var db := _make_db()
 	# Base: a copy of a known-legal shipped deck (Moonshadow — Alliance Druid),
 	# mutated per case.
-	var source := DeckManager.load_deck("alliance_moonshadow_test")
+	var source := DeckManager.load_deck("alliance_druid_moonshadow")
 	if source == null:
 		_check(false, "authorize: source deck loads")
 		return
@@ -174,7 +175,7 @@ func _test_authorize_rejects_illegal_decks() -> void:
 	# Ta'zo is a Troll Mage -> illegal; Grennan (Tauren Shaman) -> legal
 	# (only the War Stomp error is asserted on the hero swap — Ta'zo's Mage
 	# cards going class-illegal for a Shaman is expected noise).
-	var horde := DeckManager.load_deck("horde_tazo_test")
+	var horde := DeckManager.load_deck("horde_mage_tazo")
 	if horde == null:
 		_check(false, "authorize: horde source deck loads")
 		return
@@ -191,8 +192,36 @@ func _test_authorize_rejects_illegal_decks() -> void:
 	_check(not stomp_flagged, "War Stomp legal for a Tauren hero")
 
 
+# Every card whose printed text says "your hero is in <X> form" must carry the
+# matching form_state:<X> flag, or a card that gates on the form by name
+# (Thangal: "Use only while he's in bear form") silently doesn't see it. The
+# flag is easy to forget on the cards that pair a form with an on-play effect —
+# Bash and Claw both shipped without it — so this pins the whole set against the
+# REAL database rather than trusting each recipe to be edited by hand.
+func _test_form_state_flags() -> void:
+	var db := _make_db()
+	var expected := {
+		"azeroth_17":      "bear",   # Bash
+		"azeroth_18":      "bear",   # Bear Form
+		"dark_portal_19":  "cat",    # Cat Form
+		"dark_portal_20":  "cat",    # Claw
+	}
+	for def_id in expected:
+		var def := db.get_def(def_id) as CardDef
+		if def == null:
+			_check(false, "%s resolves in the database" % def_id)
+			continue
+		var got := StackResolver.form_state_of(def)
+		_check(got == expected[def_id], "%s (%s) declares form_state:%s (got '%s')"
+			% [def_id, def.card_name, expected[def_id], got])
+		# The printed text and the flag must agree — a card claiming one form in
+		# its text and another in its recipe would pass the check above.
+		_check(("in %s form" % expected[def_id]) in def.power_text.to_lower(),
+			"%s power_text says \"in %s form\"" % [def.card_name, expected[def_id]])
+
+
 func _test_runtime_deck_expansion() -> void:
-	var runtime := DeckManager.get_runtime_deck("alliance_dizdemona_test")
+	var runtime := DeckManager.get_runtime_deck("alliance_warlock_dizdemona")
 	_check(runtime != null, "get_runtime_deck returns a Deck")
 	if runtime == null:
 		return
@@ -201,7 +230,7 @@ func _test_runtime_deck_expansion() -> void:
 
 
 func _test_roundtrip_serialization() -> void:
-	var deck := DeckManager.load_deck("horde_radak_test")
+	var deck := DeckManager.load_deck("horde_warlock_radak_doombringer")
 	if deck == null:
 		_check(false, "roundtrip: source deck loads")
 		return
@@ -226,9 +255,9 @@ func _test_ai_profiles() -> void:
 
 
 func _test_make_ai_for_deck() -> void:
-	var ai := DeckManager.make_ai_for_deck("horde_tazo_test")
+	var ai := DeckManager.make_ai_for_deck("horde_mage_tazo")
 	_check(ai is GenericAI, "make_ai_for_deck uses recommended profile (GenericAI)")
 	var fallback := DeckManager.make_ai_for_deck("no_such_deck")
 	_check(fallback is GenericAI, "unknown deck falls back to the generic profile (GenericAI)")
-	var warlock_ai := DeckManager.make_ai_for_deck("horde_radak_test")
+	var warlock_ai := DeckManager.make_ai_for_deck("horde_warlock_radak_doombringer")
 	_check(warlock_ai is GenericAI, "base-category deck still uses its recommended_ai_id (GenericAI)")

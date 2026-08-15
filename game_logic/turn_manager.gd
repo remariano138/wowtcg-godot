@@ -104,6 +104,7 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	state.turn_events.clear()
 	# The ally-damage watchers' cursor indexes into that log, so it resets with it.
 	state.damage_watch_index = 0
+	state.ally_destroy_watch_index = 0
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false

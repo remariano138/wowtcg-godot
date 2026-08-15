@@ -262,6 +262,9 @@ func _ready() -> void:
 		_test_bestial_wrath_targeting_and_ai,
 		_test_skorn_reflects_ally_damage,
 		_test_skorn_combat_scope_and_gates,
+		_test_circle_of_life_replaces_destroyed_ally,
+		_test_circle_of_life_is_symmetric_and_optional,
+		_test_circle_of_life_scope_and_copies,
 		_test_recombobulation_fetch_on_opposing_ally_death,
 		_test_recombobulation_scope_and_decline,
 		_test_iceblade_hacker,
@@ -332,6 +335,9 @@ func _ready() -> void:
 		_test_mildred_sacrifice_destroys_ability,
 		_test_mildred_killed_in_response_and_ai,
 		_test_stat_tracker_counts,
+		_test_feral_rage_draws_on_combat_damage,
+		_test_feral_rage_form_and_affordability_gates,
+		_test_feral_rage_scope_copies_and_prevention,
 		_test_green_whelp_armor_bounces_attacker,
 		_test_green_whelp_armor_decline_and_gates,
 		_test_attack_exhaust_denies_protector,
@@ -554,6 +560,145 @@ func _test_stat_tracker_counts() -> void:
 
 # Green Whelp Armor: when an attacking ally deals combat damage to the wielder's
 # hero, the wielder may pay 2 to return that ally to its owner's hand.
+# ══════════════════════════════════════════════════════════════════════════════
+# Feral Rage (azeroth_21): "Ongoing: When your hero is dealt combat damage while
+# in bear form, you may pay (1). If you do, draw a card."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _feral_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("rage_def", 5, "ongoing|combat_damage_in_form_draw:bear:1")
+	db.instant("bear_def", 1, "ongoing|form:1|form_state:bear|hero_has_protector")
+	db.instant("cat_def",  1, "ongoing|form:1|form_state:cat|hero_atk_while_attacking:1")
+	db.ally("ogre_def", 3, 3, [], 3)
+	return db
+
+
+# p2 attacks p1's hero with a 3/3. p1 holds Feral Rage and (optionally) a form.
+func _feral_state(db: MockDB, form_def: String, resources: int = 2) -> GameState:
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	_add_resources(state, "p1", resources)
+	var ogre := _add_ally(state, "ogre", "ogre_def", "p2")
+	ogre.just_summoned = false
+	var rage := CardInstance.create("rage", "rage_def", "p1", "p1_hero_row")
+	state.cards["rage"] = rage
+	state.zones["p1_hero_row"].card_ids.append("rage")
+	if form_def != "":
+		var form: CardInstance = CardInstance.create("form", form_def, "p1", "p1_hero_row")
+		state.cards["form"] = form
+		state.zones["p1_hero_row"].card_ids.append("form")
+	# Stock p1's deck so the draw has something to find.
+	for i in range(3):
+		var c := CardInstance.create("p1_deck_%d" % i, "ogre_def", "p1", "p1_deck")
+		state.cards["p1_deck_%d" % i] = c
+		state.zones["p1_deck"].card_ids.append("p1_deck_%d" % i)
+	return state
+
+
+# Run p2's ogre attack into p1's hero all the way to the conclusion.
+func _feral_run_attack(state: GameState, db) -> void:
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "ogre", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # → conclusion
+
+
+func _test_feral_rage_draws_on_combat_damage() -> void:
+	_buf.append("\n-- Feral Rage: pay 1 to draw after the hero is hit in bear form --")
+	var db := _feral_db()
+	var state := _feral_state(db, "bear_def")
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+
+	_feral_run_attack(state, db)
+	eq(state.get_card("p1_hero").damage_taken, 3, "fr-a: the hero took the hit")
+	eq(state.pending_feral_rage_player, "p1", "fr-b: the draw offer opened for p1")
+	eq(state.pending_feral_rage_cost, 1, "fr-c: cost is 1")
+
+	# The offer blocks priority until it is answered.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"fr-d: pass_priority is blocked while the offer is pending")
+
+	StackResolver.choose_feral_rage(state, true, db)
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before + 1, "fr-e: drew a card")
+	eq(state.get_available_resources("p1"), 1, "fr-f: paid 1 of the 2 resources")
+	eq(state.pending_feral_rage_player, "", "fr-g: offer closed")
+
+
+func _test_feral_rage_form_and_affordability_gates() -> void:
+	_buf.append("\n-- Feral Rage: form, affordability and decline gates --")
+	# No form at all -> no offer.
+	var db := _feral_db()
+	var state := _feral_state(db, "")
+	_feral_run_attack(state, db)
+	eq(state.pending_feral_rage_player, "", "fr-h: no form -> no offer")
+
+	# CAT form is not bear form.
+	db = _feral_db()
+	state = _feral_state(db, "cat_def")
+	_feral_run_attack(state, db)
+	eq(state.pending_feral_rage_player, "", "fr-i: cat form does not qualify")
+
+	# Bear form but no resources -> the point never opens.
+	db = _feral_db()
+	state = _feral_state(db, "bear_def", 0)
+	_feral_run_attack(state, db)
+	eq(state.pending_feral_rage_player, "", "fr-j: unaffordable -> no offer")
+
+	# Declining costs nothing and draws nothing.
+	db = _feral_db()
+	state = _feral_state(db, "bear_def")
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+	_feral_run_attack(state, db)
+	eq(state.pending_feral_rage_player, "p1", "fr-k: offer opened")
+	StackResolver.choose_feral_rage(state, false, db)
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before, "fr-l: declined -> no draw")
+	eq(state.get_available_resources("p1"), 2, "fr-m: declined -> nothing paid")
+
+
+func _test_feral_rage_scope_copies_and_prevention() -> void:
+	_buf.append("\n-- Feral Rage: attacker role, two copies, full prevention --")
+	# The hero ATTACKS and takes the defender's retaliation — "is dealt combat
+	# damage" has no role clause, so it still fires.
+	var db := _feral_db()
+	var state := _feral_state(db, "bear_def")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	# Give p1's hero some ATK so it is a legal attacker.
+	state.get_card("p1_hero").active_buffs.append(
+		Buff.make("test_atk", "test", "atk", 2, "permanent", 0))
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "ogre"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(state, db)
+	ok(state.get_card("p1_hero").damage_taken > 0, "fr-n: the attacking hero took retaliation")
+	eq(state.pending_feral_rage_player, "p1", "fr-o: an ATTACKING hero also qualifies")
+	StackResolver.choose_feral_rage(state, true, db)
+
+	# Two copies in play -> one hit, two separate offers.
+	db = _feral_db()
+	state = _feral_state(db, "bear_def", 3)
+	var rage2 := CardInstance.create("rage2", "rage_def", "p1", "p1_hero_row")
+	state.cards["rage2"] = rage2
+	state.zones["p1_hero_row"].card_ids.append("rage2")
+	var hand_before: int = state.zones["p1_hand"].card_ids.size()
+	_feral_run_attack(state, db)
+	eq(state.pending_feral_rage_player, "p1", "fr-p: first of two offers open")
+	StackResolver.choose_feral_rage(state, true, db)
+	eq(state.pending_feral_rage_player, "p1", "fr-q: the second copy opens its own offer")
+	StackResolver.choose_feral_rage(state, true, db)
+	eq(state.zones["p1_hand"].card_ids.size(), hand_before + 2, "fr-r: drew twice")
+	eq(state.get_available_resources("p1"), 1, "fr-s: paid 1 per offer")
+	eq(state.pending_feral_rage_player, "", "fr-t: both offers answered")
+
+
 func _test_green_whelp_armor_bounces_attacker() -> void:
 	_buf.append("\n-- Green Whelp Armor: pay 2 to bounce the attacking ally --")
 	var db := MockDB.new()
@@ -13146,6 +13291,157 @@ func _complete_recomb(state: GameState, db) -> void:
 		{"quest_id": "recomb"}), db)
 	StackResolver.pass_priority(state, db)
 	StackResolver.pass_priority(state, db)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Circle of Life (azeroth_19): "Ongoing: When an ally is destroyed, its
+# controller may search his deck for an ally card with the same name and put it
+# into play exhausted."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _circle_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("circle_def", 8, "ongoing|recursion_on_ally_death_same_name")
+	db.instant("vanquish_def", 1, "destroy_target:ally")
+	db.ally("body_def", 2, 2, [], 3)      # MockDB names a def after its id, so
+	db.ally("other_def", 2, 2, [], 3)     # two ids == two different NAMES.
+	db.totem("totem_def", 1, "totem:fire", 1)
+	db.token("token_def", 1, 1)
+	return db
+
+
+# Circle in play under `owner`, plus a deck copy of `deck_defs` for each player
+# named in it.
+func _circle_state(db: MockDB, owner: String = "p1") -> GameState:
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var circle := CardInstance.create("circle", "circle_def", owner, owner + "_hero_row")
+	state.cards["circle"] = circle
+	state.zones[owner + "_hero_row"].card_ids.append("circle")
+	return state
+
+
+func _add_card_to_deck(state: GameState, inst_id: String, def_id: String,
+		ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_deck")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_deck"].card_ids.append(inst_id)
+	return card
+
+
+func _test_circle_of_life_replaces_destroyed_ally() -> void:
+	_buf.append("\n-- Circle of Life: a dying ally is replaced from its controller's deck --")
+	var db := _circle_db()
+	var state := _circle_state(db, "p1")
+	_add_resources(state, "p1", 3)
+	var victim := _add_ally(state, "victim", "body_def", "p1")
+	victim.just_summoned = false
+	_add_card_to_deck(state, "deck_copy",  "body_def",  "p1")   # same name
+	_add_card_to_deck(state, "deck_other", "other_def", "p1")   # different name
+	_add_card_to_hand(state, "vanq", "vanquish_def", "p1")
+
+	eq(state.pending_circle_player, "", "col-a: nothing pending before a death")
+
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "vanq", "target_id": "victim"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("victim").zone_id, "p1_graveyard", "col-b: the ally was destroyed")
+	eq(state.pending_circle_player, "p1", "col-c: the search opened for its controller")
+	eq(StackResolver.get_circle_candidates(state, "p1", "body_def", db), ["deck_copy"],
+		"col-d: only the SAME-NAMED ally card in that deck is a candidate")
+
+	# The choice blocks priority until answered.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"col-e: pass_priority is blocked while the search is pending")
+
+	StackResolver.choose_circle_of_life(state, "deck_copy", db)
+	eq(state.get_card("deck_copy").zone_id, "p1_ally_row", "col-f: the copy is in play")
+	ok(state.get_card("deck_copy").is_exhausted, "col-g: it entered play EXHAUSTED (710.1b)")
+	eq(state.pending_circle_player, "", "col-h: choice closed")
+
+
+func _test_circle_of_life_is_symmetric_and_optional() -> void:
+	_buf.append("\n-- Circle of Life: symmetric, declinable, name-gated --")
+	var db := _circle_db()
+	# Circle belongs to p1; the ally that dies belongs to p2.
+	var state := _circle_state(db, "p1")
+	var victim := _add_ally(state, "victim", "body_def", "p2")
+	victim.just_summoned = false
+	_add_card_to_deck(state, "p2_copy", "body_def", "p2")
+
+	StackResolver._destroy_card_trigger(state, "victim", "", db)
+	eq(state.pending_circle_player, "p2",
+		"col-i: \"ITS controller\" — the OPPONENT searches, off their own deck")
+
+	# "May" (and 413.3: a search of a non-public zone can fail to find).
+	StackResolver.choose_circle_of_life(state, "", db)
+	eq(state.get_card("p2_copy").zone_id, "p2_deck", "col-j: declined — the copy stays in the deck")
+	eq(state.pending_circle_player, "", "col-k: choice closed on decline")
+
+	# No same-named card in the deck -> no choice point opens at all.
+	var v2 := _add_ally(state, "victim2", "other_def", "p2")
+	v2.just_summoned = false
+	StackResolver._destroy_card_trigger(state, "victim2", "", db)
+	eq(state.pending_circle_player, "", "col-l: no match in deck -> no search opens")
+
+	# A HERO dying is not "an ally", and neither is an ability in the hero row.
+	eq(state.pending_circle_queue.size(), 0, "col-m: nothing queued")
+
+
+func _test_circle_of_life_scope_and_copies() -> void:
+	_buf.append("\n-- Circle of Life: totems, tokens, two copies, and the cursor --")
+	var db := _circle_db()
+	var state := _circle_state(db, "p1")
+
+	# A Totem is an ally card in every zone (305.3a), so a dying totem finds one.
+	var totem := _add_ally(state, "totem_inst", "totem_def", "p1")
+	totem.just_summoned = false
+	_add_card_to_deck(state, "totem_copy", "totem_def", "p1")
+	StackResolver._destroy_card_trigger(state, "totem_inst", "", db)
+	eq(state.pending_circle_player, "p1", "col-n: a destroyed Totem searches like any ally")
+	StackResolver.choose_circle_of_life(state, "totem_copy", db)
+	eq(state.get_card("totem_copy").zone_id, "p1_ally_row", "col-o: the totem copy is in play")
+
+	# A token matches nothing — tokens aren't deckable, so the name can't be
+	# in a deck. No "non-token" clause was needed on this card.
+	var tok := _add_ally(state, "tok", "token_def", "p1")
+	tok.just_summoned = false
+	state.get_card("tok").is_token = true
+	StackResolver._destroy_card_trigger(state, "tok", "", db)
+	eq(state.pending_circle_player, "", "col-p: a destroyed token opens no search")
+
+	# Two Circles in play -> one death queues TWO searches.
+	var circle2 := CardInstance.create("circle2", "circle_def", "p1", "p1_hero_row")
+	state.cards["circle2"] = circle2
+	state.zones["p1_hero_row"].card_ids.append("circle2")
+	var v := _add_ally(state, "v3", "body_def", "p1")
+	v.just_summoned = false
+	_add_card_to_deck(state, "copy_a", "body_def", "p1")
+	_add_card_to_deck(state, "copy_b", "body_def", "p1")
+	StackResolver._destroy_card_trigger(state, "v3", "", db)
+	eq(state.pending_circle_player, "p1", "col-q: first of two searches open")
+	StackResolver.choose_circle_of_life(state, "copy_a", db)
+	eq(state.pending_circle_player, "p1", "col-r: the second copy queues its own search")
+	StackResolver.choose_circle_of_life(state, "copy_b", db)
+	eq(state.pending_circle_player, "", "col-s: both searches answered")
+
+	# The cursor is advanced even with no watcher in play, so a Circle played
+	# later cannot fetch for allies that died before it existed.
+	var db2 := _circle_db()
+	var late := _base_state(db2, "p1_hero", "p2_hero")
+	var early := _add_ally(late, "early", "body_def", "p1")
+	early.just_summoned = false
+	_add_card_to_deck(late, "late_copy", "body_def", "p1")
+	StackResolver._destroy_card_trigger(late, "early", "", db2)
+	eq(late.pending_circle_player, "", "col-t: no Circle in play -> no search")
+	var c3 := CardInstance.create("late_circle", "circle_def", "p1", "p1_hero_row")
+	late.cards["late_circle"] = c3
+	late.zones["p1_hero_row"].card_ids.append("late_circle")
+	StackResolver._fire_circle_of_life(late, db2)
+	eq(late.pending_circle_player, "",
+		"col-u: a Circle played after the death does not fetch retroactively")
 
 
 func _test_recombobulation_fetch_on_opposing_ally_death() -> void:

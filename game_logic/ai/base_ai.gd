@@ -2322,6 +2322,27 @@ func choose_recombobulation(state: GameState, db, player_id: String) -> String:
 	return sort_valuable_cards(state, db, candidates)[0]
 
 
+# Circle of Life: "When an ally is destroyed, its controller may search his deck
+# for an ally card with the same name and put it into play exhausted." Always
+# take it. Unlike the Recombobulation fetch there is no hand-size reason to
+# decline — the card goes straight into PLAY, not into hand — and it costs
+# nothing, so replacing a body that just died is free value. Every candidate is
+# a copy of the same card by construction (they share a name), so which instance
+# is picked cannot matter; take the first.
+#
+# Deliberately not modelled: thinning your own deck is a real cost in a long
+# game, and 413.2 shuffles it. Neither is something this AI reasons about, and
+# a body on the board is worth more than either.
+func choose_circle_of_life(state: GameState, db, player_id: String,
+		card_name: String) -> String:
+	if not db:
+		return ""
+	var candidates := StackResolver.get_circle_candidates(state, player_id, card_name, db)
+	if candidates.is_empty():
+		return ""
+	return candidates[0]
+
+
 # ── Quest reward choices ("Choose one … you may choose both") ────────────────
 # Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
 # Earth. Policy: ALWAYS take both modes when the race condition allows it
@@ -2620,6 +2641,22 @@ func choose_whelp_bounce(state: GameState, db, _player_id: String) -> bool:
 	# Bounce allies whose cost is at least the 2 we spend (net tempo neutral or
 	# better; the opponent must also re-pay the full cost to redeploy it).
 	return def.cost >= 2
+
+
+# Feral Rage: our hero was dealt combat damage in bear form, so we may pay (1)
+# to draw a card. ALWAYS pay. The offer only opens on damage we have already
+# taken — the resources are otherwise likely to go unspent on the opponent's
+# turn, which is when a bear-form druid gets hit — so a card for 1 is a trade
+# worth taking every time it is available. The engine has already checked
+# affordability, both when queueing the offer and again when opening it.
+#
+# Deliberately not gated on hand size: drawing into a full hand means discarding
+# at wrap-up (503.2a), which would waste the resource. That case is rare enough
+# (it needs a full hand AND a bear-form hero being attacked) that the gate would
+# cost more games than it saves — but it is the one thing to revisit if the AI
+# is ever seen throwing cards away here.
+func choose_feral_rage(_state: GameState, _db, _player_id: String) -> bool:
+	return true
 
 
 # Returns activate_power actions for the player's hero.

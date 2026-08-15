@@ -1014,6 +1014,96 @@ Enforcement site: the `end_of_turn_destroy_if_no_damage_dealt` arm of
 
 ---
 
+## Feral Rage — draw offer resolved immediately, not on the chain
+
+**Card:** Feral Rage (`azeroth_21`, 5, Ability — Feral, Druid, Rare). Printed
+text: "Ongoing: When your hero is dealt combat damage while in bear form, you
+may pay (1). If you do, draw a card." Recipe flag
+`combat_damage_in_form_draw:bear:1`.
+
+**Deviation:** by the rules this is a triggered ability (703) that should be
+ADDED TO THE CHAIN when the hero is dealt combat damage. The engine instead
+opens it as a direct-call optional payment point
+(`pending_feral_rage_queue` / `pending_feral_rage_player` →
+`choose_feral_rage(state, pay, db)`) at combat conclusion — the Green Whelp
+Armor bounce point's pattern, which is the same shape of trigger (an optional
+payment fired by combat damage landing on the wielder's hero) at the same
+moment. `can_submit` / `pass_priority` hard-block while it is pending. Nothing
+is lost in practice: the effect names no target, and it fires after the combat
+step is over, so there is no window it could meaningfully be answered in.
+
+**Multiple offers** — several copies of Feral Rage, or both heroes qualifying
+from one combat (a defender's retaliation onto an attacking hero) — queue one
+offer each and are answered front-first. Affordability is re-checked as each
+offer opens, since an earlier one may have spent the resources.
+
+**Not a deviation, recorded because it looks like one:** the trigger fires for
+an ATTACKING hero taking the defender's retaliation, not only for a defending
+one. The printed text says "is dealt combat damage" with no role clause, so
+both combat packets are scanned. Likewise, a hit prevented in full triggers
+nothing (717.2b — the packet ceased to exist), matching whelp bounce and every
+other "damage actually landed" trigger.
+
+**Why:** see Boneshanks. Enforcement sites: `StackResolver._maybe_open_feral_rage`
+/ `_open_next_feral_rage` / `choose_feral_rage` in
+`game_logic/stack_resolver.gd`, called from `_do_combat_conclusion`.
+
+---
+
+## Circle of Life — search resolved immediately, not on the chain
+
+**Card:** Circle of Life (`azeroth_19`, 8, Ability — Restoration, Druid).
+Printed text: "Ongoing: When an ally is destroyed, its controller may search his
+deck for an ally card with the same name and put it into play exhausted."
+Recipe flag `recursion_on_ally_death_same_name`.
+
+**Deviation:** by the rules this is a triggered ability (703) that should be
+ADDED TO THE CHAIN each time an ally dies, respondable before it resolves. The
+engine instead opens it as a direct-call optional choice
+(`pending_circle_queue` + `pending_circle_player`, resolved via
+`choose_circle_of_life`; `""` declines) at the moment of destruction — the same
+immediate-resolution pattern as Boneshanks' death trigger and Recombobulation's
+fetch, and for the same reason: the engine's chain-based trigger frameworks are
+tied to two specific moments (the ready step and the combat step), and a death
+has no such point at which a window can be opened.
+
+**What is actually lost is narrower than usual.** The effect names no target in
+play and the opponent cannot interact with a deck, so there is nothing to
+respond to; removal held for the replacement still works a moment later. What
+does differ is TIMING RELATIVE TO OTHER EFFECTS: the replacement lands before
+anyone gets priority, so an AoE that kills two allies puts both replacements on
+the board before the opponent's next window, where on the chain each trigger
+would resolve with a window between. And ORDER: 708.1a puts simultaneous
+triggers in turn-player-first order with each player sequencing their own, while
+the engine queues them in destruction order — visible when one death fires
+several triggers (a Boneshanks dying under a Circle queues its death-target pick
+and this search in code order, not an order the controller chose).
+
+**Multiple searches** — several deaths in one event, or several copies of Circle
+in play — queue one choice each and are answered front-first, one browser at a
+time. A death with no same-named ally card in that player's deck opens no
+choice at all.
+
+**Hotseat:** routed `_route_choice(player, "private")`, NOT "public" like the
+Recombobulation fetch — a deck is hidden information, so the off-seat player
+gets the peek path rather than the candidate cards being shown to the room.
+Either player can be the decider, since the trigger is symmetric ("ITS
+controller").
+
+**Not a deviation, recorded because it looks like one:** declining while a match
+exists is legal twice over — the card says "may", and 413.3 lets a player
+searching a non-public zone for a card of a specified description fail to find
+it. The deck is shuffled either way (413.2), which is why
+`choose_circle_of_life` emits `deck_shuffled` on the decline path too.
+
+**Why:** see Boneshanks. Enforcement sites: `StackResolver._fire_circle_of_life`
+/ `_open_next_circle` / `choose_circle_of_life` in `game_logic/stack_resolver.gd`,
+fed by the `ally_destroyed` turn-log entry recorded in
+`GameLogic.check_destroyed` / `destroy_card` (see
+`game_logic/turn_state_flags.md`).
+
+---
+
 ## Operation Recombobulation — reward trigger resolved immediately, not on the chain
 
 **Card:** Operation Recombobulation (`dark_portal_292`, Quest, Alliance, Gnome

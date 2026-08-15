@@ -295,6 +295,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_whelp_bounce() before priority can move.
 	if state.pending_whelp_bounce_player != "":
 		return []
+	# A pending Feral Rage draw offer must be resolved (or declined) via
+	# choose_feral_rage() before priority can move.
+	if state.pending_feral_rage_player != "":
+		return []
 	# A pending Track Humanoids look must be resolved via
 	# choose_track_placement() before priority can move.
 	if state.pending_track_look_player != "":
@@ -318,6 +322,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# A pending Operation Recombobulation fetch must be resolved (or declined) via
 	# choose_recombobulation() before priority can move.
 	if state.pending_recomb_player != "":
+		return []
+	# A pending Circle of Life deck search must be resolved (or declined) via
+	# choose_circle_of_life() before priority can move.
+	if state.pending_circle_player != "":
 		return []
 	# A pending armor-prevention decision (717.2c) must be resolved via
 	# choose_prevention() before priority can move.
@@ -495,6 +503,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_whelp_bounce_player != "":
 		return false
 
+	# Feral Rage's draw offer blocks everything until resolved (or declined) via
+	# choose_feral_rage().
+	if state.pending_feral_rage_player != "":
+		return false
+
 	# Track Humanoids' look blocks everything until resolved via
 	# choose_track_placement().
 	if state.pending_track_look_player != "":
@@ -518,6 +531,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Operation Recombobulation's optional graveyard fetch blocks everything until
 	# resolved (or declined) via choose_recombobulation().
 	if state.pending_recomb_player != "":
+		return false
+
+	# Circle of Life's optional deck search blocks everything until resolved (or
+	# declined) via choose_circle_of_life().
+	if state.pending_circle_player != "":
 		return false
 
 	# Armor prevention point (717.2c) blocks everything until resolved via
@@ -4059,6 +4077,7 @@ static func _apply_packet_group(state: GameState, db,
 	# Operation Recombobulation: any opposing non-token ally that died in this
 	# group (including to Cold Blood just above) offers its owner a fetch.
 	events.append_array(_fire_recombobulation(state, db))
+	events.append_array(_fire_circle_of_life(state, db))
 	# Skorn: any ally this group damaged reflects that amount onto its own
 	# party's hero. Last, so the destroy bookkeeping above is settled first — the
 	# reflect reads the log's snapshot, not the board, so a dead ally still pays.
@@ -5858,6 +5877,12 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, defender.controller if defender else "",
 		attacker_was_ally, defender_is_hero, hero_dmg_landed, db))
 
+	# Feral Rage (rule 703): "When your hero is dealt combat damage while in bear
+	# form, you may pay (1). If you do, draw a card." Scans BOTH packets — the
+	# card has no role clause, so an attacking hero taking the defender's
+	# retaliation qualifies just as a defending or protecting one does.
+	events.append_array(_maybe_open_feral_rage(state, atk_events, def_events, db))
+
 	# Randipan / Samuel Grey (rule 703): "When [this] deals combat damage to a
 	# defending hero, ..." — fires only when the attacker's combat damage
 	# actually LANDED on a defending hero (armor DEF/block absorbing all of it,
@@ -6204,6 +6229,141 @@ static func _fire_recombobulation(state: GameState, db) -> Array[GameEvent]:
 	return events
 
 
+# ── Circle of Life (azeroth_19) ───────────────────────────────────────────────
+# "Ongoing: When an ally is destroyed, its controller may search his deck for an
+# ally card with the same name and put it into play exhausted."
+#
+# Read off the same `ally_destroyed` turn-log entries as Recombobulation above,
+# so every destruction in the game — combat, damage, destroy effects, sacrifice
+# costs, state-based deaths — feeds it by construction, and called from the same
+# three sweep points. Two things differ from that card:
+#
+#   - The cursor is BOARD-GLOBAL (GameState.ally_destroy_watch_index), Skorn's
+#     shape rather than Recombobulation's per-player grant index: this is a
+#     static power on whatever is in play, not a this-turn grant with an owner.
+#     Every in-play copy fires for an entry before the cursor advances past it,
+#     so two Circles queue two searches for one death and each death pays each
+#     copy exactly once.
+#   - The trigger is SYMMETRIC and the beneficiary is not the card's controller:
+#     "ITS controller" is whoever controlled the ally that died, so a Circle in
+#     play refills the opponent's board off the opponent's deck too.
+#
+# The name is snapshotted onto the queue: the dead card's instance still holds
+# its card_def_id (that never changes, unlike its zone), but by the time the
+# choice is ANSWERED the card may have moved again, so the queue carries the
+# name rather than the corpse.
+static func _fire_circle_of_life(state: GameState, db) -> Array[GameEvent]:
+	if db == null:
+		return []
+	var watchers := 0
+	for pid in state.players:
+		for card in state.cards_in_zone(pid + "_hero_row"):
+			var w_def := db.get_def(card.card_def_id) as CardDef
+			if w_def and _has_effect_flag(w_def, "recursion_on_ally_death_same_name"):
+				watchers += 1
+	if watchers == 0:
+		# Nothing is watching, but the cursor still advances: a Circle played
+		# LATER this turn must not fetch for allies that died before it existed.
+		state.ally_destroy_watch_index = state.turn_events.size()
+		return []
+	var i := state.ally_destroy_watch_index
+	while i < state.turn_events.size():
+		var entry: Dictionary = state.turn_events[i]
+		i += 1
+		if entry.get("type", "") != "ally_destroyed":
+			continue
+		if not bool(entry.get("is_ally", false)):
+			continue
+		# No "non-token" clause on this card, unlike Recombobulation — a token
+		# simply matches no deck card by name, since tokens aren't deckable.
+		var dead := state.get_card(str(entry.get("card_id", "")))
+		if not dead:
+			continue
+		var dead_def := db.get_def(dead.card_def_id) as CardDef
+		if not dead_def:
+			continue
+		var pid2 := str(entry.get("controller", ""))
+		for _w in watchers:
+			state.pending_circle_queue.append({
+				"player": pid2, "card_name": dead_def.card_name,
+			})
+	state.ally_destroy_watch_index = state.turn_events.size()
+	return _open_next_circle(state, db)
+
+
+# Peek the front queued Circle of Life search and open it. Skips queued entries
+# whose player has no matching ally card left in his deck — the trigger simply
+# does nothing rather than opening an empty search.
+static func _open_next_circle(state: GameState, db) -> Array[GameEvent]:
+	if state.pending_circle_player != "":
+		return []   # one at a time
+	while not state.pending_circle_queue.is_empty():
+		var entry: Dictionary = state.pending_circle_queue[0]
+		var pid := str(entry.get("player", ""))
+		var nm  := str(entry.get("card_name", ""))
+		var candidates := get_circle_candidates(state, pid, nm, db)
+		if candidates.is_empty():
+			state.pending_circle_queue.pop_front()
+			continue
+		state.pending_circle_player = pid
+		state.pending_circle_name   = nm
+		return [GameEvent.circle_choice_opened(pid, nm, candidates)]
+	state.pending_circle_player = ""
+	state.pending_circle_name   = ""
+	return []
+
+
+# Resolve the open Circle of Life search: put the chosen ally card from that
+# player's own deck into play EXHAUSTED, then shuffle the deck (413.2) and open
+# the next queued search. card_id "" declines — both because the card says "may"
+# and because 413.3 lets a player searching a non-public zone for a card of a
+# specified description fail to find it. Direct call — no chain, no priority
+# pass (see data/rules_deviations.md "Circle of Life").
+static func choose_circle_of_life(state: GameState, card_id: String, db) -> Array[GameEvent]:
+	if state.pending_circle_player == "" or state.pending_circle_queue.is_empty():
+		return []
+	var entry: Dictionary = state.pending_circle_queue.pop_front()
+	var pid := str(entry.get("player", ""))
+	var nm  := str(entry.get("card_name", ""))
+	state.pending_circle_player = ""
+	state.pending_circle_name   = ""
+	var events: Array[GameEvent] = []
+	if card_id == "":
+		events.append(GameEvent.circle_declined(pid, nm))
+	elif card_id in get_circle_candidates(state, pid, nm, db):
+		# Re-checked against the live pool: still an ally card of that name in
+		# this player's deck.
+		var card := state.get_card(card_id)
+		# Rule 710.1b: "enters play exhausted" is processed DURING entry — the
+		# card does not enter ready and then exhaust — so the flag is set before
+		# _bring_ally_into_play moves it, not with GameLogic.exhaust_card after.
+		if card:
+			card.is_exhausted = true
+		events.append_array(_bring_ally_into_play(state, card_id, db))
+		events.append(GameEvent.circle_put_into_play(pid, card_id, nm))
+	# Rule 413.2: the owner shuffles his deck after the search — whether or not
+	# a card was found, since the search happened either way.
+	state.zones[pid + "_deck"].card_ids.shuffle()
+	events.append(GameEvent.deck_shuffled(pid))
+	events.append_array(_open_next_circle(state, db))
+	return events
+
+
+# Ally CARDS named `card_name` in this player's own DECK — Circle of Life's
+# search pool. Card type, not zone, asked through the shared predicate, so a
+# Totem card counts (305.3a, "totems are ally cards in all zones").
+static func get_circle_candidates(state: GameState, player_id: String,
+		card_name: String, db) -> Array[String]:
+	var result: Array[String] = []
+	if db == null or card_name == "":
+		return result
+	for card in state.cards_in_zone(player_id + "_deck"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if def and def.card_name == card_name and is_ally_card_def(def):
+			result.append(card.instance_id)
+	return result
+
+
 # Peek the front queued Recombobulation fetch and open it. Skips queued entries
 # whose owner has no ally card left in his graveyard (nothing to fetch — the
 # trigger simply does nothing rather than opening an empty choice).
@@ -6373,6 +6533,141 @@ static func choose_whelp_bounce(state: GameState, pay: bool,
 		events.append_array(GameLogic.move_card(state, ally_id, owner + "_hand"))
 		events.append(GameEvent.whelp_bounce_resolved(player_id, ally_id))
 	return events
+
+
+# ── Feral Rage (azeroth_21) ───────────────────────────────────────────────────
+# "Ongoing: When your hero is dealt combat damage while in bear form, you may
+# pay (1). If you do, draw a card."
+#
+# Recipe `combat_damage_in_form_draw:FORM:COST` — the form and the cost are
+# arguments, so a cat-form or a differently-priced version is data only.
+#
+# Opened at combat conclusion, the whelp bounce's point, because "combat damage"
+# is the whole condition and the turn event log does not record whether a packet
+# was combat damage. Both packets are scanned, not just the attacker's: the card
+# says "is DEALT combat damage" with no role clause, so it fires for a hero
+# defending, a hero that stepped in as protector, AND an attacking hero taking
+# the defender's retaliation. Damage prevented in full was never dealt (717.2b),
+# so a hit fully absorbed by armor triggers nothing.
+#
+# One offer PER IN-PLAY COPY (the power is on each card), and the amount of
+# damage is irrelevant — one hit is one offer, whether it was for 1 or for 10.
+static func _maybe_open_feral_rage(state: GameState, atk_events: Array,
+		def_events: Array, db) -> Array[GameEvent]:
+	if db == null:
+		return []
+	# Damage actually landed on each player's own hero, from either packet.
+	var hit: Dictionary = {}
+	for ev_list in [atk_events, def_events]:
+		for ev in ev_list:
+			if (ev as GameEvent).event_type != "damage_dealt":
+				continue
+			if int((ev as GameEvent).payload.get("amount", 0)) <= 0:
+				continue
+			var tid := str((ev as GameEvent).payload.get("target", ""))
+			var target := state.get_card(tid)
+			if not target:
+				continue
+			var ps := state.players.get(target.controller) as PlayerState
+			if ps and ps.hero_instance_id == tid:
+				hit[target.controller] = true
+	for pid in hit:
+		if not state.is_in_play(str(state.players[pid].hero_instance_id)):
+			continue   # hero died to the hit — the game is over, nothing to draw into
+		for card in state.cards_in_zone(str(pid) + "_hero_row"):
+			var def := db.get_def(card.card_def_id) as CardDef
+			if not def:
+				continue
+			var args := _effect_args(def, "combat_damage_in_form_draw")
+			if args.is_empty():
+				continue
+			var form: String = str(args[0]) if args.size() > 0 else ""
+			# "While in bear form" is read HERE, as the damage is dealt — a form
+			# broken later in the turn does not retract an offer already open.
+			if not hero_is_in_form(state, str(pid), form, db):
+				continue
+			var cost := int(args[1]) if args.size() > 1 else 0
+			if state.get_available_resources(str(pid)) < cost:
+				continue   # unaffordable — the point never opens
+			state.pending_feral_rage_queue.append(str(pid))
+	return _open_next_feral_rage(state, db)
+
+
+# Peek the front queued Feral Rage offer and open it. Re-checks affordability:
+# an earlier offer in the same queue may have spent the resources.
+static func _open_next_feral_rage(state: GameState, db) -> Array[GameEvent]:
+	if state.pending_feral_rage_player != "":
+		return []   # one at a time
+	while not state.pending_feral_rage_queue.is_empty():
+		var pid: String = state.pending_feral_rage_queue[0]
+		var cost := _feral_rage_cost(state, pid, db)
+		if cost < 0 or state.get_available_resources(pid) < cost:
+			state.pending_feral_rage_queue.pop_front()
+			continue
+		state.pending_feral_rage_player = pid
+		state.pending_feral_rage_cost   = cost
+		return [GameEvent.feral_rage_opened(pid, cost)]
+	state.pending_feral_rage_player = ""
+	state.pending_feral_rage_cost   = 0
+	return []
+
+
+# The cheapest in-play Feral Rage cost for this player; -1 if none is in play
+# (the card left play between the hit and the offer).
+static func _feral_rage_cost(state: GameState, player_id: String, db) -> int:
+	if db == null:
+		return -1
+	var best := -1
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var args := _effect_args(def, "combat_damage_in_form_draw")
+		if args.is_empty():
+			continue
+		var cost := int(args[1]) if args.size() > 1 else 0
+		if best < 0 or cost < best:
+			best = cost
+	return best
+
+
+# Entry point for the Feral Rage draw decision (NOT chain-based — called
+# directly by the scene, like choose_whelp_bounce). pay == false declines.
+# "If you do" (709.2f): the draw happens only because the payment did.
+static func choose_feral_rage(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_feral_rage_player == "":
+		return []
+	var player_id := state.pending_feral_rage_player
+	var cost      := state.pending_feral_rage_cost
+	state.pending_feral_rage_queue.pop_front()
+	state.pending_feral_rage_player = ""
+	state.pending_feral_rage_cost   = 0
+
+	var events: Array[GameEvent] = []
+	if pay and state.get_available_resources(player_id) >= cost:
+		events.append_array(_pay_resources(state, player_id, cost))
+		events.append_array(_draw_one(state, player_id))
+		events.append(GameEvent.feral_rage_resolved(player_id))
+	else:
+		events.append(GameEvent.feral_rage_declined(player_id))
+	events.append_array(_open_next_feral_rage(state, db))
+	return events
+
+
+# The `:`-separated arguments of the named effects segment, [] if the def has no
+# such segment. (The KEY itself is dropped — args[0] is the first argument.)
+static func _effect_args(def: CardDef, key: String) -> Array:
+	if not def or def.effects == "":
+		return []
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == key:
+			var out: Array = []
+			for i in range(1, parts.size()):
+				out.append(parts[i].strip_edges())
+			return out
+	return []
 
 
 # ── Graveyard search (generic query API) ──────────────────────────────────────
@@ -9287,6 +9582,7 @@ static func _check_destroyed_trigger(state: GameState, card_id: String,
 				events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 			break
 	events.append_array(_fire_recombobulation(state, db))
+	events.append_array(_fire_circle_of_life(state, db))
 	return events
 
 
@@ -9323,6 +9619,7 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 		if controller != "":
 			events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 	events.append_array(_fire_recombobulation(state, db))
+	events.append_array(_fire_circle_of_life(state, db))
 	return events
 
 

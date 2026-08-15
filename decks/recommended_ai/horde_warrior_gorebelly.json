@@ -1,5 +1,5 @@
 {
-  "deck_id": "horde_gorebelly_test",
+  "deck_id": "horde_warrior_gorebelly",
   "display_name": "Horde Warrior Gorebelly",
   "hero_card_def_id": "azeroth_9",
   "card_entries": [
@@ -149,7 +149,7 @@
   "source": "recommended_ai",
   "metadata": {
     "author": "playtest",
-    "origin": "copied from horde_grennan_test; Shaman abilities swapped for Krol Blades"
+    "origin": "copied from horde_shaman_grennan_stormspeaker; Shaman abilities swapped for Krol Blades"
   },
   "_hero_name": "Gorebelly"
 }

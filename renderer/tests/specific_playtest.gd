@@ -22,8 +22,8 @@ extends "res://renderer/tests/playtest.gd"
 
 const MOORF_DEF    := "azeroth_235"   # Elder Moorf, 1/1 — power: (1) target ally +2 ATK, once/turn
 const ATTACKER_DEF := "azeroth_192"   # Kor Cindervein, 3/3 vanilla — the AI's attacker
-const P1_DECK := "alliance_boris_test"
-const P2_DECK := "horde_tazo_test"
+const P1_DECK := "alliance_priest_boris_brightbeard"
+const P2_DECK := "horde_mage_tazo"
 
 
 func _ready() -> void:

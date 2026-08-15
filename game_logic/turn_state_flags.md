@@ -57,7 +57,7 @@ GameState.has_turn_event(type) / turn_events_of(type)
 | Type | Written in | Snapshot fields | Read by |
 |---|---|---|---|
 | `damage_dealt` | `GameLogic.deal_damage` — AFTER prevention (717.2b: fully absorbed damage was never dealt). `amount` is the DEALT amount, which per 405.2 may exceed the target's health: only "put" damage is capped at fatal, so overkill is logged in full | `source_id`, `target_id`, `amount`, `source_controller`, `target_controller`, `source_is_ally`, `target_is_hero`, `target_is_ally` | Thysta Spiritlasher (`dark_portal_236`): any entry this turn → she stays silent (`TurnManager._apply_each_turn_end_effects`). Torek's Assault (`azeroth_345`): entry with `target_is_hero` ∧ `source_is_ally` ∧ `source_controller` = completer ∧ `target_controller` ≠ completer (`StackResolver.can_submit` quest gate). Cold Blood (`azeroth_92`): entry with `source_id` = the granting player's hero ∧ target still an ally in play → destroy it (`StackResolver._fire_cold_blood`). Skorn, Mistress of Shadow (`azeroth_259`): entry with `target_is_ally` → every in-play Skorn deals `amount` shadow to the hero of `target_controller` (`StackResolver._fire_skorn`) |
-| `ally_destroyed` | `GameLogic.check_destroyed`, `GameLogic.destroy_card`, and the 400.5 attachment sweep in `move_card` — co-located with every `GameEvent.card_destroyed` construction, i.e. while the card is still in play | `card_id`, `controller`, `owner`, `is_ally`, `is_token` | Operation Recombobulation (`dark_portal_292`): entry with `is_ally` ∧ not `is_token` ∧ `controller` ≠ the completer → the completer MAY fetch an ally card out of his graveyard (`StackResolver._fire_recombobulation`) |
+| `ally_destroyed` | `GameLogic.check_destroyed`, `GameLogic.destroy_card`, and the 400.5 attachment sweep in `move_card` — co-located with every `GameEvent.card_destroyed` construction, i.e. while the card is still in play | `card_id`, `controller`, `owner`, `is_ally`, `is_token` | Operation Recombobulation (`dark_portal_292`): entry with `is_ally` ∧ not `is_token` ∧ `controller` ≠ the completer → the completer MAY fetch an ally card out of his graveyard (`StackResolver._fire_recombobulation`). Circle of Life (`azeroth_19`): any entry with `is_ally` → that entry's `controller` MAY search his deck for a same-named ally card (`StackResolver._fire_circle_of_life`); no `is_token` clause is needed, a token's name matches no deck card |
 
 `put_damage` (405.3 self-damage costs) deliberately does not record — self-costs
 are not "damage dealt", the same call made for Berserking's counters.
@@ -71,7 +71,11 @@ ally already sits in a graveyard and its zone can no longer say "ally".
 whatever is in play, so they share ONE board-global cursor,
 `GameState.damage_watch_index` (reset to 0 with `turn_events` at every turn
 start). `_fire_skorn` fires every in-play watcher for an entry, then advances
-past it — which is both what makes each damage event pay exactly once per
+past it — the same shape `GameState.ally_destroy_watch_index` uses for the
+`ally_destroyed` watchers (Circle of Life), which is why that entry type now has
+TWO independent readers: Recombobulation's per-player grant index and this
+board-global cursor. Each reader owns its own cursor, so neither can consume the
+other's entries — which is both what makes each damage event pay exactly once per
 watcher and what makes the reflect non-recursive: the cursor has already moved
 past the entry before the reflected packet is dealt (and that packet targets a
 hero, so it would not qualify anyway).

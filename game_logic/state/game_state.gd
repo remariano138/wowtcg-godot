@@ -75,6 +75,13 @@ var turn_events: Array = []
 # past it. Reset to 0 with turn_events at every turn start.
 var damage_watch_index: int = 0
 
+# The same cursor for "when an ally is destroyed" watchers read off cards in
+# play (Circle of Life). Separate from Recombobulation's per-player
+# `recomb_from_index` for the reason above: that is a this-turn grant owned by
+# the player who completed the quest, this is a static power on whatever is in
+# play, so one board-global cursor serves every copy. Reset with turn_events.
+var ally_destroy_watch_index: int = 0
+
 # The one append site. Keep new record calls co-located with the matching
 # GameEvent construction in the primitive, so log truth == event truth.
 func record(event_type: String, data: Dictionary) -> void:
@@ -159,6 +166,17 @@ var pending_strike_ready_side: String = ""
 var pending_whelp_bounce_player: String = ""
 var pending_whelp_bounce_ally_id: String = ""
 var pending_whelp_bounce_cost: int = 0
+# Feral Rage (azeroth_21): "Ongoing: When your hero is dealt combat damage while
+# in bear form, you may pay (1). If you do, draw a card." Opened at combat
+# conclusion like the whelp bounce and resolved via
+# StackResolver.choose_feral_rage() (direct call). One entry PER IN-PLAY COPY per
+# qualifying hit — the trigger is a power on each card, not on the hero — so the
+# queue holds player ids and is drained one offer at a time. Both heroes can
+# qualify from one combat (a defender's retaliation onto an attacking hero), so
+# the queue is not single-player.
+var pending_feral_rage_queue: Array[String] = []   # player ids, front-first
+var pending_feral_rage_player: String = ""         # who must decide now; "" = none
+var pending_feral_rage_cost: int = 0
 # Track Humanoids: "At the start of your turn, look at the top card of your deck.
 # You may put it on the bottom of your deck." Non-empty while the controller is
 # deciding. The looked-at card is NOT drawn and never leaves the deck — keeping
@@ -370,6 +388,20 @@ var pending_death_triggers: Array = []
 # graveyard to fetch never opens a choice.
 var pending_recomb_queue: Array[String] = []   # completer ids, front-first
 var pending_recomb_player: String = ""         # who must decide now; "" = none
+
+# ── Circle of Life (azeroth_19) ───────────────────────────────────────────────
+# "Ongoing: When an ally is destroyed, its controller may search his deck for an
+# ally card with the same name and put it into play exhausted." Each qualifying
+# death queues one OPTIONAL deck search for the DESTROYED ally's controller —
+# either player, since the trigger is symmetric — resolved one at a time via
+# StackResolver.choose_circle_of_life (a direct call — no chain, no priority
+# pass, like the Recombobulation fetch). Entries are {player, card_name}: the
+# name is what the search matches, carried on the queue because the dead card
+# may itself have left the graveyard by the time the choice is answered.
+# A death with no matching ally card in that player's deck opens no choice.
+var pending_circle_queue: Array = []           # [{player, card_name}], front-first
+var pending_circle_player: String = ""         # who must decide now; "" = none
+var pending_circle_name: String = ""           # the name being searched for
 var pending_death_target_player: String = ""  # controller who must pick a target ally; "" = none
 
 # Players who have been required to draw a card from an empty deck (rule
@@ -976,6 +1008,7 @@ func to_dict() -> Dictionary:
 		"priority_player":   priority_player,
 		"turn_events":       turn_events.duplicate(true),
 		"damage_watch_index": damage_watch_index,
+		"ally_destroy_watch_index": ally_destroy_watch_index,
 		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
@@ -995,6 +1028,7 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.priority_player    = d.get("priority_player", "")
 	gs.turn_events        = (d.get("turn_events", []) as Array).duplicate(true)
 	gs.damage_watch_index = d.get("damage_watch_index", 0)
+	gs.ally_destroy_watch_index = d.get("ally_destroy_watch_index", 0)
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
 	for a in d.get("pending_actions", []):
 		gs.pending_actions.append(PendingAction.from_dict(a))

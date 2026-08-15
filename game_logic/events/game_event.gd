@@ -379,6 +379,16 @@ static func whelp_bounce_opened(player_id: String, ally_id: String, cost: int) -
 static func whelp_bounce_resolved(player_id: String, ally_id: String) -> GameEvent:
 	return make("whelp_bounce_resolved", {"player": player_id, "ally_id": ally_id})
 
+# ── Feral Rage (azeroth_21) ───────────────────────────────────────────────────
+static func feral_rage_opened(player_id: String, cost: int) -> GameEvent:
+	return make("feral_rage_opened", {"player": player_id, "cost": cost})
+
+static func feral_rage_resolved(player_id: String) -> GameEvent:
+	return make("feral_rage_resolved", {"player": player_id})
+
+static func feral_rage_declined(player_id: String) -> GameEvent:
+	return make("feral_rage_declined", {"player": player_id})
+
 # Chops / Voss Treebender: attack-exhaust point opened (attacker's controller MAY
 # exhaust target hero or ally), and resolved (target_id == "" = declined).
 static func attack_exhaust_opened(player_id: String, source_id: String) -> GameEvent:
@@ -455,6 +465,28 @@ static func recomb_choice_opened(player_id: String, card_ids: Array) -> GameEven
 
 static func recomb_declined(player_id: String) -> GameEvent:
 	return make("recomb_declined", {"player": player_id})
+
+# ── Circle of Life (azeroth_19) ───────────────────────────────────────────────
+# The deck being searched is PRIVATE, so `card_ids` here is for the deciding
+# player's own browser only — the shared game log may name what died and where
+# the search ended, never the rest of the deck.
+static func circle_choice_opened(player_id: String, card_name: String,
+		card_ids: Array) -> GameEvent:
+	return make("circle_choice_opened", {
+		"player": player_id, "card_name": card_name, "card_ids": card_ids,
+	})
+
+static func circle_declined(player_id: String, card_name: String) -> GameEvent:
+	return make("circle_declined", {"player": player_id, "card_name": card_name})
+
+static func circle_put_into_play(player_id: String, card_id: String,
+		card_name: String) -> GameEvent:
+	return make("circle_put_into_play", {
+		"player": player_id, "card_id": card_id, "card_name": card_name,
+	})
+
+static func deck_shuffled(player_id: String) -> GameEvent:
+	return make("deck_shuffled", {"player": player_id})
 
 static func card_returned_from_graveyard(card_id: String, player_id: String) -> GameEvent:
 	return make("card_returned_from_graveyard", {

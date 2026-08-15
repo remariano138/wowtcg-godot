@@ -2619,12 +2619,13 @@ func _is_ally_atk_damage(card_id: String) -> bool:
 	return StackResolver.is_ally_atk_damage_def(def)
 
 
-# The damage type Skewer's chosen source deals — its own printed type (the card
-# names no type of its own). Drives the phase-2 targeting cursor icon.
-func _skewer_source_dmg_type(source_id: String) -> String:
-	var card := state.get_card(source_id)
-	var def := db.get_def(card.card_def_id) as CardDef if (card and db) else null
-	return def.dmg_type.to_lower() if def else ""
+# The damage type Skewer's chosen source deals — always MELEE, matching the
+# packet built at resolution: per 408.3a a packet takes the source character's
+# printed damage type only when it is created during combat conclusion, and this
+# one is created outside combat by a modifier that names no type. Drives the
+# phase-2 targeting cursor icon.
+func _skewer_source_dmg_type(_source_id: String) -> String:
+	return "melee"
 
 
 # True for a two-target damage+heal spell played from hand (Shock and Soothe,

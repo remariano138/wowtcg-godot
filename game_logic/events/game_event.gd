@@ -276,6 +276,20 @@ static func cant_attack_applied(target_id: String, source_id: String) -> GameEve
 static func cant_protect_applied(target_id: String, source_id: String) -> GameEvent:
 	return make("cant_protect_applied", {"target_id": target_id, "source_id": source_id})
 
+# "Must attack this turn if able" placed on a character (rule 600.2 — Lynda
+# Steele, Mocking Blow). Its controller can't pass priority at sorcery speed
+# while a legal combat could be proposed with it.
+static func must_attack_applied(target_id: String, source_id: String) -> GameEvent:
+	return make("must_attack_applied", {"target_id": target_id, "source_id": source_id})
+
+# "Can attack only [character] if able" placed on a character (rule 601.2c —
+# Mocking Blow's second clause). `only_id` is the one legal defender it narrows
+# to while that proposal can be made.
+static func can_attack_only_applied(target_id: String, source_id: String,
+		only_id: String) -> GameEvent:
+	return make("can_attack_only_applied",
+		{"target_id": target_id, "source_id": source_id, "only_id": only_id})
+
 static func mulligan_phase_started(first_player: String, player_order: Array) -> GameEvent:
 	return make("mulligan_phase_started", {
 		"first_player": first_player, "player_order": player_order,

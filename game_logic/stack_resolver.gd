@@ -323,6 +323,15 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# sub-choices must be resolved via the choose_quest_* calls first.
 	if _quest_choice_pending(state):
 		return []
+	# Rule 600.2: a character that "must attack this turn if able" locks its
+	# controller's sorcery-speed pass — they can't pass priority while the chain
+	# is empty during their non-combat action phase if they could legally propose
+	# a combat with it. Not an ordering rule: everything else is still open to
+	# them in any order, they simply can't leave the phase with the attack
+	# unmade. Checked live, so exhausting/killing/freezing the character — or
+	# leaving it no legal defender — lifts the lock by itself.
+	if must_attack_blocks_pass(state, state.priority_player, db):
+		return []
 	state.consecutive_passes += 1
 	var events: Array[GameEvent] = []
 
@@ -1421,6 +1430,16 @@ static func _any_exhausted_ally(state: GameState, db) -> bool:
 	return false
 
 
+# True when at least one ally in play, either party, is a legal target (706).
+# Backs the no-target highlight probe for "ally"-kind activated powers.
+static func _any_legal_ally_target(state: GameState, db) -> bool:
+	for pid: String in state.players:
+		for ally: CardInstance in state.cards_in_zone(pid + "_ally_row"):
+			if _is_legal_target(state, ally.instance_id, db):
+				return true
+	return false
+
+
 # ── Sacrifice-an-ally play cost (Sever the Cord) ──────────────────────────────
 #
 # "As an additional cost to play Sever the Cord, destroy an ally in your party."
@@ -1480,8 +1499,10 @@ static func _play_cost_sacrifice_ok(state: GameState, def: CardDef,
 # i.e. from the attack window onward), a "+N ATK while attacking" aura (Zorm
 # Stonefury) is counted, and an aura that dies in the response window is not.
 # The damage is dealt by the ALLY, not by your hero — so it is NOT tagged
-# `from_ability` (Chromatic Cloak boosts hero ability damage only) and its type
-# is the source's own printed damage type.
+# `from_ability` (Chromatic Cloak boosts hero ability damage only), and its type
+# is MELEE, not the source ally's printed damage type: per 408.3a a packet takes
+# the source character's types only when it is created during combat conclusion,
+# and this one is created by a modifier that names no type.
 static func is_ally_atk_damage_def(def: CardDef) -> bool:
 	return def != null and _has_effect_flag_prefix(def, "ally_atk_damage")
 
@@ -2848,8 +2869,11 @@ static func _resolve_play_instant(state: GameState,
 						# exactly while the source is attacking (602.1 — from the
 						# attack window onward), and an aura killed in the response
 						# window no longer does. The ALLY deals the damage, not
-						# your hero, so the packet is NOT `from_ability` and
-						# carries the source's own printed damage type.
+						# your hero, so the packet is NOT `from_ability`. Its type is
+						# MELEE (408.3a): only a combat-conclusion packet takes the
+						# source character's printed damage type — this one is created
+						# outside combat by a modifier that names no type, so it is
+						# plain melee damage whatever icon the chosen ally prints.
 						var sk_source: String = action.params.get("source_id", "")
 						var sk_src := state.get_card(sk_source)
 						var sk_src_ok := sk_src != null \
@@ -2858,12 +2882,11 @@ static func _resolve_play_instant(state: GameState,
 						if sk_src_ok and _is_legal_target(state, target_id, db) \
 								and _is_ally(state, target_id):
 							var sk_amount := state.get_atk(sk_source, db)
-							var sk_def := db.get_def(sk_src.card_def_id) as CardDef
 							if sk_amount > 0:
 								events.append_array(defer_packets(state, db, [{
 									"source": sk_source, "target": target_id,
 									"amount": sk_amount,
-									"dmg_type": sk_def.dmg_type.to_lower() if sk_def else "",
+									"dmg_type": "melee",
 								}]))
 					"deal_damage_and_heal":
 						# Shock and Soothe: "Your hero deals N <type> damage to
@@ -4252,6 +4275,12 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if skip_target:
 			return true
 		return _is_exhausted_ally(state, action.params.get("target_id", ""), db)
+	# An "ally"-kind power needs an ally in play to point at — a hero is never a
+	# legal target for one, so on a board with no ally the no-target highlight
+	# probe must go dark rather than green (Lynda Steele, Gertha, Augustus).
+	# "hero_or_ally" needs no such gate: a hero is always in play.
+	if targets_kind == "ally" and not _any_legal_ally_target(state, db):
+		return false
 	if skip_target:
 		return true
 	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
@@ -4613,6 +4642,20 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 					and _is_hero_or_ally(state, cp_target, db):
 				events.append_array(_apply_damage_riders(
 					state, cp_target, card_id, "cannot_protect"))
+		"must_attack_target":
+			# Lynda Steele: "(1) -> Target ally must attack this turn if able."
+			# Rule 600.2 — a pass-priority lock on the target's CONTROLLER, not a
+			# restriction on what it may attack (that is Mocking Blow's second
+			# clause). Placed as a `must_attack` restriction Buff with turns:1, so
+			# the end-of-turn sweep gives "this turn" expiry for free and times
+			# correctly when the power is used during the opponent's turn — which
+			# is the only turn it does anything, since the lock bites during the
+			# TARGET's controller's action phase. Rule 706 re-check: fizzles if the
+			# target left play or became Untargetable.
+			var ma_target: String = action.params.get("target_id", "")
+			if _is_legal_target(state, ma_target, db) and _is_ally(state, ma_target):
+				events.append_array(_apply_damage_riders(
+					state, ma_target, card_id, "must_attack"))
 		"heal_party":
 			# Lady Courtney Noel: "[Activate] -> [she] heals N damage from each hero
 			# and ally in your party." Non-targeted and friendly-only, so 706
@@ -4795,15 +4838,32 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 		var hero := state.get_card(ps.hero_instance_id)
 		if hero and not _has_keyword(hero, "elusive", db, state):
 			result.append(hero.instance_id)
-	# sarmoth_taunt: if a taunt card is among the legal defenders, restrict to taunt cards only.
+	# Rules 601.2c / 601.2d — "can attack only [character] if able". Two sources
+	# feed ONE specified-defender set (see the block comment above
+	# _can_attack_only_ids): the board-side `sarmoth_taunt` aura, and
+	# `can_attack_only:<id>` restriction buffs on this attacker (Mocking Blow).
+	# Narrowing to the union rather than applying them in turn is what makes the
+	# rulebook's 601.2d example — Sarmoth + Mocking Blow → "can attack only
+	# Sarmoth or Warrax" — resolve correctly.
+	var specified: Array[String] = _can_attack_only_ids(attacker)
 	if db:
-		var taunt_ids: Array[String] = []
 		for id in result:
 			var c := state.get_card(id)
-			if c and _has_effect_flag(db.get_def(c.card_def_id) as CardDef, "sarmoth_taunt"):
-				taunt_ids.append(id)
-		if not taunt_ids.is_empty():
-			return taunt_ids
+			if c and _has_effect_flag(db.get_def(c.card_def_id) as CardDef, "sarmoth_taunt") \
+					and id not in specified:
+				specified.append(id)
+	if not specified.is_empty():
+		# Only the specified characters that are legal defenders anyway count.
+		var narrowed: Array[String] = []
+		for id in result:
+			if id in specified:
+				narrowed.append(id)
+		# 601.2c: "However, if such a proposal can't be made (because there are
+		# no such characters in play, or all such characters are Elusive, for
+		# example), any other legal defender can be proposed." So an empty
+		# narrowing falls back to the full list instead of forbidding combat.
+		if not narrowed.is_empty():
+			return narrowed
 	return result
 
 
@@ -4925,13 +4985,108 @@ static func _apply_damage_riders(state: GameState, target_id: String,
 		var r := restriction.strip_edges()
 		if r == "":
 			continue
+		# Rule 601.2c: "can attack only your hero if able" (Mocking Blow's second
+		# clause). The narrowed-to character rides IN the stat name rather than in
+		# the amount — Buff.amount is an int, and what this restriction has to
+		# carry is an instance id. On every path that reaches here the packet's
+		# `source` IS the caster's hero ("YOUR hero deals ... damage"), so the
+		# rider needs nothing announced alongside it. Several such buffs stack as
+		# a UNION of specified defenders, which is exactly 601.2d.
+		if r == "can_attack_only_source":
+			if source_id == "":
+				continue
+			target.active_buffs.append(Buff.make(
+				"mocking_blow_can_attack_only", source_id,
+				"can_attack_only:" + source_id, 1, "turns", 1))
+			events.append(GameEvent.can_attack_only_applied(
+				target_id, source_id, source_id))
+			continue
 		target.active_buffs.append(Buff.make(
 			"frost_" + r + "_this_turn", source_id, r, 1, "turns", 1))
 		if r == "cannot_attack":
 			events.append(GameEvent.cant_attack_applied(target_id, source_id))
 		elif r == "cannot_protect":
 			events.append(GameEvent.cant_protect_applied(target_id, source_id))
+		elif r == "must_attack":
+			events.append(GameEvent.must_attack_applied(target_id, source_id))
 	return events
+
+
+# ── "must attack" / "can attack only" (rules 600.2, 601.2c-d) ─────────────────
+#
+# The engine's only MANDATORY combat modifiers. Every other restriction so far
+# (cannot_attack, cannot_protect, Gouge's ready lock) REMOVES legality; these two
+# constrain what their controller may do with what remains:
+#
+#   must_attack (600.2)      — a pass-priority lock, NOT an action ordering rule.
+#                              The controller may do anything else first, in any
+#                              order; what they can't do is pass priority at
+#                              sorcery speed (empty chain, their own non-combat
+#                              action phase) while a legal combat COULD be
+#                              proposed with this character. "If able" is
+#                              therefore free: exhaust it, kill it, freeze it or
+#                              leave it no legal defender and the lock lifts.
+#   can_attack_only (601.2c) — narrows the legal DEFENDERS to a named set, with
+#                              a fallback: if no such proposal can be made (all
+#                              elusive / not in play), any legal defender is
+#                              legal again.
+#
+# Sarmoth's `sarmoth_taunt` is the board-side flavour of the SAME 601.2c/d
+# modifier class ("opposing heroes and allies can attack only this ally if
+# able"), so both feed one specified-defender set in `get_legal_defenders`
+# rather than each narrowing the list in turn — which is what makes the
+# rulebook's own worked example (601.2d: Sarmoth + Mocking Blow → "can attack
+# only Sarmoth or Warrax") come out right instead of one silently eating the
+# other.
+
+# The instance ids this attacker is narrowed to by its own `can_attack_only`
+# buffs, ignoring whether those characters are legal defenders right now (the
+# 601.2c "if able" fallback is applied by the caller).
+static func _can_attack_only_ids(attacker: CardInstance) -> Array[String]:
+	var ids: Array[String] = []
+	if not attacker:
+		return ids
+	for b in attacker.active_buffs:
+		if b.amount > 0 and b.stat.begins_with("can_attack_only:"):
+			var id := b.stat.substr("can_attack_only:".length())
+			if id != "" and id not in ids:
+				ids.append(id)
+	return ids
+
+
+# Rule 600.2: the ids of characters `player_id` controls that MUST attack right
+# now — i.e. carry a `must_attack` modifier AND have at least one legal combat
+# available. Empty while none does, so this is a no-op in almost every pass.
+#
+# Deliberately does NOT check phase or chain state: it answers "which of my
+# characters are able to attack", and the callers (the pass gate, the pass-button
+# label, the AI) supply the sorcery-speed context.
+static func get_must_attack_ids(state: GameState, player_id: String,
+		db = null) -> Array[String]:
+	var result: Array[String] = []
+	for attacker_id in get_legal_attackers(state, player_id, db):
+		var card := state.get_card(attacker_id)
+		if card and card.has_restriction("must_attack") \
+				and not get_legal_defenders(state, attacker_id, db).is_empty():
+			result.append(attacker_id)
+	return result
+
+
+# True when rule 600.2 forbids `player_id` from passing priority right now: one
+# of their characters must attack if able, and it is able. Only sorcery speed is
+# locked — the modifier says nothing about a player's priority during a combat
+# window, in response to a link, or on the opponent's turn.
+static func must_attack_blocks_pass(state: GameState, player_id: String,
+		db = null) -> bool:
+	if state.phase != "action":
+		return false
+	if state.combat_attack_window or state.combat_defend_window or state.in_protect_point:
+		return false
+	if state.turn_player != player_id:
+		return false
+	if not state.pending_actions.is_empty():
+		return false
+	return not get_must_attack_ids(state, player_id, db).is_empty()
 
 
 # "Your hero has protector" (Draconian Deflector): true when any in-play card

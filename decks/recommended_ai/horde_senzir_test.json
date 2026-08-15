@@ -69,11 +69,6 @@
       "_card_name": "Skorn, Mistress of Shadow"
     },
     {
-      "card_def_id": "azeroth_276",
-      "count": 1,
-      "_card_name": "Zy'lah Manslayer"
-    },
-    {
       "card_def_id": "azeroth_235",
       "count": 1,
       "_card_name": "Elder Moorf"
@@ -97,6 +92,16 @@
       "card_def_id": "azeroth_39",
       "count": 1,
       "_card_name": "Marked for Death"
+    },
+    {
+      "card_def_id": "dark_portal_32",
+      "count": 1,
+      "_card_name": "Chops"
+    },
+    {
+      "card_def_id": "azeroth_271",
+      "count": 1,
+      "_card_name": "Windseer Tarus"
     },
     {
       "card_def_id": "azeroth_246",
@@ -135,7 +140,7 @@
     },
     {
       "card_def_id": "dark_portal_34",
-      "count": 2,
+      "count": 1,
       "_card_name": "Hootie"
     },
     {
@@ -175,7 +180,7 @@
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 2,
+      "count": 1,
       "_card_name": "Taz'dingo"
     },
     {
@@ -192,6 +197,11 @@
       "card_def_id": "dark_portal_215",
       "count": 1,
       "_card_name": "Ja'zaron"
+    },
+    {
+      "card_def_id": "azeroth_226",
+      "count": 1,
+      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_155",

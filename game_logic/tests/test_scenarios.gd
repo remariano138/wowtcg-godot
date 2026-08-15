@@ -413,6 +413,11 @@ func _ready() -> void:
 		_test_lhurg_fizzle_and_ai,
 		_test_jinlak_cant_protect,
 		_test_jinlak_fizzle_and_ai,
+		_test_lynda_must_attack_locks_pass,
+		_test_lynda_if_able_releases,
+		_test_mocking_blow_damage_and_redirect,
+		_test_mocking_blow_stacks_with_taunt,
+		_test_ai_must_attack,
 		_test_lady_courtney_heals_party,
 		_test_lady_courtney_gates_and_ai,
 		_test_marked_for_death_attach_and_aura,
@@ -23873,3 +23878,302 @@ func _test_track_humanoids_scope_and_empty_deck() -> void:
 			bottom += 1
 	ok(bottom > 20 and bottom < 140,
 		"trks-e: AI buries roughly 20 percent of the time (got %d/400)" % bottom)
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lynda Steele (dark_portal_178) — 5-cost 3/5 Alliance Human Warrior, Protector:
+# "(1) -> Target ally must attack this turn if able."
+# Recipe: activated_power:1:must_attack_target:0::ally:no_activate
+#
+# and Mocking Blow (azeroth_144) — 1, Instant Ability - Arms, Warrior:
+# "Your hero deals 1 melee damage to target hero or ally. This turn, that
+#  character must attack if able and can attack only your hero."
+# Recipe: deal_damage_to_target:1:melee:must_attack+can_attack_only_source
+#
+# The engine's first MANDATORY combat modifiers, and the two halves of rule
+# 600.2 / 601.2c:
+#   * must_attack (600.2)      is a PASS-PRIORITY lock, not an ordering rule.
+#     The controller may still do anything else, in any order — what they can't
+#     do is pass at sorcery speed while the attack is still available.
+#   * can_attack_only (601.2c) narrows the legal DEFENDERS, with a fallback to
+#     any legal defender when no narrowed proposal can be made.
+# Lynda applies only the first; Mocking Blow applies both, which is what makes
+# it a redirect rather than merely a goad.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const LYNDA_RECIPE := "activated_power:1:must_attack_target:0::ally:no_activate"
+const MOCKING_BLOW_RECIPE := "deal_damage_to_target:1:melee:must_attack+can_attack_only_source"
+
+
+func _lynda_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("lynda_def", 3, 5, (["protector"] as Array[String]), 5, LYNDA_RECIPE)
+	db.ally("grunt_def", 2, 2, [], 2)
+	db.ally("bruiser_def", 5, 5, [], 5)
+	db.ally("wall_def", 0, 9, [], 3)
+	db.ally("elusive_def", 2, 2, (["elusive"] as Array[String]), 2)
+	db.instant("mocking_blow_def", 1, MOCKING_BLOW_RECIPE)
+	return db
+
+
+func _test_lynda_must_attack_locks_pass() -> void:
+	_buf.append("\n-- Lynda Steele: must-attack is a pass-priority lock (600.2) --")
+	var db := _lynda_db()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	var lynda := _add_ally(state, "lynda", "lynda_def", "p1")
+	lynda.just_summoned = true   # no [Activate] symbol: sickness must not gate it
+	var foe := _add_ally(state, "foe", "grunt_def", "p2")
+	foe.just_summoned = false
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "lynda", "target_id": "foe"})
+	ok(StackResolver.can_submit(state, use, db),
+		"ly-a: usable while summoning-sick (no [Activate] tap symbol)")
+	StackResolver.submit_action(state, use, db)
+	ok(not state.get_card("lynda").is_exhausted,
+		"ly-b: she does NOT exhaust — plain payment power")
+	eq(state.get_available_resources("p1"), 3, "ly-c: 1 resource paid at announcement")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("foe").has_restriction("must_attack"),
+		"ly-d: must_attack applied to the target")
+
+	# The lock belongs to the TARGET's controller and bites in THEIR action phase.
+	ok(not StackResolver.must_attack_blocks_pass(state, "p1", db),
+		"ly-e: our own pass is unaffected — the modifier is on their ally")
+	state.turn_player     = "p2"
+	state.priority_player = "p2"
+	ok(StackResolver.must_attack_blocks_pass(state, "p2", db),
+		"ly-f: their sorcery-speed pass is locked on their turn")
+	eq(StackResolver.get_must_attack_ids(state, "p2", db), ["foe"] as Array[String],
+		"ly-g: the locking character is reported")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"ly-h: pass_priority refuses — nothing happens")
+	eq(state.priority_player, "p2", "ly-i: priority did not move")
+
+	# Lynda's power puts NO restriction on the defender (that is Mocking Blow's
+	# second clause): every legal defender is still available.
+	var defenders := StackResolver.get_legal_defenders(state, "foe", db)
+	ok("p1_hero" in defenders and "lynda" in defenders,
+		"ly-j: no target restriction — hero and ally both remain legal defenders")
+
+	# Making the attack releases the lock.
+	var atk := PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "foe", "defender_id": "p1_hero"})
+	ok(StackResolver.can_submit(state, atk, db), "ly-k: the forced attack is legal")
+	StackResolver.submit_action(state, atk, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not StackResolver.must_attack_blocks_pass(state, "p2", db),
+		"ly-l: attacker is exhausted — if-able no longer holds, lock lifts")
+
+
+func _test_lynda_if_able_releases() -> void:
+	_buf.append("\n-- Lynda Steele: every if-able release, and this-turn expiry --")
+	var db := _lynda_db()
+
+	# (1) Exhausted — unable, so no lock.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	var f1 := _add_ally(s1, "foe", "grunt_def", "p2")
+	f1.just_summoned = false
+	f1.active_buffs.append(Buff.make("t", "src", "must_attack", 1, "turns", 1))
+	s1.turn_player = "p2"
+	s1.priority_player = "p2"
+	ok(StackResolver.must_attack_blocks_pass(s1, "p2", db), "ly-m: ready and able -> locked")
+	f1.is_exhausted = true
+	ok(not StackResolver.must_attack_blocks_pass(s1, "p2", db),
+		"ly-n: exhausted -> unable -> no lock")
+	f1.is_exhausted = false
+
+	# (2) Summoning sick — unable.
+	f1.just_summoned = true
+	ok(not StackResolver.must_attack_blocks_pass(s1, "p2", db),
+		"ly-o: summoning-sick -> unable -> no lock")
+	f1.just_summoned = false
+
+	# (3) A cannot_attack restriction (Frostbolt / Litori) beats the must.
+	f1.active_buffs.append(Buff.make("f", "src", "cannot_attack", 1, "turns", 1))
+	ok(not StackResolver.must_attack_blocks_pass(s1, "p2", db),
+		"ly-p: cant-attack wins over must-attack -> no lock")
+	f1.active_buffs = f1.active_buffs.filter(
+		func(b: Buff) -> bool: return b.stat != "cannot_attack")
+
+	# (4) No legal defender at all — unable.
+	s1.get_card("p1_hero").active_buffs.append(
+		Buff.make("el", "src", "grant_elusive", 1, "turns", 1))
+	eq(StackResolver.get_legal_defenders(s1, "foe", db), [] as Array[String],
+		"ly-q: no legal defender exists")
+	ok(not StackResolver.must_attack_blocks_pass(s1, "p2", db),
+		"ly-r: nothing legal to attack -> unable -> no lock")
+
+	# (5) Not their action phase / a combat window — the modifier says nothing
+	#     about priority outside sorcery speed.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var f2 := _add_ally(s2, "foe", "grunt_def", "p2")
+	f2.just_summoned = false
+	f2.active_buffs.append(Buff.make("t", "src", "must_attack", 1, "turns", 1))
+	_add_ally(s2, "block", "grunt_def", "p1").just_summoned = false
+	s2.turn_player = "p2"
+	s2.priority_player = "p2"
+	ok(StackResolver.must_attack_blocks_pass(s2, "p2", db), "ly-s: locked at sorcery speed")
+	s2.phase = "end"
+	ok(not StackResolver.must_attack_blocks_pass(s2, "p2", db),
+		"ly-t: end phase is not the non-combat action phase -> no lock")
+	s2.phase = "action"
+	s2.combat_attack_window = true
+	ok(not StackResolver.must_attack_blocks_pass(s2, "p2", db),
+		"ly-u: a combat window is not sorcery speed -> no lock")
+	s2.combat_attack_window = false
+
+	# (6) This turn — the end-of-turn buff sweep clears it.
+	TurnManager._enter_end(s2, db)
+	ok(not s2.get_card("foe").has_restriction("must_attack"),
+		"ly-v: the modifier expires at end of turn")
+
+
+func _test_mocking_blow_damage_and_redirect() -> void:
+	_buf.append("\n-- Mocking Blow: 1 melee + must attack + can attack only your hero --")
+	var db := _lynda_db()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_card_to_hand(state, "mb", "mocking_blow_def", "p1")
+	var foe := _add_ally(state, "foe", "bruiser_def", "p2")
+	foe.just_summoned = false
+	# A juicy alternative defender on our side — the redirect must take it away.
+	var bait := _add_ally(state, "bait", "wall_def", "p1")
+	bait.just_summoned = false
+
+	ok("bait" in StackResolver.get_legal_defenders(state, "foe", db),
+		"mb-a: our ally is a legal defender beforehand")
+
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "mb", "target_id": "foe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("foe").damage_taken, 1, "mb-b: 1 melee damage dealt by our hero")
+	ok(state.get_card("foe").has_restriction("must_attack"), "mb-c: must_attack applied")
+	eq(StackResolver.get_legal_defenders(state, "foe", db), ["p1_hero"] as Array[String],
+		"mb-d: 601.2c — it can attack ONLY our hero now")
+	ok(not StackResolver.can_submit(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "foe", "defender_id": "bait"}), db),
+		"mb-e: attacking our ally is now an illegal proposal")
+
+	state.turn_player = "p2"
+	state.priority_player = "p2"
+	ok(StackResolver.must_attack_blocks_pass(state, "p2", db),
+		"mb-f: and they must make that attack — the pass is locked")
+	ok(StackResolver.can_submit(state, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "foe", "defender_id": "p1_hero"}), db),
+		"mb-g: the redirected attack is legal")
+
+	# 601.2c fallback: with our hero no longer a legal defender (elusive), the
+	# narrowing can't be satisfied and ANY legal defender is legal again.
+	state.get_card("p1_hero").active_buffs.append(
+		Buff.make("el", "src", "grant_elusive", 1, "turns", 1))
+	eq(StackResolver.get_legal_defenders(state, "foe", db), ["bait"] as Array[String],
+		"mb-h: 601.2c fallback — no legal narrowed proposal, so any defender may be chosen")
+
+	# This turn, on both clauses.
+	TurnManager._enter_end(state, db)
+	var f := state.get_card("foe")
+	ok(not f.has_restriction("must_attack"), "mb-i: must_attack expires at end of turn")
+	ok(not f.has_restriction("can_attack_only:p1_hero"),
+		"mb-j: the redirect expires at end of turn too")
+
+
+func _test_mocking_blow_stacks_with_taunt() -> void:
+	_buf.append("\n-- Mocking Blow + sarmoth_taunt: one specified set (601.2d) --")
+	var db := _lynda_db()
+	db.ally("sarmoth_def", 1, 5, [], 3, "sarmoth_taunt")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	_add_card_to_hand(state, "mb", "mocking_blow_def", "p1")
+	var foe := _add_ally(state, "foe", "bruiser_def", "p2")
+	foe.just_summoned = false
+	var sarmoth := _add_ally(state, "sarmoth", "sarmoth_def", "p1")
+	sarmoth.just_summoned = false
+	var spare := _add_ally(state, "spare", "wall_def", "p1")
+	spare.just_summoned = false
+
+	eq(StackResolver.get_legal_defenders(state, "foe", db), ["sarmoth"] as Array[String],
+		"mbt-a: the taunt alone narrows to Sarmoth")
+
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "mb", "target_id": "foe"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	# Rulebook 601.2d worked example: the two modifiers UNION rather than one
+	# eating the other — "can attack only Sarmoth or [our hero]".
+	var defenders := StackResolver.get_legal_defenders(state, "foe", db)
+	ok("sarmoth" in defenders and "p1_hero" in defenders,
+		"mbt-b: 601.2d — both specified characters are legal defenders")
+	ok("spare" not in defenders, "mbt-c: and nothing else is")
+
+
+func _test_ai_must_attack() -> void:
+	_buf.append("\n-- AI: Lynda held for the opponent turn; forced attack unblocks the pass --")
+	var db := _lynda_db()
+	var ai := BaseAI.new()
+
+	# Never fired on our own turn: it would expire before their action phase, and
+	# the generic ally branch would otherwise point it at our own best ally.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	_add_ally(s1, "lynda", "lynda_def", "p1").just_summoned = false
+	_add_ally(s1, "mine", "bruiser_def", "p1").just_summoned = false
+	_add_ally(s1, "foe", "grunt_def", "p2").just_summoned = false
+	var own_turn_ok := true
+	for a in ai._get_ally_power_actions(s1, db, "p1"):
+		if a.params.get("card_id", "") == "lynda":
+			own_turn_ok = false
+	ok(own_turn_ok, "ma-a: Lynda's power is never proposed on our own turn")
+	eq(ai.must_attack_action(s1, db, "p1"), null,
+		"ma-b: and the off-turn hook holds while it is our turn")
+
+	# Fired on the opponent's turn, at a body a forced attack would hurt: their
+	# 2/2 into our 3/5 Protector dies for nothing.
+	s1.turn_player = "p2"
+	s1.priority_player = "p1"
+	var act := ai.must_attack_action(s1, db, "p1")
+	ok(act != null, "ma-c: fired on the opponent's turn")
+	if act != null:
+		eq(act.params.get("card_id", ""), "lynda", "ma-d: the source is Lynda")
+		eq(act.params.get("target_id", ""), "foe", "ma-e: aimed at their ally")
+
+	# Held when the forced attack would be good FOR THEM (their 5/5 kills our
+	# chump and lives).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_ally(s2, "lynda", "lynda_def", "p1").just_summoned = false
+	_add_ally(s2, "chump", "grunt_def", "p1").just_summoned = false
+	_add_ally(s2, "big", "bruiser_def", "p2").just_summoned = false
+	s2.turn_player = "p2"
+	s2.priority_player = "p1"
+	eq(ai.must_attack_action(s2, db, "p1"), null,
+		"ma-f: held — forcing their 5/5 to swing only feeds it our chump")
+
+	# Receiving end: the AI makes the attack rather than stalling on a refused
+	# pass, and picks the defender it kills and survives.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var mine := _add_ally(s3, "mine", "bruiser_def", "p1")
+	mine.just_summoned = false
+	mine.active_buffs.append(Buff.make("t", "src", "must_attack", 1, "turns", 1))
+	_add_ally(s3, "kill", "grunt_def", "p2").just_summoned = false
+	ok(StackResolver.must_attack_blocks_pass(s3, "p1", db), "ma-g: our pass is locked")
+	var forced := ai.forced_attack_action(s3, db, "p1")
+	ok(forced != null, "ma-h: the AI produces the forced attack")
+	if forced != null:
+		eq(forced.params.get("attacker_id", ""), "mine", "ma-i: with the locked character")
+		eq(forced.params.get("defender_id", ""), "kill",
+			"ma-j: into the kill it survives, not the hero")
+	eq(ai.forced_attack_action(_base_state(db, "p1_hero", "p2_hero"), db, "p1"), null,
+		"ma-k: null when nothing is locked")

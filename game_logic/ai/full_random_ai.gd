@@ -85,7 +85,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var legal := get_reasonable_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false
-		return null
+		# Rule 600.2: the engine refuses our pass while one of our characters must
+		# attack and is able to — make that attack instead of stalling on it.
+		return forced_attack_action(state, db, player_id)
 
 	# Chain empty = own turn to act: always play something (passing wastes resources).
 	if state.pending_actions.is_empty():

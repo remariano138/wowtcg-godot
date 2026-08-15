@@ -2794,6 +2794,14 @@ func _update_pass_btn() -> void:
 	elif _router.is_awaiting_chain_lightning_optional_target():
 		_pass_btn.text     = "Skip target  [Space]"
 		_pass_btn.modulate = Color(0.5, 0.5, 0.5)
+	elif my_turn and StackResolver.must_attack_blocks_pass(_state, _local_player, _db):
+		# Rule 600.2 (Lynda Steele / Mocking Blow): the engine will refuse this
+		# pass while one of our characters must attack and is able to. Say so
+		# rather than letting the button look broken — everything else is still
+		# legal, so the button is the only thing that changes.
+		_pass_btn.disabled = true
+		_pass_btn.text     = "Must attack first  [rule 600.2]"
+		_pass_btn.modulate = Color(1.0, 0.35, 0.35)
 	elif not my_turn:
 		# The button is disabled anyway, so say WHY rather than showing a dead
 		# copy of the action: priority is with the other player. Together with
@@ -3052,6 +3060,14 @@ func _try_pass(skip_confirm: bool = false) -> void:
 		_schedule_next_turn()
 		return
 	if _state.priority_player != _local_player:
+		return
+	# Rule 600.2 (Lynda Steele / Mocking Blow): the engine refuses this pass while
+	# one of our characters must attack and is able to. The pass button says so;
+	# absorb the keyboard shortcut here too rather than firing a pass that does
+	# nothing.
+	if StackResolver.must_attack_blocks_pass(_state, _local_player, _db):
+		_show_transient_notice("A character of yours must attack this turn if able.",
+			Color(1.0, 0.35, 0.35))
 		return
 	var needs_confirm: bool = (
 		_state.turn_player == _local_player
@@ -6741,6 +6757,11 @@ func _maybe_turbo_pass() -> void:
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		_wrap_up_active = false
 		return
+	# Rule 600.2: a refused pass would spin the burst — end it and let the player
+	# make the attack the engine is waiting for.
+	if StackResolver.must_attack_blocks_pass(_state, _local_player, _db):
+		_wrap_up_active = false
+		return
 	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
 		return
 	# Post-handoff hold: the incoming hotseat player was handed the screen FOR
@@ -6928,6 +6949,9 @@ func _do_turbo_pass() -> void:
 		return
 	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
 		return
+	if StackResolver.must_attack_blocks_pass(_state, _local_player, _db):
+		_wrap_up_active = false
+		return   # rule 600.2 — see _maybe_turbo_pass
 	var phase := _state.phase
 	# Re-check at fire time — state may have changed since the deferred was scheduled.
 	if _stop_for_end_window and phase == "end" and _state.pending_actions.is_empty():

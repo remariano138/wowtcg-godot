@@ -99,6 +99,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
 	if power_exhaust != null:
 		return power_exhaust
+	# Lynda Steele (rule 600.2) — force a bad attack on the opponent's turn.
+	var force_attack := must_attack_action(state, db, player_id)
+	if force_attack != null:
+		return force_attack
 	# Sneak (BaseAI) — grant our proposed defender elusive; 601.3 fizzles it.
 	var sneak := elusive_save_action(state, db, player_id)
 	if sneak != null:
@@ -175,8 +179,12 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var chip := _hero_chip_action(state, db, player_id)
 	if chip != null:
 		return chip
-	# Nothing constructive left — end the turn.
-	return null
+	# Nothing constructive left — end the turn. Except that rule 600.2 may not
+	# LET us: an ally of ours under a "must attack if able" modifier blocks the
+	# pass, so make the attack the engine is waiting for rather than stalling on
+	# a refused pass. Last, so every step above has had its say — the lock
+	# constrains only the pass, not the order of anything else.
+	return forced_attack_action(state, db, player_id)
 
 
 # Step 3 — trade a board attacker into an enemy ally where BOTH die, but only

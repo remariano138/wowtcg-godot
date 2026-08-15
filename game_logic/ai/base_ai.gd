@@ -107,6 +107,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var power_exhaust := exhaust_attacker_ally_power_action(state, db, player_id)
 	if power_exhaust != null:
 		return power_exhaust
+	# Lynda Steele (rule 600.2) — force a bad attack on the opponent's turn.
+	var force_attack := must_attack_action(state, db, player_id)
+	if force_attack != null:
+		return force_attack
 	var sneak := elusive_save_action(state, db, player_id)
 	if sneak != null:
 		return sneak
@@ -135,7 +139,14 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var swing := atk_swing_action(state, db, player_id)
 	if swing != null:
 		return swing
-	return bear_form_action(state, db, player_id)
+	var bear := bear_form_action(state, db, player_id)
+	if bear != null:
+		return bear
+	# Rule 600.2 last resort: one of ours must attack if able and we have nothing
+	# else we want to do. The engine will REFUSE our pass while that is true, so
+	# without this the AI would sit on a blocked pass forever. Kept last so every
+	# voluntary line above is tried first — the lock constrains only the pass.
+	return forced_attack_action(state, db, player_id)
 
 
 # ── Armor damage prevention (rule 717.2c prevention point) ────────────────────
@@ -1112,6 +1123,144 @@ func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String)
 			continue
 		var act := PendingAction.make("use_ally_power", player_id,
 			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Lynda Steele: "(1) -> Target ally must attack this turn if able." (rule 600.2)
+#
+# Played during the OPPONENT's turn only — the lock applies during the target's
+# controller's own action phase, and the grant expires at end of turn, so on our
+# turn it is strictly wasted. `_get_ally_power_actions` therefore holds the power
+# and this is the one place it fires.
+#
+# What we are buying is a bad attack made by a body that would rather have stayed
+# home, so the bar is that the forced attack is bad FOR THEM: after it, their
+# ally is exhausted (so it can't protect our swing back) and we can take the hit
+# or kill it. We fire it on the opposing ally that:
+#   * is a legal attacker for them right now (an exhausted or summoning-sick
+#     ally is "unable", so the lock would be a no-op — 600.2's "if able"), and
+#   * can't kill the best defender it could be forced into, or dies to it.
+# The most valuable such ally is chosen, since forcing their biggest threat to
+# throw itself at a wall is the whole point.
+#
+# Deliberately NOT modeled: forcing an attack purely to strip a would-be
+# protector for OUR next turn. It is a real use, but it needs a read of our own
+# next turn's board that the heuristic AI doesn't have, and paying 1 a turn for
+# a guess is worse than holding the resource.
+func must_attack_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var opp := _other_player_id(state, player_id)
+	# Opponent's turn only, and only while nothing is mid-combat — a lock applied
+	# during their combat window can no longer force anything this turn.
+	if state.turn_player != opp:
+		return null
+	if state.combat_attack_window or state.combat_defend_window or state.in_protect_point:
+		return null
+
+	var best_action: PendingAction = null
+	var best_value := -1
+	for lynda in state.cards_in_zone(player_id + "_ally_row"):
+		var def := db.get_def(lynda.card_def_id) as CardDef
+		if not def:
+			continue
+		var ap := StackResolver._ally_activated_power(def)
+		if ap.get("effect", "") != "must_attack_target":
+			continue
+		for foe in state.cards_in_zone(opp + "_ally_row"):
+			var foe_id: String = foe.instance_id
+			# 600.2 "if able": a body that can't attack anyway takes no lock.
+			if foe_id not in StackResolver.get_legal_attackers(state, opp, db):
+				continue
+			var defenders := StackResolver.get_legal_defenders(state, foe_id, db)
+			if defenders.is_empty():
+				continue
+			if not _forced_attack_hurts_them(state, db, player_id, foe_id, defenders):
+				continue
+			var value := card_value_score(state, db, foe_id)
+			if value <= best_value:
+				continue
+			var act := PendingAction.make("use_ally_power", player_id,
+				{"card_id": lynda.instance_id, "target_id": foe_id})
+			if StackResolver.can_submit(state, act, db):
+				best_value = value
+				best_action = act
+	return best_action
+
+
+# True when the attack we'd force on `foe_id` is one we can answer: the best
+# defender it could legally be pointed at survives the hit, or trades up. We can
+# only reason about what THEY would pick, so take the worst case for us — the
+# defender of ours that fares worst is the one they'd choose.
+func _forced_attack_hurts_them(state: GameState, db, player_id: String,
+		foe_id: String, defenders: Array[String]) -> bool:
+	var atk := forecast_atk(state, db, foe_id, true)
+	var foe_hp := state.get_current_hp(foe_id, db)
+	var ps := state.players.get(player_id) as PlayerState
+	for did in defenders:
+		var d := state.get_card(did)
+		if not d or d.controller != player_id:
+			continue
+		# Our hero eating a big hit is not a win for us.
+		if ps and did == ps.hero_instance_id:
+			if atk >= state.get_current_hp(did, db) or atk >= 4:
+				return false
+			continue
+		# A defending ally of ours dying without killing the attacker is a loss.
+		var kills_ours := atk >= state.get_current_hp(did, db)
+		var kills_theirs := state.get_atk(did, db) >= foe_hp \
+			and not StackResolver._has_keyword(state.get_card(foe_id), "long_range", db, state)
+		if kills_ours and not kills_theirs:
+			return false
+	return true
+
+
+# Rule 600.2, the receiving end: one of OUR characters must attack if able, so
+# the engine refuses our sorcery-speed pass until it has. Returns the combat
+# proposal that satisfies the lock, or null when nothing is locked.
+#
+# Called last in every decide_action, so it only ever fires once the AI has
+# decided it wants to end the turn — it never pre-empts a line the AI would
+# rather take, including attacking with that same character voluntarily.
+#
+# Target choice: the modifier says nothing about WHAT to attack (Lynda's whole
+# distinction from Mocking Blow — see get_must_attack_ids), and the pool is
+# already narrowed by any `can_attack_only` restriction, so pick the least bad
+# defender by the usual combat math: a kill we survive, else a trade, else the
+# opposing hero, else whatever is left (the attack is compulsory — there may be
+# no good answer, and refusing is not an option).
+func forced_attack_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or not StackResolver.must_attack_blocks_pass(state, player_id, db):
+		return null
+	for attacker_id in StackResolver.get_must_attack_ids(state, player_id, db):
+		var defenders := StackResolver.get_legal_defenders(state, attacker_id, db)
+		var best := ""
+		var best_rank := -1
+		var opp := _other_player_id(state, player_id)
+		var opp_ps := state.players.get(opp) as PlayerState
+		for did in defenders:
+			# 3 = kill it and live, 2 = trade, 1 = their hero, 0 = anything else.
+			var rank := 0
+			if opp_ps and did == opp_ps.hero_instance_id:
+				rank = 1
+			else:
+				var kills_theirs := forecast_atk(state, db, attacker_id, true) \
+					>= state.get_current_hp(did, db)
+				var kills_ours := state.get_atk(did, db) \
+						>= state.get_current_hp(attacker_id, db) \
+					and not StackResolver._has_keyword(
+						state.get_card(attacker_id), "long_range", db, state)
+				if kills_theirs:
+					rank = 3 if not kills_ours else 2
+			if rank > best_rank:
+				best_rank = rank
+				best = did
+		if best == "":
+			continue
+		var act := PendingAction.make("propose_combat", player_id,
+			{"attacker_id": attacker_id, "defender_id": best})
 		if StackResolver.can_submit(state, act, db):
 			return act
 	return null
@@ -2778,6 +2927,15 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# Galahandra: held like Exhaustion, never blind-played on our own
 			# turn — only used in response to an opposing combat proposal, see
 			# exhaust_attacker_ally_power_action().
+			continue
+		elif ap.get("effect", "") == "must_attack_target":
+			# Lynda Steele: "(1) -> Target ally must attack this turn if able."
+			# Rule 600.2's lock bites during the TARGET's controller's action
+			# phase, and the grant expires at end of turn — so fired on our own
+			# turn at an opposing ally it does precisely nothing, and the generic
+			# "ally" branch below would otherwise point it at our OWN best ally
+			# and force us to attack with it. Held for the opponent's turn; see
+			# must_attack_action().
 			continue
 		elif ap.get("targets", "") == "ally":
 			# Friendly buff powers (Elder Moorf): target our own highest-ATK ally

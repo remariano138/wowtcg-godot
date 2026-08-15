@@ -964,3 +964,65 @@ hiding and no handoff.
 `game_logic/stack_resolver.gd`, fed by the `ally_destroyed` turn-log entry
 recorded in `GameLogic.check_destroyed` / `destroy_card` (see
 `game_logic/turn_state_flags.md`).
+
+---
+
+## Mocking Blow — "can attack only your hero" is read with 601.2c's "if able"
+
+**Printed text (`azeroth_144`):** "Your hero deals 1 melee damage to target
+hero or ally. This turn, that character must attack if able and can attack
+only your hero."
+
+The second clause is printed WITHOUT "if able" on this card. The comprehensive
+rules quote the same card WITH it (the 601.2d worked example under
+`References/wow_rules.txt`, "…and can attack only your hero if able."), and
+601.2c defines the whole modifier class as carrying that fallback: "However,
+if such a proposal can't be made (because there are no such characters in
+play, or all such characters are Elusive, for example), any other legal
+defender can be proposed."
+
+**Deviation:** the engine implements the rulebook's wording, not the card's.
+`StackResolver.get_legal_defenders` narrows to the specified character, and
+falls back to the full legal-defender list when no narrowed proposal can be
+made — so a Mocking Blow'd ally whose target hero has since become Elusive
+may attack something else instead of being unable to attack at all.
+
+**Why:** the printed omission is a wording slip, not a different card — the CR
+names Mocking Blow explicitly and reproduces it with the clause. Read
+literally the card would also interact badly with its OWN first clause: "must
+attack if able" plus an unsatisfiable "can attack only" would mean the ally
+must attack and has nothing it may attack, which 601.2c exists to prevent.
+
+**Enforcement site:** `StackResolver.get_legal_defenders` (the fallback branch
+after the specified-set narrowing).
+
+
+## Lynda Steele — "must attack if able" locks only the sorcery-speed pass
+
+**Printed text (`dark_portal_178`):** "(1) → Target ally must attack this turn
+if able."
+
+This is not a deviation from the card so much as a note on what rule 600.2
+actually says, because the intuitive reading ("its next action must be the
+attack") is wrong and the engine deliberately does not implement it:
+
+> "…that character's controller can't pass priority while the chain is empty
+> during his non-combat action phase if he could legally propose a combat with
+> that character."
+
+**Engine behaviour:** `StackResolver.must_attack_blocks_pass` blocks
+`pass_priority` — and nothing else. The affected player may play cards, use
+powers, place a resource and attack with other characters first, in any order;
+they simply cannot leave the phase with the forced attack still available. The
+lock is evaluated live, so every "if able" release (the character exhausts, is
+killed or bounced, gains a `cannot_attack` restriction, or runs out of legal
+defenders) lifts it with no bookkeeping.
+
+**Consequence worth knowing:** the lock bites during the TARGET's controller's
+action phase, and the grant is "this turn". Used on your own turn against an
+opposing ally the power therefore does nothing at all — it is an instant-speed
+play for the OPPONENT's turn. The AI is gated accordingly
+(`BaseAI.must_attack_action`).
+
+**Enforcement site:** `StackResolver._pass_priority` (the 600.2 gate), with the
+UI/AI reading the same predicate.

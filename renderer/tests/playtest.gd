@@ -216,8 +216,8 @@ var _controls_window:  Panel
 # their placement is kept (see _chain_window_moved).
 var _chain_window:       Panel
 var _chain_window_moved: bool = false
-# Combat window: the step readout (proposition / attack window / protect point /
-# defend window), who is attacking whom, and the protect point's own buttons.
+# Combat window: the step readout (proposition / attack window / protection point /
+# defend window), who is attacking whom, and the protection point's own buttons.
 # Auto-shown for the duration of a combat, like the chain window, and likewise
 # draggable but not closable.
 var _combat_window:  Panel
@@ -326,7 +326,7 @@ var _turbo_btn:  Button
 var _tactical_btn: Button
 var _mode_desc_label: Label
 
-# ── Protect point (inline panel UI) ───────────────────────────────────────────
+# ── protection point (inline panel UI) ───────────────────────────────────────────
 var _in_protect_mode: bool = false
 var _protect_protectors: Array = []
 var _protect_nodes: Array[Node] = []
@@ -1564,7 +1564,7 @@ const ALLY_ROW_LINE := Color(1.0, 0.9, 0.2, 0.75)     # allies
 
 # ── Combat window ─────────────────────────────────────────────────────────────
 # Everything about the combat in progress, in one place: which step of rule 602
-# we are in, who is attacking whom, and — when it is open — the protect point's
+# we are in, who is attacking whom, and — when it is open — the protection point's
 # prompt and buttons. It used to be a bare inline row over the pass button with
 # no context beyond "X is attacking Y".
 #
@@ -1610,7 +1610,7 @@ func _build_combat_window() -> void:
 	_combat_prompt_lbl.size = Vector2(COMBAT_BODY_SIZE.x - 24, 40)
 	_combat_prompt_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD
 
-	# Buttons (protect point) are rebuilt per prompt; this just reserves the row.
+	# Buttons (protection point) are rebuilt per prompt; this just reserves the row.
 	_combat_btn_row = Control.new()
 	_combat_btn_row.position     = Vector2(12, 150)
 	_combat_btn_row.size         = Vector2(COMBAT_BODY_SIZE.x - 24, COMBAT_BTN_H)
@@ -1634,7 +1634,7 @@ func _combat_step_key() -> String:
 		return "defend"
 	if _state.combat_attack_window:
 		return "attack"
-	# Attacker committed, no window open and the protect point passed: damage is
+	# Attacker committed, no window open and the protection point passed: damage is
 	# being dealt / the step is wrapping up.
 	if _state.combat_attacker != "":
 		return "conclusion"
@@ -1708,12 +1708,12 @@ func _update_combat_window() -> void:
 	# The priority windows say their piece HERE, next to the step readout that
 	# already shows what follows them (attack window → protection → defend
 	# window) — they used to open the separate prompt window on top of it, which
-	# said the same thing with less context. The protect point owns this label
+	# said the same thing with less context. The protection point owns this label
 	# while it is open (its own prompt + buttons), so don't tread on it.
 	if not _in_protect_mode:
 		match step:
 			"attack":
-				_combat_prompt_lbl.text = "You may respond before the protect point."
+				_combat_prompt_lbl.text = "You may respond before the protection point."
 			"defend":
 				_combat_prompt_lbl.text = "You may respond before damage is dealt."
 			_:
@@ -2983,7 +2983,7 @@ func _input(event: InputEvent) -> void:
 			_show_pass_hint("Press Ctrl+Space to give up control, or click a card to discard")
 			get_viewport().set_input_as_handled()
 			return
-		# Protect point: Space mirrors the "Don't protect" button (skip protecting),
+		# protection point: Space mirrors the "Don't protect" button (skip protecting),
 		# matching the pass button's behavior everywhere else in the window flow.
 		if _in_protect_mode:
 			_resolve_protection("")
@@ -3303,7 +3303,7 @@ func _log_event(event: GameEvent) -> void:
 		"defend_window_opened":
 			_window_generation += 1
 			# Readout lives in the Combat window — see attack_window_opened.
-			# Defender may now be a protector that swapped in during protect point,
+			# Defender may now be a protector that swapped in during protection point,
 			# so re-highlight rather than assume the attack-window pair still holds.
 			_set_combat_highlight(event.payload.get("attacker_id", ""), event.payload.get("defender_id", ""))
 			_refresh_ui()
@@ -5460,14 +5460,14 @@ func _close_gy_dialog() -> void:
 
 # Red-outlines the attacker + current defender for the duration of the attack/
 # defend windows, so the human can see who's fighting and decide whether to
-# respond (e.g. Quick Strike) before protect point / damage. Called again on
+# respond (e.g. Quick Strike) before protection point / damage. Called again on
 # defend_window_opened since the defender may have swapped to a protector.
 #
 # Deferred one frame: the callers (attack_window_opened / defend_window_opened
 # handlers) call _refresh_ui()/_drain_passes() right after this, which routes
 # through _router.refresh_highlights() -> BoardRenderer._on_highlights_updated,
 # and that unconditionally overwrites every card node's outline — wiping the
-# red outline set here if applied synchronously (same issue protect point
+# red outline set here if applied synchronously (same issue protection point
 # works around with _apply_protect_outlines).
 func _set_combat_highlight(attacker_id: String, defender_id: String) -> void:
 	call_deferred("_apply_combat_highlight", attacker_id, defender_id)
@@ -5518,7 +5518,7 @@ func _apply_proposed_combat_highlight(attacker_id: String, defender_id: String) 
 		_combat_highlight_ids.append(defender_id)
 
 
-# ── Protect point ──────────────────────────────────────────────────────────────
+# ── protection point ──────────────────────────────────────────────────────────────
 
 func _handle_protect_point(payload: Dictionary) -> void:
 	var attacker_id: String    = payload.get("attacker_id", "")
@@ -5550,7 +5550,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	_protect_attacker_id  = attacker_id
 	_ai_timer.stop()   # prevent AI from acting while human is choosing a protector
 	# Modal except the legal protectors — clicking one is the same as its button
-	# (see _build_choice_popup; the protect point renders inline, not as a popup).
+	# (see _build_choice_popup; the protection point renders inline, not as a popup).
 	_set_board_block(true, protectors)
 	_pass_btn.visible  = false
 	_cancel_btn.visible = false
@@ -5617,7 +5617,7 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 
 func _apply_protect_outlines(atk_id: String, def_id: String, prot_ids: Array) -> void:
 	if not _in_protect_mode:
-		return   # protect point was already resolved before this frame fired
+		return   # protection point was already resolved before this frame fired
 	_renderer.highlight_cards(prot_ids)
 	_renderer.set_card_outline(atk_id, true, Color(1.0, 0.2, 0.2))
 	_renderer.set_card_outline(def_id, true, Color(1.0, 0.2, 0.2))
@@ -6972,7 +6972,7 @@ func _player_owns_top_of_chain(pid: String) -> bool:
 # "Something happened" since the human last got to decide, per the layer-2
 # auto-pass rule: a NEW opponent-owned chain link on top (not the same one
 # they already saw/passed on), or a combat window transition (attack ->
-# protect point -> defend -> resolved). Explicitly NOT included: legal-play
+# protection point -> defend -> resolved). Explicitly NOT included: legal-play
 # existence, resources entering play, or non-chain forced/triggered effects
 # (e.g. Taz'dingo, Infernal's end-of-turn burn) — those open no counterplay
 # window, so passing through them shouldn't cost the human an extra ask.
@@ -7013,7 +7013,7 @@ func _describe_priority_stop_reason() -> String:
 			return "defend window opened"
 		if _state.combat_attack_window:
 			return "attack window opened"
-		return "protect point"
+		return "protection point"
 	# With the layer-2 "nothing changed" auto-pass suspended, a window is also
 	# held when nothing new happened — name the window rather than "unknown".
 	if _state.combat_defend_window:

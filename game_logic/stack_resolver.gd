@@ -299,6 +299,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_track_placement() before priority can move.
 	if state.pending_track_look_player != "":
 		return []
+	# A pending Galway Steamwhistle weapon-ready pick must be resolved via
+	# choose_weapon_ready() before priority can move.
+	if state.pending_weapon_ready_player != "":
+		return []
 	# A pending Form pay-return decision must be resolved via
 	# choose_form_return() before priority can move.
 	if state.pending_form_return_player != "":
@@ -494,6 +498,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Track Humanoids' look blocks everything until resolved via
 	# choose_track_placement().
 	if state.pending_track_look_player != "":
+		return false
+
+	# Galway Steamwhistle's weapon-ready pick blocks everything until resolved
+	# via choose_weapon_ready().
+	if state.pending_weapon_ready_player != "":
 		return false
 
 	# Start-of-turn trigger target choice blocks everything until resolved via
@@ -4755,6 +4764,19 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			if party_hero:
 				events.append_array(GameLogic.heal(
 					state, party_hero.instance_id, party_amount, db, card_id))
+		"ready_hero_and_weapon":
+			# Galway Steamwhistle: "[Activate] -> Ready your hero and one of your
+			# weapons." Both halves are CHOICES, not targets — nothing is
+			# announced, so 706 Untargetable is irrelevant — and the weapon pick
+			# belongs to RESOLUTION (709.2b): 707.1 locks in only X, modes and
+			# targets. The hero readies unconditionally (a no-op if already
+			# ready); the weapon half opens a direct-call choice point only when
+			# there is a real decision to make.
+			var galway_pid := card.controller
+			var galway_hero := state.get_hero(galway_pid)
+			if galway_hero:
+				events.append_array(GameLogic.ready_card(state, galway_hero.instance_id))
+			events.append_array(_open_weapon_ready_choice(state, galway_pid, card_id, db))
 		"buff_atk_target":
 			# Elder Moorf: "Target ally has +X ATK this turn."
 			var amount: int = int(ap.get("amount", 0))
@@ -6542,6 +6564,54 @@ static func quest_requires_turn_player(def: CardDef) -> bool:
 	return requires_turn_player(def)
 
 
+# ── Form state ("your hero is in bear form") ──────────────────────────────────
+# A Form card prints what form its controller's hero is IN (Bear Form: "Your
+# hero is in bear form"; Cat Form: "…in cat form"), which is a separate axis
+# from the `form:N` slot tag (uniqueness) and from whatever the form GRANTS
+# (hero_has_protector, hero_atk_while_attacking). Cards that key on the form by
+# name — Thangal's "Use only while he's in bear form" — must read the printed
+# state, not a grant: two different Forms could grant the same thing.
+# `form_state:NAME` marks the Form; `require_form_state:NAME` gates the reader.
+
+# The form name a card declares its controller's hero to be in ("" if none).
+static func form_state_of(def: CardDef) -> String:
+	if not def or def.effects == "":
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() > 1 and parts[0].strip_edges() == "form_state":
+			return parts[1].strip_edges().to_lower()
+	return ""
+
+
+# The form name a power requires its user's hero to be in ("" = no restriction).
+static func requires_form_state(def: CardDef) -> String:
+	if not def or def.effects == "":
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() > 1 and parts[0].strip_edges() == "require_form_state":
+			return parts[1].strip_edges().to_lower()
+	return ""
+
+
+# Is player_id's hero currently in the named form? Read LIVE off that player's
+# hero_row, so it lifts the instant the Form leaves play (a form break, a
+# destroy, a second Form sacrificed to the 414.3b slot check).
+static func hero_is_in_form(state: GameState, player_id: String,
+		form_name: String, db) -> bool:
+	if not db or form_name == "":
+		return false
+	var want := form_name.to_lower()
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if not card:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if def and form_state_of(def) == want:
+			return true
+	return false
+
+
 # All graveyard cards matching a requirement, from player_id's point of view.
 static func get_graveyard_search_candidates(state: GameState, player_id: String,
 		req: Dictionary, db) -> Array[String]:
@@ -7120,6 +7190,61 @@ static func choose_quest_ready_target(state: GameState, card_id: String,
 	var events: Array[GameEvent] = GameLogic.ready_card(state, card_id)
 	events.append_array(_run_quest_mode_queue(state, db))
 	return events
+
+
+# Galway Steamwhistle's pool: "one of your weapons" — every weapon card the
+# player controls in their own hero_row (any weapon, not just Melee: the card
+# says "weapons"). A CHOICE, not a target, so 706 Untargetable does not apply.
+# Only EXHAUSTED weapons are offered: readying a ready weapon is a no-op, so a
+# board of ready weapons is no decision at all. Read live at resolution, so a
+# weapon destroyed or struck-with in the response window is accounted for.
+static func get_weapon_ready_candidates(state: GameState, player_id: String,
+		db) -> Array[String]:
+	var result: Array[String] = []
+	if not db:
+		return result
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if not card.is_exhausted:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or def.card_type != "Equipment":
+			continue
+		if _weapon_info(def).is_empty():
+			continue
+		result.append(card.instance_id)
+	return result
+
+
+# Open the weapon-ready choice as the power resolves (709.2b). No exhausted
+# weapon → the clause simply does nothing and no choice point opens; exactly
+# one → it readies immediately rather than prompting for a forced pick.
+static func _open_weapon_ready_choice(state: GameState, player_id: String,
+		source_id: String, db) -> Array[GameEvent]:
+	var weapons := get_weapon_ready_candidates(state, player_id, db)
+	if weapons.is_empty():
+		return []
+	if weapons.size() == 1:
+		return GameLogic.ready_card(state, weapons[0])
+	state.pending_weapon_ready_player = player_id
+	state.pending_weapon_ready_source = source_id
+	state.pending_weapon_ready_ids    = weapons
+	return [GameEvent.weapon_ready_required(source_id, player_id, weapons)]
+
+
+# Entry point: the controller picked which weapon readies. Direct call (NOT the
+# chain), like the strike point; can_submit / pass_priority hard-block while
+# pending, so an unanswered choice can't be skipped.
+static func choose_weapon_ready(state: GameState, weapon_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_weapon_ready_player == "":
+		return []
+	if weapon_id not in get_weapon_ready_candidates(
+			state, state.pending_weapon_ready_player, db):
+		return []
+	state.pending_weapon_ready_player = ""
+	state.pending_weapon_ready_source = ""
+	state.pending_weapon_ready_ids    = []
+	return GameLogic.ready_card(state, weapon_id)
 
 
 # Poison Water's pool: every card in the completer's OWN graveyard, any type.
@@ -7803,6 +7928,13 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 	if requires_turn_player(def):
 		if state.turn_player != action.source_player:
 			return false
+	# "Use only while he's in bear form" (Thangal). Not a turn or speed
+	# restriction — the power stays instant-speed, it simply requires the form
+	# to be up. Re-checked at resolution, so breaking the form in the response
+	# window fizzles the power with the cost already paid.
+	var need_form := requires_form_state(def)
+	if need_form != "" and not hero_is_in_form(state, action.source_player, need_form, db):
+		return false
 	# Must be able to afford the cost.
 	var cost: int = max(def.cost, 0)
 	if cost > state.get_available_resources(action.source_player):
@@ -7968,11 +8100,24 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 		return []
 
 	var events: Array[GameEvent] = []
+	# "Use only while he's in bear form" is re-checked here (709.2a): the form
+	# may have broken in the response window. The power then does nothing and
+	# the cost stays paid — the flip is not undone.
+	var res_form := requires_form_state(def)
+	if res_form != "" and not hero_is_in_form(state, action.source_player, res_form, db):
+		return [GameEvent.make("action_fizzled", {
+			"action_type": action.action_type,
+			"reason":      "form_state_lost",
+		})]
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts.is_empty() or parts[0] == "":
 			continue
 		match parts[0].strip_edges():
+			"ready_hero":
+				# Thangal: "Ready Thangal." No target and no choice — the source
+				# hero readies itself. A no-op if it is already ready.
+				events.append_array(GameLogic.ready_card(state, hero_id))
 			"deal_damage_to_target":
 				# Format: deal_damage_to_target:AMOUNT:DMG_TYPE
 				# Rule 706 re-check: fizzle if the target left play or became Untargetable.

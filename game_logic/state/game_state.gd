@@ -328,6 +328,14 @@ var pending_quest_ferocity_source: String = ""  # quest instance id (buff source
 # CHOOSES one of their own characters (not a target — Untargetable is irrelevant).
 var pending_quest_ready_player: String = ""
 var pending_quest_ready_source: String = ""     # quest instance id (UI)
+# Galway Steamwhistle "[Activate] -> Ready your hero and one of your weapons":
+# the controller CHOOSES which of their own weapons readies (not a target —
+# nothing is announced, so 706 Untargetable is irrelevant). Opened from the
+# power's RESOLUTION (709.2b) and only when more than one exhausted weapon is
+# in play; one candidate readies with no prompt, none opens no choice at all.
+var pending_weapon_ready_player: String = ""
+var pending_weapon_ready_source: String = ""    # the power's source card (UI)
+var pending_weapon_ready_ids: Array[String] = []
 # Poison Water "Shuffle any number of cards from your graveyard into your deck":
 # the completer CHOOSES a subset of their own graveyard (not a target). "Any
 # number" includes zero, so an empty pick is a legal answer.

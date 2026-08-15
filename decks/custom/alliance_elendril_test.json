@@ -1,6 +1,6 @@
 {
   "deck_id": "alliance_elendril_test",
-  "display_name": "Alliance_test (Elendril)",
+  "display_name": "Alliance Hunter Elendril",
   "hero_card_def_id": "azeroth_3",
   "card_entries": [
     {
@@ -89,6 +89,11 @@
       "_card_name": "Fury"
     },
     {
+      "card_def_id": "azeroth_185",
+      "count": 1,
+      "_card_name": "Galway Steamwhistle"
+    },
+    {
       "card_def_id": "azeroth_45",
       "count": 2,
       "_card_name": "Rayder"
@@ -155,7 +160,7 @@
     },
     {
       "card_def_id": "azeroth_221",
-      "count": 2,
+      "count": 1,
       "_card_name": "Tristan Rapidstrike"
     },
     {

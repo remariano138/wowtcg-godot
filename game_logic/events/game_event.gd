@@ -539,6 +539,15 @@ static func quest_ready_target_required(quest_id: String,
 		"quest_id": quest_id, "player": player_id,
 	})
 
+# Galway Steamwhistle: the controller must choose which of their own weapons
+# readies. A CHOICE, not a target — Untargetable is irrelevant. Only opened
+# when there is a real decision (two or more exhausted weapons).
+static func weapon_ready_required(source_id: String, player_id: String,
+		weapon_ids: Array[String]) -> GameEvent:
+	return make("weapon_ready_required", {
+		"source": source_id, "player": player_id, "weapon_ids": weapon_ids,
+	})
+
 # Poison Water: the completer must choose which cards in their own graveyard
 # (any number, zero included) are shuffled into their deck. card_ids = the whole
 # graveyard, i.e. the pool to pick from.

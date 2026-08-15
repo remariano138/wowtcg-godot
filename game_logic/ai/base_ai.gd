@@ -136,6 +136,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ready_quest := ready_protector_quest_action(state, db, player_id)
 	if ready_quest != null:
 		return ready_quest
+	var thangal := thangal_ready_action(state, db, player_id)
+	if thangal != null:
+		return thangal
 	var dodge := evasion_action(state, db, player_id)
 	if dodge != null:
 		return dodge
@@ -2164,6 +2167,31 @@ func choose_ready_on_strike(state: GameState, db, _player_id: String) -> bool:
 	return state.pending_strike_ready_side == "attack"
 
 
+# Galway Steamwhistle's weapon pick — called by the scene on
+# weapon_ready_required when the pending player is an AI. The point of readying
+# a weapon is striking with it again, so take the highest-ATK candidate; a
+# `power_weapon` (Rod of the Ogre Magi, Hypnotic Blade) is valued for its
+# activated power instead, so its ATK says nothing and it loses every tie.
+# The choice is only ever opened with two or more candidates.
+func choose_weapon_ready(state: GameState, db, player_id: String) -> String:
+	var best := ""
+	var best_atk := -1
+	for weapon_id in StackResolver.get_weapon_ready_candidates(state, player_id, db):
+		var card := state.get_card(weapon_id)
+		if not card:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var atk := def.printed_atk
+		if "power_weapon" in def.effects:
+			atk = -1
+		if atk > best_atk:
+			best_atk = atk
+			best = weapon_id
+	return best
+
+
 # Chops / Voss Treebender: "When [this] attacks, you may exhaust target hero or
 # ally." Pick the target to exhaust, or "" to decline. The point of the trigger
 # is denying the protect point (602.2 — a protector must exhaust to protect), so
@@ -2417,6 +2445,39 @@ func ready_protector_quest_action(state: GameState, db,
 				{"quest_id": quest.instance_id})
 		if StackResolver.can_submit(state, action, db):
 			return action
+	return null
+
+
+# ── Thangal: ready our hero mid-attack so it can protect again ───────────────
+# "(3), Flip Thangal → Ready Thangal. Use only while he's in bear form."
+# Dragonkin Menace's heuristic with the choice removed — the readied character
+# is always the hero. Bear Form is what makes it worth 3: it grants the hero
+# PROTECTOR, so a hero readied during an opposing attack is a blocker for that
+# very attack (readying happens before the protect point, 602.2), and the form
+# requirement means the protector grant is up by construction.
+#
+# Like the quest, this deliberately misses the card's other use — readying a
+# spent hero to attack a second time on our own turn. That is a tempo call the
+# AI has no model for, while an extra block on an incoming attack is almost
+# always good.
+func thangal_ready_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.turn_player == player_id:
+		return null
+	if not _opposing_attack_underway(state, player_id):
+		return null
+	var hero := state.get_hero(player_id)
+	if not hero or not hero.is_exhausted:
+		return null   # nothing to ready
+	var hero_def := db.get_def(hero.card_def_id) as CardDef
+	if not hero_def or not StackResolver._power_effect_is(hero_def, "ready_hero"):
+		return null   # some other hero's flip — can_submit would happily fire it
+	var action := PendingAction.make("activate_power", player_id,
+			{"hero_id": hero.instance_id})
+	# can_submit carries every gate that matters: the flip being unspent, the 3
+	# resources, and the bear-form requirement (which is also the protector
+	# grant we are paying for).
+	if StackResolver.can_submit(state, action, db):
+		return action
 	return null
 
 
@@ -2704,6 +2765,25 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id})
 				if StackResolver.can_submit(state, party_act, db):
 					result.append(party_act)
+		elif ap.get("effect", "") == "ready_hero_and_weapon":
+			# Galway Steamwhistle: "[Activate] -> Ready your hero and one of your
+			# weapons." Non-targeted, so the generic else-branch below would tap
+			# her every turn for nothing. Tapping her costs us her attack, so
+			# only fire when the power actually readies something: our hero is
+			# exhausted, or a weapon of ours is (a spent weapon readied is a
+			# second strike this turn — the whole point of the card).
+			var galway_worth := false
+			var galway_hero := state.get_hero(player_id)
+			if galway_hero and galway_hero.is_exhausted:
+				galway_worth = true
+			if not galway_worth and not StackResolver.get_weapon_ready_candidates(
+					state, player_id, db).is_empty():
+				galway_worth = true
+			if galway_worth:
+				var galway_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id})
+				if StackResolver.can_submit(state, galway_act, db):
+					result.append(galway_act)
 		elif ap.get("effect", "") == "destroy_ally" \
 				and StackResolver.power_has_extra_cost(extra_cost_str, "sacrifice_ally"):
 			# Gertha, The Old Crone: "1, Destroy an ally in your party -> Destroy
@@ -3119,6 +3199,17 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 		# make this turn — ready hero (it will attack), ready melee weapon, and
 		# net save = min(discount, strike cost) − flip cost > 0. With cheap
 		# weapons (e.g. Krol Blade, strike 1) the flip is never proposed.
+		# ready_hero (Thangal): the untargeted branch below would flip him every
+		# turn for nothing, and a flip spent on an already-ready hero is 3
+		# resources and the whole turn's power for a no-op. Only propose it when
+		# there is actually something to ready. The defensive use — readying the
+		# hero mid-attack so its bear-form protector grant blocks again — is
+		# thangal_ready_action, which runs off-turn where this enumeration never
+		# does.
+		if _hero_power_is(state, db, hero_id, "ready_hero"):
+			var self_hero := state.get_card(hero_id)
+			if not self_hero or not self_hero.is_exhausted:
+				return result
 		if _hero_power_is(state, db, hero_id, "melee_strike_discount"):
 			if not _strike_discount_worth_it(state, db, player_id, hero_id):
 				return result

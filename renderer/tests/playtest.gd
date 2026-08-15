@@ -3717,6 +3717,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_quest_ferocity_target(event.payload)
 		"quest_ready_target_required":
 			_handle_quest_ready_target(event.payload)
+		"weapon_ready_required":
+			_handle_weapon_ready(event.payload)
 		"plague_destroy_required":
 			_handle_plague_destroy(event.payload)
 		"quest_shuffle_required":
@@ -4815,6 +4817,31 @@ func _handle_quest_ready_target(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
+# Galway Steamwhistle: the controller readies one of their own weapons. Board-
+# public (equipment is in play), so the off-screen hotseat player is prompted
+# inline like every other public choice. Only fires with two or more exhausted
+# weapons — a single candidate readied itself at resolution.
+func _handle_weapon_ready(payload: Dictionary) -> void:
+	var player: String    = payload.get("player", "")
+	var source_id: String = payload.get("source", "")
+	if _route_choice(player, "public") == "ai":
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		var weapon_id := ""
+		if ai_obj is BaseAI:
+			weapon_id = (ai_obj as BaseAI).choose_weapon_ready(_state, _db, player)
+		else:
+			var legal := StackResolver.get_weapon_ready_candidates(_state, player, _db)
+			weapon_id = legal[0] if not legal.is_empty() else ""
+		var events := StackResolver.choose_weapon_ready(_state, weapon_id, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_weapon_ready_targeting(source_id)
+		_set_status("⚙ Select one of your weapons to ready")
+		_refresh_ui()
+
+
 # A New Plague: the pending player destroys an ally in their own party.
 func _handle_plague_destroy(payload: Dictionary) -> void:
 	var player: String = payload.get("player", "")
@@ -4993,6 +5020,10 @@ func _on_targeting_cancelled() -> void:
 	# Dragonkin Menace's ready pick is mandatory too — restart it on a stray cancel.
 	if _state and _state.pending_quest_ready_player != "":
 		_router.start_quest_ready_targeting(_state.pending_quest_ready_source)
+		return
+	# Galway Steamwhistle's weapon pick is mandatory as well — restart it.
+	if _state and _state.pending_weapon_ready_player != "":
+		_router.start_weapon_ready_targeting(_state.pending_weapon_ready_source)
 		return
 	# A queued death trigger is mandatory whenever it still has a legal target
 	# (Boneshanks "destroy target ally", Vexra Darkfall "target hero") — the
@@ -6705,6 +6736,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the Green Whelp Armor bounce choice before advancing
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		return  # wait for Track Humanoids' top/bottom choice before advancing
+	if _state.pending_weapon_ready_player != "":
+		return  # wait for Galway Steamwhistle's weapon pick before advancing
 	if _state.pending_prevention_player != "" or _in_prevention_mode:
 		return  # wait for the armor-prevention choice (717.2c) before advancing
 	if _in_ally_exhaust_mode:
@@ -6792,7 +6825,7 @@ func _drain_passes() -> void:
 				or StackResolver._quest_choice_pending(_state) \
 				or _in_quest_choice_mode \
 				or _state.pending_whelp_bounce_player != "" \
-				or _state.pending_track_look_player != "" or _in_track_look_mode:
+				or _state.pending_track_look_player != "" or _in_track_look_mode 				or _state.pending_weapon_ready_player != "":
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
@@ -6926,6 +6959,9 @@ func _maybe_turbo_pass() -> void:
 		_wrap_up_active = false
 		return
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
+		_wrap_up_active = false
+		return
+	if _state.pending_weapon_ready_player != "":
 		_wrap_up_active = false
 		return
 	# Rule 600.2: a refused pass would spin the burst — end it and let the player

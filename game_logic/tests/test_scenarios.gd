@@ -110,6 +110,9 @@ func _ready() -> void:
 		_test_counterattack_requires_bigger_opposing_party,
 		_test_dragonkin_menace_opponent_turn_and_ready,
 		_test_dragonkin_menace_ai_readies_protector,
+		_test_thangal_readies_hero_in_bear_form,
+		_test_thangal_form_lost_in_response_fizzles,
+		_test_ai_thangal_readies_to_protect,
 		_test_toreks_assault_requires_hero_damaged_by_ally,
 		_test_find_lethal,
 		_test_find_lethal_baseline_in_ai_actions,
@@ -426,6 +429,8 @@ func _ready() -> void:
 		_test_mocking_blow_damage_and_redirect,
 		_test_mocking_blow_stacks_with_taunt,
 		_test_ai_must_attack,
+		_test_galway_readies_hero_and_weapon,
+		_test_galway_pick_gates_and_ai,
 		_test_lady_courtney_heals_party,
 		_test_lady_courtney_gates_and_ai,
 		_test_marked_for_death_attach_and_aura,
@@ -5671,6 +5676,139 @@ func _test_dragonkin_menace_ai_readies_protector() -> void:
 	plain.is_exhausted = true
 	eq(ai.choose_quest_ready_target(state, db, "p1"), "p1_prot",
 		"dkm-ai-d: AI readies the protector")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Thangal: "(3), Flip Thangal -> Ready Thangal. Use only while he's in bear form."
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_thangal_readies_hero_in_bear_form() -> void:
+	_buf.append("\n-- Thangal: flip readies the hero, gated on bear form --")
+	var db := MockDB.new()
+	db.hero("thangal_def", 28, 3, "ready_hero|require_form_state:bear")
+	db.hero("p2_hero", 30)
+	db.instant("bear_def", 1, "ongoing|form:1|form_state:bear|hero_has_protector")
+
+	var state := _base_state(db, "thangal_def", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var hero := state.get_hero("p1")
+	hero.is_exhausted = true
+
+	var pow := PendingAction.make("activate_power", "p1", {"hero_id": hero.instance_id})
+	ok(not StackResolver.can_submit(state, pow, db),
+		"thangal-a: power illegal with no bear form in play")
+
+	# Bear Form resolves into the hero row.
+	var bear := CardInstance.create("bear", "bear_def", "p1", "p1_hero_row")
+	state.cards["bear"] = bear
+	state.zones["p1_hero_row"].card_ids.append("bear")
+	ok(StackResolver.can_submit(state, pow, db),
+		"thangal-b: power legal while in bear form")
+
+	StackResolver.submit_action(state, pow, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not hero.is_exhausted, "thangal-c: the hero readied")
+	eq(state.get_available_resources("p1"), 0, "thangal-d: 3 resources paid")
+	var ps := state.players["p1"] as PlayerState
+	ok(ps.has_used_hero_power, "thangal-e: the flip is spent")
+
+
+func _test_thangal_form_lost_in_response_fizzles() -> void:
+	_buf.append("\n-- Thangal: form broken in response fizzles, cost stays paid --")
+	var db := MockDB.new()
+	db.hero("thangal_def", 28, 3, "ready_hero|require_form_state:bear")
+	db.hero("p2_hero", 30)
+	db.instant("bear_def", 1, "ongoing|form:1|form_state:bear|hero_has_protector")
+	db.instant("cat_def",  1, "ongoing|form:1|form_state:cat|hero_atk_while_attacking:1")
+
+	var state := _base_state(db, "thangal_def", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var hero := state.get_hero("p1")
+	hero.is_exhausted = true
+	var bear := CardInstance.create("bear", "bear_def", "p1", "p1_hero_row")
+	state.cards["bear"] = bear
+	state.zones["p1_hero_row"].card_ids.append("bear")
+
+	StackResolver.submit_action(state, PendingAction.make("activate_power", "p1",
+		{"hero_id": hero.instance_id}), db)
+	# The form breaks while the power sits on the chain (709.2a re-check).
+	GameLogic.move_card(state, "bear", "p1_graveyard")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(hero.is_exhausted, "thangal-f: the power fizzled — the hero is still exhausted")
+	eq(state.get_available_resources("p1"), 0, "thangal-g: the cost stays paid")
+
+	# Cat form is a different form_state, so it never satisfies the gate.
+	var ps := state.players["p1"] as PlayerState
+	ps.has_used_hero_power = false
+	_add_resources(state, "p1", 3)
+	var cat := CardInstance.create("cat", "cat_def", "p1", "p1_hero_row")
+	state.cards["cat"] = cat
+	state.zones["p1_hero_row"].card_ids.append("cat")
+	ok(not StackResolver.can_submit(state, PendingAction.make("activate_power", "p1",
+		{"hero_id": hero.instance_id}), db),
+		"thangal-h: cat form does not satisfy \"in bear form\"")
+
+
+func _test_ai_thangal_readies_to_protect() -> void:
+	_buf.append("\n-- Thangal AI: ready the hero mid-attack so it can protect again --")
+	var db := MockDB.new()
+	db.hero("thangal_def", 28, 3, "ready_hero|require_form_state:bear")
+	db.hero("p2_hero", 30)
+	db.instant("bear_def", 1, "ongoing|form:1|form_state:bear|hero_has_protector")
+	db.ally("plain_def", 2, 2, [], 2)
+
+	var state := _base_state(db, "thangal_def", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var bear := CardInstance.create("bear", "bear_def", "p1", "p1_hero_row")
+	state.cards["bear"] = bear
+	state.zones["p1_hero_row"].card_ids.append("bear")
+	var hero := state.get_hero("p1")
+	hero.is_exhausted = true
+	_add_ally(state, "p2_attacker", "plain_def", "p2")
+
+	var ai := BaseAI.new()
+
+	# The opponent's turn, but nobody is attacking — hold the flip.
+	state.turn_player     = "p2"
+	state.priority_player = "p1"
+	ok(ai.thangal_ready_action(state, db, "p1") == null,
+		"thangal-ai-a: held with no attack underway")
+
+	# p2 attacks: readying the hero puts its bear-form protector grant back up.
+	state.combat_attack_window = true
+	state.combat_attacker = "p2_attacker"
+	state.combat_defender = "p1_hero"
+	var act := ai.thangal_ready_action(state, db, "p1")
+	ok(act != null and act.params.get("hero_id", "") == hero.instance_id,
+		"thangal-ai-b: flipped while an opposing attack is underway")
+
+	# Nothing to ready → hold, even under attack.
+	hero.is_exhausted = false
+	ok(ai.thangal_ready_action(state, db, "p1") == null,
+		"thangal-ai-c: held with a ready hero")
+
+	# Form gone → the gate refuses it, so the AI proposes nothing.
+	hero.is_exhausted = true
+	GameLogic.move_card(state, "bear", "p1_graveyard")
+	ok(ai.thangal_ready_action(state, db, "p1") == null,
+		"thangal-ai-d: held out of bear form")
+
+	# On our OWN turn the generic enumeration must not blind-flip a ready hero.
+	state.zones["p1_hero_row"].card_ids.append("bear")
+	(state.get_card("bear") as CardInstance).zone_id = "p1_hero_row"
+	state.zones["p1_graveyard"].card_ids.erase("bear")
+	state.combat_attack_window = false
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	hero.is_exhausted = false
+	var flips := 0
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if (a as PendingAction).action_type == "activate_power" \
+				and (a as PendingAction).params.get("hero_id", "") == hero.instance_id:
+			flips += 1
+	eq(flips, 0, "thangal-ai-e: a ready hero is never flipped for a no-op")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -23154,6 +23292,150 @@ func _test_lhurg_fizzle_and_ai() -> void:
 		"lh-o: AI kills the most valuable exhausted opposing ally")
 	ok(acts[0].params.get("target_id", "") != "mine",
 		"lh-p: AI never targets its own ally")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Galway Steamwhistle (azeroth_185) — 1-cost 1/1 Alliance Gnome Warrior:
+# "[Activate] -> Ready your hero and one of your weapons."
+# Recipe: activated_power:0:ready_hero_and_weapon:0
+#
+# Both halves are CHOICES, not targets (nothing is announced, so 706 is
+# irrelevant), and the weapon pick belongs to RESOLUTION (709.2b). Plain
+# [Activate] tap symbol: she exhausts at announcement (412.2), is summoning-
+# sickness gated, and it is therefore once per ready. Readying hero + weapon
+# buys a second weapon strike in one turn.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const GALWAY_RECIPE := "activated_power:0:ready_hero_and_weapon:0"
+
+
+func _galway_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("galway_def", 1, 1, [], 1, GALWAY_RECIPE)
+	db.weapon("axe_def", 3, 3, 1)
+	db.weapon("dagger_def", 2, 1, 1, "Melee", "off_hand_weapon")
+	db.equipment("robe_def", 2, "equipment:chest:1")
+	return db
+
+
+func _galway_equip(state: GameState, inst_id: String, def_id: String,
+		exhausted: bool) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, "p1", "p1_hero_row")
+	card.is_exhausted = exhausted
+	state.cards[inst_id] = card
+	state.zones["p1_hero_row"].card_ids.append(inst_id)
+	return card
+
+
+func _test_galway_readies_hero_and_weapon() -> void:
+	_buf.append("\n-- Galway Steamwhistle: ready your hero and one of your weapons --")
+	var db := _galway_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var galway := _add_ally(state, "galway", "galway_def", "p1")
+	galway.just_summoned = false
+	state.get_card("p1_hero").is_exhausted = true
+	var axe := _galway_equip(state, "axe", "axe_def", true)
+	var dagger := _galway_equip(state, "dagger", "dagger_def", true)
+	_galway_equip(state, "robe", "robe_def", true)
+
+	var use := PendingAction.make("use_ally_power", "p1", {"card_id": "galway"})
+	ok(StackResolver.can_submit(state, use, db), "gal-a: legal with no target at all")
+	StackResolver.submit_action(state, use, db)
+	ok(state.get_card("galway").is_exhausted,
+		"gal-b: she exhausts at announcement ([Activate])")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(not state.get_card("p1_hero").is_exhausted,
+		"gal-c: the hero readies unconditionally, no choice involved")
+	eq(state.pending_weapon_ready_player, "p1",
+		"gal-d: two exhausted weapons -> the pick opens for the controller")
+	var pool := StackResolver.get_weapon_ready_candidates(state, "p1", db)
+	ok("axe" in pool and "dagger" in pool, "gal-e: both exhausted weapons offered")
+	ok("robe" not in pool, "gal-f: non-weapon equipment is not a candidate")
+
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"gal-g: pass_priority blocked while the pick is pending")
+	ok(not StackResolver.can_submit(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db),
+		"gal-h: can_submit blocked while the pick is pending")
+
+	StackResolver.choose_weapon_ready(state, "axe", db)
+	ok(not axe.is_exhausted, "gal-i: the chosen weapon readies")
+	ok(dagger.is_exhausted, "gal-j: only ONE weapon readies")
+	eq(state.pending_weapon_ready_player, "", "gal-k: choice cleared")
+	eq(state.get_available_resources("p1"), 0, "gal-l: costs no resources")
+
+
+func _test_galway_pick_gates_and_ai() -> void:
+	_buf.append("\n-- Galway Steamwhistle: auto-pick, no-op cases, tap gates, AI --")
+	var db := _galway_db()
+
+	# Exactly one exhausted weapon: it readies with no prompt (a forced pick is
+	# no decision).
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var galway := _add_ally(state, "galway", "galway_def", "p1")
+	galway.just_summoned = false
+	var axe := _galway_equip(state, "axe", "axe_def", true)
+	_galway_equip(state, "ready_dagger", "dagger_def", false)
+	StackResolver.submit_action(state, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "galway"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_weapon_ready_player, "",
+		"gal-m: a single candidate opens no choice point")
+	ok(not axe.is_exhausted, "gal-n: it readies anyway")
+
+	# No exhausted weapon at all: the hero still readies, nothing else happens.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var g2 := _add_ally(s2, "galway2", "galway_def", "p1")
+	g2.just_summoned = false
+	s2.get_card("p1_hero").is_exhausted = true
+	_galway_equip(s2, "ready_axe", "axe_def", false)
+	StackResolver.submit_action(s2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "galway2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	eq(s2.pending_weapon_ready_player, "",
+		"gal-o: no exhausted weapon -> no choice point")
+	ok(not s2.get_card("p1_hero").is_exhausted, "gal-p: the hero readied regardless")
+
+	# Tap gates: summoning sickness and once-per-ready.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var fresh := _add_ally(s3, "fresh", "galway_def", "p1")
+	fresh.just_summoned = true
+	_galway_equip(s3, "axe3", "axe_def", true)
+	var use3 := PendingAction.make("use_ally_power", "p1", {"card_id": "fresh"})
+	ok(not StackResolver.can_submit(s3, use3, db),
+		"gal-q: summoning-sick — the tap power can't be used")
+	fresh.just_summoned = false
+	fresh.is_exhausted  = true
+	ok(not StackResolver.can_submit(s3, use3, db), "gal-r: exhausted — once per ready")
+	fresh.is_exhausted = false
+	ok(StackResolver.can_submit(s3, use3, db), "gal-s: usable once ready")
+
+	# AI: holds the power when nothing would ready, fires when something would,
+	# and takes the highest-ATK weapon.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	s4.phase = "action"
+	s4.turn_player = "p1"
+	var g4 := _add_ally(s4, "galway4", "galway_def", "p1")
+	g4.just_summoned = false
+	_galway_equip(s4, "ready_axe4", "axe_def", false)
+	var ai := BaseAI.new()
+	ok(ai._get_ally_power_actions(s4, db, "p1").is_empty(),
+		"gal-t: AI holds it while hero and weapons are all ready")
+	var big := _galway_equip(s4, "big", "axe_def", true)
+	var small := _galway_equip(s4, "small", "dagger_def", true)
+	var acts := ai._get_ally_power_actions(s4, db, "p1")
+	eq(acts.size(), 1, "gal-u: AI fires it once a weapon is spent")
+	eq(acts[0].params.get("card_id", ""), "galway4", "gal-v: the action is hers")
+	eq(ai.choose_weapon_ready(s4, db, "p1"), "big",
+		"gal-w: AI readies the highest-ATK weapon")
+	ok(big.is_exhausted and small.is_exhausted,
+		"gal-x: the AI hook picks, it doesn't act")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

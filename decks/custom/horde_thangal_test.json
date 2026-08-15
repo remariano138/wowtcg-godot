@@ -1,0 +1,134 @@
+{
+  "deck_id": "horde_thangal_test",
+  "display_name": "Horde Druid Thangal",
+  "hero_card_def_id": "azeroth_16",
+  "card_entries": [
+    {
+      "card_def_id": "azeroth_345",
+      "count": 4,
+      "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 4,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 4,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_235",
+      "count": 1,
+      "_card_name": "Elder Moorf"
+    },
+    {
+      "card_def_id": "azeroth_18",
+      "count": 4,
+      "_card_name": "Bear Form"
+    },
+    {
+      "card_def_id": "azeroth_246",
+      "count": 2,
+      "_card_name": "Kagra of the Crossroads"
+    },
+    {
+      "card_def_id": "azeroth_248",
+      "count": 2,
+      "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "azeroth_266",
+      "count": 4,
+      "_card_name": "Voss Treebender"
+    },
+    {
+      "card_def_id": "azeroth_159",
+      "count": 4,
+      "_card_name": "Exhaustion"
+    },
+    {
+      "card_def_id": "azeroth_232",
+      "count": 2,
+      "_card_name": "Confessor Mildred"
+    },
+    {
+      "card_def_id": "azeroth_240",
+      "count": 2,
+      "_card_name": "Guardian Steelhorn"
+    },
+    {
+      "card_def_id": "azeroth_274",
+      "count": 1,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "dark_portal_199",
+      "count": 2,
+      "_card_name": "Bhenn Checks-the-Sky"
+    },
+    {
+      "card_def_id": "azeroth_156",
+      "count": 2,
+      "_card_name": "Burn Away"
+    },
+    {
+      "card_def_id": "azeroth_226",
+      "count": 4,
+      "_card_name": "Bala Silentblade"
+    },
+    {
+      "card_def_id": "dark_portal_224",
+      "count": 2,
+      "_card_name": "Morik"
+    },
+    {
+      "card_def_id": "azeroth_155",
+      "count": 2,
+      "_card_name": "Skewer"
+    },
+    {
+      "card_def_id": "azeroth_168",
+      "count": 2,
+      "_card_name": "Shattering Blow"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "dark_portal_210",
+      "count": 2,
+      "_card_name": "Ghank"
+    },
+    {
+      "card_def_id": "dark_portal_227",
+      "count": 2,
+      "_card_name": "Outrider Zarg"
+    },
+    {
+      "card_def_id": "azeroth_249",
+      "count": 4,
+      "_card_name": "Kulan Earthguard"
+    },
+    {
+      "card_def_id": "dark_portal_233",
+      "count": 1,
+      "_card_name": "Sister Rot"
+    },
+    {
+      "card_def_id": "azeroth_275",
+      "count": 1,
+      "_card_name": "Zygore Bladebreaker"
+    }
+  ],
+  "recommended_ai_id": "ai_generic",
+  "source": "custom",
+  "metadata": {
+    "author": "playtest",
+    "origin": "built from decks/templates/horde_exhauster.json, 2026-08-15"
+  },
+  "_hero_name": "Thangal"
+}

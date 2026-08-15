@@ -923,6 +923,14 @@ func start_quest_ready_targeting(quest_id: String) -> void:
 	start_targeting(quest_id, "choose_quest_ready", "", 0)
 
 
+# Convenience wrapper for Galway Steamwhistle's "one of your weapons" pick.
+# Mandatory — Esc is absorbed while this targeting is active. A CHOICE rather
+# than a target, so 706 Untargetable does not narrow the pool, and it is only
+# ever opened with two or more candidates.
+func start_weapon_ready_targeting(source_id: String) -> void:
+	start_targeting(source_id, "choose_weapon_ready", "", 0)
+
+
 # A New Plague: mandatory "destroy an ally in your party" pick (red highlights,
 # like the pet sacrifice).
 func start_plague_destroy_mode(candidate_ids: Array) -> void:
@@ -1128,6 +1136,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
 		"choose_quest_ferocity":     _handle_quest_ferocity_targeting_click(instance_id)
 		"choose_quest_ready":        _handle_quest_ready_targeting_click(instance_id)
+		"choose_weapon_ready":       _handle_weapon_ready_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
 		"play_instant":              _handle_instant_targeting_click(instance_id)
 		"play_ability":              _handle_ability_targeting_click(instance_id)
@@ -1204,6 +1213,17 @@ func _handle_quest_ready_targeting_click(instance_id: String) -> void:
 	# Dragonkin Menace reward pick. Mandatory, direct-call resolution (no chain).
 	if instance_id in StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player):
 		var events := StackResolver.choose_quest_ready_target(state, instance_id, db)
+		cancel_targeting()
+		EventBus.emit_events(events)
+		quest_flow_resolved.emit()
+
+
+func _handle_weapon_ready_targeting_click(instance_id: String) -> void:
+	# Galway Steamwhistle's weapon pick. Mandatory, direct-call resolution (no
+	# chain) — the power's resolution is already done, this is the last half.
+	if instance_id in StackResolver.get_weapon_ready_candidates(
+			state, state.pending_weapon_ready_player, db):
+		var events := StackResolver.choose_weapon_ready(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
 		quest_flow_resolved.emit()
@@ -1749,6 +1769,9 @@ func get_playable_card_ids() -> Array:
 				return StackResolver.get_quest_ferocity_targets(state, db)
 			"choose_quest_ready":
 				return StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player)
+			"choose_weapon_ready":
+				return StackResolver.get_weapon_ready_candidates(
+					state, state.pending_weapon_ready_player, db)
 			"choose_attack_exhaust":
 				return StackResolver.get_attack_exhaust_targets(state, db)
 			"play_instant":

@@ -10,7 +10,7 @@
     },
     {
       "card_def_id": "azeroth_353",
-      "count": 1,
+      "count": 2,
       "_card_name": "Into the Maw of Madness"
     },
     {
@@ -30,12 +30,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 3,
+      "count": 4,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 1,
+      "count": 2,
       "_card_name": "Chasing A-Me 01"
     },
     {
@@ -95,7 +95,7 @@
     },
     {
       "card_def_id": "azeroth_246",
-      "count": 3,
+      "count": 2,
       "_card_name": "Kagra of the Crossroads"
     },
     {
@@ -172,16 +172,6 @@
       "card_def_id": "dark_portal_227",
       "count": 2,
       "_card_name": "Outrider Zarg"
-    },
-    {
-      "card_def_id": "azeroth_236",
-      "count": 1,
-      "_card_name": "Fa'tafi"
-    },
-    {
-      "card_def_id": "azeroth_229",
-      "count": 1,
-      "_card_name": "Besh'iah"
     }
   ],
   "recommended_ai_id": "ai_generic",

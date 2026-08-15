@@ -5,7 +5,7 @@
   "card_entries": [
     {
       "card_def_id": "azeroth_345",
-      "count": 2,
+      "count": 4,
       "_card_name": "Torek's Assault"
     },
     {
@@ -27,6 +27,11 @@
       "card_def_id": "dark_portal_316",
       "count": 4,
       "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 1,
+      "_card_name": "Chasing A-Me 01"
     },
     {
       "card_def_id": "azeroth_352",
@@ -119,11 +124,6 @@
       "_card_name": "Bala Silentblade"
     },
     {
-      "card_def_id": "dark_portal_224",
-      "count": 2,
-      "_card_name": "Morik"
-    },
-    {
       "card_def_id": "azeroth_113",
       "count": 2,
       "_card_name": "Lightning Bolt"
@@ -145,7 +145,7 @@
     },
     {
       "card_def_id": "azeroth_249",
-      "count": 4,
+      "count": 3,
       "_card_name": "Kulan Earthguard"
     },
     {

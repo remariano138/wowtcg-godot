@@ -54,14 +54,14 @@
       "_card_name": "Warcaller Zin'bawa"
     },
     {
+      "card_def_id": "azeroth_40",
+      "count": 1,
+      "_card_name": "Master of the Hunt"
+    },
+    {
       "card_def_id": "azeroth_154",
       "count": 1,
       "_card_name": "Lust for Battle"
-    },
-    {
-      "card_def_id": "dark_portal_41",
-      "count": 1,
-      "_card_name": "Venomstrike"
     },
     {
       "card_def_id": "azeroth_259",
@@ -69,13 +69,8 @@
       "_card_name": "Skorn, Mistress of Shadow"
     },
     {
-      "card_def_id": "azeroth_235",
-      "count": 1,
-      "_card_name": "Elder Moorf"
-    },
-    {
       "card_def_id": "azeroth_45",
-      "count": 1,
+      "count": 3,
       "_card_name": "Rayder"
     },
     {
@@ -94,54 +89,34 @@
       "_card_name": "Marked for Death"
     },
     {
-      "card_def_id": "dark_portal_32",
-      "count": 1,
-      "_card_name": "Chops"
-    },
-    {
       "card_def_id": "azeroth_271",
       "count": 1,
       "_card_name": "Windseer Tarus"
     },
     {
       "card_def_id": "azeroth_246",
-      "count": 1,
+      "count": 3,
       "_card_name": "Kagra of the Crossroads"
     },
     {
-      "card_def_id": "azeroth_238",
-      "count": 1,
-      "_card_name": "Gartok Skullsplitter"
-    },
-    {
       "card_def_id": "azeroth_36",
-      "count": 3,
+      "count": 4,
       "_card_name": "Bloodclaw"
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 1,
+      "count": 2,
       "_card_name": "Ka'tali Stonetusk"
+    },
+    {
+      "card_def_id": "dark_portal_242",
+      "count": 1,
+      "_card_name": "Waz'luk"
     },
     {
       "card_def_id": "azeroth_153",
       "count": 1,
       "_card_name": "Into the Fray"
-    },
-    {
-      "card_def_id": "azeroth_231",
-      "count": 1,
-      "_card_name": "Brigg"
-    },
-    {
-      "card_def_id": "dark_portal_232",
-      "count": 1,
-      "_card_name": "Scout Omerrta"
-    },
-    {
-      "card_def_id": "dark_portal_34",
-      "count": 1,
-      "_card_name": "Hootie"
     },
     {
       "card_def_id": "azeroth_33",
@@ -150,7 +125,7 @@
     },
     {
       "card_def_id": "azeroth_244",
-      "count": 1,
+      "count": 2,
       "_card_name": "Jin'lak Nightfang"
     },
     {
@@ -169,24 +144,9 @@
       "_card_name": "Confessor Mildred"
     },
     {
-      "card_def_id": "dark_portal_212",
-      "count": 1,
-      "_card_name": "Grunt Baranka"
-    },
-    {
       "card_def_id": "dark_portal_40",
       "count": 2,
       "_card_name": "Trophy Kill"
-    },
-    {
-      "card_def_id": "azeroth_260",
-      "count": 1,
-      "_card_name": "Taz'dingo"
-    },
-    {
-      "card_def_id": "azeroth_264",
-      "count": 1,
-      "_card_name": "Vesh'ral"
     },
     {
       "card_def_id": "dark_portal_224",
@@ -195,13 +155,8 @@
     },
     {
       "card_def_id": "dark_portal_215",
-      "count": 1,
+      "count": 3,
       "_card_name": "Ja'zaron"
-    },
-    {
-      "card_def_id": "azeroth_226",
-      "count": 1,
-      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_155",
@@ -209,19 +164,14 @@
       "_card_name": "Skewer"
     },
     {
-      "card_def_id": "azeroth_269",
-      "count": 1,
-      "_card_name": "Watcher Mal'wi"
-    },
-    {
       "card_def_id": "dark_portal_226",
-      "count": 1,
+      "count": 2,
       "_card_name": "Nyn'jah"
     },
     {
-      "card_def_id": "azeroth_230",
-      "count": 1,
-      "_card_name": "Blood Guard Mal'wani"
+      "card_def_id": "dark_portal_227",
+      "count": 2,
+      "_card_name": "Outrider Zarg"
     },
     {
       "card_def_id": "azeroth_236",
@@ -232,11 +182,6 @@
       "card_def_id": "azeroth_229",
       "count": 1,
       "_card_name": "Besh'iah"
-    },
-    {
-      "card_def_id": "azeroth_275",
-      "count": 1,
-      "_card_name": "Zygore Bladebreaker"
     }
   ],
   "recommended_ai_id": "ai_generic",

@@ -82,6 +82,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var shift := bear_form_action(state, db, player_id)
 	if shift != null:
 		return shift
+	# Outrider Zarg (BaseAI) — he dies at end of turn unless he dealt damage, so
+	# the attack is deterministic too rather than left to the dice.
+	var use_it := use_it_or_lose_it_attack_action(state, db, player_id)
+	if use_it != null:
+		return use_it
 	var legal := get_reasonable_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false

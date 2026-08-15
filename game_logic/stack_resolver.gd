@@ -2182,6 +2182,22 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						}
 						events.append(GameEvent.enter_play_target_required(
 							card_id, dmg_type, amount))
+					"deal_damage_to_hero":
+						# Waz'luk: "When [this] enters play, he deals N fire damage to
+						# target HERO." Taz'dingo's mandatory targeted enter-play burn
+						# with the pool narrowed to heroes — either party's, so a human
+						# may point it at their own. A hero is always in play, so the
+						# trigger can never fizzle for want of a target.
+						var hero_amount := int(parts[2]) if parts.size() > 2 else 0
+						var hero_dmg_type := parts[3].to_lower().strip_edges() if parts.size() > 3 else ""
+						state.pending_enter_play_effect = {
+							"card_id": card_id,
+							"effect": "deal_damage_to_hero:%d:%s" % [hero_amount, hero_dmg_type],
+							"dmg_type": hero_dmg_type,
+							"amount": hero_amount,
+						}
+						events.append(GameEvent.enter_play_target_required(
+							card_id, hero_dmg_type, hero_amount))
 					"destroy_exhausted_damaged_ally":
 						# Ghank: "When [this] enters play, you may destroy target
 						# exhausted ally with damage on it." Optional — the choice
@@ -2434,6 +2450,20 @@ static func is_totem_def(def: CardDef) -> bool:
 		if seg.strip_edges() == "totem" or seg.strip_edges().begins_with("totem:"):
 			return true
 	return false
+
+
+# Rule 305.3a: "Totems are ability allies and count as both IN ALL ZONES." So a
+# Totem CARD sitting in a graveyard (or a deck) is an ally card for every effect
+# that looks for one — the rulebook's own worked example is Resurrection, i.e.
+# Finkle Einhorn / Ancestral Spirit's effect verbatim. Its printed card_type is
+# "Ability" / "Instant Ability", so a bare `card_type == "Ally"` test misses it;
+# ask this instead anywhere the question is "is this an ally CARD".
+# NOT for in-play ally-row scans — those already read the zone, where a totem is
+# present by construction.
+static func is_ally_card_def(def: CardDef) -> bool:
+	if not def:
+		return false
+	return def.card_type == "Ally" or is_totem_def(def)
 
 
 static func _resolve_play_ongoing_ability(state: GameState,
@@ -4376,7 +4406,8 @@ static func _count_graveyard_allies(state: GameState, player_id: String, db) -> 
 		return 0
 	for card in state.cards_in_zone(player_id + "_graveyard"):
 		var def := db.get_def(card.card_def_id) as CardDef
-		if def and def.card_type == "Ally":
+		# 305.3a — a Totem card in a graveyard is an ally card.
+		if is_ally_card_def(def):
 			n += 1
 	return n
 
@@ -4427,7 +4458,8 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			if removed >= rfg_n:
 				break
 			var gy_def := db.get_def(gy_card.card_def_id) as CardDef
-			if gy_def and gy_def.card_type == "Ally":
+			# 305.3a — a Totem card in a graveyard is an ally card.
+			if is_ally_card_def(gy_def):
 				events.append_array(GameLogic.move_card(state, gy_card.instance_id, gy_card.owner + "_rfg"))
 				events.append(GameEvent.card_removed_from_game(gy_card.instance_id, action.source_player))
 				removed += 1
@@ -6146,7 +6178,8 @@ static func get_recomb_candidates(state: GameState, player_id: String, db) -> Ar
 		return result
 	for card in state.cards_in_zone(player_id + "_graveyard"):
 		var cdef := db.get_def(card.card_def_id) as CardDef
-		if cdef and cdef.card_type == "Ally":
+		# 305.3a — a Totem card in a graveyard is an ally card.
+		if is_ally_card_def(cdef):
 			result.append(card.instance_id)
 	return result
 
@@ -6487,9 +6520,13 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 			var def := db.get_def(card.card_def_id) as CardDef
 			if not def:
 				continue
-			if type_filter != "any" and type_filter != "" \
-					and def.card_type != type_filter and def.card_subtype != type_filter:
-				continue
+			if type_filter != "any" and type_filter != "":
+				# 305.3a — a Totem card counts as an ally card in every zone.
+				var type_ok := def.card_type == type_filter \
+						or def.card_subtype == type_filter \
+						or (type_filter == "Ally" and is_ally_card_def(def))
+				if not type_ok:
+					continue
 			if max_cost >= 0 and def.cost > max_cost:
 				continue
 			result.append(card.instance_id)
@@ -7977,6 +8014,11 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	if String(state.pending_enter_play_effect.get("effect", "")).begins_with("deal_damage_to_target") \
 			and not _is_hero_or_ally(state, target_id, db):
 		return false
+	# Waz'luk: "deals N damage to target HERO" — the character pool narrowed to
+	# heroes (either party's). An ally, an ability or an equipment is never legal.
+	if String(state.pending_enter_play_effect.get("effect", "")).begins_with("deal_damage_to_hero") \
+			and not _is_hero(state, target_id):
+		return false
 	# Effect-specific target restriction (Ghank): only an exhausted ally with
 	# damage on it is a legal target.
 	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_exhausted_damaged_ally" \
@@ -8098,6 +8140,21 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			var amount := int(parts[1]) if parts.size() > 1 else 0
 			events.append_array(defer_packets(state, db, [{
 				"source": source_id, "target": target_id, "amount": amount,
+			}]))
+		"deal_damage_to_hero":
+			# Waz'luk — 706 re-check: fizzle if the target left play or became
+			# Untargetable, and it must still be a hero. The SOURCE is the ally,
+			# not the controller's hero, so the packet is NOT tagged from_ability
+			# (no Chromatic Cloak) and World in Flames doesn't see it either; it
+			# goes through defer_packets, so armor prevention opens normally.
+			if not _is_legal_target(state, target_id, db) \
+					or not _is_hero(state, target_id):
+				return events
+			var hero_amount := int(parts[1]) if parts.size() > 1 else 0
+			var hero_dmg_type := parts[2] if parts.size() > 2 else ""
+			events.append_array(defer_packets(state, db, [{
+				"source": source_id, "target": target_id, "amount": hero_amount,
+				"dmg_type": hero_dmg_type,
 			}]))
 		"destroy_exhausted_damaged_ally":
 			# Ghank — 706 re-check: fizzle unless the target is STILL an

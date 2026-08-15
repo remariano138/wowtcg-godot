@@ -818,9 +818,13 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 			match p[0]:
 				"party_health_aura":
 					# Nerra Lifeboon: "Other allies in your party have +X health."
-					# Only actual allies — never equipment, abilities, or totems
-					# (which are ability cards) even if they sit in a party zone.
-					if def and def.card_type == "Ally":
+					# "An ally in your party" is the controller's ally_row read
+					# live — the same convention as atk_per_damage_party and
+					# _party_size_buff — so TOTEMS are included (305.3a: they are
+					# ability allies and count as both in all zones), while the
+					# hero and hero_row equipment/abilities are not. "Other"
+					# excludes only the source, skipped by the loop above.
+					if inst.zone_id == inst.controller + "_ally_row":
 						bonus += int(p[1]) if p.size() > 1 else 1
 	for source in cards_in_zone(inst.controller + "_hero_row"):
 		var src_def2: CardDef = db.get_def(source.card_def_id)

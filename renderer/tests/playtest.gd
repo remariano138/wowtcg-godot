@@ -299,6 +299,12 @@ var _auto_pass_combat: bool = false
 # _end_phase_has_consequences / _wrap_up_skippable_window. Read that before
 # widening or narrowing the burst.
 var _wrap_up_active: bool = false
+# True while the prompt channel is showing one of the "plain Space isn't enough,
+# press Ctrl+Space" hints. Those hints answer a key press rather than describing
+# board state, so they must disappear the moment the player actually passes (by
+# keyboard or by clicking the pass button) — see _show_pass_hint /
+# _clear_pass_hint. Any other prompt clears the flag (see _set_status).
+var _pass_hint_shown: bool = false
 # Every local hand card the pointer is currently inside — a fan overlaps, so this
 # is routinely more than one. Only the frontmost magnifies (_apply_hand_magnify).
 var _hovered_hand_ids: Array[String] = []
@@ -2279,6 +2285,11 @@ func _enter_play_effect_text(action: PendingAction) -> String:
 			var dmg_type := parts[2] if parts.size() > 2 else ""
 			return "deals %s %s damage to target hero or ally" % [amount, dmg_type] \
 				if dmg_type != "" else "deals %s damage to target hero or ally" % amount
+		"deal_damage_to_hero":
+			var h_amount := parts[1] if parts.size() > 1 else "0"
+			var h_dmg_type := parts[2] if parts.size() > 2 else ""
+			return "deals %s %s damage to target hero" % [h_amount, h_dmg_type] \
+				if h_dmg_type != "" else "deals %s damage to target hero" % h_amount
 		"destroy_exhausted_damaged_ally":
 			return "destroy target exhausted, damaged ally"
 		"destroy_armor":            return "destroy target armor"
@@ -2913,6 +2924,7 @@ func _input(event: InputEvent) -> void:
 		# Handled on its own (NOT via the wrap-up burst) so giving up control doesn't
 		# also try to end the turn — it's a start-of-turn choice, the turn continues.
 		if _state.pending_control_discard_player == _local_player:
+			_clear_pass_hint()
 			_router.decline_control_discard()
 			_refresh_ui()
 			_schedule_next_turn()
@@ -2936,14 +2948,14 @@ func _input(event: InputEvent) -> void:
 		# Plain Space must not end the turn — that requires Ctrl+Space. Absorb it
 		# so an accidental tap can't skip the turn.
 		if _is_wrap_up_pass():
-			_set_status("Press Ctrl+Space to wrap up / end your turn")
+			_show_pass_hint("Press Ctrl+Space to wrap up / end your turn")
 			get_viewport().set_input_as_handled()
 			return
 		# Same protection for Infernal's give-up-control: plain Space must not
 		# hand the card to the opponent. Ctrl+Space (or clicking the pass
 		# button / a hand card to discard) is required.
 		if _state.pending_control_discard_player == _local_player:
-			_set_status("Press Ctrl+Space to give up control, or click a card to discard")
+			_show_pass_hint("Press Ctrl+Space to give up control, or click a card to discard")
 			get_viewport().set_input_as_handled()
 			return
 		# Protect point: Space mirrors the "Don't protect" button (skip protecting),
@@ -3048,6 +3060,7 @@ func _try_pass(skip_confirm: bool = false) -> void:
 	# Nightbloom's optional placement: Space/pass declines it. No Ctrl gate —
 	# declining gives nothing away, unlike Infernal's give-up-control below.
 	if _state.pending_resource_place_player == _local_player:
+		_clear_pass_hint()
 		_router.decline_hand_resource()
 		_refresh_ui()
 		_schedule_next_turn()
@@ -3055,6 +3068,7 @@ func _try_pass(skip_confirm: bool = false) -> void:
 	# Infernal choice pending for the human: Space/pass = decline the discard
 	# and give the opponent control of the source.
 	if _state.pending_control_discard_player == _local_player:
+		_clear_pass_hint()
 		_router.decline_control_discard()
 		_refresh_ui()
 		_schedule_next_turn()
@@ -3078,6 +3092,8 @@ func _try_pass(skip_confirm: bool = false) -> void:
 	if needs_confirm and not skip_confirm:
 		_end_turn_dialog.popup_centered()
 	else:
+		# The pass answers the hint that asked for it — take it back down.
+		_clear_pass_hint()
 		_stop_for_end_window = false   # the held wrap-up window is used up by a pass
 		_router.pass_priority_action()
 		_blink_pass_btn()
@@ -3090,6 +3106,7 @@ func _try_pass(skip_confirm: bool = false) -> void:
 
 func _on_end_turn_confirmed() -> void:
 	# Player confirmed they want to pass — do it for them (no need to press again).
+	_clear_pass_hint()
 	_router.pass_priority_action()
 	_blink_pass_btn()
 	_schedule_next_turn()
@@ -6976,7 +6993,24 @@ func _do_turbo_pass() -> void:
 	_schedule_next_turn()
 
 
+# Show a "press Ctrl+Space instead" hint and remember that the prompt channel is
+# holding it, so the next pass can take it back down.
+func _show_pass_hint(text: String) -> void:
+	_set_status(text)
+	_pass_hint_shown = true
+
+
+# Take a pass hint back down. Only clears the channel if the hint is what is in
+# it — a targeting prompt or anything else set since must survive.
+func _clear_pass_hint() -> void:
+	if _pass_hint_shown:
+		_set_status("")
+
+
 func _set_status(text: String) -> void:
+	# Any other prompt supersedes a pass hint, so the hint no longer owns the
+	# channel (see _show_pass_hint / _clear_pass_hint).
+	_pass_hint_shown = false
 	if _status:
 		var wrapped := _wrap_text(text, _status, PROMPT_BODY_W - PROMPT_TEXT_PAD * 2.0)
 		_status.text = wrapped

@@ -142,6 +142,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var bear := bear_form_action(state, db, player_id)
 	if bear != null:
 		return bear
+	# Outrider Zarg: he dies at end of turn unless he dealt damage, so swing with
+	# him rather than end the turn holding a card that is about to destroy itself.
+	var use_it := use_it_or_lose_it_attack_action(state, db, player_id)
+	if use_it != null:
+		return use_it
 	# Rule 600.2 last resort: one of ours must attack if able and we have nothing
 	# else we want to do. The engine will REFUSE our pass while that is true, so
 	# without this the AI would sit on a blocked pass forever. Kept last so every
@@ -1235,35 +1240,84 @@ func forced_attack_action(state: GameState, db, player_id: String) -> PendingAct
 	if not db or not StackResolver.must_attack_blocks_pass(state, player_id, db):
 		return null
 	for attacker_id in StackResolver.get_must_attack_ids(state, player_id, db):
-		var defenders := StackResolver.get_legal_defenders(state, attacker_id, db)
-		var best := ""
-		var best_rank := -1
-		var opp := _other_player_id(state, player_id)
-		var opp_ps := state.players.get(opp) as PlayerState
-		for did in defenders:
-			# 3 = kill it and live, 2 = trade, 1 = their hero, 0 = anything else.
-			var rank := 0
-			if opp_ps and did == opp_ps.hero_instance_id:
-				rank = 1
-			else:
-				var kills_theirs := forecast_atk(state, db, attacker_id, true) \
-					>= state.get_current_hp(did, db)
-				var kills_ours := state.get_atk(did, db) \
-						>= state.get_current_hp(attacker_id, db) \
-					and not StackResolver._has_keyword(
-						state.get_card(attacker_id), "long_range", db, state)
-				if kills_theirs:
-					rank = 3 if not kills_ours else 2
-			if rank > best_rank:
-				best_rank = rank
-				best = did
-		if best == "":
-			continue
-		var act := PendingAction.make("propose_combat", player_id,
-			{"attacker_id": attacker_id, "defender_id": best})
-		if StackResolver.can_submit(state, act, db):
+		var act := _least_bad_attack(state, db, player_id, attacker_id)
+		if act != null:
 			return act
 	return null
+
+
+# Outrider Zarg (`end_of_turn_destroy_if_no_damage_dealt`): he destroys himself at
+# the end of our turn unless he dealt damage, so an idle Zarg is a dead Zarg —
+# swinging costs us nothing we were not about to lose anyway. Nothing in the RULES
+# forces the attack (unlike rule 600.2 above); this is purely the AI refusing to
+# throw the card away.
+#
+# Called last in every decide_action, immediately before forced_attack_action, so
+# every voluntary line — lethal, safe kills, trades, developing, chip — has already
+# had its say and may well have attacked with him for better reasons. What is left
+# here is the case where the AI was about to end the turn with him still ready.
+#
+# Only fires on our own turn (the end-of-turn check is turn-player scoped, so an
+# attack made on the opponent's turn would not save him) and only while he has
+# in fact dealt no damage yet this turn. Target choice is forced_attack_action's:
+# a kill we survive, else a trade, else their hero, else whatever is legal — the
+# alternative is losing him for free, so even a bad attack beats no attack.
+func use_it_or_lose_it_attack_action(state: GameState, db,
+		player_id: String) -> PendingAction:
+	if not db or state.turn_player != player_id:
+		return null
+	for attacker_id in StackResolver.get_legal_attackers(state, player_id, db):
+		var card := state.get_card(attacker_id)
+		if not card:
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not StackResolver._has_effect_flag(
+				def, "end_of_turn_destroy_if_no_damage_dealt"):
+			continue
+		var dealt := false
+		for log_entry in state.turn_events_of("damage_dealt"):
+			if String(log_entry.get("source_id", "")) == attacker_id:
+				dealt = true
+				break
+		if dealt:
+			continue   # already earned his keep this turn
+		var act := _least_bad_attack(state, db, player_id, attacker_id)
+		if act != null:
+			return act
+	return null
+
+
+# The best available attack for a character that is going to attack no matter what
+# (rule 600.2's compulsion, or Outrider Zarg's use-it-or-lose-it clause). Ranking:
+# 3 = kill it and live, 2 = trade, 1 = their hero, 0 = anything else. Returns null
+# when no legal, submittable proposal exists.
+func _least_bad_attack(state: GameState, db, player_id: String,
+		attacker_id: String) -> PendingAction:
+	var best := ""
+	var best_rank := -1
+	var opp := _other_player_id(state, player_id)
+	var opp_ps := state.players.get(opp) as PlayerState
+	for did in StackResolver.get_legal_defenders(state, attacker_id, db):
+		var rank := 0
+		if opp_ps and did == opp_ps.hero_instance_id:
+			rank = 1
+		else:
+			var kills_theirs := forecast_atk(state, db, attacker_id, true) \
+				>= state.get_current_hp(did, db)
+			var kills_ours := state.get_atk(did, db) \
+					>= state.get_current_hp(attacker_id, db) \
+				and not StackResolver._has_keyword(
+					state.get_card(attacker_id), "long_range", db, state)
+			if kills_theirs:
+				rank = 3 if not kills_ours else 2
+		if rank > best_rank:
+			best_rank = rank
+			best = did
+	if best == "":
+		return null
+	var act := PendingAction.make("propose_combat", player_id,
+		{"attacker_id": attacker_id, "defender_id": best})
+	return act if StackResolver.can_submit(state, act, db) else null
 
 
 # Withdraw (combat_instant_save_bounce): a held Instant that returns a target

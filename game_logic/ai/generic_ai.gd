@@ -179,6 +179,13 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var chip := _hero_chip_action(state, db, player_id)
 	if chip != null:
 		return chip
+	# 5.5. Outrider Zarg (BaseAI): an ally that destroys itself at end of turn
+	# unless it dealt damage. Every voluntary line above has already had its say,
+	# so if he is still ready here, attacking is strictly better than losing him
+	# for nothing.
+	var use_it := use_it_or_lose_it_attack_action(state, db, player_id)
+	if use_it != null:
+		return use_it
 	# Nothing constructive left — end the turn. Except that rule 600.2 may not
 	# LET us: an ally of ours under a "must attack if able" modifier blocks the
 	# pass, so make the attack the engine is waiting for rather than stalling on

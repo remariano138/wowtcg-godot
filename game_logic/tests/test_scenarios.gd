@@ -90,6 +90,7 @@ func _ready() -> void:
 		_test_ai_maw_of_madness_gate,
 		_test_sunken_treasure_equipment_to_hand,
 		_test_finkle_einhorn_graveyard_to_play,
+		_test_totem_is_an_ally_card_in_the_graveyard,
 		_test_ancestral_spirit_reanimate,
 		_test_ancestral_spirit_gates,
 		_test_ancestral_spirit_ai_picks_best,
@@ -384,6 +385,8 @@ func _ready() -> void:
 		_test_sister_rot_decline_and_fizzle,
 		_test_bhenn_exhausts_ally,
 		_test_ai_bhenn_freezes_proposal,
+		_test_wazluk_burns_target_hero,
+		_test_wazluk_hero_only_pool_and_707_3,
 		_test_karkas_bounces_ally,
 		_test_karkas_self_bounce_decline_and_fizzle,
 		_test_nynjah_steals_equipment,
@@ -424,6 +427,9 @@ func _ready() -> void:
 		_test_marked_for_death_fizzle_and_ai,
 		_test_track_humanoids_look_top_card,
 		_test_track_humanoids_scope_and_empty_deck,
+		_test_outrider_zarg_idle_dies,
+		_test_outrider_zarg_scope_and_death,
+		_test_ai_outrider_zarg_attacks,
 	]
 
 	for t in tests:
@@ -5118,6 +5124,65 @@ func _test_finkle_einhorn_graveyard_to_play() -> void:
 		"finkle-i: quest flipped face-down after completion")
 
 
+# Rule 305.3a: "Totems are ability allies and count as both in all zones." The
+# rulebook's own example is Resurrection — i.e. Finkle Einhorn's effect verbatim
+# — so a Totem CARD in a graveyard is a legal target for every "ally card in a
+# graveyard" effect, and reanimating one must put a working Totem back in play
+# (ally_row, still unable to attack per 305.3a).
+func _test_totem_is_an_ally_card_in_the_graveyard() -> void:
+	_buf.append("\n-- 305.3a: a Totem card in a graveyard is an ally card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("finkle_def", 3, "graveyard_to_play:Ally:1:1:own:2")
+	db.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire", 1)
+	# A plain (non-totem) ability in the same graveyard must stay excluded — the
+	# fix widens the filter to Totems, not to every ability card.
+	db.ability("burn_def", 2, "deal_damage_to_target:2:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+
+	var quest := CardInstance.create("finkle_inst", "finkle_def", "p1", "p1_resource_row")
+	state.cards["finkle_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("finkle_inst")
+
+	for pair in [["searing", "searing_def"], ["burn", "burn_def"]]:
+		var c := CardInstance.create(pair[0], pair[1], "p1", "p1_graveyard")
+		state.cards[pair[0]] = c
+		state.zones["p1_graveyard"].card_ids.append(pair[0])
+
+	var req := StackResolver.get_graveyard_search_requirement(db.get_def("finkle_def"))
+	var cands := StackResolver.get_graveyard_search_candidates(state, "p1", req, db)
+	eq(cands, ["searing"], "gy-totem-a: the Totem card is the only ally-card candidate")
+
+	var bad := PendingAction.make("use_quest", "p1",
+			{"quest_id": "finkle_inst", "target_ids": ["burn"]})
+	ok(not StackResolver.can_submit(state, bad, db),
+		"gy-totem-b: a non-totem ability is still an illegal target")
+
+	var good := PendingAction.make("use_quest", "p1",
+			{"quest_id": "finkle_inst", "target_ids": ["searing"]})
+	ok(not StackResolver.submit_action(state, good, db).is_empty(),
+		"gy-totem-c: completion naming the Totem submits")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("searing").zone_id, "p1_ally_row",
+		"gy-totem-d: reanimated Totem enters the ally_row (305.3a)")
+	ok(not ("searing" in StackResolver.get_legal_attackers(state, "p1", db)),
+		"gy-totem-e: a reanimated Totem still can't be proposed as an attacker")
+
+	# Rule 305.3a is zone-agnostic, so the same is true of the exile/count paths
+	# (Battle of Darrowshire, Cannibalize, Ophelia, Operation Recombobulation).
+	var rfg_req := {"card_type": "Ally", "min_count": 1, "max_count": 99, "owner": "both"}
+	var gy2 := CardInstance.create("searing2", "searing_def", "p2", "p2_graveyard")
+	state.cards["searing2"] = gy2
+	state.zones["p2_graveyard"].card_ids.append("searing2")
+	ok("searing2" in StackResolver.get_graveyard_search_candidates(state, "p1", rfg_req, db),
+		"gy-totem-f: an opposing Totem card is exile-able as an ally card")
+
+
 const ANCESTRAL_FX := "graveyard_to_play:Ally:1:1:own:resources:health_minus_1"
 
 # Ancestral Spirit (dark_portal_91, 3, Ability — Restoration): "Put target ally
@@ -5635,6 +5700,28 @@ func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
 	_advance_phase(state, db)
 	ok(state.turn_events.is_empty(),
 		"sc26c-h: turn event log resets at next turn start")
+
+	# 305.3a — a Totem is an ability ally in your party, so a Searing Totem's
+	# ping on the opposing hero satisfies "damaged by an ally in your party".
+	# This needs no special-casing: the log's `source_is_ally` snapshot is taken
+	# from the source's ZONE (ally_row), which is where a totem lives.
+	var db2 := MockDB.new()
+	db2.hero("p1_hero", 30)
+	db2.hero("p2_hero", 30)
+	db2.quest("torek_def", 1, "require_hero_damaged_by_ally|draw:1")
+	db2.totem("searing_def", 2, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire", 1)
+
+	var state2 := _base_state(db2, "p1_hero", "p2_hero")
+	var q2 := CardInstance.create("torek2", "torek_def", "p1", "p1_resource_row")
+	state2.cards["torek2"] = q2
+	state2.zones["p1_resource_row"].card_ids.append("torek2")
+	_add_ally(state2, "searing_inst", "searing_def", "p1")
+
+	ok(not StackResolver.can_use_quest_no_target_check(state2, "torek2", "p1", db2),
+		"sc26c-i: probe fails before the totem has pinged anything")
+	GameLogic.deal_damage(state2, "searing_inst", "p2_hero", 1, db2)
+	ok(StackResolver.can_use_quest_no_target_check(state2, "torek2", "p1", db2),
+		"sc26c-j: a friendly Totem's damage satisfies Torek's Assault (305.3a)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8828,6 +8915,15 @@ func _test_nerra_lifeboon_health_aura() -> void:
 	eq(state.get_max_hp("grunt_inst", db), 3, "sc41-a: other ally gets +1 max health")
 	eq(state.get_max_hp("nerra_inst", db), 4, "sc41-b: Nerra doesn't buff herself")
 	eq(state.get_max_hp("opp_inst", db), 2, "sc41-c: opponent's ally unaffected by p1's Nerra")
+
+	# 305.3a — a Totem is an ability ally, so a totem in the ally_row IS "an ally
+	# in your party" and gets the aura; the hero never does (not an ally).
+	db.totem("searing_def", 2, "ongoing|totem:fire", 1)
+	_add_ally(state, "searing_inst", "searing_def", "p1")
+	eq(state.get_max_hp("searing_inst", db), 2,
+		"sc41-a2: a friendly Totem gets the party health aura (305.3a)")
+	eq(state.get_max_hp(state.get_hero("p1").instance_id, db), 30,
+		"sc41-a3: the hero is not an ally and is unaffected")
 
 	# Two Nerras stack.
 	_add_ally(state, "nerra2_inst", "nerra_def", "p1")
@@ -19226,6 +19322,94 @@ func _test_ai_bhenn_freezes_proposal() -> void:
 		"bhai-h: AI holds Bhenn against a 2-ATK chip attack")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Waz'luk (dark_portal_242): "When Waz'luk enters play, he deals 1 fire damage
+# to target hero." Taz'dingo's mandatory targeted enter-play burn with the pool
+# narrowed to HEROES — either party's, so a human may point it at their own.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_wazluk_burns_target_hero() -> void:
+	_buf.append("\n-- Waz'luk: enter-play burn on a target hero --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_242", 2, 1, [], 1, "on_enter:deal_damage_to_hero:1:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	_add_card_to_hand(state, "waz", "dark_portal_242", "p1")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "waz"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"wz-a: enter-play choice pending after Waz'luk resolves")
+	ok(not state.pending_enter_play_effect.get("optional", false),
+		"wz-b: the trigger is MANDATORY (no \"you may\")")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "waz", "target_id": "p2_hero"}), db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"wz-c: marker cleared at announcement — the response window is real")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p2_hero").damage_taken, 1,
+		"wz-d: the target hero took 1 damage")
+	eq(state.get_card("p1_hero").damage_taken, 0,
+		"wz-e: nothing else was damaged")
+
+
+func _test_wazluk_hero_only_pool_and_707_3() -> void:
+	_buf.append("\n-- Waz'luk: hero-only target pool; source not re-checked (707.3) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_242", 2, 1, [], 1, "on_enter:deal_damage_to_hero:1:fire")
+	db.ally("bear_def", 2, 3, [], 2)
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	_add_card_to_hand(state, "waz", "dark_portal_242", "p1")
+	_add_ally(state, "bear", "bear_def", "p2")
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "waz"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "waz", "target_id": "p2_hero"}), db),
+		"wzp-a: the opposing hero is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "waz", "target_id": "p1_hero"}), db),
+		"wzp-b: our own hero is legal too (printed \"target hero\")")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "waz", "target_id": "bear"}), db),
+		"wzp-c: an ally is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "waz", "target_id": "waz"}), db),
+		"wzp-d: Waz'luk himself is NOT a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "waz", "target_id": "robe"}), db),
+		"wzp-e: equipment is NOT a legal target")
+
+	# 707.3 — an effect exists independently of its source: killing Waz'luk in
+	# the response window does NOT stop the ping.
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "waz", "target_id": "p2_hero"}), db)
+	GameLogic.destroy_card(state, "waz")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("waz").zone_id, "p1_graveyard", "wzp-f: Waz'luk was destroyed")
+	eq(state.get_card("p2_hero").damage_taken, 1,
+		"wzp-g: the damage still lands (707.3 — source not re-checked)")
+
+
 func _test_karkas_bounces_ally() -> void:
 	_buf.append("\n-- Karkas Deathhowl: may bounce a target ally on enter --")
 	var db := MockDB.new()
@@ -24177,3 +24361,163 @@ func _test_ai_must_attack() -> void:
 			"ma-j: into the kill it survives, not the hero")
 	eq(ai.forced_attack_action(_base_state(db, "p1_hero", "p2_hero"), db, "p1"), null,
 		"ma-k: null when nothing is locked")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Outrider Zarg (dark_portal_227, 4-cost 4/2 Orc Hunter, Ferocity):
+#   "At the end of your turn, if Outrider Zarg dealt no damage this turn,
+#    destroy him."
+#   end_of_turn_destroy_if_no_damage_dealt
+# Venomstrike's victim list inverted into a yes/no condition: the `damage_dealt`
+# turn log filtered to him as source. "YOUR turn", so only his controller's turn
+# judges him — and rule 703.3 means a Zarg already gone is never asked.
+# ══════════════════════════════════════════════════════════════════════════════
+const ZARG_FX := "end_of_turn_destroy_if_no_damage_dealt"
+
+func _test_outrider_zarg_idle_dies() -> void:
+	_buf.append("\n-- Outrider Zarg: destroyed at end of your turn unless he dealt damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zarg_def", 4, 2, ["ferocity"], 4, ZARG_FX)
+	db.ally("tank_def", 0, 9, [], 3)
+
+	# ── Case 1: idle all turn → destroyed, in his OWNER's graveyard.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "zarg", "zarg_def", "p1")
+	s1.turn_player = "p1"
+	s1.phase = "action"
+	_advance_phase(s1, db)
+	ok(not s1.is_in_play("zarg"), "oz-a: an idle Zarg destroys himself at end of turn")
+	eq(s1.get_card("zarg").zone_id, "p1_graveyard", "oz-b: and reaches his owner's graveyard")
+
+	# ── Case 2: he dealt damage → he lives. Any damage, any target, any source
+	# path — the condition reads the log, not combat specifically.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "zarg", "zarg_def", "p1")
+	_add_ally(s2, "tank", "tank_def", "p2")
+	s2.turn_player = "p1"
+	GameLogic.deal_damage(s2, "zarg", "tank", 1, db)
+	s2.phase = "action"
+	_advance_phase(s2, db)
+	ok(s2.is_in_play("zarg"), "oz-c: one point of damage anywhere saves him")
+
+	# ── Case 3: ANOTHER source's damage is not his — the filter is source_id.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s3, "zarg", "zarg_def", "p1")
+	_add_ally(s3, "tank", "tank_def", "p2")
+	s3.turn_player = "p1"
+	GameLogic.deal_damage(s3, "p1_hero", "tank", 1, db)
+	s3.phase = "action"
+	_advance_phase(s3, db)
+	ok(not s3.is_in_play("zarg"), "oz-d: someone else's damage doesn't save him")
+
+	# ── Case 4: COMBAT damage counts (the log is written by deal_damage, so every
+	# damage path feeds this by construction).
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s4, "zarg", "zarg_def", "p1").just_summoned = false
+	s4.turn_player = "p1"
+	s4.phase = "action"
+	_run_combat(s4, db, "p1", "zarg", "p2_hero")
+	eq(s4.get_card("p2_hero").damage_taken, 4, "oz-e: he connected for 4 in combat")
+	_advance_phase(s4, db)
+	ok(s4.is_in_play("zarg"), "oz-f: combat damage saves him just the same")
+
+
+func _test_outrider_zarg_scope_and_death() -> void:
+	_buf.append("\n-- Outrider Zarg: 'your turn' only, log clears per turn, 703.3 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zarg_def", 4, 2, ["ferocity"], 4, ZARG_FX)
+
+	# ── Case 1: "at the end of YOUR turn" — the opponent's end phase never judges
+	# him, so an idle Zarg survives their whole turn.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "zarg", "zarg_def", "p1")
+	s1.turn_player = "p2"
+	s1.phase = "action"
+	_advance_phase(s1, db)
+	ok(s1.is_in_play("zarg"), "oz-g: the opponent's end phase doesn't judge him")
+
+	# And the damage he dealt on THEIR turn doesn't carry over to ours: the turn
+	# event log is cleared at every turn start, so he must earn it again.
+	s1.turn_events.clear()
+	s1.turn_player = "p1"
+	s1.phase = "action"
+	_advance_phase(s1, db)
+	ok(not s1.is_in_play("zarg"),
+		"oz-h: 'this turn' is per turn — last turn's damage doesn't save him")
+
+	# ── Case 2 (703.3): a Zarg destroyed earlier in the turn is never asked —
+	# the sweep only visits cards in play. He is not destroyed twice, and the
+	# arm is a no-op rather than an error.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "zarg", "zarg_def", "p1")
+	s2.turn_player = "p1"
+	GameLogic.destroy_card(s2, "zarg")
+	s2.phase = "action"
+	_advance_phase(s2, db)
+	eq(s2.get_card("zarg").zone_id, "p1_graveyard", "oz-i: an already-dead Zarg is left alone")
+
+	# ── Case 3: the clause is his alone — an ally without the flag is untouched
+	# by an idle turn.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	db.ally("plain_def", 2, 2, [], 2)
+	_add_ally(s3, "plain", "plain_def", "p1")
+	s3.turn_player = "p1"
+	s3.phase = "action"
+	_advance_phase(s3, db)
+	ok(s3.is_in_play("plain"), "oz-j: an ally without the clause survives an idle turn")
+
+
+func _test_ai_outrider_zarg_attacks() -> void:
+	_buf.append("\n-- AI: Zarg swings rather than end the turn holding a doomed card --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("zarg_def", 4, 2, ["ferocity"], 4, ZARG_FX)
+	db.ally("chump_def", 1, 1, [], 1)
+	var ai := BaseAI.new()
+
+	# Idle Zarg on our own turn → attack, and prefer the kill he survives (their
+	# 1/1 dies to 4 and deals 1 back into his 2 health) over the hero.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s1, "zarg", "zarg_def", "p1").just_summoned = false
+	_add_ally(s1, "chump", "chump_def", "p2").just_summoned = false
+	s1.turn_player     = "p1"
+	s1.priority_player = "p1"
+	s1.phase           = "action"
+	var act := ai.use_it_or_lose_it_attack_action(s1, db, "p1")
+	ok(act != null, "oz-k: the AI proposes an attack with the idle Zarg")
+	if act != null:
+		eq(act.params.get("attacker_id", ""), "zarg", "oz-l: with Zarg")
+		eq(act.params.get("defender_id", ""), "chump", "oz-m: into the kill he survives")
+
+	# Already dealt damage this turn → nothing more is forced.
+	GameLogic.deal_damage(s1, "zarg", "p2_hero", 1, db)
+	eq(ai.use_it_or_lose_it_attack_action(s1, db, "p1"), null,
+		"oz-n: held once he has already earned his keep")
+
+	# Never on the opponent's turn: an attack there wouldn't save him anyway
+	# (the end-of-turn check is turn-player scoped).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s2, "zarg", "zarg_def", "p1").just_summoned = false
+	_add_ally(s2, "chump", "chump_def", "p2").just_summoned = false
+	s2.turn_player     = "p2"
+	s2.priority_player = "p1"
+	s2.phase           = "action"
+	eq(ai.use_it_or_lose_it_attack_action(s2, db, "p1"), null,
+		"oz-o: never fired on the opponent's turn")
+
+	# An exhausted Zarg is not a legal attacker — the hook produces nothing
+	# rather than an illegal proposal.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	var z3 := _add_ally(s3, "zarg", "zarg_def", "p1")
+	z3.just_summoned = false
+	z3.is_exhausted  = true
+	s3.turn_player     = "p1"
+	s3.priority_player = "p1"
+	s3.phase           = "action"
+	eq(ai.use_it_or_lose_it_attack_action(s3, db, "p1"), null,
+		"oz-p: an exhausted Zarg produces no proposal")

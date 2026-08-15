@@ -933,6 +933,52 @@ Enforcement site: the `end_of_turn_damage_own_victims` arm of
 
 ---
 
+## Outrider Zarg — self-destruction resolved immediately, not on the chain
+
+**Card:** Outrider Zarg (`dark_portal_227`, 4-cost 4/2 Orc Hunter, Ferocity).
+Printed text: "At the end of your turn, if Outrider Zarg dealt no damage this
+turn, destroy him."
+
+**Deviation:** the same one already documented for Thysta Spiritlasher and
+Venomstrike. Per 708.1 a triggered effect should be added to the chain and be
+respondable; his destruction instead resolves **inline** during the end phase.
+It is mandatory, free, has no cost, no target and no choice, so the only thing
+the chain would add is a window in which to respond to a destruction nobody
+can stop — and there is no card in the pool that changes the outcome. If a
+"prevent that destruction" effect is ever implemented, this arm has to move onto
+the chain like the start-of-turn and combat triggers did.
+
+**Rulings pinned alongside it:**
+
+- **The condition is turn history**, read off the `damage_dealt` entries in
+  `GameState.turn_events` filtered to `source_id` == this card (see
+  `game_logic/turn_state_flags.md`) — Venomstrike's victim list reduced to a
+  yes/no. Every damage source in the game records there, so combat damage,
+  ability damage and power damage all save him by construction, and "this turn"
+  is free: the log is cleared at every turn start.
+- **"At the end of YOUR turn"**, so the arm lives in the turn-player-scoped
+  sweep (`_apply_end_of_turn_effects`, Infernal's), NOT Thysta's each-player
+  one. Damage he dealt on the opponent's turn — retaliating as a defender, say —
+  cannot save him, because the log is cleared before his own turn's end phase
+  reads it, and an idle Zarg is simply not judged on the opponent's turn.
+- **Damage dealt, not damage attempted.** Damage prevented in full was never
+  dealt (717.2b), so a swing entirely absorbed by armor does not save him. 405.2
+  overkill does count, in full.
+- **Any damage to anything.** Not restricted to opposing characters and not to
+  combat — damaging his own side counts.
+- **Rule 703.3** needs no code: the sweep only visits `cards_in_play`, so a Zarg
+  destroyed, bounced or exiled earlier in the turn is never asked.
+
+**AI:** modeled, unlike the other end-of-turn triggers — see
+`BaseAI.use_it_or_lose_it_attack_action`, called last in every `decide_action`
+(immediately before `forced_attack_action`), which swings with an idle Zarg
+rather than end the turn holding a card that is about to destroy itself.
+
+Enforcement site: the `end_of_turn_destroy_if_no_damage_dealt` arm of
+`TurnManager._apply_end_of_turn_effects`.
+
+---
+
 ## Operation Recombobulation — reward trigger resolved immediately, not on the chain
 
 **Card:** Operation Recombobulation (`dark_portal_292`, Quest, Alliance, Gnome

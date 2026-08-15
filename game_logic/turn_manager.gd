@@ -411,6 +411,33 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 					packets.append({"source": card.instance_id,
 						"target": opp_hero.instance_id, "amount": amount})
 				events.append_array(StackResolver.defer_packets(state, db, packets))
+			"end_of_turn_destroy_if_no_damage_dealt":
+				# Outrider Zarg: "At the end of your turn, if [this] dealt no damage
+				# this turn, destroy him." Venomstrike's victim list inverted: the
+				# condition is turn HISTORY, read off the turn event log's
+				# `damage_dealt` entries filtered to this card as source — so combat
+				# damage, ability/power damage and any future way it deals damage
+				# all satisfy it by construction. Damage absorbed in full by
+				# prevention is not damage DEALT (717.2b) and does not save him.
+				#
+				# "At the end of YOUR turn", so this arm lives in the turn-player
+				# sweep: an attack made on the opponent's turn cannot save him, and
+				# his controller's own turn is the only one that judges him.
+				# Rule 703.3 needs no code: the sweep only visits cards_in_play, so
+				# a Zarg already gone this turn is never asked.
+				var dealt := false
+				for log_entry in state.turn_events_of("damage_dealt"):
+					if String(log_entry.get("source_id", "")) == card.instance_id:
+						dealt = true
+						break
+				if not dealt:
+					# Mandatory, free, no cost, no choice, no target — resolves
+					# inline rather than on the chain (same deviation as Thysta /
+					# Venomstrike, see data/rules_deviations.md "Outrider Zarg").
+					# Through _destroy_card_trigger so on_destroyed triggers and the
+					# `ally_destroyed` turn-log entry behave as for any destruction.
+					events.append_array(StackResolver._destroy_card_trigger(
+						state, card.instance_id, card.instance_id, db))
 	return events
 
 

@@ -2779,6 +2779,31 @@ func _in_mulligan_ui() -> bool:
 	return _mulligan_panel != null and _mulligan_panel.visible
 
 
+## True while a combat proposal sits on the chain — passing it through starts
+## the combat step (601.3) rather than doing anything else.
+func _combat_proposal_pending() -> bool:
+	for pa in _state.pending_actions:
+		if (pa as PendingAction).action_type == "propose_combat":
+			return true
+	return false
+
+
+## Name of the combat step both players passing would advance to, for the pass
+## button. Attack window (602.1) → the protect point if anyone can actually
+## protect, else straight to the defend window; defend window (602.3) → the
+## conclusion, i.e. damage.
+func _next_combat_step() -> String:
+	if _state.combat_defend_window:
+		return "Damage"
+	if _combat_proposal_pending():
+		return "Combat"
+	if _state.combat_attack_window:
+		var protectors := StackResolver.get_legal_protectors(
+				_state, _state.combat_attacker, _state.combat_defender, _db)
+		return "Protect" if not protectors.is_empty() else "Defense"
+	return "next step"
+
+
 func _update_pass_btn() -> void:
 	_update_resource_info()
 	_update_turn_steps()
@@ -2848,7 +2873,11 @@ func _update_pass_btn() -> void:
 	elif not has_plays:
 		# Wrap-up / end-turn passes require Ctrl+Space (plain Space can't end your
 		# turn — prevents accidental skips); other passes stay on Space.
-		if in_action:
+		if in_attack or in_defend or _combat_proposal_pending():
+			# A pass inside a combat window never wraps up the turn — it only
+			# advances to the next combat step (602.2 / 602.3 / 603). Say which.
+			_pass_btn.text = "No legal play — Pass to %s  [Space]" % _next_combat_step()
+		elif in_action:
 			_pass_btn.text = "No legal play — Wrap Up  [Ctrl+Space]"
 		elif _state.phase == "end":
 			_pass_btn.text = "No legal play — %s  [Ctrl+Space]" \
@@ -2857,7 +2886,10 @@ func _update_pass_btn() -> void:
 			_pass_btn.text = "No legal play — Pass  [Space]"
 		_pass_btn.modulate = Color(1.0, 0.35, 0.35)
 	elif chain_busy:
-		_pass_btn.text     = "Pass Priority  [Space]"
+		# A combat proposal is the one link whose resolution is a step rather than
+		# an effect — name the destination like the combat windows below do.
+		_pass_btn.text     = "Pass to Combat  [Space]" if _combat_proposal_pending() \
+				else "Pass Priority  [Space]"
 		_pass_btn.modulate = Color(1.0, 1.0, 1.0)
 	elif in_attack:
 		_pass_btn.text     = "Attack window : fight on!  [Space] · auto-pass [F]"

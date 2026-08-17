@@ -335,6 +335,7 @@ func _ready() -> void:
 		_test_mildred_sacrifice_destroys_ability,
 		_test_mildred_killed_in_response_and_ai,
 		_test_stat_tracker_counts,
+		_test_stat_tracker_damage_and_resources,
 		_test_feral_rage_draws_on_combat_damage,
 		_test_feral_rage_form_and_affordability_gates,
 		_test_feral_rage_scope_copies_and_prevention,
@@ -363,6 +364,8 @@ func _ready() -> void:
 		_test_fireball_attach_and_burn,
 		_test_flame_shock_attach_and_burn,
 		_test_ai_flame_shock_targets_hero_only,
+		_test_pyroblast_attach_and_burn,
+		_test_ai_pyroblast_targets_hero_only,
 		_test_world_in_flames_doubles_fire,
 		_test_chromatic_cloak_ability_bonus,
 		_test_ai_fireball_targets_hero_only,
@@ -446,6 +449,12 @@ func _ready() -> void:
 		_test_outrider_zarg_idle_dies,
 		_test_outrider_zarg_scope_and_death,
 		_test_ai_outrider_zarg_attacks,
+		_test_jocasta_fetches_ally_from_graveyard,
+		_test_jocasta_optional_fizzle_and_707_3,
+		_test_jocasta_ai_and_totem,
+		_test_katsin_shields_combat_both_ways,
+		_test_katsin_scope_and_expiry,
+		_test_ai_katsin_saves_dying_ally,
 	]
 
 	for t in tests:
@@ -556,6 +565,106 @@ func _test_stat_tracker_counts() -> void:
 		st2.record_event(e)
 
 	eq(st2.played("p1"), 1, "submit: play counts, resource excluded")
+
+
+# Resources placed face down, and the hero's combat / ability damage split.
+# Damage is counted post-prevention and attributed to the HERO's controller.
+func _test_stat_tracker_damage_and_resources() -> void:
+	_buf.append("[b]--- stat_tracker: resources placed & hero damage split ---[/b]")
+	var st := StatTracker.new()
+
+	# Face-down placements count; a face-up one (quest, 412.1b) does not.
+	st.record_event(GameEvent.make("resource_placed",
+		{"card_id": "r1", "player": "p1", "face_up": false}))
+	st.record_event(GameEvent.make("resource_placed",
+		{"card_id": "r2", "player": "p1", "face_up": false}))
+	st.record_event(GameEvent.make("resource_placed",
+		{"card_id": "q1", "player": "p1", "face_up": true}))
+	st.record_event(GameEvent.make("resource_placed",
+		{"card_id": "r3", "player": "p2", "face_up": false}))
+	eq(st.resourced("p1"), 2, "stat-r1: face-down placements counted, face-up excluded")
+	eq(st.resourced("p2"), 1, "stat-r2: per player")
+
+	# Retracting a counted placement undoes it; retracting the face-up quest,
+	# or any other action type, must not touch the count.
+	st.record_event(GameEvent.make("action_retracted",
+		{"action_type": "place_resource", "player": "p1", "card_id": "r2"}))
+	eq(st.resourced("p1"), 1, "stat-r3: retracted placement decrements")
+	st.record_event(GameEvent.make("action_retracted",
+		{"action_type": "place_resource", "player": "p1", "card_id": "q1"}))
+	st.record_event(GameEvent.make("action_retracted",
+		{"action_type": "play_ally", "player": "p1", "card_id": "r1"}))
+	eq(st.resourced("p1"), 1, "stat-r4: face-up / non-resource retractions ignored")
+
+	# Damage split: only the hero's own packets, only combat / ability ones.
+	st.record_event(GameEvent.damage_dealt("h", "t", 3,
+		{"source_controller": "p1", "source_is_hero": true, "combat": true}))
+	st.record_event(GameEvent.damage_dealt("h", "t", 2,
+		{"source_controller": "p1", "source_is_hero": true, "from_ability": true}))
+	st.record_event(GameEvent.damage_dealt("h", "t", 9,
+		{"source_controller": "p1", "source_is_hero": false, "combat": true}))
+	st.record_event(GameEvent.damage_dealt("h", "t", 9,
+		{"source_controller": "p1", "source_is_hero": true}))
+	eq(st.hero_combat_dmg("p1"),  3, "stat-d1: hero combat damage")
+	eq(st.hero_ability_dmg("p1"), 2, "stat-d2: hero ability damage")
+	eq(st.hero_combat_dmg("p2"),  0, "stat-d3: nothing attributed to the opponent")
+
+	# Ally damage is its own column, whatever the provenance, and never counts
+	# in a hero one (Skewer's packet is dealt BY the ally, not by the hero).
+	st.record_event(GameEvent.damage_dealt("a", "t", 4,
+		{"source_controller": "p1", "source_is_ally": true, "combat": true}))
+	st.record_event(GameEvent.damage_dealt("a", "t", 1,
+		{"source_controller": "p1", "source_is_ally": true, "from_ability": true}))
+	st.record_event(GameEvent.damage_dealt("a", "t", 2,
+		{"source_controller": "p2", "source_is_ally": true}))
+	eq(st.ally_dmg("p1"), 5, "stat-d6: ally damage summed regardless of provenance")
+	eq(st.ally_dmg("p2"), 2, "stat-d7: ally damage per player")
+	eq(st.hero_combat_dmg("p1"),  3, "stat-d8: ally combat damage isn't hero combat")
+	eq(st.hero_ability_dmg("p1"), 2, "stat-d9: ally ability damage isn't hero ability")
+
+	st.reset()
+	eq(st.resourced("p1"), 0, "stat-d4: reset clears resources")
+	eq(st.hero_combat_dmg("p1"), 0, "stat-d5: reset clears hero damage")
+	eq(st.ally_dmg("p1"), 0, "stat-d10: reset clears ally damage")
+
+	# ── Integration: the flags must actually reach the events ──────────────────
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("krol_def", 3, 3, 1)
+	db.instant("bolt_def", 1, "deal_damage_to_target:2:fire")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	_add_hand_card(state, "bolt", "bolt_def", "p1")
+
+	var live := StatTracker.new()
+	var feed := func(events: Array) -> void:
+		for e in events:
+			live.record_event(e)
+
+	# Hero attacks, strikes with the weapon: 3 combat damage to the enemy hero.
+	feed.call(StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db))
+	feed.call(StackResolver.pass_priority(state, db))
+	feed.call(StackResolver.pass_priority(state, db))
+	feed.call(StackResolver.choose_strike(state, "krol", db))
+	for i in 4:
+		feed.call(StackResolver.pass_priority(state, db))
+	eq(live.hero_combat_dmg("p1"), 3, "stat-i1: combat conclusion counts as hero combat damage")
+	eq(live.hero_ability_dmg("p1"), 0, "stat-i2: combat damage is not ability damage")
+
+	# Same hero, an ability this time: 2 fire damage to the enemy hero.
+	feed.call(StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "bolt", "target_id": "p2_hero"}), db))
+	feed.call(StackResolver.pass_priority(state, db))
+	feed.call(StackResolver.pass_priority(state, db))
+	eq(live.hero_ability_dmg("p1"), 2, "stat-i3: ability damage counted separately")
+	eq(live.hero_combat_dmg("p1"), 3, "stat-i4: ability damage didn't leak into combat")
+	eq(live.hero_combat_dmg("p2"), 0, "stat-i5: defender dealt nothing back")
 
 
 # Green Whelp Armor: when an attacking ally deals combat damage to the wielder's
@@ -18496,6 +18605,71 @@ func _test_ai_flame_shock_targets_hero_only() -> void:
 	ok("p2_hero" in fs_targets, "aifs-b: Flame Shock aimed at the opposing hero only")
 
 
+const PYROBLAST_FX := "ongoing|attach:hero_or_ally|attach_deal_damage:6:fire|attached_damage_turn_start:2:fire"
+
+func _test_pyroblast_attach_and_burn() -> void:
+	_buf.append("\n-- Pyroblast: attach deals 6, burns 2 each turn start (Fireball clone) --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 9, [], 3)
+	db.ability("azeroth_59", 8, PYROBLAST_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var tank := _add_ally(state, "tank", "tank_def", "p2")
+	_add_card_to_hand(state, "pb", "azeroth_59", "p1")
+	_add_resources(state, "p1", 8)
+
+	# attach:hero_or_ally — a hero is ALSO a legal target.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "pb", "target_id": "p2_hero"}), db),
+		"pyr-a: Pyroblast can target a hero")
+
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "pb", "target_id": "tank"})
+	ok(StackResolver.can_submit(state, cast, db), "pyr-b: Pyroblast on an enemy ally is legal")
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # resolves
+
+	eq(state.get_card("pb").zone_id, "attached", "pyr-c: Pyroblast is attached")
+	eq(state.get_card("pb").attached_to, "tank", "pyr-d: host is the ally")
+	eq(tank.damage_taken, 6, "pyr-e: 6 fire dealt on attach")
+
+	# Start of the CONTROLLER's turn: hero deals 2 to the attached character.
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	eq(tank.damage_taken, 8, "pyr-f: turn-start burn dealt 2 (8 total)")
+
+	# Next turn start is lethal — host dies, Pyroblast follows it (400.5).
+	_ready_step(state, db)
+	eq(tank.zone_id, "p2_graveyard", "pyr-g: burn killed the host")
+	eq(state.get_card("pb").zone_id, "p1_graveyard", "pyr-h: Pyroblast died with its host")
+
+
+func _test_ai_pyroblast_targets_hero_only() -> void:
+	_buf.append("\n-- AI Pyroblast: only the opposing hero is ever targeted --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("tank_def", 3, 9, [], 3)
+	db.ability("azeroth_59", 8, PYROBLAST_FX)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "tank", "tank_def", "p2")
+	_add_card_to_hand(state, "pb", "azeroth_59", "p1")
+	_add_resources(state, "p1", 8)
+
+	state.players["p1"].resource_placed_this_turn = true
+	var ai := BaseAI.new()
+	var pb_targets: Array = []
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "pb":
+			pb_targets.append(a.params.get("target_id", ""))
+	eq(pb_targets.size(), 1, "aipy-a: exactly one Pyroblast action generated")
+	ok("p2_hero" in pb_targets, "aipy-b: Pyroblast aimed at the opposing hero only")
+
+
 func _test_world_in_flames_doubles_fire() -> void:
 	_buf.append("\n-- World in Flames: hero fire damage doubled --")
 	var db := MockDB.new()
@@ -25249,6 +25423,388 @@ func _test_ai_must_attack() -> void:
 # judges him — and rule 703.3 means a Zarg already gone is never asked.
 # ══════════════════════════════════════════════════════════════════════════════
 const ZARG_FX := "end_of_turn_destroy_if_no_damage_dealt"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dark Cleric Jocasta (azeroth_233, 6-cost 3/5 Horde Undead Priest):
+#   "When Dark Cleric Jocasta enters play, you may put target ally card from
+#    your graveyard into your hand."
+#   on_enter:graveyard_to_hand_ally
+# Call the Spirit's fetch reached from an enter-play trigger — and the first
+# enter-play target that lives in a GRAVEYARD rather than in play, so the pool
+# is get_graveyard_search_candidates and the in-play _is_legal_target gate is
+# deliberately skipped (Untargetable is state on an in-play card).
+# ══════════════════════════════════════════════════════════════════════════════
+const JOCASTA_FX := "on_enter:graveyard_to_hand_ally"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Katsin Bloodoath (dark_portal_218, 4-cost 5/3 Horde Blood Elf Paladin,
+# Protector):
+#   "(3) -> Prevent all combat damage that would be dealt to and dealt by
+#    target friendly ally this turn."
+#   activated_power:3:prevent_combat_damage_target:0::friendly_ally:no_activate
+# Bestial Wrath's instance-scoped shield Buff narrowed to COMBAT damage but
+# widened to BOTH directions — GameLogic.prevent checks the buff on the packet's
+# source as well as its target, which is what makes it a pure save that can
+# never win a fight. `no_activate`: no tap symbol, so repeatable.
+# ══════════════════════════════════════════════════════════════════════════════
+const KATSIN_FX := "activated_power:3:prevent_combat_damage_target:0::friendly_ally:no_activate"
+
+func _katsin_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("katsin_def", 5, 3, ["protector"], 4, KATSIN_FX)
+	db.ally("grunt_def", 2, 2, [], 2)     # our body: 2/2
+	db.ally("brute_def", 4, 4, [], 4)     # their body: 4/4 — kills a 2/2, survives
+	db.instant("bolt_def", 2, "deal_damage_to_target:3:fire")
+	return db
+
+
+func _test_katsin_shields_combat_both_ways() -> void:
+	_buf.append("\n-- Katsin Bloodoath: prevents combat damage dealt TO and BY the target --")
+	var db := _katsin_db()
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	var katsin := _add_ally(st, "katsin", "katsin_def", "p1")
+	katsin.just_summoned = false
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	var brute := _add_ally(st, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+
+	# No [Activate] tap symbol (no_activate): she does not exhaust to use it.
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "grunt"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(not st.get_card("katsin").is_exhausted,
+		"kb-a: no tap symbol — the source does not exhaust (701.2)")
+	eq(st.get_available_resources("p1"), 0, "kb-b: 3 resources paid")
+
+	# Our 2/2 attacks their 4/4: normally the grunt dies and the brute takes 2.
+	_run_combat(st, db, "p1", "grunt", "brute")
+	ok(st.is_in_play("grunt"), "kb-c: shielded ally takes no combat damage")
+	eq(st.get_card("grunt").damage_taken, 0, "kb-d: no damage placed on it at all")
+	eq(st.get_card("brute").damage_taken, 0,
+		"kb-e: and it DEALS none either (\"dealt by\") — the save wins nothing")
+
+
+func _test_katsin_scope_and_expiry() -> void:
+	_buf.append("\n-- Katsin Bloodoath: combat-only, friendly-only, expiry, repeatable --")
+	var db := _katsin_db()
+
+	# (1) Non-combat damage still lands — the shield is combat-only.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	_add_resources(st, "p2", 2)
+	var katsin := _add_ally(st, "katsin", "katsin_def", "p1")
+	katsin.just_summoned = false
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "grunt"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	_add_card_to_hand(st, "bolt", "bolt_def", "p2")
+	st.turn_player = "p2"
+	st.priority_player = "p2"
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p2",
+		{"card_id": "bolt", "target_id": "grunt"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(not st.is_in_play("grunt"),
+		"kb-f: an ABILITY still kills it — the shield covers combat damage only")
+
+	# (2) "Target FRIENDLY ally" — the opponent's ally is not a legal target,
+	#     and a hero is never legal.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 6)
+	var k2 := _add_ally(st2, "katsin", "katsin_def", "p1")
+	k2.just_summoned = false
+	_add_ally(st2, "brute", "brute_def", "p2")
+	ok(not StackResolver.can_submit(st2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "brute"}), db),
+		"kb-g: an opposing ally is NOT a legal target")
+	ok(not StackResolver.can_submit(st2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "p1_hero"}), db),
+		"kb-h: our own hero is NOT a legal target (\"ally\")")
+	ok(StackResolver.can_submit(st2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "katsin"}), db),
+		"kb-i: she may shield HERSELF (an ally in your party)")
+
+	# (3) Repeatable — no tap symbol, so it can be used twice in one turn given
+	#     the resources.
+	StackResolver.submit_action(st2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "katsin"}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	ok(StackResolver.can_submit(st2, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "katsin"}), db),
+		"kb-j: repeatable in the same turn (no once-per-turn gate)")
+
+	# (4) The grant expires with the turn.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 3)
+	var k3 := _add_ally(st3, "katsin", "katsin_def", "p1")
+	k3.just_summoned = false
+	var g3 := _add_ally(st3, "grunt", "grunt_def", "p1")
+	g3.just_summoned = false
+	StackResolver.submit_action(st3, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "katsin", "target_id": "grunt"}), db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	_drive_turns(st3, db, BaseAI.new(), BaseAI.new(), 2)
+	var brute3 := _add_ally(st3, "brute3", "brute_def", "p2")
+	brute3.just_summoned = false
+	var post: Array[GameEvent] = GameLogic.deal_damage(
+		st3, "brute3", "grunt", 2, db, {"combat": true, "combat_attack": true})
+	var landed := 0
+	for e in post:
+		if e.event_type == "damage_dealt":
+			landed += int(e.payload.get("amount", 0))
+	eq(landed, 2, "kb-k: the shield expired at end of turn — combat damage lands again")
+
+
+func _test_ai_katsin_saves_dying_ally() -> void:
+	_buf.append("\n-- Katsin Bloodoath: AI shields a doomed ally, holds otherwise --")
+	var db := _katsin_db()
+	db.ally("chump_def", 1, 1, [], 1)
+
+	# Our 2/2 is attacked by their 4/4 — it dies and kills nothing, so shield it.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	var katsin := _add_ally(st, "katsin", "katsin_def", "p1")
+	katsin.just_summoned = false
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	var brute := _add_ally(st, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+	st.turn_player = "p2"
+	st.priority_player = "p2"
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "brute", "defender_id": "grunt"}), db)
+	st.priority_player = "p1"
+	var ai := BaseAI.new()
+	var act := ai.katsin_shield_action(st, db, "p1")
+	ok(act != null, "kb-l: AI shields our ally that would die for nothing")
+	if act != null:
+		eq(act.params.get("target_id", ""), "grunt", "kb-m: it shields the doomed ally")
+
+	# Their 1/1 attacks our 2/2 — we kill it and live, so shielding would throw
+	# the kill away. Hold.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 3)
+	var k2 := _add_ally(st2, "katsin", "katsin_def", "p1")
+	k2.just_summoned = false
+	var g2 := _add_ally(st2, "grunt", "grunt_def", "p1")
+	g2.just_summoned = false
+	var chump := _add_ally(st2, "chump", "chump_def", "p2")
+	chump.just_summoned = false
+	st2.turn_player = "p2"
+	st2.priority_player = "p2"
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "chump", "defender_id": "grunt"}), db)
+	st2.priority_player = "p1"
+	eq(ai.katsin_shield_action(st2, db, "p1"), null,
+		"kb-n: AI holds when our ally wins the fight anyway")
+
+	# And it is never offered proactively outside combat.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 3)
+	var k3 := _add_ally(st3, "katsin", "katsin_def", "p1")
+	k3.just_summoned = false
+	var g3 := _add_ally(st3, "grunt", "grunt_def", "p1")
+	g3.just_summoned = false
+	for a in ai.get_reasonable_actions(st3, db, "p1"):
+		var pa := a as PendingAction
+		ok(not (pa.action_type == "use_ally_power" and pa.params.get("card_id", "") == "katsin"),
+			"kb-o: the shield is never blind-played outside combat")
+
+func _test_jocasta_fetches_ally_from_graveyard() -> void:
+	_buf.append("\n-- Dark Cleric Jocasta: may fetch an ally card from your graveyard --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("jocasta_def", 3, 5, [], 6, JOCASTA_FX)
+	db.ally("bear_def", 2, 4, [], 8)      # cost 8 — the fetch has no cost cap
+	db.ability("spell_def", 1, "")
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	_add_card_to_hand(st, "jocasta", "jocasta_def", "p1")
+	var dead := CardInstance.create("dead_bear", "bear_def", "p1", "p1_graveyard")
+	st.cards["dead_bear"] = dead
+	st.zones["p1_graveyard"].card_ids.append("dead_bear")
+	# An ability card of ours, and an ally in the OPPONENT's graveyard — neither
+	# is a legal target ("ally card", "YOUR graveyard").
+	var junk := CardInstance.create("junk", "spell_def", "p1", "p1_graveyard")
+	st.cards["junk"] = junk
+	st.zones["p1_graveyard"].card_ids.append("junk")
+	var opp_dead := CardInstance.create("opp_bear", "bear_def", "p2", "p2_graveyard")
+	st.cards["opp_bear"] = opp_dead
+	st.zones["p2_graveyard"].card_ids.append("opp_bear")
+
+	StackResolver.submit_action(st, PendingAction.make("play_ally", "p1",
+		{"card_id": "jocasta"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(not st.pending_enter_play_effect.is_empty(),
+		"jo-a: enter-play choice pending after Jocasta resolves")
+	ok(st.pending_enter_play_effect.get("optional", false),
+		"jo-b: the trigger is optional (\"you may\")")
+
+	var legal := StackResolver.get_enter_play_graveyard_targets(st, db, "p1")
+	ok("dead_bear" in legal,  "jo-c: an ally card in our own graveyard is legal")
+	ok(not ("junk" in legal), "jo-d: a non-ally card is NOT legal")
+	ok(not ("opp_bear" in legal),
+		"jo-e: the opponent's graveyard is NOT legal (\"your graveyard\")")
+	ok(not StackResolver.can_submit(st, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "jocasta", "target_id": "p2_hero"}), db),
+		"jo-f: an in-play character is NOT a legal target")
+
+	# The pick puts a link on the chain, so the opponent gets a REAL window.
+	StackResolver.submit_action(st, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "jocasta", "target_id": "dead_bear"}), db)
+	ok(st.pending_enter_play_effect.is_empty(),
+		"jo-g: pending marker cleared at announcement (the window is real)")
+	eq(st.get_card("dead_bear").zone_id, "p1_graveyard",
+		"jo-h: nothing has moved yet — the fetch is still on the chain")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	eq(st.get_card("dead_bear").zone_id, "p1_hand", "jo-i: ally card is in hand")
+	ok(not st.is_in_play("dead_bear"), "jo-j: nothing entered play (hand, not board)")
+	ok(st.is_in_play("jocasta"), "jo-k: Jocasta herself is on the board")
+
+
+func _test_jocasta_optional_fizzle_and_707_3() -> void:
+	_buf.append("\n-- Dark Cleric Jocasta: empty graveyard, decline, fizzle, 707.3 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("jocasta_def", 3, 5, [], 6, JOCASTA_FX)
+	db.ally("bear_def", 2, 4, [], 3)
+	db.instant("vanquish_def", 2, "destroy_target:ally")
+
+	# (1) Empty graveyard → no prompt at all.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	_add_card_to_hand(st, "jocasta", "jocasta_def", "p1")
+	StackResolver.submit_action(st, PendingAction.make("play_ally", "p1",
+		{"card_id": "jocasta"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(st.pending_enter_play_effect.is_empty(),
+		"jo-l: no ally card in the graveyard opens no choice point")
+
+	# (2) Decline is legal ("you may").
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 6)
+	_add_card_to_hand(st2, "jocasta", "jocasta_def", "p1")
+	var d2 := CardInstance.create("dead_bear", "bear_def", "p1", "p1_graveyard")
+	st2.cards["dead_bear"] = d2
+	st2.zones["p1_graveyard"].card_ids.append("dead_bear")
+	StackResolver.submit_action(st2, PendingAction.make("play_ally", "p1",
+		{"card_id": "jocasta"}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	ok(not st2.pending_enter_play_effect.is_empty(), "jo-m: choice opened")
+	StackResolver.decline_enter_play_effect(st2)
+	ok(st2.pending_enter_play_effect.is_empty(), "jo-n: declining clears the choice")
+	eq(st2.get_card("dead_bear").zone_id, "p1_graveyard",
+		"jo-o: the card stays in the graveyard on a decline")
+
+	# (3) Target removed from the graveyard in the response window → fizzle
+	#     (706/4217), and (4) killing Jocasta in that window does NOT stop the
+	#     fetch (707.3 — an effect exists independently of its source).
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 6)
+	_add_resources(st3, "p2", 2)
+	_add_card_to_hand(st3, "jocasta", "jocasta_def", "p1")
+	var d3 := CardInstance.create("dead_bear", "bear_def", "p1", "p1_graveyard")
+	st3.cards["dead_bear"] = d3
+	st3.zones["p1_graveyard"].card_ids.append("dead_bear")
+	_add_card_to_hand(st3, "vanq", "vanquish_def", "p2")
+	StackResolver.submit_action(st3, PendingAction.make("play_ally", "p1",
+		{"card_id": "jocasta"}), db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.submit_action(st3, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "jocasta", "target_id": "dead_bear"}), db)
+	# p2 kills Jocasta in response to the fetch (p1 must pass priority first —
+	# the proposer keeps it after an announcement).
+	StackResolver.pass_priority(st3, db)
+	StackResolver.submit_action(st3, PendingAction.make("play_instant", "p2",
+		{"card_id": "vanq", "target_id": "jocasta"}), db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)   # Vanquish resolves — Jocasta dies
+	ok(not st3.is_in_play("jocasta"), "jo-p: Jocasta was killed in the response window")
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)   # the fetch link resolves
+	eq(st3.get_card("dead_bear").zone_id, "p1_hand",
+		"jo-q: the fetch still resolves with its source dead (707.3)")
+
+	# (5) "Your graveyard" is the LINK's controller, pinned at announcement — not
+	#     whoever controls Jocasta at resolution. A control change mid-chain must
+	#     not move the fetch to the other player's graveyard or hand.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 6)
+	_add_card_to_hand(st4, "jocasta", "jocasta_def", "p1")
+	var d4 := CardInstance.create("dead_bear", "bear_def", "p1", "p1_graveyard")
+	st4.cards["dead_bear"] = d4
+	st4.zones["p1_graveyard"].card_ids.append("dead_bear")
+	StackResolver.submit_action(st4, PendingAction.make("play_ally", "p1",
+		{"card_id": "jocasta"}), db)
+	StackResolver.pass_priority(st4, db)
+	StackResolver.pass_priority(st4, db)
+	StackResolver.submit_action(st4, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "jocasta", "target_id": "dead_bear"}), db)
+	# Jocasta changes hands while the fetch sits on the chain (rule 401.3).
+	GameLogic.move_card(st4, "jocasta", "p2_ally_row")
+	st4.get_card("jocasta").controller = "p2"
+	StackResolver.pass_priority(st4, db)
+	StackResolver.pass_priority(st4, db)
+	eq(st4.get_card("dead_bear").zone_id, "p1_hand",
+		"jo-u: the fetch still uses the ANNOUNCER's graveyard and hand after a control change")
+
+
+func _test_jocasta_ai_and_totem() -> void:
+	_buf.append("\n-- Dark Cleric Jocasta: AI pick, full-hand decline, totems count --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("jocasta_def", 3, 5, [], 6, JOCASTA_FX)
+	db.ally("cheap_def", 1, 1, [], 1)
+	db.ally("big_def", 5, 5, [], 7)
+	# 305.3a — a Totem card counts as an ally card in EVERY zone.
+	db.instant("totem_def", 2, "ongoing|totem:fire")
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var cheap := CardInstance.create("cheap", "cheap_def", "p1", "p1_graveyard")
+	st.cards["cheap"] = cheap
+	st.zones["p1_graveyard"].card_ids.append("cheap")
+	var big := CardInstance.create("big", "big_def", "p1", "p1_graveyard")
+	st.cards["big"] = big
+	st.zones["p1_graveyard"].card_ids.append("big")
+	var tot := CardInstance.create("tot", "totem_def", "p1", "p1_graveyard")
+	st.cards["tot"] = tot
+	st.zones["p1_graveyard"].card_ids.append("tot")
+
+	var pool := StackResolver.get_enter_play_graveyard_targets(st, db, "p1")
+	ok("tot" in pool, "jo-r: a Totem card in the graveyard is an ally card (305.3a)")
+
+	var ai := BaseAI.new()
+	eq(ai.choose_enter_play_graveyard(st, db, "p1"), "big",
+		"jo-s: AI takes the most valuable ally card back")
+
+	# Full hand → decline (the card would be discarded at wrap-up, 503.2a).
+	for i in st.get_max_hand_size("p1", db):
+		_add_card_to_hand(st, "filler%d" % i, "cheap_def", "p1")
+	eq(ai.choose_enter_play_graveyard(st, db, "p1"), "",
+		"jo-t: AI declines with a full hand")
 
 func _test_outrider_zarg_idle_dies() -> void:
 	_buf.append("\n-- Outrider Zarg: destroyed at end of your turn unless he dealt damage --")

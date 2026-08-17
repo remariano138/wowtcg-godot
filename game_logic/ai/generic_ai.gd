@@ -113,6 +113,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var wrath := bestial_wrath_action(state, db, player_id)
 	if wrath != null:
 		return wrath
+	# Katsin Bloodoath — shield an ally that would die in this combat.
+	var katsin := katsin_shield_action(state, db, player_id)
+	if katsin != null:
+		return katsin
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector

@@ -65,6 +65,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var wrath := bestial_wrath_action(state, db, player_id)
 	if wrath != null:
 		return wrath
+	# Katsin Bloodoath (BaseAI) — shield an ally that would die in this combat.
+	var katsin := katsin_shield_action(state, db, player_id)
+	if katsin != null:
+		return katsin
 	# Withdraw save-bounce (BaseAI) — deterministic, never left to the dice.
 	var save := save_bounce_action(state, db, player_id)
 	if save != null:

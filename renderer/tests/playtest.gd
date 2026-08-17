@@ -113,6 +113,9 @@ var _stop_for_end_window: bool = false
 # passing every such window to speed the game up back when instants were rare.
 # Instant-speed plays are common enough now that skipping a real decision point
 # is simply wrong, so ambush is the only behaviour.
+# Game Over dialog: sized for the _stats_grid block (the default
+# ConfirmationDialog size squeezes its columns). Widen it when adding a column.
+const GAME_OVER_DIALOG_SIZE := Vector2i(840, 300)
 const AMBUSH_HIGHLIGHT := Color(1.0, 0.9, 0.2)
 const HOVER_MAGNIFY := 1.2   # local player's own hand cards magnify on hover
 var _in_ambush_mode: bool = false
@@ -263,6 +266,8 @@ var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_r
 var _gy_quest_shuffle_mode: bool = false  # true = Poison Water's graveyard→deck pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_circle_mode:   bool = false    # true = Circle of Life deck search (choose_circle_of_life; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
+var _gy_jocasta_mode:  bool = false    # true = Dark Cleric Jocasta's enter-play fetch (a choose_enter_play_target chain link; Cancel/Esc = decline — "you may")
+var _gy_jocasta_source: String = ""    # the Jocasta instance whose trigger is pending (source_card_id of that link)
 var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). See _gy_filter_active.
 var _gy_reveal_card_type: String = ""   # reveal-pick: required card type, kept so the choice can be re-opened if a pick is refused
 var _gy_filter_active: bool = false   # true = _gy_selectable is authoritative, INCLUDING when empty (reveal-pick with no matching card ⇒ nothing is pickable). Without this an empty dict read as "all selectable" and let the player submit an illegal pick, which the engine refuses — leaving the choice pending forever and hard-locking the turn.
@@ -4393,6 +4398,39 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_router.start_enter_play_targeting(card_id, dmg_type, amount)
 			_refresh_ui()
 		return
+	# Dark Cleric Jocasta: "you may put target ally card from your graveyard into
+	# your hand." The only enter-play target that lives in a GRAVEYARD, so it is
+	# picked in the graveyard browser rather than by clicking the board. Routed
+	# "public" — a graveyard is open information, so the off-seat hotseat player
+	# picks inline with no hand hiding and no handoff.
+	if _state.pending_enter_play_effect.get("effect", "") == "graveyard_to_hand_ally":
+		var jo_route := _route_choice(ctrl, "public")
+		if jo_route == "ai":
+			var jo_pick := ""
+			var jo_ai: Object = _p1_ai if ctrl == "p1" else _p2_ai
+			if jo_ai is BaseAI:
+				jo_pick = (jo_ai as BaseAI).choose_enter_play_graveyard(_state, _db, ctrl)
+			if jo_pick == "":
+				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+			else:
+				var jo_act := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": jo_pick})
+				EventBus.emit_events(StackResolver.submit_action(_state, jo_act, _db))
+				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
+			_refresh_ui()
+			_schedule_next_turn()
+			return
+		_gy_jocasta_source = card_id
+		_open_gy_dialog(
+				StackResolver.get_enter_play_graveyard_targets(_state, _db, ctrl), false,
+				"Dark Cleric Jocasta — put an ally card from your graveyard into your hand",
+				0, 1)
+		_gy_jocasta_mode = true
+		_gy_confirm_btn.text = "Take it (C)"
+		_gy_cancel_btn.text = "Decline (Esc)"
+		_set_status("Take an ally card back from your graveyard, or decline")
+		_refresh_ui()
+		return
 	# Hur Shieldsmasher / Zygore Bladebreaker: optional destroy-equipment
 	# trigger. AI only destroys OPPOSING equipment (declines otherwise);
 	# humans may Esc to decline.
@@ -5452,6 +5490,9 @@ func _on_gy_confirm_pressed() -> void:
 	if _gy_circle_mode:
 		_resolve_circle_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
 		return
+	if _gy_jocasta_mode:
+		_resolve_jocasta_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
+		return
 	if _gy_reveal_mode:
 		var pick: String = _gy_selected[0] if not _gy_selected.is_empty() else ""
 		var payload := {
@@ -5537,6 +5578,9 @@ func _on_gy_cancel_pressed() -> void:
 	if _gy_circle_mode:
 		_resolve_circle_choice("")   # "may" + 413.3 — Esc/Cancel fails to find
 		return
+	if _gy_jocasta_mode:
+		_resolve_jocasta_choice("")  # "you may" — Esc/Cancel declines the fetch
+		return
 	var was_view_only := _gy_view_only
 	_close_gy_dialog()
 	if not was_view_only:
@@ -5552,6 +5596,27 @@ func _resolve_recomb_choice(pick: String) -> void:
 	var events := StackResolver.choose_recombobulation(_state, pick, _db)
 	_exit_choice_peek_mode()
 	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+
+
+# Shared exit for Dark Cleric Jocasta's browser: "" declines. Unlike the
+# Recombobulation / Circle fetches this one is NOT a direct call — a pick puts a
+# choose_enter_play_target link on the chain (so the opponent gets a real window
+# before the card comes back), which is why it submits and then passes priority.
+func _resolve_jocasta_choice(pick: String) -> void:
+	var source_id := _gy_jocasta_source
+	var src := _state.get_card(source_id)
+	var picker: String = src.controller if src else _local_player
+	_close_gy_dialog()
+	if pick == "":
+		EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+	else:
+		var act := PendingAction.make("choose_enter_play_target", picker,
+			{"source_card_id": source_id, "target_id": pick})
+		EventBus.emit_events(StackResolver.submit_action(_state, act, _db))
+	_exit_choice_peek_mode()
 	_set_status("")
 	_refresh_ui()
 	_schedule_next_turn()
@@ -5577,6 +5642,8 @@ func _close_gy_dialog() -> void:
 	_gy_reveal_mode = false
 	_gy_recomb_mode = false
 	_gy_circle_mode = false
+	_gy_jocasta_mode = false
+	_gy_jocasta_source = ""
 	_gy_quest_shuffle_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
@@ -6759,25 +6826,51 @@ func _handle_game_over(payload: Dictionary) -> void:
 			else "★  %s  wins!" % _log_player(winner)
 	var dialog := ConfirmationDialog.new()
 	dialog.title            = "Game Over"
-	dialog.dialog_text      = "%s\n\n%s\n\n%s" % [
-		headline, GameEvent.game_over_explanation(payload), _stats_summary()]
+	dialog.dialog_text      = "%s\n\n%s\n" % [
+		headline, GameEvent.game_over_explanation(payload)]
 	dialog.get_ok_button().text     = "Rematch"
 	dialog.get_cancel_button().text = "Leave Game"
+	dialog.add_child(_stats_grid())
 	dialog.confirmed.connect(_on_rematch)
 	dialog.canceled.connect(func() -> void: get_tree().quit())
 	add_child(dialog)
-	dialog.popup_centered()
+	# Wide enough for the six-column stat block below — the default size wraps it.
+	dialog.popup_centered(GAME_OVER_DIALOG_SIZE)
 
 
 # Compact per-player stat block for the Game Over dialog.
-func _stats_summary() -> String:
-	var lines := PackedStringArray()
-	lines.append("            Drawn   Played   Dmg prevented")
+# A GridContainer, NOT space-padded text: the dialog label uses a proportional
+# font, so padding never lines a column up with its header. Adding a column here
+# is enough — the grid sizes itself; only keep GAME_OVER_DIALOG_SIZE wide enough.
+func _stats_grid() -> Control:
+	var headers := ["", "Drawn", "Played", "Resources", "Dmg prev",
+			"Hero combat", "Hero ability", "Ally dmg"]
+	var grid := GridContainer.new()
+	grid.columns = headers.size()
+	grid.add_theme_constant_override("h_separation", 18)
+	grid.add_theme_constant_override("v_separation", 4)
+	for h in headers:
+		grid.add_child(_stats_cell(h, true))
 	for pid in ["p1", "p2"]:
-		lines.append("%-8s  %5d   %6d   %13d" % [
-			pid.to_upper(), _stats.drawn(pid), _stats.played(pid),
-			_stats.prevented(pid)])
-	return "\n".join(lines)
+		var row := [pid.to_upper(), _stats.drawn(pid), _stats.played(pid),
+				_stats.resourced(pid), _stats.prevented(pid),
+				_stats.hero_combat_dmg(pid), _stats.hero_ability_dmg(pid),
+				_stats.ally_dmg(pid)]
+		for i in row.size():
+			grid.add_child(_stats_cell(str(row[i]), false, i > 0))
+	return grid
+
+
+func _stats_cell(text: String, header: bool, right_align: bool = false) -> Label:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if right_align \
+			else HORIZONTAL_ALIGNMENT_LEFT
+	if header:
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if text != "" \
+				else HORIZONTAL_ALIGNMENT_LEFT
+	return lbl
 
 
 func _on_rematch() -> void:

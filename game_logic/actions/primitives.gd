@@ -302,7 +302,17 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		"target_is_ally":    target_zone != null and target_zone.zone_type == "ally_row",
 	})
 
-	events.append(GameEvent.damage_dealt(source_id, target_id, dealt))
+	# Provenance for observers (StatTracker's hero combat / ability damage split).
+	# Snapshotted like the log entry above, and for the same reason: by the time
+	# anything reads it the source may have left play or changed control.
+	var source_ps := state.players.get(source_card.controller) as PlayerState if source_card else null
+	events.append(GameEvent.damage_dealt(source_id, target_id, dealt, {
+		"source_controller": source_card.controller if source_card else "",
+		"source_is_hero":    source_ps != null and source_ps.hero_instance_id == source_id,
+		"source_is_ally":    source_zone != null and source_zone.zone_type == "ally_row",
+		"combat":            bool(opts.get("combat", false)),
+		"from_ability":      bool(opts.get("from_ability", false)),
+	}))
 	events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, max_hp))
 
 	# Berserking: "Ongoing: When your hero is dealt damage, put a berserk counter
@@ -370,6 +380,20 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 		events.append(GameEvent.damage_prevented(target_id, amount, 0, target.controller))
 		return {"amount": 0, "events": events}
 
+	# (a3) Katsin Bloodoath: "Prevent all combat damage that would be dealt TO and
+	# dealt BY target friendly ally this turn." Bestial Wrath's instance-scoped
+	# grant narrowed to COMBAT damage but widened to both directions — which is
+	# why the SOURCE is checked as well as the target. "combat" is set on both
+	# packets of the conclusion (the attacker's and the defender's retaliation),
+	# so a shielded ally neither takes nor deals combat damage, while every
+	# non-combat source (abilities, powers, totems, end-of-turn burns) still
+	# lands. Skipped for unpreventable damage, which returned above.
+	if bool(opts.get("combat", false)) \
+			and (_has_prevent_combat_shield(target)
+				or _has_prevent_combat_shield(state.get_card(source_id))):
+		events.append(GameEvent.damage_prevented(target_id, amount, 0, target.controller))
+		return {"amount": 0, "events": events}
+
 	# (b) Rule 717.2c: exhausted armor prevents damage dealt to the controller's
 	# HERO. The pool (PlayerState.damage_prevention) was built at the prevention
 	# point (StackResolver.choose_prevention) opened right before this packet.
@@ -395,6 +419,20 @@ static func _has_prevent_all_shield(target: CardInstance) -> bool:
 		return false
 	for buff in target.active_buffs:
 		if (buff as Buff).stat == "prevent_all_damage":
+			return true
+	return false
+
+
+# A "prevent all COMBAT damage dealt to and by this character" grant sitting on
+# the instance (Katsin Bloodoath's `prevent_combat_damage` Buff). Same live read
+# and same automatic expiry as the shield above; it is checked against BOTH ends
+# of a combat packet, since the clause covers damage the character deals as well
+# as damage dealt to it.
+static func _has_prevent_combat_shield(card: CardInstance) -> bool:
+	if card == null:
+		return false
+	for buff in card.active_buffs:
+		if (buff as Buff).stat == "prevent_combat_damage":
 			return true
 	return false
 

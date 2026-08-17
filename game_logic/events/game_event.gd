@@ -42,8 +42,20 @@ static func card_moved(card_id: String, from_zone: String, to_zone: String) -> G
 static func card_played(player_id: String, card_id: String) -> GameEvent:
 	return make("card_played", {"player": player_id, "card": card_id})
 
-static func damage_dealt(source_id: String, target_id: String, amount: int) -> GameEvent:
-	return make("damage_dealt", {"source": source_id, "target": target_id, "amount": amount})
+# `amount` is the damage actually DEALT — after prevention (717.2b), uncapped by
+# the target's remaining health (405.2). `extra` carries the packet's provenance
+# for observers that need it (StatTracker's per-source damage breakdown):
+#   source_controller — the controller of the source card, snapshotted
+#   source_is_hero    — the source IS that player's hero instance
+#   combat            — this is combat damage (either combat conclusion packet)
+#   from_ability      — the packet came from an ability resolution
+# Rules code must not read these back off the event: state.record("damage_dealt")
+# is the rules-contract log (game_logic/turn_state_flags.md); this is for the UI.
+static func damage_dealt(source_id: String, target_id: String, amount: int,
+		extra: Dictionary = {}) -> GameEvent:
+	var data := {"source": source_id, "target": target_id, "amount": amount}
+	data.merge(extra)
+	return make("damage_dealt", data)
 
 static func card_destroyed(card_id: String, by_source: String) -> GameEvent:
 	return make("card_destroyed", {"card": card_id, "source": by_source})

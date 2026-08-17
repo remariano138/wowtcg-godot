@@ -2346,6 +2346,25 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 							}
 							events.append(GameEvent.enter_play_target_required(
 								card_id, "exhaust", 0))
+					"graveyard_to_hand_ally":
+						# Dark Cleric Jocasta: "When Dark Cleric Jocasta enters play,
+						# you may put target ally card from your graveyard into your
+						# hand." Call the Spirit's fetch reached from an enter-play
+						# trigger — and the FIRST enter-play target that lives in a
+						# GRAVEYARD rather than in play, which is why the pool is
+						# get_graveyard_search_candidates and not one of the in-play
+						# pools above. Optional; an empty graveyard opens no prompt.
+						if not get_enter_play_graveyard_targets(
+								state, db, card.controller).is_empty():
+							state.pending_enter_play_effect = {
+								"card_id": card_id,
+								"effect": "graveyard_to_hand_ally",
+								"dmg_type": "graveyard",
+								"amount": 0,
+								"optional": true,
+							}
+							events.append(GameEvent.enter_play_target_required(
+								card_id, "graveyard", 0))
 					"steal_equipment":
 						# Nyn'jah: "When Nyn'jah enters play, you may ready target
 						# opposing equipment. You control that equipment while
@@ -3799,7 +3818,8 @@ static func get_ready_def_armor(state: GameState, player_id: String,
 # An offer dict for a packet about to hit `target_id`, or {} when the target
 # isn't an in-play hero / no damage / its controller has no ready DEF armor.
 static func _prevention_offer(state: GameState, db, target_id: String,
-		amount: int, source_id: String, unpreventable: bool = false) -> Dictionary:
+		amount: int, source_id: String, unpreventable: bool = false,
+		is_combat: bool = false) -> Dictionary:
 	if amount <= 0 or not state.is_in_play(target_id):
 		return {}
 	if unpreventable:
@@ -3809,6 +3829,12 @@ static func _prevention_offer(state: GameState, db, target_id: String,
 		return {}
 	if GameLogic._has_prevent_all_shield(card):
 		return {}   # already fully shielded: never offer a point that can't help
+	# Katsin Bloodoath's shield covers COMBAT damage only, and covers what the
+	# shielded ally DEALS as well as what it takes — so a hero being attacked by
+	# a shielded ally is never offered a point either: the packet can't land.
+	if is_combat and (GameLogic._has_prevent_combat_shield(card)
+			or GameLogic._has_prevent_combat_shield(state.get_card(source_id))):
+		return {}
 	var ps := state.players.get(card.controller) as PlayerState
 	if not ps or ps.hero_instance_id != target_id:
 		return {}   # only heroes are shielders (717.2c)
@@ -3837,11 +3863,11 @@ static func _combat_prevention_offers(state: GameState, db) -> Array:
 	atk_dmg = _combat_replacements(state, db, attacker_id, atk_dmg)
 	def_dmg = _combat_replacements(state, db, defender_id, def_dmg)
 	var defender_offer := _prevention_offer(state, db, defender_id, atk_dmg, attacker_id,
-		GameLogic.is_damage_unpreventable(state, db, attacker_id, true))
+		GameLogic.is_damage_unpreventable(state, db, attacker_id, true), true)
 	if not defender_offer.is_empty():
 		offers.append(defender_offer)
 	var attacker_offer := _prevention_offer(state, db, attacker_id, def_dmg, defender_id,
-		GameLogic.is_damage_unpreventable(state, db, defender_id, true))
+		GameLogic.is_damage_unpreventable(state, db, defender_id, true), true)
 	if not attacker_offer.is_empty():
 		offers.append(attacker_offer)
 	return offers
@@ -4042,8 +4068,12 @@ static func _apply_packet_group(state: GameState, db,
 		var source_id: String = p.get("source", "")
 		if not state.is_in_play(target_id):
 			continue
+		# `from_ability` is forwarded purely as provenance for the damage_dealt
+		# event (StatTracker's ability-damage split) — the Chromatic Cloak bonus
+		# it also drives was already applied when the packet was built.
 		var dd_events := GameLogic.deal_damage(
-			state, source_id, target_id, int(p.get("amount", 0)), db)
+			state, source_id, target_id, int(p.get("amount", 0)), db,
+			{"from_ability": bool(p.get("from_ability", false))})
 		events.append_array(dd_events)
 		var drain_per := int(p.get("drain_heal_per", 0))
 		if drain_per > 0:
@@ -4753,6 +4783,26 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 					and _is_hero_or_ally(state, cp_target, db):
 				events.append_array(_apply_damage_riders(
 					state, cp_target, card_id, "cannot_protect"))
+		"prevent_combat_damage_target":
+			# Katsin Bloodoath: "(3) -> Prevent all combat damage that would be
+			# dealt to and dealt by target friendly ally this turn." Bestial
+			# Wrath's instance-scoped shield Buff (turns:1, so the end-of-turn
+			# sweep gives "this turn" for free and it times correctly when used on
+			# the opponent's turn), narrowed to COMBAT damage but covering both
+			# directions — GameLogic.prevent checks the buff on the packet's SOURCE
+			# as well as its target. "Friendly ally" is the caster's own ally_row,
+			# the source herself included. Rule 706 re-check: fizzles if the target
+			# left play, became Untargetable or changed control.
+			var pc_target: String = action.params.get("target_id", "")
+			var pc_card := state.get_card(pc_target)
+			if _is_legal_target(state, pc_target, db) and _is_ally(state, pc_target) \
+					and pc_card and pc_card.controller == action.source_player:
+				pc_card.active_buffs.append(Buff.make(
+					"prevent_combat_damage", card_id,
+					"prevent_combat_damage", 1, "turns", 1))
+				events.append(GameEvent.make("damage_shield_granted", {
+					"target": pc_target, "source": card_id, "kind": "combat",
+				}))
 		"must_attack_target":
 			# Lynda Steele: "(1) -> Target ally must attack this turn if able."
 			# Rule 600.2 — a pass-priority lock on the target's CONTROLLER, not a
@@ -5839,11 +5889,14 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	# then check fatalities on both after — true simultaneity.
 	# combat_attack marks the attacker→defender packet — Brother Rhone's shield
 	# only stops damage from ATTACKING allies, never a defender's retaliation.
+	# "combat" marks BOTH packets (the retaliation is combat damage too, and the
+	# stats care about that); "combat_attack" marks only the attacker→defender
+	# one, which is the narrower fact Brother Rhone's shield keys on.
 	var atk_events := GameLogic.deal_damage(state, attacker_id, defender_id, atk_dmg, db,
-		{"unpreventable": atk_unpreventable, "combat_attack": true})
+		{"unpreventable": atk_unpreventable, "combat_attack": true, "combat": true})
 	events.append_array(atk_events)
 	var def_events := GameLogic.deal_damage(state, defender_id, attacker_id, def_dmg, db,
-		{"unpreventable": def_unpreventable})
+		{"unpreventable": def_unpreventable, "combat": true})
 	events.append_array(def_events)
 	_clear_damage_prevention(state)   # combat over — unspent block expires
 
@@ -8190,6 +8243,9 @@ static func retract_last(state: GameState, player_id: String,
 	events.append(GameEvent.make("action_retracted", {
 		"action_type": top.action_type,
 		"player":      player_id,
+		# Which card came back, where the action had one (StatTracker undoes the
+		# resource count off this; "" for the card-less action types).
+		"card_id":     card_id,
 	}))
 	return events
 
@@ -8548,6 +8604,12 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 		if (a as PendingAction).action_type == "choose_enter_play_target":
 			return false
 	var target_id: String = action.params.get("target_id", "")
+	# Dark Cleric Jocasta targets a card in a GRAVEYARD, not in play, so the
+	# in-play gate below would reject every legal target. Its own pool is the
+	# whole check.
+	if String(state.pending_enter_play_effect.get("effect", "")) == "graveyard_to_hand_ally":
+		return target_id in get_enter_play_graveyard_targets(
+			state, db, source_card.controller)
 	if not _is_legal_target(state, target_id, db):
 		return false
 	# Taz'dingo: "deals N damage to target hero or ally" — a CHARACTER target.
@@ -8649,6 +8711,18 @@ static func get_enter_play_ability_targets(state: GameState, db) -> Array[String
 	return result
 
 
+# Legal targets for Dark Cleric Jocasta's enter-play trigger: ally CARDS in
+# `controller`'s OWN graveyard (Call the Spirit's pool). Asked through
+# get_graveyard_search_candidates, so a Totem card counts as an ally card per
+# 305.3a. Unlike every other enter-play pool these targets are NOT in play, so
+# _is_legal_target is deliberately not applied — Untargetable is a keyword on an
+# in-play card, and a card in a graveyard has no such state.
+static func get_enter_play_graveyard_targets(state: GameState, db,
+		controller: String) -> Array[String]:
+	return get_graveyard_search_candidates(
+		state, controller, {"card_type": "Ally", "owner": "own"}, db)
+
+
 # Decline an OPTIONAL pending enters-play effect ("you may ..." — Ghank).
 # Direct call from the scene (Esc / AI decline) — mandatory effects (Taz'dingo)
 # can't be declined and are left untouched.
@@ -8737,6 +8811,23 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 			# 601.3 recheck — Exhaustion's interrupt on an Instant Ally body.
 			if target_id in get_death_target_targets(state, db):
 				events.append_array(GameLogic.exhaust_card(state, target_id))
+		"graveyard_to_hand_ally":
+			# Dark Cleric Jocasta — 706 re-check: fizzle unless the target is STILL
+			# an ally card in the source controller's graveyard. A card exiled
+			# (Cannibalize, Ophelia) or otherwise moved out of the graveyard in the
+			# response window is gone from the pool. The source is NOT re-checked
+			# (707.3): killing Jocasta in that window does not stop the fetch.
+			# "YOUR graveyard" is the LINK's controller — the player who announced
+			# it, which _can_choose_enter_play_target pinned to Jocasta's controller
+			# at announcement. Never re-read off the source card: an effect belongs
+			# to whoever controlled its source when it was created, so a source that
+			# died (707.3) or changed control mid-chain must not move the fetch to
+			# another player's graveyard.
+			var fetch_ctrl: String = action.source_player
+			if target_id in get_enter_play_graveyard_targets(state, db, fetch_ctrl):
+				events.append_array(GameLogic.move_card(
+					state, target_id, fetch_ctrl + "_hand"))
+				events.append(GameEvent.card_returned_from_graveyard(target_id, fetch_ctrl))
 		"steal_equipment":
 			# Nyn'jah — 706 re-check: fizzle unless the target is still a legal
 			# in-play equipment controlled by an opponent (an equipment that was

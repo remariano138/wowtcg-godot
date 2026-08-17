@@ -64,6 +64,11 @@
       "_card_name": "World in Flames"
     },
     {
+      "card_def_id": "azeroth_59",
+      "count": 1,
+      "_card_name": "Pyroblast"
+    },
+    {
       "card_def_id": "azeroth_235",
       "count": 1,
       "_card_name": "Elder Moorf"
@@ -85,7 +90,7 @@
     },
     {
       "card_def_id": "azeroth_252",
-      "count": 2,
+      "count": 1,
       "_card_name": "Moko Hunts-at-Dawn"
     },
     {

@@ -556,7 +556,18 @@ func _on_game_event(event: GameEvent) -> void:
 			if ecd_cn and ecd_cn.has_method("update_damage"):
 				ecd_cn.update_damage(ecd_dmg)
 		"card_destroyed":
-			_play_death_animation(event.payload.get("card", ""))
+			var dead_id: String = event.payload.get("card", "")
+			# A source pulsing while its power is on the chain can be destroyed by
+			# the power itself (sacrifice_self — "Chipper" Ironbane, Kavai, Moira).
+			# `ally_power_used` would normally end the loop; a destroyed source
+			# never gets there, so the pulse would run forever in the graveyard.
+			# Give it the same 2-second post-resolution pulse instead.
+			if _pulsing_id == dead_id:
+				var dcn := card_nodes.get(dead_id) as CardNode
+				if dcn:
+					dcn.stop_pulse(2.0)
+				_pulsing_id = ""
+			_play_death_animation(dead_id)
 		"card_revealed":
 			var cn := card_nodes.get(event.payload.get("card", "")) as CardNode
 			if cn:

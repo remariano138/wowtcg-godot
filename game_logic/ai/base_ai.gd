@@ -120,6 +120,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var wrath := bestial_wrath_action(state, db, player_id)
 	if wrath != null:
 		return wrath
+	# Katsin Bloodoath — shield an ally that would die in this combat.
+	var katsin := katsin_shield_action(state, db, player_id)
+	if katsin != null:
+		return katsin
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -1160,6 +1164,78 @@ func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String)
 # protector for OUR next turn. It is a real use, but it needs a read of our own
 # next turn's board that the heuristic AI doesn't have, and paying 1 a turn for
 # a guess is worse than holding the resource.
+# Katsin Bloodoath: "(3) -> Prevent all combat damage that would be dealt to and
+# dealt by target friendly ally this turn." A pure SAVE — the shield stops what
+# the ally deals as well as what it takes, so it never wins a fight, it only
+# refuses to lose one. Fired when one of our allies is in a combat it would not
+# survive, held otherwise (the power costs 3 a shot and does nothing outside
+# combat).
+#
+# The "dealt by" half is what shapes the policy: shielding an ally that would
+# kill its opponent and live throws away a kill, so that case is skipped
+# outright. A mutual trade is shielded only when OUR body is worth at least
+# theirs — otherwise letting the trade happen is the better deal.
+#
+# Works in the attack window, the defend window and in response to a combat
+# proposal still on the chain: the grant lasts the turn, so any of those is
+# early enough to cover the conclusion.
+func katsin_shield_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var attacker_id := ""
+	var defender_id := ""
+	if state.combat_attack_window or state.combat_defend_window:
+		attacker_id = state.combat_attacker
+		defender_id = state.combat_defender
+	elif not state.pending_actions.is_empty():
+		var top: PendingAction = state.pending_actions.back()
+		if top.action_type == "propose_combat":
+			attacker_id = top.params.get("attacker_id", "")
+			defender_id = top.params.get("defender_id", "")
+	if attacker_id == "" or defender_id == "":
+		return null
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+
+	# Which side is ours, and is it an ALLY? (The power can't shield a hero.)
+	var ours := ""
+	var theirs := ""
+	for pair in [[attacker_id, defender_id], [defender_id, attacker_id]]:
+		var card := state.get_card(pair[0])
+		if card and card.controller == player_id \
+				and StackResolver._is_ally(state, pair[0]):
+			ours = pair[0]
+			theirs = pair[1]
+			break
+	if ours == "":
+		return null
+
+	# Only worth 3 resources if our ally is actually about to die.
+	var ours_is_attacker := (ours == attacker_id)
+	var verdict := combat_trade_value(state, db, ours, theirs, ours_is_attacker)
+	if verdict == "both":
+		# A trade: shield only if our body is worth at least theirs.
+		if card_value_score(state, db, ours) < card_value_score(state, db, theirs):
+			return null
+	elif verdict != "suicide":
+		# "safe_lethal" — we kill it and live, so shielding throws the kill away.
+		# "no_one"      — nothing of ours dies, so there is no save to make.
+		return null
+
+	for katsin in state.cards_in_zone(player_id + "_ally_row"):
+		var def := db.get_def(katsin.card_def_id) as CardDef
+		if not def:
+			continue
+		if StackResolver._ally_activated_power(def).get(
+				"effect", "") != "prevent_combat_damage_target":
+			continue
+		var act := PendingAction.make("use_ally_power", player_id,
+			{"card_id": katsin.instance_id, "target_id": ours})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
 func must_attack_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null
@@ -2322,6 +2398,23 @@ func choose_recombobulation(state: GameState, db, player_id: String) -> String:
 	return sort_valuable_cards(state, db, candidates)[0]
 
 
+# Dark Cleric Jocasta: "When [she] enters play, you may put target ally card
+# from your graveyard into your hand." The fetch is free, so take the most
+# valuable ally card back — the Recombobulation heuristic verbatim, including
+# its full-hand decline (a card drawn into a full hand is discarded at wrap-up,
+# 503.2a, for nothing). "" declines.
+func choose_enter_play_graveyard(state: GameState, db, player_id: String) -> String:
+	if not db:
+		return ""
+	var candidates := StackResolver.get_enter_play_graveyard_targets(state, db, player_id)
+	if candidates.is_empty():
+		return ""
+	var hand := state.zones.get(player_id + "_hand") as Zone
+	if hand and hand.card_ids.size() >= state.get_max_hand_size(player_id, db):
+		return ""
+	return sort_valuable_cards(state, db, candidates)[0]
+
+
 # Circle of Life: "When an ally is destroyed, its controller may search his deck
 # for an ally card with the same name and put it into play exhausted." Always
 # take it. Unlike the Recombobulation fetch there is no hand-size reason to
@@ -3129,6 +3222,13 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# "ally" branch below would otherwise point it at our OWN best ally
 			# and force us to attack with it. Held for the opponent's turn; see
 			# must_attack_action().
+			continue
+		elif ap.get("effect", "") == "prevent_combat_damage_target":
+			# Katsin Bloodoath: "(3) -> Prevent all combat damage dealt to and by
+			# target friendly ally this turn." The shield does nothing outside a
+			# combat, and the generic branch below would spend 3 resources on it
+			# every turn for no effect. Held for a combat one of our allies would
+			# not survive; see katsin_shield_action().
 			continue
 		elif ap.get("targets", "") == "ally":
 			# Friendly buff powers (Elder Moorf): target our own highest-ATK ally

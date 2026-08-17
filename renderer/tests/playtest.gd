@@ -115,7 +115,7 @@ var _stop_for_end_window: bool = false
 # is simply wrong, so ambush is the only behaviour.
 # Game Over dialog: sized for the _stats_grid block (the default
 # ConfirmationDialog size squeezes its columns). Widen it when adding a column.
-const GAME_OVER_DIALOG_SIZE := Vector2i(840, 300)
+const GAME_OVER_DIALOG_SIZE := Vector2i(840, 360)
 const AMBUSH_HIGHLIGHT := Color(1.0, 0.9, 0.2)
 const HOVER_MAGNIFY := 1.2   # local player's own hand cards magnify on hover
 var _in_ambush_mode: bool = false
@@ -191,10 +191,11 @@ var _context_menu: PopupMenu
 var _context_actions: Array   # Array of {label, action, enabled}
 
 # ── Player display names ──────────────────────────────────────────────────────
-# What the UI calls each seat. Hardcoded for now; the intent is that these become
-# editable (typed in by the player, an AI's given name, or the hero's name), so
-# every user-facing mention of a player goes through _player_name() rather than
-# printing the engine's player_id — swapping the source is then a one-place edit.
+# What the UI calls each seat: the name of the hero sitting in it, set once per
+# game in _setup_game (see there). The "P1"/"P2" values below are only what's
+# shown before a game exists. Every user-facing mention of a player goes through
+# _player_name() rather than printing the engine's player_id, so making these
+# editable later (typed in by the player, an AI's given name) is a one-place edit.
 var _p1_name: String = "P1"
 var _p2_name: String = "P2"
 
@@ -2094,6 +2095,12 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	_router.setup(_state, _db, _local_player)
 	_orient_camera(_local_player, false)   # e.g. single human seated at p2 vs AI
 
+	# Each seat is named after the hero sitting in it — done here, once the heroes
+	# are in play and before anything user-facing is drawn, so every _player_name()
+	# call for the rest of the game reads the hero's name.
+	_p1_name = _hero_name("p1")
+	_p2_name = _hero_name("p2")
+
 	# Who goes first — prompt (normal start / rematch) or autopick random (Quick Start).
 	_choose_first_player()
 
@@ -2693,6 +2700,12 @@ func _player_name(pid: String) -> String:
 	return _p1_name if pid == "p1" else _p2_name
 
 
+# The same names as a player_id -> name map, for engine-side text builders
+# (GameEvent.game_over_explanation) that don't know about the scene.
+func _player_names() -> Dictionary:
+	return {"p1": _p1_name, "p2": _p2_name}
+
+
 # "(1)" for the player who took the first turn this game, "(2)" for the other.
 # Read live off state.first_player, which TurnManager sets at start_game — so a
 # rematch that flips who starts flips these with no extra bookkeeping.
@@ -2845,9 +2858,21 @@ func _update_pass_btn() -> void:
 		or (_state.pending_control_discard_player != "" \
 			and _state.pending_control_discard_player != _local_player) \
 		or (_state.pending_resource_place_player != "" \
-			and _state.pending_resource_place_player != _local_player)
+			and _state.pending_resource_place_player != _local_player) \
+		or not _state.pending_enter_play_effect.is_empty()
 
-	if _state.pending_resource_place_player == _local_player:
+	if not _state.pending_enter_play_effect.is_empty():
+		# An enters-play target choice is owed (Bhenn, Taz'dingo, Sister Rot…).
+		# The engine hard-blocks both submit and pass until it's answered, so the
+		# button only says who it's waiting on — an optional effect is declined
+		# with Esc out of the targeting flow, not from here.
+		var owed := StackResolver.pending_enter_play_controller(_state)
+		_pass_btn.text = ("Choose a target  [Esc to decline]" \
+				if bool(_state.pending_enter_play_effect.get("optional", false)) \
+				else "Choose a target") if owed == _local_player \
+			else "Waiting for %s to choose a target" % _player_name(owed)
+		_pass_btn.modulate = Color(1.0, 0.6, 0.0)
+	elif _state.pending_resource_place_player == _local_player:
 		# Nightbloom: the pass button is the DECLINE option. Plain Space is fine
 		# here — unlike Infernal's give-up-control, declining costs nothing.
 		_pass_btn.disabled = false
@@ -3131,6 +3156,13 @@ func _try_pass(skip_confirm: bool = false) -> void:
 		return
 	# The quest ally-exhaust picker is modal: answer it (Confirm/Cancel) first.
 	if _in_ally_exhaust_mode:
+		return
+	# An enters-play target choice is owed (Bhenn, Taz'dingo…). The engine blocks
+	# the pass anyway; absorb the key here so it doesn't look like a dead button.
+	# An optional effect is declined with Esc out of the targeting flow.
+	if not _state.pending_enter_play_effect.is_empty():
+		_show_transient_notice("Choose a target for the entering ally first.",
+			Color(1.0, 0.6, 0.0))
 		return
 	# Nightbloom's optional placement: Space/pass declines it. No Ctrl gate —
 	# declining gives nothing away, unlike Infernal's give-up-control below.
@@ -3495,7 +3527,7 @@ func _log_event(event: GameEvent) -> void:
 			var head: String = "DRAW" if bool(event.payload.get("draw", false)) \
 					else "%s WINS" % _log_player(event.payload.get("winner", ""))
 			_log_entry("\n[color=#d4af37][b]═══ %s ═══[/b][/color]\n%s"
-					% [head, GameEvent.game_over_explanation(event.payload)])
+					% [head, GameEvent.game_over_explanation(event.payload, _player_names())])
 
 
 # ── AI ─────────────────────────────────────────────────────────────────────────
@@ -4542,6 +4574,44 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 				var dact2 := PendingAction.make("choose_enter_play_target", ctrl,
 					{"source_card_id": card_id, "target_id": best_id2})
 				EventBus.emit_events(StackResolver.submit_action(_state, dact2, _db))
+				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
+			_refresh_ui()
+			_schedule_next_turn()
+		else:
+			_router.start_enter_play_targeting(card_id, dmg_type, amount)
+			_refresh_ui()
+		return
+	# Ra'chee's mandatory heal ("he heals N damage from target hero or ally").
+	# The generic branch below is opponent-only, which is exactly backwards for a
+	# heal — so this one is FRIENDLY-only: our own most-damaged character, hero
+	# first on a tie (it is the one that can't be replaced). The trigger can't be
+	# declined and our hero is always a legal target, so with nothing damaged it
+	# resolves as a no-op on our own hero rather than repairing the opponent.
+	if enter_eff.begins_with("heal_target"):
+		if ctrl_type != "human":
+			var heal_best := ""
+			var heal_best_dmg := -1
+			var ps_own := _state.players.get(ctrl) as PlayerState
+			var heal_cands: Array[String] = []
+			if ps_own and ps_own.hero_instance_id != "":
+				heal_cands.append(ps_own.hero_instance_id)
+			for ally in _state.cards_in_zone(ctrl + "_ally_row"):
+				heal_cands.append(ally.instance_id)
+			for tid in heal_cands:
+				var hact := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": tid})
+				if not StackResolver.can_submit(_state, hact, _db):
+					continue
+				var hc := _state.get_card(tid)
+				if not hc:
+					continue
+				if hc.damage_taken > heal_best_dmg:
+					heal_best_dmg = hc.damage_taken
+					heal_best = tid
+			if heal_best != "":
+				var hact2 := PendingAction.make("choose_enter_play_target", ctrl,
+					{"source_card_id": card_id, "target_id": heal_best})
+				EventBus.emit_events(StackResolver.submit_action(_state, hact2, _db))
 				EventBus.emit_events(StackResolver.pass_priority(_state, _db))
 			_refresh_ui()
 			_schedule_next_turn()
@@ -6826,12 +6896,54 @@ func _handle_game_over(payload: Dictionary) -> void:
 			else "★  %s  wins!" % _log_player(winner)
 	var dialog := ConfirmationDialog.new()
 	dialog.title            = "Game Over"
-	dialog.dialog_text      = "%s\n\n%s\n" % [
-		headline, GameEvent.game_over_explanation(payload)]
-	dialog.get_ok_button().text     = "Rematch"
-	dialog.get_cancel_button().text = "Leave Game"
-	dialog.add_child(_stats_grid())
-	dialog.confirmed.connect(_on_rematch)
+	# The dialog's own label is left empty: an AcceptDialog lays out only that
+	# label, so a raw grid child would be positioned over it. Everything goes in
+	# one anchored VBox instead — headline, win condition, then the stat block.
+	dialog.dialog_text      = ""
+	# The dialog's own button bar is NOT used: it sits under the body, which put
+	# Rematch/Leave below the stat block (and off the bottom when the grid grew).
+	# Both buttons live in the body instead, directly under the headline — the
+	# stat block is the last thing on the dialog. Keep them hidden, or the bar
+	# reserves space and duplicates the choice.
+	dialog.get_ok_button().hide()
+	dialog.get_cancel_button().hide()
+	var body := VBoxContainer.new()
+	body.set_anchors_preset(Control.PRESET_FULL_RECT)
+	body.offset_left   = 16
+	body.offset_top    = 12
+	body.offset_right  = -16
+	body.offset_bottom = -16
+	body.add_theme_constant_override("separation", 8)
+	var head_lbl := Label.new()
+	head_lbl.text = headline
+	head_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.add_child(head_lbl)
+	var why_lbl := Label.new()
+	why_lbl.text = GameEvent.game_over_explanation(payload, _player_names())
+	why_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	why_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(why_lbl)
+	var btns := HBoxContainer.new()
+	btns.alignment = BoxContainer.ALIGNMENT_CENTER
+	btns.add_theme_constant_override("separation", 24)
+	var rematch_btn := Button.new()
+	rematch_btn.text = "Rematch"
+	rematch_btn.custom_minimum_size = Vector2(160, 40)
+	rematch_btn.pressed.connect(func() -> void:
+		dialog.hide()
+		_on_rematch())
+	btns.add_child(rematch_btn)
+	var leave_btn := Button.new()
+	leave_btn.text = "Leave Game"
+	leave_btn.custom_minimum_size = Vector2(160, 40)
+	leave_btn.pressed.connect(func() -> void: get_tree().quit())
+	btns.add_child(leave_btn)
+	body.add_child(btns)
+	var sep := HSeparator.new()
+	body.add_child(sep)
+	body.add_child(_stats_grid())
+	dialog.add_child(body)
+	# The titlebar close button still emits `canceled` — treat it as Leave Game.
 	dialog.canceled.connect(func() -> void: get_tree().quit())
 	add_child(dialog)
 	# Wide enough for the six-column stat block below — the default size wraps it.
@@ -6926,6 +7038,8 @@ func _on_rematch() -> void:
 func _schedule_next_turn() -> void:
 	if _draining or _game_over or _handoff_pending or _in_ambush_mode:
 		return
+	if not _state.pending_enter_play_effect.is_empty():
+		return  # wait for the enters-play target choice (Bhenn, Taz'dingo…)
 	if _state.pending_discard_count > 0:
 		return  # wait for discard resolution before advancing
 	if _state.pending_pet_sacrifice_player != "":
@@ -7036,7 +7150,8 @@ func _drain_passes() -> void:
 				or _state.pending_prevention_player != "" or _in_prevention_mode \
 				or _in_ally_exhaust_mode:
 			break
-		if _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
+		if not _state.pending_enter_play_effect.is_empty() \
+				or _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
 				or _state.pending_equip_sacrifice_player != "" \
 				or _state.pending_unique_sacrifice_player != "" \
 				or _state.pending_form_sacrifice_player != "" \

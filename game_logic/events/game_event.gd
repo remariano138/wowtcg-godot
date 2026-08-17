@@ -182,7 +182,9 @@ static func game_over_explanation(payload: Dictionary, names: Dictionary = {}) -
 	var cause := func(pid: String) -> String:
 		match reason:
 			"hero_defeated":
-				return "%s's hero received fatal damage" % name.call(pid)
+				# The display name IS the hero's name (see playtest's _p1_name),
+				# so this reads "Ta'zo received fatal damage" — never "X's hero".
+				return "%s received fatal damage" % name.call(pid)
 			"decked":
 				return "%s was decked — required to draw from an empty deck" % name.call(pid)
 			_:

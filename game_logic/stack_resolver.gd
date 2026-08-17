@@ -263,6 +263,14 @@ static func drain_state_based_deaths(state: GameState, db = null) -> Array[GameE
 
 
 static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
+	# A pending enters-play target choice (Bhenn, Taz'dingo, Sister Rot…) must be
+	# answered — submitted via choose_enter_play_target, or declined via
+	# decline_enter_play_effect where the effect is optional — before priority can
+	# move. can_submit already blocks every other action; without this, a pass
+	# would still flip priority away from the player who owes the choice (and the
+	# scene's drain loop would bounce passes around it).
+	if not state.pending_enter_play_effect.is_empty():
+		return []
 	# A pending discard-or-give-control choice (Infernal) must be resolved via
 	# choose_control_discard / decline_control_discard before priority can move.
 	if state.pending_control_discard_player != "":
@@ -2259,6 +2267,24 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						}
 						events.append(GameEvent.enter_play_target_required(
 							card_id, hero_dmg_type, hero_amount))
+					"heal_target":
+						# Ra'chee: "When [this] enters play, he heals N damage from
+						# target hero or ally." Taz'dingo's mandatory targeted
+						# enter-play shape with the burn swapped for a heal, on the
+						# same generic hero-or-ally pool — either party's, so a human
+						# may heal the opponent's. A hero is always in play, so the
+						# trigger can never fizzle for want of a target, and an
+						# undamaged target is a legal no-op rather than a reason to
+						# withhold it.
+						var heal_amount := int(parts[2]) if parts.size() > 2 else 0
+						state.pending_enter_play_effect = {
+							"card_id": card_id,
+							"effect": "heal_target:%d" % heal_amount,
+							"dmg_type": "heal",
+							"amount": heal_amount,
+						}
+						events.append(GameEvent.enter_play_target_required(
+							card_id, "heal", heal_amount))
 					"destroy_exhausted_damaged_ally":
 						# Ghank: "When [this] enters play, you may destroy target
 						# exhausted ally with damage on it." Optional — the choice
@@ -8625,6 +8651,12 @@ static func _can_choose_enter_play_target(state: GameState, action: PendingActio
 	if String(state.pending_enter_play_effect.get("effect", "")).begins_with("deal_damage_to_hero") \
 			and not _is_hero(state, target_id):
 		return false
+	# Ra'chee: "heals N damage from target hero or ally" — a CHARACTER target,
+	# same pool as Taz'dingo's burn (either party's). An in-play ability or
+	# equipment can't be healed.
+	if String(state.pending_enter_play_effect.get("effect", "")).begins_with("heal_target") \
+			and not _is_hero_or_ally(state, target_id, db):
+		return false
 	# Effect-specific target restriction (Ghank): only an exhausted ally with
 	# damage on it is a legal target.
 	if String(state.pending_enter_play_effect.get("effect", "")) == "destroy_exhausted_damaged_ally" \
@@ -8774,6 +8806,17 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 				"source": source_id, "target": target_id, "amount": hero_amount,
 				"dmg_type": hero_dmg_type,
 			}]))
+		"heal_target":
+			# Ra'chee — 706 re-check: fizzle if the target left play or became
+			# Untargetable, and it must still be a hero or ally. The heal lands
+			# inline (GameLogic.heal no-ops and emits nothing on an undamaged
+			# target); per 707.3 the SOURCE is not re-checked, so killing Ra'chee
+			# in the response window does not stop it.
+			if not _is_legal_target(state, target_id, db) \
+					or not _is_hero_or_ally(state, target_id, db):
+				return events
+			var heal_amount := int(parts[1]) if parts.size() > 1 else 0
+			events.append_array(GameLogic.heal(state, target_id, heal_amount, db, source_id))
 		"destroy_exhausted_damaged_ally":
 			# Ghank — 706 re-check: fizzle unless the target is STILL an
 			# exhausted, damaged, targetable ally at resolution.
@@ -9469,6 +9512,13 @@ static func _other_player(state: GameState, player_id: String) -> String:
 static func _pending_effect_controller(state: GameState) -> String:
 	var src := state.get_card(state.pending_enter_play_effect.get("card_id", ""))
 	return src.controller if src else state.turn_player
+
+
+# Public probe for the UI: who owes the pending enters-play target choice.
+static func pending_enter_play_controller(state: GameState) -> String:
+	if state.pending_enter_play_effect.is_empty():
+		return ""
+	return _pending_effect_controller(state)
 
 
 # Fire any "on_destroyed" effects declared in the card's effects string.

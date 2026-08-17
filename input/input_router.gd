@@ -1810,7 +1810,21 @@ func get_playable_card_ids() -> Array:
 			and state.pending_actions.is_empty() \
 			and not state.combat_attack_window and not state.combat_defend_window \
 			and not state.in_protect_point:
-		result.append_array(StackResolver.get_legal_attackers(state, local_player, db))
+		var attackers := StackResolver.get_legal_attackers(state, local_player, db)
+		result.append_array(attackers)
+		# Strikeable weapons (rule 303.2 / 602.1). The strike point itself only
+		# opens once combat starts, so this is an advance cue: the hero can attack
+		# (ready, with at least one legal defender) AND the weapon is ready with a
+		# payable strike cost right now. get_strikeable_weapons covers the weapon
+		# half (readiness, cost incl. Gorebelly's discount and Margaret Fowl's tax,
+		# one weapon per combat); the hero being a legal attacker covers the rest,
+		# so a hero facing only elusive characters lights up nothing.
+		var hero_ps := state.players.get(local_player) as PlayerState
+		if hero_ps and attackers.has(hero_ps.hero_instance_id) \
+				and not StackResolver.get_legal_defenders(
+					state, hero_ps.hero_instance_id, db).is_empty():
+			result.append_array(StackResolver.get_strikeable_weapons(
+				state, local_player, hero_ps.hero_instance_id, db))
 	# Face-up quests in resource row whose cost is currently payable (simple quests).
 	for card in state.cards_in_zone(local_player + "_resource_row"):
 		if card.face_down:

@@ -402,6 +402,8 @@ func _ready() -> void:
 		_test_ai_bhenn_freezes_proposal,
 		_test_wazluk_burns_target_hero,
 		_test_wazluk_hero_only_pool_and_707_3,
+		_test_rachee_heals_target_on_enter,
+		_test_rachee_pool_fizzle_and_707_3,
 		_test_karkas_bounces_ally,
 		_test_karkas_self_bounce_decline_and_fizzle,
 		_test_nynjah_steals_equipment,
@@ -19963,6 +19965,19 @@ func _test_bhenn_exhausts_ally() -> void:
 			"p1", {"source_card_id": "bhenn", "target_id": "robe"}), db),
 		"bh-f: equipment is NOT a legal target")
 
+	# The choice is mandatory-to-ANSWER: nobody may pass priority around it, and
+	# priority stays with the player who owes it (declining is its own call).
+	eq(StackResolver.pending_enter_play_controller(state), "p1",
+		"bh-e2: the choice is owed by the entering ally's controller")
+	eq(state.priority_player, "p1", "bh-e3: priority sits with them")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"bh-e4: they can't pass around the choice")
+	eq(state.priority_player, "p1", "bh-e5: the blocked pass moved nothing")
+	state.priority_player = "p2"
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"bh-e6: nor can the opponent")
+	state.priority_player = "p1"
+
 	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
 		"p1", {"source_card_id": "bhenn", "target_id": "bear"}), db)
 	StackResolver.pass_priority(state, db)
@@ -20177,6 +20192,109 @@ func _test_wazluk_hero_only_pool_and_707_3() -> void:
 	eq(state.get_card("waz").zone_id, "p1_graveyard", "wzp-f: Waz'luk was destroyed")
 	eq(state.get_card("p2_hero").damage_taken, 1,
 		"wzp-g: the damage still lands (707.3 — source not re-checked)")
+
+
+func _test_rachee_heals_target_on_enter() -> void:
+	_buf.append("\n-- Ra'chee: enter-play heal on a target hero or ally --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_230", 1, 2, [], 1, "on_enter:heal_target:2")
+	db.ally("bear_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	_add_card_to_hand(state, "rachee", "dark_portal_230", "p1")
+	_add_ally(state, "bear", "bear_def", "p1")
+	state.get_card("bear").damage_taken = 2
+	state.get_card("p1_hero").damage_taken = 5
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "rachee"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"rc-a: enter-play choice pending after Ra'chee resolves")
+	ok(not state.pending_enter_play_effect.get("optional", false),
+		"rc-b: the trigger is MANDATORY (no \"you may\")")
+
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "rachee", "target_id": "p1_hero"}), db)
+	ok(state.pending_enter_play_effect.is_empty(),
+		"rc-c: marker cleared at announcement — the response window is real")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p1_hero").damage_taken, 3,
+		"rc-d: the target hero healed 2")
+	eq(state.get_card("bear").damage_taken, 2,
+		"rc-e: nothing else was healed")
+
+
+func _test_rachee_pool_fizzle_and_707_3() -> void:
+	_buf.append("\n-- Ra'chee: hero-or-ally pool; fizzle on a gone target; 707.3 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_230", 1, 2, [], 1, "on_enter:heal_target:2")
+	db.ally("bear_def", 2, 3, [], 2)
+	db.equipment("robe_def", 4, "equipment:chest:0", "Cloth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 1)
+	_add_card_to_hand(state, "rachee", "dark_portal_230", "p1")
+	_add_ally(state, "bear", "bear_def", "p2")
+	state.get_card("bear").damage_taken = 2
+	var robe := CardInstance.create("robe", "robe_def", "p2", "p2_hero_row")
+	state.cards["robe"] = robe
+	state.zones["p2_hero_row"].card_ids.append("robe")
+
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p1",
+		{"card_id": "rachee"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "rachee", "target_id": "p1_hero"}), db),
+		"rcp-a: our own hero is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "rachee", "target_id": "p2_hero"}), db),
+		"rcp-b: the OPPOSING hero is legal too (printed \"target hero or ally\")")
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "rachee", "target_id": "bear"}), db),
+		"rcp-c: an opposing ally is a legal target")
+	ok(StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "rachee", "target_id": "rachee"}), db),
+		"rcp-d: Ra'chee himself is legal (he is in play by the time it fires)")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "rachee", "target_id": "robe"}), db),
+		"rcp-e: equipment is NOT a legal target")
+
+	# 706/709.2a — a target that leaves play in the response window fizzles the
+	# heal; 707.3 — killing the SOURCE does not stop it.
+	StackResolver.submit_action(state, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "rachee", "target_id": "bear"}), db)
+	GameLogic.destroy_card(state, "bear")
+	GameLogic.destroy_card(state, "rachee")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("rachee").zone_id, "p1_graveyard", "rcp-f: Ra'chee was destroyed")
+	eq(state.get_card("p1_hero").damage_taken, 0,
+		"rcp-g: the heal fizzled on the gone target — nothing else was healed")
+
+	# An undamaged target is a legal, no-op resolution (nothing to decline).
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state2, "p1", 1)
+	_add_card_to_hand(state2, "rachee2", "dark_portal_230", "p1")
+	StackResolver.submit_action(state2, PendingAction.make("play_ally", "p1",
+		{"card_id": "rachee2"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.submit_action(state2, PendingAction.make("choose_enter_play_target",
+		"p1", {"source_card_id": "rachee2", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	eq(state2.get_card("p1_hero").damage_taken, 0,
+		"rcp-h: healing an undamaged target is a legal no-op")
 
 
 func _test_karkas_bounces_ally() -> void:
@@ -20615,7 +20733,7 @@ func _test_game_over_explanations() -> void:
 	_buf.append("\n-- Game-over explanations cover every win condition --")
 	var fatal := GameEvent.game_over("p1", "p2").payload
 	eq(GameEvent.game_over_explanation(fatal),
-			"P2's hero received fatal damage. P1 wins!",
+			"P2 received fatal damage. P1 wins!",
 			"deck-d1: hero_defeated explanation")
 
 	var decked := GameEvent.game_over("p1", "p2", "decked").payload
@@ -20632,7 +20750,7 @@ func _test_game_over_explanations() -> void:
 			"deck-d3: draw explanation names both causes")
 
 	eq(GameEvent.game_over_explanation(fatal, {"p1": "Ta'zo", "p2": "Grennan"}),
-			"Grennan's hero received fatal damage. Ta'zo wins!",
+			"Grennan received fatal damage. Ta'zo wins!",
 			"deck-d4: display names are used when supplied")
 
 

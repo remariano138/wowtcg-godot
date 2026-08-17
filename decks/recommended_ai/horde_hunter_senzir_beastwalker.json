@@ -49,14 +49,9 @@
       "_card_name": "Master of the Hunt"
     },
     {
-      "card_def_id": "azeroth_259",
+      "card_def_id": "dark_portal_41",
       "count": 1,
-      "_card_name": "Skorn, Mistress of Shadow"
-    },
-    {
-      "card_def_id": "dark_portal_134",
-      "count": 1,
-      "_card_name": "Berserking"
+      "_card_name": "Venomstrike"
     },
     {
       "card_def_id": "azeroth_37",
@@ -79,14 +74,19 @@
       "_card_name": "Chops"
     },
     {
+      "card_def_id": "azeroth_42",
+      "count": 1,
+      "_card_name": "Old Bones"
+    },
+    {
       "card_def_id": "azeroth_36",
       "count": 4,
       "_card_name": "Bloodclaw"
     },
     {
-      "card_def_id": "dark_portal_242",
-      "count": 2,
-      "_card_name": "Waz'luk"
+      "card_def_id": "azeroth_266",
+      "count": 3,
+      "_card_name": "Voss Treebender"
     },
     {
       "card_def_id": "azeroth_153",
@@ -114,9 +114,9 @@
       "_card_name": "Zorm Stonefury"
     },
     {
-      "card_def_id": "azeroth_160",
+      "card_def_id": "azeroth_172",
       "count": 2,
-      "_card_name": "Fall Back"
+      "_card_name": "Withdraw"
     },
     {
       "card_def_id": "azeroth_156",
@@ -129,9 +129,9 @@
       "_card_name": "Morik"
     },
     {
-      "card_def_id": "azeroth_260",
+      "card_def_id": "azeroth_247",
       "count": 1,
-      "_card_name": "Taz'dingo"
+      "_card_name": "Karkas Deathhowl"
     },
     {
       "card_def_id": "azeroth_155",
@@ -145,13 +145,13 @@
     },
     {
       "card_def_id": "azeroth_270",
-      "count": 2,
+      "count": 1,
       "_card_name": "Wazzuli Wildmender"
     },
     {
-      "card_def_id": "azeroth_275",
+      "card_def_id": "dark_portal_226",
       "count": 2,
-      "_card_name": "Zygore Bladebreaker"
+      "_card_name": "Nyn'jah"
     }
   ],
   "recommended_ai_id": "ai_generic",
@@ -159,6 +159,6 @@
   "metadata": {
     "author": "playtest",
     "origin": "user deck list, 2026-07-08"
-  },
+  }, 
   "_hero_name": "Sen'zir Beastwalker"
 }

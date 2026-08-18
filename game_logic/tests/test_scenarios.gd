@@ -400,6 +400,7 @@ func _ready() -> void:
 		_test_sister_rot_decline_and_fizzle,
 		_test_bhenn_exhausts_ally,
 		_test_ai_bhenn_freezes_proposal,
+		_test_bhenn_off_priority_choice,
 		_test_wazluk_burns_target_hero,
 		_test_wazluk_hero_only_pool_and_707_3,
 		_test_rachee_heals_target_on_enter,
@@ -20023,6 +20024,56 @@ func _test_bhenn_exhausts_ally() -> void:
 # fizzles the proposal at the 601.3 recheck. Held otherwise, and she can't
 # answer an attacking HERO (her pool is allies only).
 # ══════════════════════════════════════════════════════════════════════════════
+
+func _test_bhenn_off_priority_choice() -> void:
+	_buf.append("\n-- Bhenn: the enters-play choice is answerable OFF-priority --")
+	# An Instant Ally flashed in during the OPPONENT's turn resolves with priority
+	# handed back to the turn player, while the choice is owed by her controller.
+	# Everything else is blocked (can_submit) and nobody may pass (_pass_priority),
+	# so requiring priority to answer would deadlock the game outright.
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("dark_portal_199", 2, 1, [], 2, "on_enter:exhaust_ally")
+	(db.get_def("dark_portal_199") as CardDef).is_instant = true
+	db.ally("bear_def", 2, 3, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")   # p1's turn
+	_add_resources(state, "p2", 2)
+	_add_card_to_hand(state, "bhenn", "dark_portal_199", "p2")
+	var bear := _add_ally(state, "bear", "bear_def", "p1")
+
+	state.priority_player = "p2"
+	StackResolver.submit_action(state, PendingAction.make("play_ally", "p2",
+		{"card_id": "bhenn"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(not state.pending_enter_play_effect.is_empty(),
+		"bhp-a: the choice is pending after she resolves")
+	eq(StackResolver.pending_enter_play_controller(state), "p2",
+		"bhp-b: it is owed by her controller")
+	# The resolution path hands priority to the owed player itself, but nothing
+	# else may: force the turn player's priority to stand in for every route that
+	# can open this choice off-priority (a trigger resolved from another player's
+	# link, a scene drain that already moved on).
+	state.priority_player = "p1"
+
+	var pick := PendingAction.make("choose_enter_play_target", "p2",
+		{"source_card_id": "bhenn", "target_id": "bear"})
+	ok(StackResolver.can_submit(state, pick, db),
+		"bhp-d: the owed player may answer without priority")
+	ok(not StackResolver.can_submit(state, PendingAction.make("choose_enter_play_target",
+			"p1", {"source_card_id": "bhenn", "target_id": "bear"}), db),
+		"bhp-e: the other player may not answer it, priority or no")
+
+	StackResolver.submit_action(state, pick, db)
+	eq(state.priority_player, "p2",
+		"bhp-f: adding the link moves priority to whoever added it (410.1)")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(bear.is_exhausted, "bhp-g: the exhaust resolves")
+
 
 func _test_ai_bhenn_freezes_proposal() -> void:
 	_buf.append("\n-- AI plays Bhenn Checks-the-Sky in response to a heavy attack proposal --")

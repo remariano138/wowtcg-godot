@@ -167,6 +167,12 @@ static func submit_action(state: GameState, action: PendingAction,
 			# _resolve_choose_enter_play_target reads the effect from here, not state.
 			action.params["_effect_dict"] = state.pending_enter_play_effect.duplicate()
 			state.pending_enter_play_effect = {}
+			# The choice may have been answered off-priority (can_submit lets its
+			# owner do that — an Instant Ally's trigger resolves with priority
+			# already handed back to the turn player). Whoever adds a link holds
+			# priority afterwards (410.1), so move it here rather than leaving the
+			# window open for a player who has nothing to respond to yet.
+			state.priority_player = action.source_player
 
 	state.pending_actions.push_back(action)
 	state.consecutive_passes = 0
@@ -440,13 +446,25 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 
 static func can_submit(state: GameState, action: PendingAction,
 		db = null) -> bool:
-	# Must be the acting player's priority.
-	if action.source_player != state.priority_player:
-		return false
-
 	# Pending enters-play target choice blocks everything except resolving it.
-	if not state.pending_enter_play_effect.is_empty() \
-			and action.action_type != "choose_enter_play_target":
+	# The choice is owed by the ENTERING ALLY'S CONTROLLER, who is not necessarily
+	# the priority player: an Instant Ally (Bhenn Checks-the-Sky) flashed in during
+	# the opponent's turn resolves with priority handed back to the turn player,
+	# and every other action — including a pass, blocked in _pass_priority — is
+	# locked out until this is answered. Requiring priority here would therefore
+	# deadlock the game: nothing could be submitted and nobody could pass. So the
+	# owed player may answer it whenever it is pending, and submit_action moves
+	# priority to them as the link goes on the chain (see there).
+	var owes_enter_play := not state.pending_enter_play_effect.is_empty()
+	if owes_enter_play:
+		if action.action_type != "choose_enter_play_target":
+			return false
+		if action.source_player != pending_enter_play_controller(state):
+			return false
+
+	# Must be the acting player's priority — except for the choice above, which
+	# its owner may answer off-priority (that is the whole point of the block).
+	if not owes_enter_play and action.source_player != state.priority_player:
 		return false
 
 	# Pet uniqueness violation blocks everything until resolved via choose_pet_sacrifice().

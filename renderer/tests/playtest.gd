@@ -129,6 +129,10 @@ var _ambush_player: String = ""
 var _in_choice_peek: bool = false
 var _choice_peek_player: String = ""
 var _choice_peek_hides_hand: bool = false
+# True while a peek was opened for an enters-play target pick — that flow ends in
+# targeting rather than in a modal, so it releases the peek itself
+# (_on_targeting_cancelled) instead of through _on_discard_mode_ended.
+var _enter_play_peek: bool = false
 
 # ── Menu ───────────────────────────────────────────────────────────────────────
 var _menu_layer:  CanvasLayer
@@ -1375,6 +1379,7 @@ func _exit_choice_peek_mode() -> void:
 	_in_choice_peek = false
 	_choice_peek_player = ""
 	_choice_peek_hides_hand = false
+	_enter_play_peek = false
 	_router.setup(_state, _db, _local_player)
 	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
 	_router.refresh_highlights()
@@ -1986,8 +1991,27 @@ func _refresh_card_input_shields() -> void:
 	var rects: Array[Rect2] = [PASS_BLOCK_RECT]
 	for win in [_turn_info_window, _controls_window, _chain_window]:
 		if win and is_instance_valid(win) and win.visible:
+			if win == _chain_window and _chain_shield_suspended():
+				continue
 			rects.append(Rect2(win.position, win.size))
 	CardNode.input_shields = rects
+
+
+# The chain window is centred on the board (960, 540), which is right between the
+# two ally rows — its shield covers the near edge of each. That is harmless while
+# it only means "don't start an attack by clicking through the panel", but a
+# TARGETING flow is a different matter: the chain is non-empty exactly when a
+# response is being aimed (Bhenn's exhaust answering a combat proposal, Withdraw
+# saving an ally), and a shielded target is simply unclickable — the board looks
+# dead and, for a mandatory choice that also blocks passing, the game is stuck.
+# So the shield lifts for the duration of a targeting flow and the card under the
+# pointer wins (CardNode._input runs before Control GUI input).
+#
+# Exception: Escape Artist's interrupt mode TARGETS a link, so there the chain
+# entries must keep the clicks they'd otherwise hand to the board.
+func _chain_shield_suspended() -> bool:
+	return _router != null and _router._targeting_source != "" \
+		and not _router._is_interrupt_mode()
 
 
 # Drag by the title bar. The press/release arrives on the bar; the motion is
@@ -2098,8 +2122,8 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	# Each seat is named after the hero sitting in it — done here, once the heroes
 	# are in play and before anything user-facing is drawn, so every _player_name()
 	# call for the rest of the game reads the hero's name.
-	_p1_name = _hero_name("p1")
-	_p2_name = _hero_name("p2")
+	_p1_name = _short_hero_name("p1")
+	_p2_name = _short_hero_name("p2")
 
 	# Who goes first — prompt (normal start / rematch) or autopick random (Quick Start).
 	_choose_first_player()
@@ -2114,6 +2138,18 @@ func _hero_name(pid: String) -> String:
 		if def:
 			return def.card_name
 	return pid.to_upper()
+
+
+# The seat name: just the hero's first word. The rest of a hero's name is
+# usually a title or epithet ("Sen'zir Beastwalker", "Boris Brightbeard"), and
+# the full string is too long for the places a player name appears (pass button,
+# status line, log lines). The who-goes-first screen still shows the full name.
+func _short_hero_name(pid: String) -> String:
+	var full := _hero_name(pid)
+	var cut := full.find(" ")
+	var short_name := full.substr(0, cut) if cut > 0 else full
+	# "Ta'zo, the Whatever" — a name ending in a comma keeps neither.
+	return short_name.trim_suffix(",")
 
 
 # After the board is built, decide who goes first. Quick Start skips the prompt
@@ -4427,8 +4463,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		else:
-			_router.start_enter_play_targeting(card_id, dmg_type, amount)
-			_refresh_ui()
+			_begin_enter_play_targeting(ctrl, card_id, dmg_type, amount)
 		return
 	# Dark Cleric Jocasta: "you may put target ally card from your graveyard into
 	# your hand." The only enter-play target that lives in a GRAVEYARD, so it is
@@ -4495,8 +4530,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		else:
-			_router.start_enter_play_targeting(card_id, dmg_type, amount)
-			_refresh_ui()
+			_begin_enter_play_targeting(ctrl, card_id, dmg_type, amount)
 		return
 	# Bhenn Checks-the-Sky's optional exhaust ("you may exhaust target ally").
 	# AI: the attacking ally of a combat proposal still on the chain first (that
@@ -4537,8 +4571,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		else:
-			_router.start_enter_play_targeting(card_id, dmg_type, amount)
-			_refresh_ui()
+			_begin_enter_play_targeting(ctrl, card_id, dmg_type, amount)
 		return
 	# Sister Rot rides the same branch with the ability pool instead. So does
 	# Nyn'jah's steal, whose pool is opposing-only to begin with — the AI's
@@ -4578,8 +4611,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		else:
-			_router.start_enter_play_targeting(card_id, dmg_type, amount)
-			_refresh_ui()
+			_begin_enter_play_targeting(ctrl, card_id, dmg_type, amount)
 		return
 	# Ra'chee's mandatory heal ("he heals N damage from target hero or ally").
 	# The generic branch below is opponent-only, which is exactly backwards for a
@@ -4616,8 +4648,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 			_refresh_ui()
 			_schedule_next_turn()
 		else:
-			_router.start_enter_play_targeting(card_id, dmg_type, amount)
-			_refresh_ui()
+			_begin_enter_play_targeting(ctrl, card_id, dmg_type, amount)
 		return
 	if ctrl_type != "human":
 		# AI picks a random valid target — opponents only, never self-harm.
@@ -4661,8 +4692,7 @@ func _handle_enter_play_target(payload: Dictionary) -> void:
 		_schedule_next_turn()
 	else:
 		# Human: enter targeting mode to pick a target.
-		_router.start_enter_play_targeting(card_id, dmg_type, amount)
-		_refresh_ui()
+		_begin_enter_play_targeting(ctrl, card_id, dmg_type, amount)
 
 
 # Ongoing Totem "at the start of each turn" targeted damage (Searing Totem). The
@@ -5104,6 +5134,7 @@ func _on_quest_flow_resolved() -> void:
 
 
 func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int) -> void:
+	_refresh_card_input_shields()   # lift the chain window's shield (see there)
 	var card := _state.get_card(source_id) as CardInstance
 	var def: CardDef = _db.get_def(card.card_def_id) if card else null
 	var name_str := def.card_name if def else source_id
@@ -5146,8 +5177,41 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	_refresh_ui()
 
 
+# The enters-play pick is made by clicking the BOARD, so the InputRouter has to
+# be pointed at the entering ally's CONTROLLER — who is not always the seated
+# player. An Instant Ally (Bhenn Checks-the-Sky) is flashed in by the player whose
+# turn it ISN'T, and in hotseat the ambush stop that pointed the router at them
+# has already ended by the time her trigger opens. Submitting the pick as the
+# wrong player fails can_submit, so every click is silently swallowed — a board
+# that looks dead. Routed "public": the ally, its target and the choice are all
+# in play, so nothing is hidden and no handoff is needed.
+func _begin_enter_play_targeting(ctrl: String, card_id: String,
+		dmg_type: String, amount: int) -> void:
+	if _route_choice(ctrl, "public") == "peek":
+		_enter_play_peek = true
+	_router.start_enter_play_targeting(card_id, dmg_type, amount)
+	_refresh_ui()
+
+
+# Is the pending enters-play choice already answered — i.e. its link is on the chain?
+func _enter_play_target_queued() -> bool:
+	if not _state:
+		return false
+	for a in _state.pending_actions:
+		if (a as PendingAction).action_type == "choose_enter_play_target":
+			return true
+	return false
+
+
 func _on_targeting_cancelled() -> void:
 	_set_status("")
+	_refresh_card_input_shields()   # targeting over — the chain window shields again
+	# The pick above was made through a choice peek and is now answered (or the
+	# effect is gone) — hand the router back to the seated player.
+	if _enter_play_peek and (not _state \
+			or _state.pending_enter_play_effect.is_empty() or _enter_play_target_queued()):
+		_enter_play_peek = false
+		_exit_choice_peek_mode()
 	# Attack-exhaust trigger (Chops / Voss Treebender) is optional ("you may") —
 	# Esc while picking resolves it as a decline, opening the held attack window.
 	if _state and _state.pending_attack_exhaust_player != "":
@@ -5205,10 +5269,14 @@ func _on_targeting_cancelled() -> void:
 			# Optional effect (Ghank "you may ...") — Esc means decline.
 			if eff.get("optional", false):
 				EventBus.emit_events(StackResolver.decline_enter_play_effect(_state))
+				if _enter_play_peek:
+					_enter_play_peek = false
+					_exit_choice_peek_mode()
 				_refresh_ui()
 				_drain_passes()
 				return
-			_router.start_enter_play_targeting(
+			_begin_enter_play_targeting(
+				StackResolver.pending_enter_play_controller(_state),
 				eff.get("card_id", ""), eff.get("dmg_type", ""), eff.get("amount", 0))
 			return
 	_refresh_ui()
@@ -6998,6 +7066,7 @@ func _on_rematch() -> void:
 	_in_choice_peek              = false
 	_choice_peek_player          = ""
 	_choice_peek_hides_hand      = false
+	_enter_play_peek             = false
 	_handoff_pending              = false
 	_handoff_layer                = null   # freed with the other children above
 	_mulligan_queue               = []

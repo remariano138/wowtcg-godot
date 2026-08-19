@@ -10,3 +10,6 @@ assets/cards/
 
 # Godot CSV-as-translation importer artifacts (regenerable, noisy)
 *.translation
+
+# Downloaded Steam CDN atlases (regenerable, large)
+tools/atlas_cache/

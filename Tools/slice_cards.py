@@ -1,17 +1,24 @@
+from __future__ import annotations
+
 import json
 import re
 import csv
+import urllib.request
 from pathlib import Path
 from PIL import Image
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 ROOT        = Path(__file__).parent.parent
 JSON_PATH   = ROOT / "Tools" / "PNJfromTTSmod" / "2236124562.json"
-IMAGES_DIR  = Path(r"C:\Users\remim\OneDrive\Documents\My Games\Tabletop Simulator\Mods\Images")
+IMAGES_DIR  = Path.home() / "OneDrive" / "Documents" / "My Games" / "Tabletop Simulator" / "Mods" / "Images"
+CACHE_DIR   = Path(__file__).parent / "atlas_cache"
+CDN_MIRROR  = "https://steamusercontent-a.akamaihd.net"
+USER_AGENT  = "Mozilla/5.0"
 OUTPUT_DIR  = ROOT / "assets" / "cards"
 TOOLS_DIR   = Path(__file__).parent
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,12 +34,49 @@ def sanitize_name(name: str) -> str:
     return name.strip("_")
 
 def find_local_atlas(url: str, images_dir: Path) -> Path | None:
+    """Locate an atlas: the local Tabletop Simulator mod cache first, then our
+    own download cache, then the Steam CDN. Keyed on the ugc id, which is stable
+    across CDN mirrors. The CDN fallback is what lets the slicer run on a fresh
+    clone with nothing installed but Python + Pillow."""
     ugc_id = url_to_ugc_id(url)
     if not ugc_id:
         return None
-    for f in images_dir.iterdir():
-        if ugc_id in f.name:
-            return f
+
+    if images_dir.is_dir():
+        for f in images_dir.iterdir():
+            if ugc_id in f.name:
+                return f
+
+    cached = CACHE_DIR / (ugc_id + ".png")
+    if cached.exists() and cached.stat().st_size > 0:
+        return cached
+
+    return download_atlas(url, cached)
+
+
+def download_atlas(url: str, dest: Path) -> Path | None:
+    """Fetch one atlas from the Steam CDN into the cache.
+
+    The URLs in the mod JSON point at `cloud-N.steamusercontent.com`, which no
+    longer serves them: that host presents a certificate for a different name
+    (so https fails verification) and answers plain http with 403. The same ugc
+    path on the Akamai mirror works, so it is tried FIRST and the printed URLs
+    are kept only as a fallback in case the mirror is retired instead."""
+    candidates = [re.sub(r"^https?://[^/]+", CDN_MIRROR, url),
+                  url.replace("http://", "https://", 1),
+                  url]
+    for candidate in candidates:
+        try:
+            print("    downloading " + candidate, flush=True)
+            req = urllib.request.Request(candidate, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = resp.read()
+            if not data:
+                continue
+            dest.write_bytes(data)
+            return dest
+        except Exception as exc:
+            print("    [WARN] " + str(exc), flush=True)
     return None
 
 def collect_cards(data: dict) -> list[dict]:

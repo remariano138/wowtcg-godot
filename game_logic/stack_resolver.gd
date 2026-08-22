@@ -67,9 +67,40 @@ static func submit_action(state: GameState, action: PendingAction,
 						events.append_array(
 							_destroy_card_trigger(state, sac_id, card_id, db))
 					action.params["_cost_paid_irreversibly"] = true
+				# Dark Pact: "As an additional cost to play Dark Pact, destroy one
+				# of your Pets." Same announcement-time (412.2) sacrifice as Sever
+				# the Cord, but the destroyed card IS the whole point rather than
+				# a cost alongside a separate target — its printed cost is read
+				# back at resolution (the CardInstance survives in the graveyard)
+				# to size the draw.
+				if sac_def and play_cost_sacrifices_pet(sac_def):
+					var pet_sac_id: String = action.params.get("sacrifice_id", "")
+					if pet_sac_id != "" and state.is_in_play(pet_sac_id):
+						events.append_array(
+							_destroy_card_trigger(state, pet_sac_id, card_id, db))
+					action.params["_cost_paid_irreversibly"] = true
 				# Stat tracking: a card was played from hand (excludes resources,
 				# which are a separate branch below). See StatTracker.
 				events.append(GameEvent.card_played(action.source_player, card_id))
+		"propose_combat":
+			# Rule 600.3 (Winter's Grasp): "…unless their controller pays (1) for
+			# each attacker." The CR calls this "an additional cost to adding an
+			# effect to the chain proposing that character as an attacker", so it
+			# is paid HERE, on chain entry, with every other 412.2 cost. Unlike
+			# Sever the Cord's sacrifice it is refundable (resources can be
+			# un-exhausted), so the announcement stays retractable. A proposal
+			# that FIZZLES at the 601.3 re-check keeps the tax paid — a cost is
+			# not refunded because the link did nothing.
+			var atk_tax := attack_tax(state, action.params.get("attacker_id", ""),
+					action.params.get("defender_id", ""), db)
+			if atk_tax > 0:
+				events.append_array(_pay_resources(state, action.source_player, atk_tax, db))
+				action.params["_attack_tax"] = atk_tax
+				events.append(GameEvent.make("attack_tax_paid", {
+					"player":      action.source_player,
+					"attacker_id": action.params.get("attacker_id", ""),
+					"amount":      atk_tax,
+				}))
 		"place_resource":
 			var card_id: String = action.params.get("card_id", "")
 			if card_id != "":
@@ -94,7 +125,15 @@ static func submit_action(state: GameState, action: PendingAction,
 				if q_card:
 					var def := db.get_def(q_card.card_def_id) as CardDef
 					if def:
-						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0) as int))
+						# Lazy Peons: "Exhaust Lazy Peons to complete this
+						# quest." A 412.2 cost like the ally exhaust below, paid
+						# BEFORE the resource cost so the quest can never end up
+						# paying for its own completion. Refundable, so unlike
+						# Into the Maw of Madness the announcement stays
+						# retractable.
+						if quest_cost_exhausts_self(def):
+							events.append_array(GameLogic.exhaust_card(state, quest_id))
+						events.append_array(_pay_resources(state, action.source_player, max(def.cost, 0) as int, db))
 						# Rule 412.2: the "exhaust N allies" extra cost (The Love
 						# Potion) is paid on chain entry too, so the same allies
 						# can't pay for two announcements at once. Refunded by
@@ -122,7 +161,7 @@ static func submit_action(state: GameState, action: PendingAction,
 				var ap_cost := power_resource_cost(ap_data,
 					int(action.params.get("x_value", 0)))
 				if ap_cost > 0:
-					events.append_array(_pay_resources(state, action.source_player, ap_cost))
+					events.append_array(_pay_resources(state, action.source_player, ap_cost, db))
 				# Rule 412.2: the [Activate] tap symbol, the once-per-turn mark and
 				# the "exhaust your hero" extra cost are paid HERE, on chain entry —
 				# not at resolution. Deferring them left the source and the hero
@@ -139,17 +178,17 @@ static func submit_action(state: GameState, action: PendingAction,
 				if h_card:
 					var def := db.get_def(h_card.card_def_id) as CardDef
 					if def and def.cost > 0:
-						events.append_array(_pay_resources(state, action.source_player, def.cost))
+						events.append_array(_pay_resources(state, action.source_player, def.cost, db))
 					elif def and _power_effect_is(def, "heal_x_from_target"):
 						var x_val: int = action.params.get("x_value", 0)
 						if x_val > 0:
-							events.append_array(_pay_resources(state, action.source_player, x_val))
+							events.append_array(_pay_resources(state, action.source_player, x_val, db))
 					elif def and _power_effect_is(def, "radak_pet_sacrifice"):
 						# Pay X resources and destroy the chosen Pet as costs.
 						var pet_id: String = action.params.get("pet_id", "")
 						var x_val: int = action.params.get("x_value", 0)
 						if x_val > 0:
-							events.append_array(_pay_resources(state, action.source_player, x_val))
+							events.append_array(_pay_resources(state, action.source_player, x_val, db))
 						if pet_id != "" and state.is_in_play(pet_id):
 							events.append_array(_destroy_card_trigger(state, pet_id, hero_id, db))
 			var ps := state.players.get(action.source_player) as PlayerState
@@ -284,6 +323,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# Nightbloom's optional "put a card from your hand into your resource row"
 	# choice — resolve it via choose_hand_resource / decline_hand_resource.
 	if state.pending_resource_place_player != "":
+		return []
+	# Seraph the Exalted's mandatory "put an ally card from your hand into play"
+	# choice — resolve it via choose_hand_play() before priority can move.
+	if state.pending_hand_play_player != "":
 		return []
 	# A pending reveal-and-pick choice is mandatory — resolve it via
 	# choose_reveal_pick() before priority can move.
@@ -499,6 +542,10 @@ static func can_submit(state: GameState, action: PendingAction,
 	# via choose_hand_resource() / decline_hand_resource().
 	if state.pending_resource_place_player != "":
 		return false
+	# Seraph the Exalted's mandatory hand-to-play choice blocks everything until
+	# resolved via choose_hand_play().
+	if state.pending_hand_play_player != "":
+		return false
 
 	# Reveal-and-pick quest reward blocks everything until resolved via
 	# choose_reveal_pick().
@@ -693,14 +740,33 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		# Sever the Cord: the sacrificed ally is announced with the play (412.2).
 		if def and not _play_cost_sacrifice_ok(state, def, action):
 			return false
+		# Dark Pact: the sacrificed Pet is announced with the play (412.2).
+		if def and not _play_cost_sacrifice_pet_ok(state, def, action, db):
+			return false
 		# Skewer: the CHOSEN source ally rides the play as `source_id`.
 		if def and not _ally_atk_source_ok(state, def, action):
 			return false
+		# Graveyard-search instant (Cold Snap: "Put up to X Frost ability cards
+		# with different names from your graveyard into your hand"). Same gate as
+		# the sorcery-speed twin above.
+		var gy_verdict := _graveyard_play_ok(state, action, def, db)
+		if gy_verdict != GY_PLAY_NA:
+			return gy_verdict == GY_PLAY_OK
 		if def and is_modal_def(def):
 			# Mode-aware targeting: ONLY the chosen mode's requirement applies,
 			# so Escape Artist's interrupt half announces a chain link while its
 			# remove-attackers half announces nothing at all.
 			return _modal_target_ok(state, def, action, card_id, db)
+		# Counterspell: "Interrupt target ability card." A top-level interrupt
+		# announces a LINK on the chain, so it is validated against the interrupt
+		# pool instead of the in-play _is_legal_target path below.
+		if def and is_plain_interrupt_def(def):
+			if action.params.get("_skip_target_check", false):
+				return not get_interrupt_candidates(state, db, action.source_player,
+						false).is_empty()
+			return _is_interrupt_target(state, db, action.source_player,
+					action.params.get("target_id", ""), card_id,
+					interrupt_requires_hero_target(interrupt_segment(def, action)))
 		if def and _has_effect_flag_prefix(def, "multi_shot"):
 			if not _can_play_multi_shot(state, action, db): return false
 		elif def and is_divided_damage_def(def):
@@ -758,6 +824,10 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 			elif destroy_target_kind(def) == "equipment":
 				if not _is_in_play_equipment(state, target_id, db):
 					return false
+			elif destroy_target_kind(def) == "armor":
+				# Sunder Armor: equipment narrowed to ARMOR (_is_destroyable_armor).
+				if not _is_destroyable_armor(state, target_id, db):
+					return false
 			elif _instant_targets_hero_or_ally_only(def):
 				# "target hero or ally" — never an in-play ability/equipment.
 				if not _is_hero_or_ally(state, target_id, db):
@@ -796,59 +866,30 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		# non-instant card with the same cost gets it for free.)
 		if def and not _play_cost_sacrifice_ok(state, def, action):
 			return false
+		# Dark Pact: the sacrificed Pet is announced with the play (412.2).
+		if def and not _play_cost_sacrifice_pet_ok(state, def, action, db):
+			return false
 		# Skewer: the CHOSEN source ally rides the play as `source_id` (here for
 		# the sorcery-speed twin of the instant path above).
 		if def and not _ally_atk_source_ok(state, def, action):
 			return false
-		# Graveyard-reanimate ability (Ancestral Spirit): the target is an ally
-		# CARD in the caster's graveyard, announced with the play — cost gated
-		# against the caster's resources (dynamic max_cost). Validate it's still
-		# a legal candidate (or, for the highlight probe, that any exists).
-		if def and _ability_reanimates_from_graveyard(def):
-			var rz_req := get_graveyard_search_requirement(def)
-			var rz_cands := get_graveyard_search_candidates(
-					state, action.source_player, rz_req, db)
-			if rz_cands.is_empty():
-				return false
+		# Graveyard-search abilities (Ancestral Spirit's reanimate, Call the
+		# Spirit's fetch, Cannibalize's exile): the target(s) are CARDS in a
+		# graveyard, announced with the play. One shared gate with the instant
+		# path — see _graveyard_play_ok.
+		var gy_verdict := _graveyard_play_ok(state, action, def, db)
+		if gy_verdict != GY_PLAY_NA:
+			return gy_verdict == GY_PLAY_OK
+		# Counterspell's shape at sorcery speed (here for the twin of the instant
+		# path above; no shipped card uses it yet, but a non-instant interrupt
+		# would otherwise fall through to the in-play target check).
+		if def and is_plain_interrupt_def(def):
 			if action.params.get("_skip_target_check", false):
-				return true
-			return action.params.get("target_id", "") in rz_cands
-		# Graveyard-fetch ability (Call the Spirit): the target is an ally CARD
-		# in the caster's graveyard, announced with the play. Ancestral Spirit's
-		# branch minus the resource cap — nothing enters play, so there is
-		# nothing to afford. Mandatory single target, so an empty pool makes the
-		# card unplayable (706.2).
-		if def and _ability_fetches_from_graveyard(def):
-			var gh_req := get_graveyard_search_requirement(def)
-			var gh_cands := get_graveyard_search_candidates(
-					state, action.source_player, gh_req, db)
-			if gh_cands.is_empty():
-				return false
-			if action.params.get("_skip_target_check", false):
-				return true
-			return action.params.get("target_id", "") in gh_cands
-		# Graveyard-exile ability (Cannibalize): "Remove any number of ally
-		# cards in graveyards from the game." ANY NUMBER includes zero, so
-		# unlike the reanimate branch an empty candidate pool does NOT make the
-		# card unplayable — it just removes nothing and heals nothing. The
-		# chosen cards ride the play as `target_ids` (multi-select) and are
-		# validated against the current candidate pool.
-		if def and _ability_removes_from_graveyard(def):
-			if action.params.get("_skip_target_check", false):
-				return true
-			var rr_req := get_graveyard_search_requirement(def)
-			var rr_cands := get_graveyard_search_candidates(
-					state, action.source_player, rr_req, db)
-			var rr_picks: Array = action.params.get("target_ids", [])
-			if rr_picks.size() < int(rr_req.get("min_count", 0)) \
-					or rr_picks.size() > int(rr_req.get("max_count", 0)):
-				return false
-			var rr_seen := {}
-			for rr_id in rr_picks:
-				if rr_seen.has(rr_id) or not (rr_id in rr_cands):
-					return false
-				rr_seen[rr_id] = true
-			return true
+				return not get_interrupt_candidates(state, db, action.source_player,
+						false).is_empty()
+			return _is_interrupt_target(state, db, action.source_player,
+					action.params.get("target_id", ""), card_id,
+					interrupt_requires_hero_target(interrupt_segment(def, action)))
 		# Mode-aware targeting (see the instant path / _modal_target_ok).
 		if def and is_modal_def(def):
 			return _modal_target_ok(state, def, action, card_id, db)
@@ -904,6 +945,8 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 						action.source_player, db): return false
 			elif destroy_target_kind(def) == "equipment":
 				if not _is_in_play_equipment(state, target_id, db): return false
+			elif destroy_target_kind(def) == "armor":
+				if not _is_destroyable_armor(state, target_id, db): return false
 			elif _instant_targets_hero_or_ally_only(def):
 				# "target hero or ally" — never an in-play ability/equipment.
 				if not _is_hero_or_ally(state, target_id, db): return false
@@ -994,16 +1037,26 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		var req := get_graveyard_search_requirement(def)
 		return not get_graveyard_search_candidates(state, scan_pid, req, db).is_empty()
 	# Call the Spirit: same, minus the cost cap — one ally card in the caster's
-	# own graveyard is all it needs, and with none the card goes dark.
+	# own graveyard is all it needs, and with none the card goes dark. Cold Snap
+	# fetches "up to X", and up-to includes zero, so like Cannibalize it stays
+	# playable (and lit) with an empty graveyard.
 	if _ability_fetches_from_graveyard(def):
 		var f_pid := player_id if player_id != "" else state.turn_player
 		var f_req := get_graveyard_search_requirement(def)
+		if int(f_req.get("min_count", 1)) <= 0:
+			return true
 		return not get_graveyard_search_candidates(state, f_pid, f_req, db).is_empty()
 	# Sever the Cord: an additional cost that can't be paid makes the card
 	# unplayable (412.2) — it goes dark with no ally in the caster's party.
 	if play_cost_sacrifices_ally(def):
 		var sac_pid := player_id if player_id != "" else state.turn_player
 		if get_play_sacrifice_candidates(state, sac_pid).is_empty():
+			return false
+	# Dark Pact: the additional cost (destroy one of your Pets) can't be paid
+	# without a Pet in the caster's party — the card goes dark.
+	if play_cost_sacrifices_pet(def):
+		var pet_sac_pid := player_id if player_id != "" else state.turn_player
+		if get_play_pet_sacrifice_candidates(state, pet_sac_pid, db).is_empty():
 			return false
 	# Skewer: "Choose an ally in your party" is not a cost, but it is equally
 	# unsatisfiable with an empty party — the card goes dark.
@@ -1018,6 +1071,12 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 	# does nothing, exactly as the printed text allows.
 	if is_modal_def(def) and has_targetless_mode(def):
 		return true
+	# Counterspell: a plain interrupt has no targetless fallback, so with nothing
+	# on the chain to interrupt it goes DARK (706.2) — the one place it differs
+	# from Escape Artist, which stays lit on its remove-attackers half.
+	if is_plain_interrupt_def(def):
+		var i_pid := player_id if player_id != "" else state.turn_player
+		return not get_interrupt_candidates(state, db, i_pid, false).is_empty()
 	if not _instant_needs_target(def):
 		return true
 	# Shock and Soothe: needs TWO distinct legal hero-or-ally targets.
@@ -1061,7 +1120,7 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 		return false
 	# Burn Away / Shattering Blow: some in-play ability / equipment card must
 	# be a legal target.
-	if destroy_target_kind(def) in ["ability", "equipment"]:
+	if destroy_target_kind(def) in ["ability", "equipment", "armor"]:
 		var d_kind := destroy_target_kind(def)
 		for cid in get_destroy_kind_candidates(state, db, d_kind):
 			if not _is_legal_target(state, cid, db):
@@ -1114,6 +1173,54 @@ static func _ability_removes_from_graveyard(def: CardDef) -> bool:
 	return get_graveyard_search_requirement(def).get("dest", "") == "rfg"
 
 
+# Return codes for _graveyard_play_ok below.
+const GY_PLAY_NA   := 0   # not a graveyard-search spell — the caller carries on
+const GY_PLAY_OK   := 1   # validated; the caller may return true immediately
+const GY_PLAY_FAIL := 2
+
+# The ONE submission gate for a hand Ability whose targets live in a GRAVEYARD
+# rather than on the board — reanimate (Ancestral Spirit), fetch to hand (Call
+# the Spirit, Cold Snap) or exile (Cannibalize) — shared by the instant and
+# sorcery-speed play paths so the two can't drift apart.
+#
+# A mandatory single pick (min 1) rides `target_id` and makes the card unplayable
+# with an empty pool (706.2). "Any number" (min 0) and "up to X" ride `target_ids`
+# and are perfectly playable with nothing to pick, so the empty pool is NOT a gate
+# there — the ceiling is asked of graveyard_max_count, which is where the X lives.
+static func _graveyard_play_ok(state: GameState, action: PendingAction,
+		def: CardDef, db) -> int:
+	if not def:
+		return GY_PLAY_NA
+	if not (_ability_reanimates_from_graveyard(def) \
+			or _ability_fetches_from_graveyard(def) \
+			or _ability_removes_from_graveyard(def)):
+		return GY_PLAY_NA
+	var req := get_graveyard_search_requirement(def)
+	var cands := get_graveyard_search_candidates(state, action.source_player, req, db)
+	var min_count := int(req.get("min_count", 1))
+	if min_count > 0 and cands.size() < min_count:
+		return GY_PLAY_FAIL
+	if action.params.get("_skip_target_check", false):
+		return GY_PLAY_OK
+	if not graveyard_pick_is_multi(req):
+		return GY_PLAY_OK if action.params.get("target_id", "") in cands \
+				else GY_PLAY_FAIL
+	var picks: Array = action.params.get("target_ids", [])
+	var ceiling := graveyard_max_count(req, int(action.params.get("x_value", 0)))
+	if picks.size() < min_count or picks.size() > ceiling:
+		return GY_PLAY_FAIL
+	var seen := {}
+	for pick_id in picks:
+		if seen.has(pick_id) or not (pick_id in cands):
+			return GY_PLAY_FAIL
+		seen[pick_id] = true
+	# Cold Snap: "…with different names…" — a constraint on the chosen set.
+	if req.get("distinct_names", false) \
+			and not graveyard_picks_names_distinct(state, picks, db):
+		return GY_PLAY_FAIL
+	return GY_PLAY_OK
+
+
 # Cannibalize: "…heals 2 damage from itself for each card removed."
 # 0 when the card has no such rider.
 static func rfg_heal_per_card(def: CardDef) -> int:
@@ -1132,7 +1239,11 @@ static func _instant_needs_target(def: CardDef) -> bool:
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
 				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
 				"grant_keyword_target", "divided_damage", "buff_atk_target",
-				"ally_atk_damage"]:
+				"ally_atk_damage", "heal_target",
+				# Counterspell: a top-level interrupt announces a chain LINK.
+				# Validated by its own pool, not by _is_legal_target — see the
+				# interrupt branch in _can_play_instant.
+				"interrupt_ability"]:
 			return true
 		# Modal (707.1c): targeted when any mode's inner effect targets.
 		if parts[0] == "mode" and parts.size() > 1 \
@@ -1216,7 +1327,8 @@ static func _modal_target_ok(state: GameState, def: CardDef,
 	match mode_target_kind(mode):
 		"interrupt_ability":
 			return _is_interrupt_target(state, db, action.source_player,
-					action.params.get("target_id", ""), card_id)
+					action.params.get("target_id", ""), card_id,
+					interrupt_requires_hero_target(mode))
 		"hero_or_ally":
 			var mt: String = action.params.get("target_id", "")
 			return _is_legal_target(state, mt, db) and _is_hero_or_ally(state, mt, db)
@@ -1242,14 +1354,21 @@ static func has_targetless_mode(def: CardDef) -> bool:
 # and only if it got there by being PLAYED — a card *placed* on the chain (412.1,
 # a resource) can't be. That falls out of requiring a backing pending_action of
 # a play_* type: place_resource is excluded by construction.
+# `require_hero_target` is Escape Artist's "…that's targeting your hero" clause,
+# a RIDER on that card's mode (`mode:interrupt_ability:targets_your_hero`) rather
+# than a property of interrupting: Counterspell (`azeroth_51`) is the same
+# effect with the clause absent, so the restriction has to be a parameter of the
+# pool, not baked into it. Ask through interrupt_requires_hero_target(segment)
+# so the flag can never disagree between submission, the highlight probe and the
+# resolution re-check.
 static func get_interrupt_candidates(state: GameState, db,
-		player_id: String) -> Array:
+		player_id: String, require_hero_target: bool = true) -> Array:
 	var result: Array = []
 	if not db:
 		return result
 	var ps := state.players.get(player_id) as PlayerState
 	var hero_id: String = ps.hero_instance_id if ps else ""
-	if hero_id == "":
+	if require_hero_target and hero_id == "":
 		return result
 	for link in state.pending_actions:
 		var pa := link as PendingAction
@@ -1270,7 +1389,7 @@ static func get_interrupt_candidates(state: GameState, db,
 		var def := db.get_def(card.card_def_id) as CardDef
 		if not def or def.card_type != "Ability":
 			continue
-		if not _link_targets_hero(pa, hero_id):
+		if require_hero_target and not _link_targets_hero(pa, hero_id):
 			continue
 		result.append(cid)
 	return result
@@ -1295,10 +1414,54 @@ static func _link_targets_hero(pa: PendingAction, hero_id: String) -> bool:
 # `source_card_id` is the interrupting card, excluded because a link can't
 # interrupt itself (711.2).
 static func _is_interrupt_target(state: GameState, db, player_id: String,
-		target_id: String, source_card_id: String) -> bool:
+		target_id: String, source_card_id: String,
+		require_hero_target: bool = true) -> bool:
 	if target_id == "" or target_id == source_card_id:
 		return false
-	return target_id in get_interrupt_candidates(state, db, player_id)
+	return target_id in get_interrupt_candidates(state, db, player_id,
+			require_hero_target)
+
+
+# Escape Artist's "…that's targeting your hero" rider, read off ONE interrupt
+# segment ("interrupt_ability" -> false, "interrupt_ability:targets_your_hero"
+# -> true). Counterspell's bare segment carries no rider, so it may interrupt
+# any ability card on the chain.
+static func interrupt_requires_hero_target(segment: String) -> bool:
+	for part in segment.split(":"):
+		if part.strip_edges() == "targets_your_hero":
+			return true
+	return false
+
+
+# The interrupt segment this play would resolve: the CHOSEN mode's inner effect
+# for a modal card (Escape Artist), the top-level segment for a plain one
+# (Counterspell), "" when the play isn't an interrupt at all. The one place the
+# two shapes are reconciled — submission, the highlight probe, the router's
+# target list and the resolution re-check all ask it, so none of them can
+# disagree about whether a hero rider applies.
+static func interrupt_segment(def: CardDef, action: PendingAction) -> String:
+	if not def:
+		return ""
+	if is_modal_def(def):
+		var mode := selected_mode(def, action)
+		return mode if mode.split(":")[0].strip_edges() == "interrupt_ability" else ""
+	for entry in def.effects.split("|"):
+		var s := entry.strip_edges()
+		if s.split(":")[0].strip_edges() == "interrupt_ability":
+			return s
+	return ""
+
+
+# Does this def interrupt from a TOP-LEVEL segment (Counterspell) rather than
+# from a mode? Used by the paths that run before any mode is chosen — the
+# highlight probe and the router's targeting flow.
+static func is_plain_interrupt_def(def: CardDef) -> bool:
+	if not def or is_modal_def(def):
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges().split(":")[0].strip_edges() == "interrupt_ability":
+			return true
+	return false
 
 
 # Interrupt the link backed by `card_id` (rule 711.1): it leaves the chain
@@ -1366,6 +1529,23 @@ static func _instant_targets_hero_or_ally_only(def: CardDef) -> bool:
 				and parts.size() > 1 and parts[1] == "hero_or_ally":
 			return true
 	return false
+
+
+# Healing Touch (`heal_target:N`): the heal amount of a TOP-LEVEL heal segment,
+# 0 when the def has none. Deliberately matches only parts[0] — an activated
+# power (`activated_power:1:heal_target:2:…`, The Hammer of Grace), an
+# enter-play trigger (`on_enter:heal_target:2`, Ra'chee) and a modal mode
+# (`mode:heal_target:3`, Natural Selection) all carry the same word further
+# along their own segment and are NOT this. Used by the AI to recognise the
+# card as a friendly-only heal.
+static func _heal_target_amount(def: CardDef) -> int:
+	if def == null:
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "heal_target" and parts.size() > 1:
+			return int(parts[1])
+	return 0
 
 
 # ── Ravenous Bite (azeroth_44) — `atk_swing:A1:A2` ────────────────────────────
@@ -1563,6 +1743,55 @@ static func _play_cost_sacrifice_ok(state: GameState, def: CardDef,
 	if action.params.get("_skip_target_check", false):
 		return not cands.is_empty()
 	return action.params.get("sacrifice_id", "") in cands
+
+
+# ── Sacrifice-a-Pet play cost (Dark Pact) ──────────────────────────────────────
+#
+# "As an additional cost to play Dark Pact, destroy one of your Pets. Draw X
+# cards, where X is the cost of the Pet you destroyed." Sever the Cord's
+# announcement-time (412.2) sacrifice narrowed to Pets, with no separate
+# target — the sacrifice IS the entire cost and the card's only pick, so it
+# rides as `sacrifice_id` (never `target_id`, matching the convention) and the
+# card is unplayable with no Pet in play (the highlight probe goes dark).
+static func play_cost_sacrifices_pet(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "play_cost_sacrifice_pet")
+
+
+# Pets in `player_id`'s party that may pay the cost (rule 414.3b subtype).
+static func get_play_pet_sacrifice_candidates(state: GameState, player_id: String,
+		db) -> Array:
+	var result: Array = []
+	if db == null:
+		return result
+	for ally: CardInstance in state.cards_in_zone(player_id + "_ally_row"):
+		var def := db.get_def(ally.card_def_id) as CardDef
+		if def and def.card_subtype == "Pet":
+			result.append(ally.instance_id)
+	return result
+
+
+static func _play_cost_sacrifice_pet_ok(state: GameState, def: CardDef,
+		action: PendingAction, db) -> bool:
+	if not play_cost_sacrifices_pet(def):
+		return true
+	var cands := get_play_pet_sacrifice_candidates(state, action.source_player, db)
+	if action.params.get("_skip_target_check", false):
+		return not cands.is_empty()
+	return action.params.get("sacrifice_id", "") in cands
+
+
+# The draw amount for `draw:x_from_sacrifice` (Dark Pact): the PRINTED cost of
+# the Pet just destroyed to pay the cost. The CardInstance survives in its
+# owner's graveyard (only its zone changed), so this reads live off the same
+# `sacrifice_id` the announcement destroyed — no need to stash the amount.
+static func _sacrifice_pet_draw_amount(state: GameState, sacrifice_id: String, db) -> int:
+	if db == null or sacrifice_id == "":
+		return 0
+	var card := state.get_card(sacrifice_id)
+	if not card:
+		return 0
+	var def := db.get_def(card.card_def_id) as CardDef
+	return printed_cost(def)
 
 
 # ── Skewer (azeroth_155) — `ally_atk_damage:ally` ─────────────────────────────
@@ -1790,7 +2019,7 @@ static func _is_protecting_ally(state: GameState, target_id: String, db = null) 
 
 # Burn Away ("Destroy target ability.") / Shattering Blow ("Destroy target
 # equipment."): `destroy_target:ability` / `destroy_target:equipment`. Returns
-# the destroy_target kind of a def ("ally", "ability", "equipment",
+# the destroy_target kind of a def ("ally", "ability", "equipment", "armor",
 # "protecting_ally") or "" for non-destroy defs. Shared by the router and AI.
 static func destroy_target_kind(def: CardDef) -> String:
 	if not def:
@@ -1885,8 +2114,21 @@ static func _is_in_play_equipment(state: GameState, target_id: String, db) -> bo
 	return def != null and def.card_type == "Equipment"
 
 
-# All in-play cards that match a destroy_target kind of "ability" or
-# "equipment" (both players). Candidates only — callers still filter through
+# ── Sunder Armor (azeroth_149) — `destroy_target:armor` ───────────────────
+# "Destroy target armor." Shattering Blow's equipment pool narrowed to ARMOR:
+# an in-play Equipment whose card_subtype is one of ARMOR_SUBTYPES (rule 304 —
+# the printed type line reads "Armor — <subtype>"). A weapon (Sword, Axe…) and
+# an Item (Ramstein's Lightning Bolts) are Equipment but are NOT armor, so
+# neither is ever a legal target — the same predicate Gartok's attack-exhaust
+# pool reads, so the two can never disagree about what counts as armor. Either
+# player's armor is legal (the printed text carries no "opposing" clause).
+static func _is_destroyable_armor(state: GameState, target_id: String, db) -> bool:
+	return _is_in_play_equipment(state, target_id, db) \
+			and _is_armor_equipment(state, target_id, db)
+
+
+# All in-play cards that match a destroy_target kind of "ability", "equipment"
+# or "armor" (both players). Candidates only — callers still filter through
 # can_submit / _is_legal_target (706 Untargetable).
 static func get_destroy_kind_candidates(state: GameState, db, kind: String) -> Array:
 	var result: Array = []
@@ -1895,9 +2137,14 @@ static func get_destroy_kind_candidates(state: GameState, db, kind: String) -> A
 		zone_ids += ["p1_ally_row", "p2_ally_row", "attached"]
 	for zone_id in zone_ids:
 		for card in state.cards_in_zone(zone_id):
-			var matches := _is_in_play_ability(state, card.instance_id, db) \
-					if kind == "ability" \
-					else _is_in_play_equipment(state, card.instance_id, db)
+			var matches := false
+			match kind:
+				"ability":
+					matches = _is_in_play_ability(state, card.instance_id, db)
+				"armor":
+					matches = _is_destroyable_armor(state, card.instance_id, db)
+				_:
+					matches = _is_in_play_equipment(state, card.instance_id, db)
 			if matches:
 				result.append(card.instance_id)
 	return result
@@ -2075,7 +2322,7 @@ static func _resolve(state: GameState, action: PendingAction,
 		"play_instant":
 			return _resolve_play_instant(state, action, db)
 		"place_resource":
-			return _resolve_place_resource(state, action)
+			return _resolve_place_resource(state, action, db)
 		"propose_combat":
 			return _resolve_propose_combat(state, action, db)
 		"use_quest":
@@ -2570,10 +2817,7 @@ static func form_break_on_tag(def: CardDef) -> String:
 static func is_totem_def(def: CardDef) -> bool:
 	if not def:
 		return false
-	for seg in def.effects.split("|"):
-		if seg.strip_edges() == "totem" or seg.strip_edges().begins_with("totem:"):
-			return true
-	return false
+	return def.is_totem()
 
 
 # Rule 305.3a: "Totems are ability allies and count as both IN ALL ZONES." So a
@@ -2587,7 +2831,7 @@ static func is_totem_def(def: CardDef) -> bool:
 static func is_ally_card_def(def: CardDef) -> bool:
 	if not def:
 		return false
-	return def.card_type == "Ally" or is_totem_def(def)
+	return def.is_ally_card()
 
 
 static func _resolve_play_ongoing_ability(state: GameState,
@@ -2646,6 +2890,30 @@ static func _resolve_play_ongoing_ability(state: GameState,
 					# on the chain, the 601.3 recheck then fizzles the proposal.
 					if _exhaust_target_ok(state, parts, target_id, db):
 						events.append_array(GameLogic.exhaust_card(state, target_id))
+				"hero_atk_this_turn":
+					# Maul: "Your hero has +N ATK this turn." The on-play half of
+					# a Form card, and the untargeted twin of Ravenous Bite's
+					# pump: a Buff (stat `atk`, duration `turns`:1) on the
+					# CASTER's own hero, so the end-of-turn sweep gives "this
+					# turn" for free — correct even when cast on the opponent's
+					# turn — and get_atk section (1) reads it live.
+					# Unconditional, NOT Cat Form's `hero_atk_while_attacking`:
+					# it counts while defending and while protecting too. Nothing
+					# is announced (no target, no choice), so 706 is irrelevant
+					# and the pump can never fizzle; a hero is always in play.
+					# It also makes an otherwise 0-ATK hero a legal attacker,
+					# since that gate probes get_atk live.
+					var hat_amount := int(parts[1]) if parts.size() > 1 else 0
+					var hat_ps := state.players.get(action.source_player) as PlayerState
+					var hat_hero: String = hat_ps.hero_instance_id if hat_ps else ""
+					if hat_amount != 0 and hat_hero != "":
+						var hat_card := state.get_card(hat_hero)
+						if hat_card:
+							hat_card.active_buffs.append(Buff.make(
+								"maul_hero_atk_this_turn", card_id, "atk",
+								hat_amount, "turns", 1))
+							events.append(GameEvent.atk_swing_applied(
+								hat_hero, card_id, hat_amount))
 				"deal_damage_to_target":
 					# Same semantics as the play_instant branch: the HERO is the
 					# damage source, packets go through the prevention pipeline.
@@ -2794,6 +3062,20 @@ static func _resolve_attach(state: GameState, action: PendingAction,
 				state.pending_discard_count  = disc_n
 				events.append(GameEvent.discard_choice_opened(
 					disc_who, disc_n, "card_effect"))
+		if dp[0] == "attach_heal":
+			# Primal Mending: "Attach to target ally, and your hero heals N
+			# damage from it." attach_deal_damage's mirror — the CASTER's hero
+			# is the healer and the fresh host is the target, so attaching to an
+			# opposing ally repairs THEIRS (the printed text says simply "target
+			# ally"). The heal lands inline: there is no packet pipeline and
+			# nothing to prevent. An undamaged host is a legal no-op, so unlike
+			# the damage rider this can never kill the host and therefore never
+			# takes the attachment down with it (400.5).
+			var heal_amt := int(dp[1]) if dp.size() > 1 else 0
+			var heal_hero := state.get_hero(card.controller)
+			if heal_hero and heal_amt > 0:
+				events.append_array(GameLogic.heal(
+					state, target_id, heal_amt, db, heal_hero.instance_id))
 		if dp[0] == "attach_deal_damage":
 			var dmg_amt := int(dp[1]) if dp.size() > 1 else 0
 			var att_hero := state.get_hero(card.controller)
@@ -2853,6 +3135,10 @@ static func _resolve_play_instant(state: GameState,
 											target_id, action.source_player, db)
 								"equipment":
 									dt_ok = _is_in_play_equipment(state, target_id, db)
+								"armor":
+									# Sunder Armor: re-check equipment + armor
+									# subtype (706 / glossary 4217).
+									dt_ok = _is_destroyable_armor(state, target_id, db)
 						# Trophy Kill / Prey on the Weak: the printed-cost band is
 						# re-checked at resolution too — a target that left play and
 						# came back, or one swapped out from under the announce,
@@ -2971,9 +3257,17 @@ static func _resolve_play_instant(state: GameState,
 								target_id, card_id))
 					"heal_target":
 						# "Your hero heals N damage from target hero or ally."
-						# (Natural Selection heal mode). Re-check at resolution
-						# (706): fizzles if the target left play / became
-						# Untargetable. heal() no-ops on an undamaged target.
+						# Reached BOTH as a top-level segment (Healing Touch,
+						# `heal_target:10`) and as a modal mode (Natural
+						# Selection) — the modal dispatch above collapses to the
+						# chosen mode's inner segment, so one arm serves both.
+						# Either party's characters are legal ("target hero or
+						# ally", no "friendly"), so a human may repair the
+						# opponent's board. Re-check at resolution (706 /
+						# glossary 4217): fizzles if the target left play or
+						# became Untargetable. heal() no-ops on an undamaged
+						# target, which is a legal (wasteful) play, not an
+						# illegal one.
 						var heal_amount := int(parts[1]) if parts.size() > 1 else 0
 						if heal_amount > 0 and _is_legal_target(state, target_id, db):
 							events.append_array(GameLogic.heal(
@@ -3160,15 +3454,17 @@ static func _resolve_play_instant(state: GameState,
 									"from_ability": true})
 							events.append_array(defer_packets(state, db, ms_packets))
 					"interrupt_ability":
-						# "Interrupt target ability card that's targeting your
-						# hero." (Escape Artist, rule 711.) Re-checked at
-						# resolution like every other target (706 / glossary
-						# 4217): the link may have been interrupted by something
-						# else, or retargeted off our hero, in which case this
-						# fizzles. Costs the interrupted link paid are NOT
-						# refunded (711.2).
+						# "Interrupt target ability card." (Counterspell, rule
+						# 711; Escape Artist's mode adds "…that's targeting your
+						# hero", carried as the `targets_your_hero` rider.)
+						# Re-checked at resolution like every other target (706 /
+						# glossary 4217): the link may have been interrupted by
+						# something else — or, where the rider applies, retargeted
+						# off our hero — in which case this fizzles. Costs the
+						# interrupted link paid are NOT refunded (711.2).
 						if _is_interrupt_target(state, db, action.source_player,
-								target_id, card_id):
+								target_id, card_id,
+								interrupt_requires_hero_target(entry.strip_edges())):
 							events.append_array(_interrupt_link(state, target_id,
 									card_id, db))
 						else:
@@ -3277,7 +3573,15 @@ static func _resolve_play_instant(state: GameState,
 								{"player_id": action.source_player, "source_id": card_id}))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
-						var draw_n := int(parts[1]) if parts.size() > 1 else 1
+						# Dark Pact's `draw:x_from_sacrifice`: X is the printed cost of
+						# the Pet destroyed to pay the cost (announced as
+						# `sacrifice_id`, paid at chain entry — see submit_action).
+						var draw_n := 1
+						if parts.size() > 1 and parts[1].strip_edges() == "x_from_sacrifice":
+							draw_n = _sacrifice_pet_draw_amount(state,
+								action.params.get("sacrifice_id", ""), db)
+						elif parts.size() > 1:
+							draw_n = int(parts[1])
 						for _i in draw_n:
 							events.append_array(_draw_one(state, action.source_player))
 					"reveal_pick":
@@ -3314,14 +3618,24 @@ static func _resolve_play_instant(state: GameState,
 						# exiled in response (Cannibalize, Ophelia) fizzles the fetch.
 						# Nothing enters play, so there is no controller change and no
 						# enter-play trigger.
+						# Cold Snap fetches SEVERAL ("up to X … with different
+						# names"), announced as `target_ids`; the count and the
+						# distinct-name constraint were both settled at
+						# announcement, so all that is left here is the per-card
+						# re-check — one card exiled in response drops out on its
+						# own without fizzling the rest.
 						var gh_req := get_graveyard_search_requirement(def)
 						var gh_cands := get_graveyard_search_candidates(
 								state, action.source_player, gh_req, db)
-						if target_id in gh_cands:
+						var gh_picks: Array = action.params.get("target_ids", []) \
+								if graveyard_pick_is_multi(gh_req) else [target_id]
+						for gh_id in gh_picks:
+							if not (gh_id in gh_cands):
+								continue
 							events.append_array(GameLogic.move_card(
-									state, target_id, action.source_player + "_hand"))
+									state, gh_id, action.source_player + "_hand"))
 							events.append(GameEvent.card_returned_from_graveyard(
-									target_id, action.source_player))
+									gh_id, action.source_player))
 					"graveyard_to_play":
 						# Ancestral Spirit: "Put target ally card from your graveyard
 						# into play if its cost <= the number of resources you have.
@@ -3404,10 +3718,18 @@ static func _resolve_play_instant(state: GameState,
 									"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
 									"from_ability": true})
 							events.append_array(defer_packets(state, db, aoe_packets))
-	# Move used instant to its owner's graveyard (card is currently in chain zone).
+	# Move used instant to its owner's graveyard (card is currently in chain zone)
+	# — unless the card exiles ITSELF as part of its own text (Cold Snap: "Remove
+	# Cold Snap from the game"), in which case it goes to its OWNER's RFG zone
+	# (415.7a) instead and no later copy can ever fetch it back.
 	var card2 := state.get_card(card_id)
 	if card2:
-		events.append_array(GameLogic.move_card(state, card_id, card2.owner + "_graveyard"))
+		var self_def := db.get_def(card2.card_def_id) as CardDef if db else null
+		if self_def and ability_rfg_self_on_resolve(self_def):
+			events.append_array(GameLogic.move_card(state, card_id, card2.owner + "_rfg"))
+			events.append(GameEvent.card_removed_from_game(card_id, action.source_player))
+		else:
+			events.append_array(GameLogic.move_card(state, card_id, card2.owner + "_graveyard"))
 	# Forms: "Destroy this card when you … play a non-Feral ability." Every card
 	# resolved here is an Ability (instant or not), so playing it may break the
 	# player's in-play Form(s) — checked by tag (see _check_form_break_ability).
@@ -3418,7 +3740,7 @@ static func _resolve_play_instant(state: GameState,
 
 
 static func _resolve_place_resource(state: GameState,
-		action: PendingAction) -> Array[GameEvent]:
+		action: PendingAction, db = null) -> Array[GameEvent]:
 	var card_id: String = action.params.get("card_id", "")
 	var face_up: bool   = action.params.get("face_up", false)
 	var card := state.get_card(card_id)
@@ -3432,34 +3754,68 @@ static func _resolve_place_resource(state: GameState,
 	events.append(GameEvent.make("resource_placed", {
 		"card_id": card_id, "player": card.controller, "face_up": face_up,
 	}))
+	# Rule 710.1b: "Lazy Peons enters play exhausted" — set during entry, so the
+	# card never counts as an available resource on the turn it is placed.
+	if db:
+		var res_def := db.get_def(card.card_def_id) as CardDef
+		if res_def and enters_play_exhausted(res_def):
+			events.append_array(GameLogic.exhaust_card(state, card_id))
 	return events
 
 
 # Exhaust resources to pay a card's play cost (rule 412.2).
 # Auto-selects ready resources; face-up/face-down both valid.
 # x = announced X for X-cost cards (0 otherwise).
-# Resources in the order costs consume them: FACE-DOWN cards first (each group
-# keeping row order), face-up cards (quests) last. Any ready resource is worth
-# exactly (1), so which one a cost exhausts is game-irrelevant — the order
-# exists for the renderer's resource stacking (identical face-down cards render
-# as one pile per ready/exhausted pose; draining the face-down pile first keeps
-# the zone at two big piles instead of fragmenting it), and spending anonymous
-# resources before named quests is the natural order anyway.
-static func _resource_pay_order(state: GameState, player_id: String) -> Array:
-	var down: Array = []
-	var up:   Array = []
+# Resources in the order costs consume them, each group keeping row order:
+#   1. face-up quests whose completion DESTROYS them (Into the Maw of Madness)
+#   2. face-down cards
+#   3. every other face-up card (ordinary quests)
+#   4. face-up quests whose completion cost IS exhausting them (Lazy Peons)
+# Any ready resource is worth exactly (1), so for a plain resource which one a
+# cost exhausts is game-irrelevant — groups 2 and 3 are ordered for the
+# renderer's resource stacking (identical face-down cards render as one pile per
+# ready/exhausted pose; draining the face-down pile first keeps the zone at two
+# big piles instead of fragmenting it), and spending anonymous resources before
+# named quests is the natural order anyway.
+#
+# Groups 1 and 4 are NOT cosmetic: the player never picks which resource pays, so
+# the order is the only thing standing between an automatic cost and a quest it
+# would silently ruin. A quest that destroys itself on completion is best spent
+# already (its exhaust is free); a quest completed BY exhausting it must survive
+# every other payment or its text is gone.
+static func _resource_pay_order(state: GameState, player_id: String,
+		db = null) -> Array:
+	var first: Array = []   # face-up quests that WANT to be spent (Maw of Madness)
+	var down:  Array = []
+	var up:    Array = []
+	var last:  Array = []   # face-up quests whose completion cost IS their exhaust
 	for res_card in state.cards_in_zone(player_id + "_resource_row"):
 		if res_card.face_down:
 			down.append(res_card)
+			continue
+		var def := db.get_def(res_card.card_def_id) as CardDef if db else null
+		if def and quest_cost_exhausts_self(def):
+			# Lazy Peons: exhausting it IS the completion cost, so an automatic
+			# cost that spends it silently destroys the card's whole text. It
+			# goes dead last — the player only loses the quest when there is
+			# literally nothing else left to pay with.
+			last.append(res_card)
+		elif def and quest_cost_destroys_self(def):
+			# Into the Maw of Madness: completing it DESTROYS it, so it is the
+			# one resource the player is happiest to have already spent. Paying
+			# with it first means completing the quest costs a resource that was
+			# exhausted anyway, instead of a fresh one.
+			first.append(res_card)
 		else:
 			up.append(res_card)
-	return down + up
+	return first + down + up + last
 
 
 # Refunds (retract_last) ready in the exact reverse — face-up first — so a
 # pay-then-retract round trip is a no-op on which cards ended up exhausted.
-static func _resource_refund_order(state: GameState, player_id: String) -> Array:
-	var order := _resource_pay_order(state, player_id)
+static func _resource_refund_order(state: GameState, player_id: String,
+		db = null) -> Array:
+	var order := _resource_pay_order(state, player_id, db)
 	order.reverse()
 	return order
 
@@ -3472,7 +3828,7 @@ static func _pay_cost(state: GameState, card_id: String,
 	if cost <= 0:
 		return []
 	var events: Array[GameEvent] = []
-	for res_card in _resource_pay_order(state, player_id):
+	for res_card in _resource_pay_order(state, player_id, db):
 		if cost <= 0:
 			break
 		if not res_card.is_exhausted:
@@ -3483,10 +3839,10 @@ static func _pay_cost(state: GameState, card_id: String,
 
 # Pay an arbitrary resource cost (used for activated powers whose cost isn't the card's play cost).
 static func _pay_resource_cost(state: GameState, player_id: String,
-		amount: int) -> Array[GameEvent]:
+		amount: int, db = null) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	var remaining := amount
-	for res_card in _resource_pay_order(state, player_id):
+	for res_card in _resource_pay_order(state, player_id, db):
 		if remaining <= 0:
 			break
 		if not res_card.is_exhausted:
@@ -3713,7 +4069,7 @@ static func choose_strike(state: GameState, weapon_id: String,
 				ps.melee_strike_discount = 0   # "the next time" — consumed
 			events.append_array(GameLogic.exhaust_card(state, weapon_id))
 			if cost > 0:
-				events.append_array(_pay_resources(state, player_id, cost))
+				events.append_array(_pay_resources(state, player_id, cost, db))
 			var struck: Array = state.combat_struck_weapons.get(wielder_id, [])
 			struck.append(weapon_id)
 			state.combat_struck_weapons[wielder_id] = struck
@@ -3817,7 +4173,7 @@ static func choose_ready_on_strike(state: GameState, pay: bool,
 	if pay and state.is_in_play(weapon_id) \
 			and state.get_available_resources(player_id) >= cost:
 		if cost > 0:
-			events.append_array(_pay_resources(state, player_id, cost))
+			events.append_array(_pay_resources(state, player_id, cost, db))
 		events.append_array(GameLogic.ready_card(state, weapon_id))
 		var ps := state.players.get(player_id) as PlayerState
 		if ps and ps.hero_instance_id != "" and state.is_in_play(ps.hero_instance_id):
@@ -3827,6 +4183,57 @@ static func choose_ready_on_strike(state: GameState, pay: bool,
 	# Open the combat window this strike (and its ready point) was holding up.
 	events.append_array(_open_combat_window(state, side, db))
 	return events
+
+
+# ── Armor DEF (rule 717.2c) ───────────────────────────────────────────────────
+# The ONE place an in-play equipment's DEF is read. Printed DEF (the `equipment:`
+# segment's second field) plus every aura raising it — currently Natural
+# Defenses' `armor_def_in_form:FORM:N`. Route new DEF readers through here: the
+# prevention pool gate, the amount actually prevented and the AI all ask this,
+# so they can never disagree about what a piece of armor is worth.
+#
+# Never cached: the bonus tracks the form appearing and breaking mid-combat, and
+# lifts the instant the aura leaves play.
+#
+# Consequence worth knowing: the aura can lift a DEF 0 armor (Mooncloth Robe,
+# Chromatic Cloak) to DEF 1, which makes it an exhaustable shielder for the
+# first time — get_ready_def_armor's "> 0" gate reads this function, so that
+# falls out rather than being special-cased.
+static func get_armor_def(state: GameState, card_id: String, db) -> int:
+	if not db:
+		return 0
+	var card := state.get_card(card_id)
+	if not card:
+		return 0
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.card_type != "Equipment":
+		return 0
+	var value := int(_equipment_info(def).get("def", 0))
+	value += _armor_def_aura(state, card, db)
+	return max(value, 0)
+
+
+# Natural Defenses (azeroth_26): "Ongoing: Each of your armor has +N DEF while
+# your hero is in FORM." Controller-scoped ("YOUR armor", so the opponent's is
+# never touched) and restricted to ARMOR — a weapon and an Item are Equipment
+# but not armor, so neither is lifted off DEF 0 into the shielder pool. The form
+# gate is read live through hero_is_in_form, so breaking the form drops the
+# bonus with no bookkeeping. Stacks per copy.
+static func _armor_def_aura(state: GameState, card: CardInstance, db) -> int:
+	if not _is_armor_equipment(state, card.instance_id, db):
+		return 0
+	var bonus := 0
+	for src in state.cards_in_zone(card.controller + "_hero_row"):
+		var src_def := db.get_def(src.card_def_id) as CardDef
+		if not src_def or src_def.effects == "":
+			continue
+		for seg in src_def.effects.split("|"):
+			var parts := seg.strip_edges().split(":")
+			if parts[0].strip_edges() != "armor_def_in_form" or parts.size() < 3:
+				continue
+			if hero_is_in_form(state, card.controller, parts[1].strip_edges(), db):
+				bonus += int(parts[2])
+	return bonus
 
 
 # ── Armor damage prevention (rule 717.2c) ─────────────────────────────────────
@@ -3851,10 +4258,7 @@ static func get_ready_def_armor(state: GameState, player_id: String,
 	for card in state.cards_in_zone(player_id + "_hero_row"):
 		if card.is_exhausted:
 			continue
-		var def := db.get_def(card.card_def_id) as CardDef
-		if not def or def.card_type != "Equipment":
-			continue
-		if int(_equipment_info(def).get("def", 0)) > 0:
+		if get_armor_def(state, card.instance_id, db) > 0:
 			ids.append(card.instance_id)
 	return ids
 
@@ -4197,9 +4601,7 @@ static func choose_prevention(state: GameState, armor_id: String,
 	var events: Array[GameEvent] = []
 
 	if armor_id != "" and armor_id in get_ready_def_armor(state, player_id, db):
-		var armor := state.get_card(armor_id)
-		var a_def := db.get_def(armor.card_def_id) as CardDef
-		var def_value := int(_equipment_info(a_def).get("def", 0))
+		var def_value := get_armor_def(state, armor_id, db)
 		events.append_array(GameLogic.exhaust_card(state, armor_id))
 		var ps := state.players.get(player_id) as PlayerState
 		ps.damage_prevention += def_value
@@ -4810,6 +5212,22 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				state.pending_resource_place_source = card_id
 				events.append(GameEvent.make("resource_place_choice_opened",
 					{"player": card.controller, "source": card_id}))
+		"put_hand_ally_into_play":
+			# Seraph the Exalted: "[Activate] -> Put an ally card from your hand
+			# into play if its cost is less than or equal to the number of
+			# resources you have." WHICH ally is a resolution choice (709.2b —
+			# 707.1 locks in only X, modes and targets), so nothing was
+			# announced and the pool is read LIVE here: a card drawn in the
+			# response window is eligible, one discarded is not. MANDATORY (no
+			# "may"), so there is no decline; an empty pool opens no choice.
+			var hp_ids := get_hand_play_candidates(state, card.controller, db)
+			if not hp_ids.is_empty():
+				state.pending_hand_play_player = card.controller
+				state.pending_hand_play_source = card_id
+				state.pending_hand_play_ids = hp_ids
+				events.append(GameEvent.make("hand_play_choice_opened",
+					{"player": card.controller, "source": card_id,
+					 "card_ids": hp_ids}))
 		"heal_target":
 			var amount: int = int(ap.get("amount", 0))
 			var target_id: String = action.params.get("target_id", "")
@@ -4890,6 +5308,23 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			if galway_hero:
 				events.append_array(GameLogic.ready_card(state, galway_hero.instance_id))
 			events.append_array(_open_weapon_ready_choice(state, galway_pid, card_id, db))
+		"buff_atk_self":
+			# ── Warmaster Hork (dark_portal_241) ──────────────────────────────
+			# "(2) -> Warmaster Hork has +1 ATK this turn." Elder Moorf's
+			# `buff_atk_target` pump aimed at the SOURCE instead of at a target:
+			# nothing is announced, so 706 Untargetable is irrelevant and the
+			# power can never fizzle for want of a target. The grant is a Buff
+			# (stat `atk`, duration `turns`:1), so the end-of-turn sweep gives
+			# "this turn" for free (correct even when used on the opponent's
+			# turn) and leaving play clears it. Paired with `no_activate` it is
+			# repeatable, so the buffs simply STACK — each use adds its own.
+			# A source killed in response is out of play by resolution, so the
+			# link resolves and only as much as possible happens (709.2c) —
+			# nothing, which is why the in-play check is here and not implied.
+			var self_amount: int = int(ap.get("amount", 0))
+			if self_amount != 0 and state.is_in_play(card_id):
+				events.append_array(GameLogic.add_buff(state, card_id,
+					Buff.make("hork_atk", card_id, "atk", self_amount, "turns", 1)))
 		"buff_atk_target":
 			# Elder Moorf: "Target ally has +X ATK this turn."
 			var amount: int = int(ap.get("amount", 0))
@@ -5037,6 +5472,12 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 			continue
 		if card.has_restriction("cannot_attack"):
 			continue
+		# Rule 600.3 (Winter's Grasp): an ally whose controller can't pay the
+		# attack tax for any legal defender can't be proposed at all — offering
+		# it would light up an attacker with nothing it may attack. A board with
+		# no such aura short-circuits, so nothing else changes.
+		if _owes_unpayable_attack_tax(state, card.instance_id, db):
+			continue
 		result.append(card.instance_id)
 	return result
 
@@ -5063,6 +5504,20 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 	# Narrowing to the union rather than applying them in turn is what makes the
 	# rulebook's 601.2d example — Sarmoth + Mocking Blow → "can attack only
 	# Sarmoth or Warrax" — resolve correctly.
+	# Rule 600.3 (Winter's Grasp): the tax is an additional cost to ANNOUNCING the
+	# proposal, so a defender whose tax we can't pay is not a legal defender at
+	# all. Filtered here, BEFORE the 601.2c narrowing below, so an unaffordable
+	# specified defender falls back to the rest of the list rather than forbidding
+	# combat outright. Only the announcement is gated — _resolve_propose_combat's
+	# 601.3 re-check deliberately doesn't ask again, since by then the tax has
+	# been paid and the resources are gone.
+	if db:
+		var tax_avail := state.get_available_resources(attacker.controller)
+		var affordable: Array[String] = []
+		for id in result:
+			if attack_tax(state, attacker_id, id, db) <= tax_avail:
+				affordable.append(id)
+		result = affordable
 	var specified: Array[String] = _can_attack_only_ids(attacker)
 	if db:
 		for id in result:
@@ -5153,6 +5608,69 @@ static func _allies_attack_locked(state: GameState, player_id: String, db) -> bo
 # the given player's OPPONENT controls an in-play card carrying the
 # opposing_cant_protect effect flag. A continuous static effect — evaluated live,
 # never cached — that stops the player from protecting with any character.
+# Rule 600.3 — "can't attack unless its controller [pays a cost]" (Winter's
+# Grasp `azeroth_60`: "Ongoing: Opposing allies can't attack heroes or allies in
+# your party unless their controller pays (1) for each attacker"). The CR is
+# explicit that this "is an additional cost to adding an effect to the chain
+# proposing that character as an attacker", so it is paid at ANNOUNCEMENT with
+# every other 412.2 cost — and, being resources rather than a destroyed
+# permanent, it is refundable by retract_last.
+#
+# Two scopes, both read live off the board so the tax lifts the instant the aura
+# leaves play: the ATTACKER must be an ally (an attacking hero is never taxed —
+# the printed text says "opposing allies"), and the DEFENDER must belong to the
+# aura's controller ("heroes or allies in YOUR party"). In a duel the second is
+# every legal defender such an ally has, which is what makes the card total; the
+# check is written against the defender's controller anyway, so a card taxing
+# only part of the board would need no new code. Stacks per copy — each aura is
+# its own continuous effect and all of them have to be satisfied.
+static func attack_tax(state: GameState, attacker_id: String,
+		defender_id: String, db) -> int:
+	if not db:
+		return 0
+	var attacker := state.get_card(attacker_id)
+	var defender := state.get_card(defender_id)
+	if not attacker or not defender:
+		return 0
+	var att_zone := state.zones.get(attacker.zone_id) as Zone
+	if not att_zone or att_zone.zone_type != "ally_row":
+		return 0
+	var taxer := defender.controller
+	if taxer == attacker.controller:
+		return 0
+	var total := 0
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(taxer + zone_suffix):
+			var n := int(_effect_flag_arg(
+					db.get_def(card.card_def_id) as CardDef, "opposing_allies_attack_tax"))
+			total += max(n, 0)
+	return total
+
+
+# True when an attack tax applies to this ally and its controller can't pay it
+# for ANY legal defender — so the ally can't be proposed at all (600.3). The
+# cheap board pre-check keeps the common case (no aura in play) from paying for
+# a get_legal_defenders call per ally.
+static func _owes_unpayable_attack_tax(state: GameState, attacker_id: String,
+		db) -> bool:
+	if not db:
+		return false
+	var attacker := state.get_card(attacker_id)
+	if not attacker:
+		return false
+	var opp := _other_player(state, attacker.controller)
+	var taxed := false
+	for zone_suffix in ["_ally_row", "_hero_row"]:
+		for card in state.cards_in_zone(opp + zone_suffix):
+			if _effect_flag_arg(db.get_def(card.card_def_id) as CardDef,
+					"opposing_allies_attack_tax") != "":
+				taxed = true
+				break
+	if not taxed:
+		return false
+	return get_legal_defenders(state, attacker_id, db).is_empty()
+
+
 static func _protect_locked(state: GameState, player_id: String, db) -> bool:
 	if not db:
 		return false
@@ -5284,8 +5802,23 @@ static func get_must_attack_ids(state: GameState, player_id: String,
 	var result: Array[String] = []
 	for attacker_id in get_legal_attackers(state, player_id, db):
 		var card := state.get_card(attacker_id)
-		if card and card.has_restriction("must_attack") \
-				and not get_legal_defenders(state, attacker_id, db).is_empty():
+		if not card or not card.has_restriction("must_attack"):
+			continue
+		var defenders := get_legal_defenders(state, attacker_id, db)
+		if defenders.is_empty():
+			continue
+		# Rule 600.3: a character under BOTH a "must attack if able" modifier and
+		# a "can't attack unless its controller pays" one "is unable to attack
+		# (and consequently need not attack) unless its controller CHOOSES to pay
+		# that cost." So a tax releases the lock — a player is never compelled to
+		# spend resources. Only a defender it could attack for FREE keeps the
+		# must-attack binding; an affordable tax is still merely an option.
+		var free_defender := false
+		for def_id in defenders:
+			if attack_tax(state, attacker_id, def_id, db) <= 0:
+				free_defender = true
+				break
+		if free_defender:
 			result.append(attacker_id)
 	return result
 
@@ -5323,6 +5856,18 @@ static func _has_effect_flag(def: CardDef, flag: String) -> bool:
 		if segment.strip_edges() == flag:
 			return true
 	return false
+
+
+# The single argument of a one-argument effects segment ("gy_tag:Frost" -> "Frost").
+# "" when the def carries no such segment.
+static func _effect_flag_arg(def: CardDef, key: String) -> String:
+	if not def:
+		return ""
+	for segment in def.effects.split("|"):
+		var parts := segment.strip_edges().split(":")
+		if parts.size() >= 2 and parts[0].strip_edges() == key:
+			return parts[1].strip_edges()
+	return ""
 
 
 # True if a weapon struck by wielder_id this combat carries the
@@ -5715,7 +6260,7 @@ static func choose_ready_on_attack(state: GameState, pay: bool,
 	if pay and state.is_in_play(card_id) \
 			and state.get_available_resources(player_id) >= cost:
 		if cost > 0:
-			events.append_array(_pay_resources(state, player_id, cost))
+			events.append_array(_pay_resources(state, player_id, cost, db))
 		events.append_array(GameLogic.ready_card(state, card_id))
 		events.append(GameEvent.readied_on_attack(player_id, card_id, cost))
 
@@ -5800,8 +6345,8 @@ static func choose_attack_exhaust(state: GameState, target_id: String,
 static func get_attack_exhaust_targets(state: GameState, db) -> Array[String]:
 	if state.pending_attack_exhaust_kind == "armor":
 		var ids: Array[String] = []
-		for cid in get_destroy_kind_candidates(state, db, "equipment"):
-			if _is_armor_equipment(state, cid, db) and _is_legal_target(state, cid, db):
+		for cid in get_destroy_kind_candidates(state, db, "armor"):
+			if _is_legal_target(state, cid, db):
 				ids.append(cid)
 		return ids
 	return get_turn_start_trigger_targets(state, db)
@@ -6624,7 +7169,7 @@ static func choose_whelp_bounce(state: GameState, pay: bool,
 	var events: Array[GameEvent] = []
 	if pay and state.is_in_play(ally_id) \
 			and state.get_available_resources(player_id) >= cost:
-		events.append_array(_pay_resources(state, player_id, cost))
+		events.append_array(_pay_resources(state, player_id, cost, db))
 		var ally := state.get_card(ally_id)
 		var owner := ally.owner if ally else ""
 		events.append_array(GameLogic.move_card(state, ally_id, owner + "_hand"))
@@ -6743,7 +7288,7 @@ static func choose_feral_rage(state: GameState, pay: bool,
 
 	var events: Array[GameEvent] = []
 	if pay and state.get_available_resources(player_id) >= cost:
-		events.append_array(_pay_resources(state, player_id, cost))
+		events.append_array(_pay_resources(state, player_id, cost, db))
 		events.append_array(_draw_one(state, player_id))
 		events.append(GameEvent.feral_rage_resolved(player_id))
 	else:
@@ -6800,14 +7345,26 @@ static func get_graveyard_search_requirement(def: CardDef) -> Dictionary:
 			# "health_minus_1" — enters with damage = its health − 1).
 			var cost_field := parts[5].strip_edges() if parts.size() >= 6 else ""
 			var dyn_cost := cost_field == "resources"
+			# MAX may be the literal token "X" (Cold Snap: "up to X … cards") —
+			# resolved against the x_value announced with the play, exactly as the
+			# COST is. Read it through graveyard_max_count, never off the field.
+			var max_field := parts[3].strip_edges()
+			var dyn_max := max_field == "X"
 			return {
 				"card_type":    parts[1].strip_edges(),
 				"min_count":    int(parts[2]),
-				"max_count":    int(parts[3]),
+				"max_count":    0 if dyn_max else int(max_field),
+				"max_count_x":  dyn_max,
 				"owner":        parts[4].strip_edges(),
 				"max_cost":     -1 if (dyn_cost or cost_field == "") else int(cost_field),
 				"max_cost_dynamic": dyn_cost,
 				"damage_mode":  parts[6].strip_edges() if parts.size() >= 7 else "",
+				# Riders carried on their own segments rather than as extra
+				# positional fields (Cold Snap): a type-line TAG filter narrowing
+				# the pool, and a constraint that the chosen SET hold no two cards
+				# of the same name.
+				"tag_filter":     _effect_flag_arg(def, "gy_tag"),
+				"distinct_names": _has_effect_flag(def, "gy_distinct_names"),
 				"dest":         dest,
 				"source":       "graveyard",
 			}
@@ -6887,6 +7444,32 @@ static func quest_cost_destroys_self(def: CardDef) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		if entry.strip_edges() == "complete_cost_destroy_self":
+			return true
+	return false
+
+
+# Lazy Peons: "Exhaust Lazy Peons to complete this quest." The completion cost
+# is exhausting the quest ITSELF, so it is paid at announcement (rule 412.2)
+# exactly like Into the Maw of Madness' destroy — but it is refundable, so the
+# announcement stays retractable. The quest must be READY to be completable,
+# which is what makes the resource pay order matter: see _resource_pay_order,
+# where such a quest is spent dead last.
+static func quest_cost_exhausts_self(def: CardDef) -> bool:
+	return _def_has_flag(def, "complete_cost_exhaust_self")
+
+
+# Rule 710.1b: "enters play exhausted" is processed DURING entry, not as a ready
+# entry followed by an exhaust. For a resource that means the card provides
+# nothing on the turn it is placed (Lazy Peons).
+static func enters_play_exhausted(def: CardDef) -> bool:
+	return _def_has_flag(def, "enters_play_exhausted")
+
+
+static func _def_has_flag(def: CardDef, flag: String) -> bool:
+	if not def or def.effects == "":
+		return false
+	for entry in def.effects.split("|"):
+		if entry.strip_edges() == flag:
 			return true
 	return false
 
@@ -6990,18 +7573,15 @@ static func requires_form_state(def: CardDef) -> String:
 # Is player_id's hero currently in the named form? Read LIVE off that player's
 # hero_row, so it lifts the instant the Form leaves play (a form break, a
 # destroy, a second Form sacrificed to the 414.3b slot check).
+# Delegates to GameState.hero_form_states — the ONE implementation of this read.
+# A continuous modifier (Predatory Strikes' ATK aura) has to ask the same
+# question from inside get_atk, and GameState must not depend on the resolver,
+# so the scan lives there and this is the resolver-side name for it.
 static func hero_is_in_form(state: GameState, player_id: String,
 		form_name: String, db) -> bool:
 	if not db or form_name == "":
 		return false
-	var want := form_name.to_lower()
-	for card in state.cards_in_zone(player_id + "_hero_row"):
-		if not card:
-			continue
-		var def := db.get_def(card.card_def_id) as CardDef
-		if def and form_state_of(def) == want:
-			return true
-	return false
+	return form_name.to_lower() in state.hero_form_states(player_id, db)
 
 
 # All graveyard cards matching a requirement, from player_id's point of view.
@@ -7023,6 +7603,7 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 		gy_players.append(_other_player(state, player_id))
 	var type_filter: String = req.get("card_type", "any")
 	var max_cost: int = req.get("max_cost", -1)
+	var tag_filter: String = req.get("tag_filter", "")
 	# Dynamic cost cap (Ancestral Spirit): "cost <= the number of resources you
 	# have" — the searching player's total resource count (rule wording counts
 	# resources controlled, exhausted or not).
@@ -7042,8 +7623,61 @@ static func get_graveyard_search_candidates(state: GameState, player_id: String,
 					continue
 			if max_cost >= 0 and def.cost > max_cost:
 				continue
+			# Type-line TAG filter (Cold Snap: "Frost ability cards"). Substring
+			# on the tags column, the convention `form_break` and
+			# `ability_cost_mod_by_tag` already use — so "Frost Talent" matches
+			# "Frost" and a future "Frost Combo" would too.
+			if tag_filter != "" and not (tag_filter in def.tags):
+				continue
 			result.append(card.instance_id)
 	return result
+
+
+# How many cards this search may take. `max_count` is a printed number for every
+# card but Cold Snap, whose "up to X" is the X announced with the play — the ONE
+# place the fixed and X cases are reconciled, so the submission gate, the router's
+# browser and the AI can't disagree about the ceiling.
+static func graveyard_max_count(req: Dictionary, x_value: int = 0) -> int:
+	if req.get("max_count_x", false):
+		return max(x_value, 0)
+	return int(req.get("max_count", 1))
+
+
+# True when this search announces its picks as `target_ids` (a list) rather than
+# as a single `target_id`. "Any number" (Cannibalize, min 0) and "up to X"
+# (Cold Snap) are lists; the mandatory single pick (Ancestral Spirit's reanimate,
+# Call the Spirit's fetch) is not.
+static func graveyard_pick_is_multi(req: Dictionary) -> bool:
+	if req.is_empty():
+		return false
+	if req.get("max_count_x", false):
+		return true
+	return int(req.get("min_count", 1)) == 0 or int(req.get("max_count", 1)) > 1
+
+
+# Cold Snap: "…cards with DIFFERENT names…" — a constraint on the chosen SET, not
+# on the pool, so it is checked at announcement over the picks rather than filtered
+# out of the candidates. Names can't change, so resolution needs no re-check.
+static func graveyard_picks_names_distinct(state: GameState, ids: Array, db) -> bool:
+	if not db:
+		return true
+	var seen := {}
+	for cid in ids:
+		var card := state.get_card(cid)
+		var def := db.get_def(card.card_def_id) as CardDef if card else null
+		if not def:
+			continue
+		if seen.has(def.card_name):
+			return false
+		seen[def.card_name] = true
+	return true
+
+
+# Cold Snap: "Remove Cold Snap from the game." The spell exiles ITSELF as part of
+# its own resolution instead of going to the graveyard — so a later copy can never
+# fetch it back. A rider on the play, not an effect segment of its own.
+static func ability_rfg_self_on_resolve(def: CardDef) -> bool:
+	return _has_effect_flag(def, "rfg_self")
 
 
 # Probe: could this quest be completed if valid graveyard targets were supplied?
@@ -7082,6 +7716,11 @@ static func _can_use_quest(state: GameState, action: PendingAction,
 		return true
 	var def := db.get_def(card.card_def_id) as CardDef
 	if not def or def.card_type != "Quest":
+		return false
+	# Lazy Peons: exhausting the quest IS the completion cost, so an already
+	# exhausted copy can't be completed (and it enters play exhausted, so it is
+	# never completable on the turn it is placed).
+	if quest_cost_exhausts_self(def) and card.is_exhausted:
 		return false
 	# Check additional resource cost (e.g. "Pay 1" on A Donation of Wool).
 	var resource_cost: int = max(def.cost, 0)
@@ -8030,6 +8669,65 @@ static func choose_hand_resource(state: GameState, card_id: String,
 	return events
 
 
+# Seraph the Exalted's pool: ally CARDS in the player's own hand whose PRINTED
+# cost is <= the number of resources they have. The ONE place the pool is
+# defined, so the resolution that opens the choice, `choose_hand_play`'s
+# re-check, the router's highlight list and the AI can't disagree.
+#
+# "Ally card" is CardDef.is_ally_card, so a Totem card counts (305.3a) and an
+# Instant Ally does too. The cost measured is the PRINTED cost (`cost_base` for
+# a hypothetical X-cost ally) — nothing is being PLAYED, so cost modifiers like
+# Diplomacy's aura don't apply. "The number of resources you have" is the total
+# resource count, exhausted or not (Ancestral Spirit's identical wording, see
+# get_graveyard_search_candidates' max_cost_dynamic).
+static func get_hand_play_candidates(state: GameState, player_id: String,
+		db) -> Array[String]:
+	var out: Array[String] = []
+	if not db:
+		return out
+	var cap := state.get_total_resources(player_id)
+	for card in state.cards_in_zone(player_id + "_hand"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def or not def.is_ally_card():
+			continue
+		var printed: int = def.cost_base if def.cost_x else def.cost
+		if printed > cap:
+			continue
+		out.append(card.instance_id)
+	return out
+
+
+# Seraph the Exalted's resolution choice: put the chosen ally card from hand
+# straight into play. Direct call — no chain, no priority pass (`can_submit` /
+# `pass_priority` are hard-blocked while it is pending), and MANDATORY, so there
+# is no decline counterpart.
+#
+# Nothing is PAID: the ally is put into play, not played, so there is no cost,
+# no affordability check and no cost aura. It enters through the ordinary entry
+# path, so summoning sickness, its own on_enter triggers, the uniqueness queue
+# and the opposing-ally-enters watchers all apply as for any other entry.
+static func choose_hand_play(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_hand_play_player == "":
+		return []
+	# Re-check the pool live rather than trusting the queued ids: the card must
+	# still be an eligible ally card in that player's hand.
+	if card_id not in get_hand_play_candidates(state,
+			state.pending_hand_play_player, db):
+		return []
+	var player := state.pending_hand_play_player
+	var source := state.pending_hand_play_source
+	state.pending_hand_play_player = ""
+	state.pending_hand_play_source = ""
+	state.pending_hand_play_ids = []
+	var events: Array[GameEvent] = []
+	events.append(GameEvent.make("hand_play_resolved", {
+		"card_id": card_id, "player": player, "source": source,
+	}))
+	events.append_array(_bring_ally_into_play(state, card_id, db))
+	return events
+
+
 # Player declined Nightbloom's optional placement ("You MAY put a card...").
 static func decline_hand_resource(state: GameState,
 		_db = null) -> Array[GameEvent]:
@@ -8065,11 +8763,11 @@ static func _draw_one(state: GameState, player_id: String) -> Array[GameEvent]:
 
 # Exhaust N ready resources for a player (generic cost payment without a card reference).
 static func _pay_resources(state: GameState, player_id: String,
-		cost: int) -> Array[GameEvent]:
+		cost: int, db = null) -> Array[GameEvent]:
 	if cost <= 0:
 		return []
 	var events: Array[GameEvent] = []
-	for res_card in _resource_pay_order(state, player_id):
+	for res_card in _resource_pay_order(state, player_id, db):
 		if cost <= 0:
 			break
 		if not res_card.is_exhausted:
@@ -8235,7 +8933,7 @@ static func retract_last(state: GameState, player_id: String,
 			var ap_data2 := _ally_activated_power(ap_def2) if ap_def2 else {}
 			var ap_cost2 := power_resource_cost(ap_data2,
 				int(top.params.get("x_value", 0)))
-			for res_card in _resource_refund_order(state, player_id):
+			for res_card in _resource_refund_order(state, player_id, db):
 				if ap_cost2 <= 0:
 					break
 				if res_card.is_exhausted:
@@ -8254,7 +8952,7 @@ static func retract_last(state: GameState, player_id: String,
 			ncd_ps2.next_card_cost_mod = ncd_back
 	if top.action_type in ["play_ally", "play_instant", "play_ability"] and db and card_id != "":
 		var cost: int = state.get_play_cost(card_id, db, int(top.params.get("x_value", 0)))
-		for res_card in _resource_refund_order(state, player_id):
+		for res_card in _resource_refund_order(state, player_id, db):
 			if cost <= 0:
 				break
 			if res_card.is_exhausted:
@@ -8267,8 +8965,15 @@ static func retract_last(state: GameState, player_id: String,
 		var q_card2 := state.get_card(top.params.get("quest_id", ""))
 		var q_def2  := db.get_def(q_card2.card_def_id) as CardDef if q_card2 else null
 		if q_def2:
+			# Lazy Peons' self-exhaust cost, paid on chain entry. Readied BEFORE
+			# the resource refund below so the refund loop (which walks the pay
+			# order in reverse, i.e. such a quest first) can't spend its one
+			# ready-back on the quest and leave a genuinely-paid resource down.
+			if quest_cost_exhausts_self(q_def2):
+				events.append_array(GameLogic.ready_card(state,
+					top.params.get("quest_id", "")))
 			var q_cost: int = max(q_def2.cost, 0)
-			for res_card in _resource_refund_order(state, player_id):
+			for res_card in _resource_refund_order(state, player_id, db):
 				if q_cost <= 0:
 					break
 				if res_card.is_exhausted:
@@ -8277,6 +8982,16 @@ static func retract_last(state: GameState, player_id: String,
 			if get_quest_ally_exhaust_requirement(q_def2) > 0:
 				for aid in top.params.get("ally_ids", []):
 					events.append_array(GameLogic.ready_card(state, str(aid)))
+
+	# Rule 600.3: the attack tax (Winter's Grasp) was paid on chain entry too.
+	var atk_tax_back := int(top.params.get("_attack_tax", 0))
+	if atk_tax_back > 0:
+		for res_card in _resource_refund_order(state, player_id, db):
+			if atk_tax_back <= 0:
+				break
+			if res_card.is_exhausted:
+				events.append_array(GameLogic.ready_card(state, res_card.instance_id))
+				atk_tax_back -= 1
 
 	# Undo resource_placed_this_turn flag if a place_resource was retracted.
 	if top.action_type == "place_resource":
@@ -10152,7 +10867,7 @@ static func choose_form_return(state: GameState, pay: bool,
 		in_graveyard = zone != null and zone.zone_type == "graveyard"
 	if pay and in_graveyard \
 			and state.get_available_resources(player_id) >= cost:
-		events.append_array(_pay_resource_cost(state, player_id, cost))
+		events.append_array(_pay_resource_cost(state, player_id, cost, db))
 		events.append_array(GameLogic.move_card(state, card_id, card.owner + "_hand"))
 		events.append(GameEvent.form_return_resolved(player_id, card_id, true))
 	else:

@@ -70,3 +70,24 @@ static func from_csv_row(id: String, row: Dictionary) -> CardDef:
 			d.keywords.append(k.strip_edges().to_lower())
 
 	return d
+
+
+# Rule 305.3a: "Totems are ability allies and count as both in all zones." A
+# Totem's printed card_type is Ability / Instant Ability, so a bare
+# `card_type == "Ally"` test silently misses it. These two live here, on the def
+# itself, because both the resolver (StackResolver.is_totem_def /
+# is_ally_card_def, thin wrappers over them) and GameState's cost auras
+# (Diplomacy) need the answer, and GameState must not depend on the resolver.
+func is_totem() -> bool:
+	for seg in effects.split("|"):
+		var s := seg.strip_edges()
+		if s == "totem" or s.begins_with("totem:"):
+			return true
+	return false
+
+
+# "Is this an ALLY CARD" — the one predicate, in every zone. Do NOT use it for
+# in-play scans: there, "an ally in your party" is the controller's ally_row read
+# live, which includes totems by construction.
+func is_ally_card() -> bool:
+	return card_type == "Ally" or is_totem()

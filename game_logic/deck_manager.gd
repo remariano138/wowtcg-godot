@@ -278,12 +278,10 @@ static func make_ai_for_deck(deck_id: String) -> Object:
 
 static func _resolve_path(deck_id: String) -> String:
 	var index := get_available_decks()
-	if index.base.has(deck_id):
-		return DeckLibrary.path_for(deck_id, "base")
-	if index.recommended_ai.has(deck_id):
-		return DeckLibrary.path_for(deck_id, "recommended_ai")
-	if index.custom.has(deck_id):
-		return DeckLibrary.path_for(deck_id, "custom")
+	if index.battle_ready.has(deck_id):
+		return DeckLibrary.path_for(deck_id, "battle_ready")
+	if index.ideas.has(deck_id):
+		return DeckLibrary.path_for(deck_id, "ideas")
 	return ""
 
 

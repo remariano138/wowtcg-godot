@@ -24,6 +24,7 @@ func _ready() -> void:
 	_test_make_ai_for_deck()
 	_test_tokens_csv_loads()
 	_test_form_state_flags()
+	_test_cold_snap_pool()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -40,16 +41,15 @@ func _check(cond: bool, label: String) -> void:
 
 func _test_library_scan() -> void:
 	var index := DeckManager.get_available_decks(true)
-	_check(index.recommended_ai.size() == 8, "library finds 8 recommended_ai decks (got %d)" % index.recommended_ai.size())
-	_check(index.base.size() == 3, "library finds 3 base decks (got %d)" % index.base.size())
-	_check(index.custom.size() == 2, "custom category has 2 decks (Elendril, Thangal)")
-	_check(index.custom.has("alliance_hunter_elendril"), "alliance_hunter_elendril discovered in custom")
-	_check(index.custom.has("horde_druid_thangal"), "horde_druid_thangal discovered in custom")
-	_check(index.all().size() == 13, "all() aggregates categories (8 + 3 + 2)")
-	_check(index.recommended_ai.has("alliance_mage_litori_frostburn"), "alliance_mage_litori_frostburn discovered")
-	_check(index.recommended_ai.has("horde_mage_tazo"), "horde_mage_tazo discovered")
-	_check(index.base.has("alliance_warlock_dizdemona"), "dizdemona (Warlock) is in base, not recommended_ai")
-	_check(index.base.has("horde_warlock_radak_doombringer"), "radak (Warlock) is in base, not recommended_ai")
+	_check(index.battle_ready.size() == 6, "library finds 6 battle_ready decks (got %d)" % index.battle_ready.size())
+	_check(index.ideas.size() == 7, "library finds 7 ideas decks (got %d)" % index.ideas.size())
+	_check(index.all().size() == 13, "all() aggregates categories (6 + 7)")
+	_check(index.battle_ready.has("alliance_hunter_elendril"), "alliance_hunter_elendril discovered in battle_ready")
+	_check(index.battle_ready.has("horde_shaman_grennan_stormspeaker"), "grennan discovered in battle_ready")
+	_check(index.battle_ready.has("alliance_druid_moonshadow"), "moonshadow discovered in battle_ready")
+	_check(index.ideas.has("horde_mage_tazo"), "tazo is in ideas")
+	_check(index.ideas.has("alliance_warlock_dizdemona"), "dizdemona is in ideas")
+	_check(index.ideas.has("horde_druid_thangal"), "thangal is in ideas")
 
 
 func _test_load_all_decks() -> void:
@@ -203,6 +203,7 @@ func _test_form_state_flags() -> void:
 	var expected := {
 		"azeroth_17":      "bear",   # Bash
 		"azeroth_18":      "bear",   # Bear Form
+		"azeroth_25":      "bear",   # Maul
 		"dark_portal_19":  "cat",    # Cat Form
 		"dark_portal_20":  "cat",    # Claw
 	}
@@ -218,6 +219,34 @@ func _test_form_state_flags() -> void:
 		# its text and another in its recipe would pass the check above.
 		_check(("in %s form" % expected[def_id]) in def.power_text.to_lower(),
 			"%s power_text says \"in %s form\"" % [def.card_name, expected[def_id]])
+
+
+# Cold Snap's pool is defined by a TAG substring against the real cards.csv, so
+# the recipe is only as good as the tags column: a Frost ability whose tags cell
+# is blank or misspelled silently drops out of the pool with nothing to fail on.
+# Pin the whole set here, and the X/self-exile riders with it.
+func _test_cold_snap_pool() -> void:
+	var db := _make_db()
+	var cold := db.get_def("azeroth_50") as CardDef
+	_check(cold != null, "azeroth_50 (Cold Snap) resolves in the database")
+	if cold == null:
+		return
+	_check(cold.card_type == "Ability" and cold.is_instant,
+		"Cold Snap is an Instant Ability")
+	_check(cold.cost_x and cold.cost_base == 2, "Cold Snap costs 2+X")
+	var req := StackResolver.get_graveyard_search_requirement(cold)
+	_check(req.get("dest", "") == "hand", "Cold Snap fetches to hand")
+	_check(req.get("max_count_x", false), "Cold Snap's count is the announced X")
+	_check(String(req.get("tag_filter", "")) == "Frost", "Cold Snap filters on the Frost tag")
+	_check(req.get("distinct_names", false), "Cold Snap requires different names")
+	_check(StackResolver.ability_rfg_self_on_resolve(cold), "Cold Snap exiles itself")
+	# Every implemented Frost ability must be reachable by it. Cold Snap itself
+	# never can be — it exiles itself rather than reaching a graveyard.
+	for def_id in ["azeroth_56"]:                      # Frostbolt
+		var d := db.get_def(def_id) as CardDef
+		_check(d != null and d.card_type == "Ability" and "Frost" in d.tags,
+			"%s is a Frost ability card (tags: '%s')"
+				% [def_id, d.tags if d else "<missing>"])
 
 
 func _test_runtime_deck_expansion() -> void:

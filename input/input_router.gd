@@ -37,6 +37,8 @@ signal control_discard_mode_started(source_id: String)
 signal control_discard_mode_ended()
 signal resource_place_mode_started(source_id: String)
 signal resource_place_mode_ended()
+signal hand_play_mode_started(source_id: String)
+signal hand_play_mode_ended()
 signal pet_sacrifice_mode_started(candidate_ids: Array)
 signal pet_sacrifice_mode_ended()
 signal equipment_sacrifice_mode_started(candidate_ids: Array)
@@ -90,6 +92,7 @@ var preferred_strike_weapon: String = ""
 var _in_discard_mode: bool = false        # true while player must choose cards to discard
 var _in_control_discard_mode: bool = false  # true while player chooses: discard OR give control (Infernal)
 var _in_resource_place_mode: bool = false  # true while player chooses a hand card to bury as a resource (Nightbloom)
+var _in_hand_play_mode: bool = false  # true while player chooses an ally card in hand to put into play (Seraph)
 var _in_pet_sacrifice_mode: bool = false  # true while player must choose a pet to sacrifice
 var _in_equip_sacrifice_mode: bool = false  # true while player must choose equipment to destroy
 var _equip_sacrifice_candidates: Array[String] = []
@@ -129,6 +132,8 @@ var _ally_exhaust_quest_id: String = ""
 var _gy_select_ally_id: String = ""
 # Hand Ability awaiting a graveyard-ally target (Ancestral Spirit reanimate).
 var _gy_select_ability_id: String = ""
+# X announced for that ability, when its pick count is "up to X" (Cold Snap).
+var _gy_select_ability_x: int = 0
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 # Muted cards (instance_id → true): a human convenience flag toggled via the
@@ -239,6 +244,12 @@ func handle_card_click(instance_id: String) -> void:
 		_handle_resource_place_click(instance_id)
 		return
 
+	# ── Hand-play mode (Seraph the Exalted): click an eligible ally card in
+	# hand to put it into play. MANDATORY — there is nothing to decline ───────
+	if _in_hand_play_mode:
+		_handle_hand_play_click(instance_id)
+		return
+
 	# ── Targeting mode: click selects the target ─────────────────────────────
 	if _targeting_source != "":
 		_handle_targeting_click(instance_id)
@@ -327,13 +338,15 @@ func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 	# X-cost cards (Aimed Shot, "1+X"; Lightning Storm's divided pool): pick X
 	# first (same dialog as Boris's pay-X hero power), then confirm_x_value
 	# re-enters the targeting flow with the X riding on the submission.
-	if _card_cost_x(instance_id) and needs_target:
+	# Ancestral Spirit / Call the Spirit / Cannibalize / Cold Snap: the target(s)
+	# are cards in a graveyard — the browser opens instead of board targeting.
+	# Instant-speed as well as sorcery-speed (Cold Snap is an Instant Ability).
+	var uses_gy := _ability_uses_graveyard_browser(instance_id)
+	if _card_cost_x(instance_id) and (needs_target or uses_gy):
 		_targeting_source = instance_id
 		x_select_requested.emit(instance_id, _max_affordable_x(instance_id))
 		return true
-	# Ancestral Spirit: the target is an ally card in your graveyard — open the
-	# graveyard browser instead of board targeting.
-	if action_type == "play_ability" and _ability_uses_graveyard_browser(instance_id):
+	if uses_gy:
 		start_ability_graveyard_selection(instance_id)
 		return true
 	if not needs_target:
@@ -357,6 +370,10 @@ func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 	# first, the destroy target second.
 	if _is_play_cost_sacrifice(instance_id):
 		_targeting_first_target = ""
+		start_targeting(instance_id, action_type, "sacrifice", 0)
+		return true
+	# Dark Pact: the sacrificed Pet is the only pick — single click submits.
+	if _is_play_cost_sacrifice_pet(instance_id):
 		start_targeting(instance_id, action_type, "sacrifice", 0)
 		return true
 	# Shock and Soothe: sequential picks, the damage target first.
@@ -481,6 +498,37 @@ func _end_resource_place_mode() -> void:
 	refresh_highlights()
 
 
+# ── Hand-play mode (Seraph the Exalted) ──────────────────────────────────────
+#
+# "Put an ally card from your hand into play if its cost is <= the number of
+# resources you have." MANDATORY, so unlike Nightbloom's placement there is no
+# decline and the pass button offers nothing — only the eligible ally cards
+# highlight, and only they are clickable. Everything else is blocked by the
+# engine while the choice is pending.
+
+func start_hand_play_mode(source_id: String) -> void:
+	_in_hand_play_mode = true
+	refresh_highlights()
+	hand_play_mode_started.emit(source_id)
+
+
+func _handle_hand_play_click(instance_id: String) -> void:
+	var card := state.get_card(instance_id)
+	if not card or card.controller != local_player:
+		return
+	var events := StackResolver.choose_hand_play(state, instance_id, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_end_hand_play_mode()
+
+
+func _end_hand_play_mode() -> void:
+	_in_hand_play_mode = false
+	hand_play_mode_ended.emit()
+	refresh_highlights()
+
+
 # ── Graveyard selection (quest rewards that target graveyard cards) ───────────
 
 # Open the browser for a quest whose reward needs graveyard targets.
@@ -556,7 +604,7 @@ func start_ally_graveyard_selection(card_id: String) -> void:
 # Ancestral Spirit (reanimate one ally, `target_id`) or Cannibalize (exile any
 # number of ally cards from BOTH graveyards, `target_ids`). Opens the same
 # browser as the ally/quest graveyard searches; the confirm submits play_ability.
-func start_ability_graveyard_selection(card_id: String) -> void:
+func start_ability_graveyard_selection(card_id: String, x_value: int = 0) -> void:
 	var card := state.get_card(card_id)
 	if not card or not db:
 		return
@@ -566,14 +614,32 @@ func start_ability_graveyard_selection(card_id: String) -> void:
 		return
 	var candidates := StackResolver.get_graveyard_search_candidates(
 			state, local_player, req, db)
-	# Cannibalize removes "any number" (min 0), so an empty pool is NOT a reason
-	# to refuse: the browser still opens so the player can see there is nothing
-	# to exile and either back out or confirm an empty selection.
+	# Cold Snap: "…cards with different names…". Copies of one card are
+	# indistinguishable in a graveyard, so offering only the FIRST of each name
+	# makes every selection the browser can produce a legal one — the engine
+	# still enforces the constraint on the submission.
+	if req.get("distinct_names", false):
+		var seen_names := {}
+		var deduped: Array[String] = []
+		for cid in candidates:
+			var c := state.get_card(cid)
+			var cdef := db.get_def(c.card_def_id) as CardDef if c else null
+			if not cdef or seen_names.has(cdef.card_name):
+				continue
+			seen_names[cdef.card_name] = true
+			deduped.append(cid)
+		candidates = deduped
+	# Cannibalize removes "any number" (min 0) and Cold Snap fetches "up to X",
+	# so an empty pool is NOT a reason to refuse: the browser still opens so the
+	# player can see there is nothing to take and either back out or confirm an
+	# empty selection.
 	if candidates.size() < int(req.get("min_count", 1)):
 		return
 	_gy_select_ability_id = card_id
+	_gy_select_ability_x  = x_value
 	graveyard_select_requested.emit(card_id, candidates,
-			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
+			int(req.get("min_count", 1)),
+			StackResolver.graveyard_max_count(req, x_value))
 
 
 # Detect a hand Ability whose targets are graveyard CARDS — reanimate
@@ -594,9 +660,21 @@ func _ability_graveyard_dest(card_id: String) -> String:
 	if not def:
 		return ""
 	var dest: String = StackResolver.get_graveyard_search_requirement(def).get("dest", "")
-	# "hand" = Call the Spirit's fetch; like the reanimate it announces a single
-	# card as `target_id`, so only the "rfg" branch below needs to differ.
 	return dest if dest in ["play", "rfg", "hand"] else ""
+
+
+# True when this card's graveyard picks ride `target_ids` (Cannibalize's "any
+# number", Cold Snap's "up to X") rather than a single `target_id`. Asked of the
+# engine so the browser's confirm and the submission gate agree.
+func _ability_graveyard_multi(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return false
+	return StackResolver.graveyard_pick_is_multi(
+			StackResolver.get_graveyard_search_requirement(def))
 
 
 # UI confirmed a selection: submit the quest completion (or hero power) with
@@ -630,16 +708,23 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 		return
 	if _gy_select_ability_id != "":
 		var ability_id := _gy_select_ability_id
+		var ability_x := _gy_select_ability_x
 		_gy_select_ability_id = ""
-		# Exile abilities (Cannibalize) announce EVERY chosen card as
-		# `target_ids`; single-card abilities (Ancestral Spirit's reanimate,
-		# Call the Spirit's fetch) announce the chosen card as `target_id`.
+		_gy_select_ability_x  = 0
+		_targeting_source = ""
+		# Multi-pick searches (Cannibalize's "any number", Cold Snap's "up to X")
+		# announce EVERY chosen card as `target_ids`; the mandatory single pick
+		# (Ancestral Spirit's reanimate, Call the Spirit's fetch) announces the
+		# chosen card as `target_id`.
 		var rz_params := {"card_id": ability_id}
-		if _ability_graveyard_dest(ability_id) == "rfg":
+		if _ability_graveyard_multi(ability_id):
 			rz_params["target_ids"] = selected_ids.duplicate()
 		else:
 			rz_params["target_id"] = selected_ids[0] if not selected_ids.is_empty() else ""
-		var rz_action := PendingAction.make("play_ability", local_player, rz_params)
+		if ability_x > 0:
+			rz_params["x_value"] = ability_x
+		var rz_action := PendingAction.make(_action_type_for(ability_id),
+				local_player, rz_params)
 		var rz_events := StackResolver.submit_action(state, rz_action, db)
 		if rz_events.is_empty():
 			refresh_highlights()
@@ -669,6 +754,8 @@ func cancel_graveyard_selection() -> void:
 	_gy_select_hero_id = ""
 	_gy_select_ally_id = ""
 	_gy_select_ability_id = ""
+	_gy_select_ability_x = 0
+	_targeting_source = ""
 	refresh_highlights()
 
 
@@ -1109,16 +1196,33 @@ func choose_modal_mode(mode_index: int) -> void:
 # index rides _targeting_mode, so this is the one thing that distinguishes a
 # chain-link pick from an ordinary hero-or-ally pick.
 func _is_interrupt_mode() -> bool:
-	if _targeting_mode < 0 or _targeting_source == "" or not db:
+	if _targeting_source == "" or not db:
 		return false
 	var card := state.get_card(_targeting_source)
 	var def := db.get_def(card.card_def_id) as CardDef if card else null
 	if not def:
 		return false
+	# Counterspell: a top-level interrupt has no mode index at all — the whole
+	# card is the interrupt, so the targeting flow is a chain pick from the click.
+	if StackResolver.is_plain_interrupt_def(def):
+		return true
+	if _targeting_mode < 0:
+		return false
 	var modes := StackResolver.modal_modes(def)
 	if _targeting_mode >= modes.size():
 		return false
 	return StackResolver.mode_target_kind(modes[_targeting_mode]) == "interrupt_ability"
+
+
+# Does this hand card interrupt from a top-level segment (Counterspell)? Its
+# targets are chain links, so _begin_play_from_hand enters targeting directly
+# rather than looking for a board target.
+func _is_plain_interrupt(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null and StackResolver.is_plain_interrupt_def(def)
 
 
 func cancel_modal_choice() -> void:
@@ -1740,6 +1844,15 @@ func get_playable_card_ids() -> Array:
 			rp_ids.append(card.instance_id)
 		return rp_ids
 
+	# Hand-play mode (Seraph the Exalted): only the ELIGIBLE ally cards are
+	# choosable — the pool is the engine's, so the highlight can't drift from
+	# what choose_hand_play will accept.
+	if _in_hand_play_mode and state.pending_hand_play_player == local_player:
+		var hp_ids: Array = []
+		for id in StackResolver.get_hand_play_candidates(state, local_player, db):
+			hp_ids.append(id)
+		return hp_ids
+
 	# Discard mode: all local hand cards are valid discard choices.
 	if _in_discard_mode and state.pending_discard_player == local_player:
 		var discard_ids: Array = []
@@ -1904,6 +2017,53 @@ func refresh_highlights() -> void:
 	conditional_highlights_updated.emit(get_conditional_quest_ids())
 
 
+# Auto-mute: a play that is legal but provably does nothing right now, so it
+# must not hold a priority window open (same role as an explicit mute, but
+# derived from the board instead of from the player).
+# Elendril's flip ("Your Ranged weapons have +3 ATK this turn") is inert while
+# its controller has no Ranged weapon in play — the bonus is stored on
+# PlayerState and read only by Ranged weapons, so there is nothing to boost.
+# Gorebelly's flip ("pay 1 -> your next Melee strike costs 3 less this turn")
+# is the same shape one damage type over: the discount is stored on PlayerState
+# and read only by Melee weapon strikes, so with no Melee weapon in play there
+# is nothing to discount.
+const _INERT_WEAPON_BONUS_KEYS := {
+	"ranged_weapon_atk_bonus": "Ranged",
+	"melee_strike_discount": "Melee",
+}
+
+
+func _is_inert_play(card_id: String) -> bool:
+	if not state or not db:
+		return false
+	var ps := state.players.get(local_player) as PlayerState
+	if not ps or ps.hero_instance_id != card_id:
+		return false
+	var hero := state.get_card(card_id)
+	var hero_def: CardDef = db.get_def(hero.card_def_id) if hero else null
+	if not hero_def:
+		return false
+	for entry in hero_def.effects.split("|"):
+		var key := entry.strip_edges().split(":")[0]
+		if _INERT_WEAPON_BONUS_KEYS.has(key):
+			return not _has_weapon_of_type(local_player,
+				_INERT_WEAPON_BONUS_KEYS[key] as String)
+	return false
+
+
+func _has_weapon_of_type(player_id: String, dmg_type: String) -> bool:
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if card.controller != player_id:
+			continue
+		var def: CardDef = db.get_def(card.card_def_id)
+		if not def or def.dmg_type != dmg_type:
+			continue
+		for entry in def.effects.split("|"):
+			if entry.strip_edges().split(":")[0] == "strike_cost":
+				return true
+	return false
+
+
 # True if the local player has at least one legal action available right now.
 # Broader than get_playable_card_ids: also counts face-down resource placement,
 # which is only reachable via the context menu (not left-click).
@@ -1914,8 +2074,9 @@ func has_any_legal_play(exclude_muted: bool = false) -> bool:
 	if not state or state.priority_player != local_player:
 		return false
 	for pid: String in get_playable_card_ids():
-		if not (exclude_muted and muted_ids.has(pid)):
-			return true
+		if exclude_muted and (muted_ids.has(pid) or _is_inert_play(pid)):
+			continue
+		return true
 	# Check face-down resource placement (context-menu only).
 	var fd_action_template := PendingAction.make("place_resource", local_player,
 		{"card_id": "", "face_up": false})
@@ -2438,7 +2599,7 @@ func _get_ability_targets(card_id: String) -> Array:
 	# Burn Away / Shattering Blow: targets are in-play ability / equipment
 	# cards (hero rows, totems, attachments), not heroes and allies.
 	var kind := _destroy_kind(card_id)
-	if kind in ["ability", "equipment"]:
+	if kind in ["ability", "equipment", "armor"]:
 		return _get_destroy_kind_targets(card_id, "play_ability", kind)
 	# Windfury Weapon (`attach:melee_weapon`): targets are the caster's own Melee
 	# weapons in the hero row, not heroes/allies.
@@ -2511,8 +2672,12 @@ func _get_instant_targets(card_id: String) -> Array:
 	# every other targeting mode.
 	if _is_interrupt_mode():
 		var i_result: Array = []
-		for cid in StackResolver.get_interrupt_candidates(state, db, local_player):
-			var i_act := PendingAction.make("play_instant", local_player,
+		# The pool is asked for WITHOUT the hero rider and then filtered through
+		# can_submit, which applies whichever rider the card actually carries —
+		# so Escape Artist still only offers links aimed at our hero, and
+		# Counterspell offers every ability card on the chain.
+		for cid in StackResolver.get_interrupt_candidates(state, db, local_player, false):
+			var i_act := PendingAction.make(_action_type_for(card_id), local_player,
 				_instant_params(card_id, cid))
 			if StackResolver.can_submit(state, i_act, db):
 				i_result.append(cid)
@@ -2522,7 +2687,7 @@ func _get_instant_targets(card_id: String) -> Array:
 	if _is_divided_damage(card_id):
 		return _get_divided_targets(card_id)
 	var kind := _destroy_kind(card_id)
-	if kind in ["ability", "equipment"]:
+	if kind in ["ability", "equipment", "armor"]:
 		return _get_destroy_kind_targets(card_id, "play_instant", kind)
 	var result: Array = []
 	for pid in state.players:
@@ -2549,8 +2714,8 @@ func _destroy_kind(card_id: String) -> String:
 	return StackResolver.destroy_target_kind(def) if def else ""
 
 
-# Legal targets for a destroy_target:ability / :equipment spell (Burn Away /
-# Shattering Blow) — candidates from the resolver, filtered through can_submit
+# Legal targets for a destroy_target:ability / :equipment / :armor spell (Burn
+# Away / Shattering Blow / Sunder Armor) — candidates from the resolver, filtered through can_submit
 # like every other targeting mode.
 func _get_destroy_kind_targets(card_id: String, action_type: String, kind: String) -> Array:
 	var result: Array = []
@@ -2612,6 +2777,10 @@ func _instant_params(card_id: String, target_id: String) -> Dictionary:
 			params["target_id"] = _any_valid_skewer_target(card_id, target_id)
 		else:
 			params["source_id"] = _targeting_first_target
+	# Dark Pact: the sacrificed Pet is the card's only pick, so a single click
+	# both fills and submits `sacrifice_id`.
+	if _is_play_cost_sacrifice_pet(card_id):
+		params["sacrifice_id"] = target_id
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
 	if _targeting_x_value > 0:
@@ -2629,6 +2798,18 @@ func _is_play_cost_sacrifice(card_id: String) -> bool:
 	var card := state.get_card(card_id)
 	var def := db.get_def(card.card_def_id) as CardDef if card else null
 	return StackResolver.play_cost_sacrifices_ally(def)
+
+
+# True for a hand card with a "destroy one of your Pets" additional play cost
+# (Dark Pact, `play_cost_sacrifice_pet`): unlike Sever the Cord the sacrifice
+# is the card's ONLY pick — no separate destroy target — so it is a single
+# click rather than the two-phase flow.
+func _is_play_cost_sacrifice_pet(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.play_cost_sacrifices_pet(def)
 
 
 # Some legal victim to pair with `source` while probing Skewer's phase 1 ("" if
@@ -2927,6 +3108,10 @@ func _action_type_for(instance_id: String) -> String:
 func _ability_needs_target(card_id: String) -> bool:
 	if _is_multi_target(card_id):
 		return true
+	# Dark Pact: no separate target, but the sacrificed Pet still needs a
+	# pre-submission pick (see _is_play_cost_sacrifice_pet).
+	if _is_play_cost_sacrifice_pet(card_id):
+		return true
 	return _instant_needs_target(card_id)
 
 
@@ -3112,6 +3297,12 @@ func confirm_x_value(x_value: int) -> void:
 	var src_card := state.get_card(_targeting_source)
 	var src_zone := state.zones.get(src_card.zone_id) as Zone if src_card else null
 	if src_zone and src_zone.zone_type == "hand":
+		# Cold Snap: X is the number of cards the search may take, not a damage
+		# amount — the graveyard browser opens with that ceiling instead of the
+		# board targeting flow.
+		if _ability_uses_graveyard_browser(_targeting_source):
+			start_ability_graveyard_selection(_targeting_source, x_value)
+			return
 		var x_dmg_type := _card_dmg_type(_targeting_source)
 		# Lightning Storm divides X over several packets, so the cursor counts
 		# the points still to assign (raw) rather than previewing a single

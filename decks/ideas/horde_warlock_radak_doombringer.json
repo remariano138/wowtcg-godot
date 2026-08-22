@@ -140,7 +140,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
-  "source": "base",
+  "source": "ideas",
   "metadata": {
     "author": "playtest",
     "origin": "migrated from renderer/tests/playtest.gd"

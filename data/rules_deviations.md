@@ -1197,3 +1197,33 @@ play for the OPPONENT's turn. The AI is gated accordingly
 
 **Enforcement site:** `StackResolver._pass_priority` (the 600.2 gate), with the
 UI/AI reading the same predicate.
+
+
+## Automatic resource selection (Lazy Peons, Into the Maw of Madness)
+
+**Printed rules:** paying a cost is the player's choice of which ready resources
+to exhaust (412.2).
+
+**Engine behaviour:** the player never picks — `StackResolver._resource_pay_order`
+selects them. For a plain resource that is game-irrelevant (every ready resource
+is worth exactly (1)), which is why the order was originally just a renderer
+convenience. It stops being irrelevant the moment a face-up quest cares about its
+own exhaust state, so the order carries two explicit exceptions:
+
+- a quest whose completion cost is **destroying** it (Into the Maw of Madness) is
+  spent **FIRST** — completing it removes the card anyway, so having already
+  exhausted it costs nothing, while spending a fresh resource on it would;
+- a quest completed **BY exhausting** it (Lazy Peons) is spent **LAST** — an
+  automatic payment would otherwise silently consume the completion cost and
+  destroy the card's entire text.
+
+Everything else keeps the old order (face-down cards, then ordinary face-up
+cards), and the refund walks the same list in reverse, so a pay-then-retract
+round trip is a no-op on which cards ended up exhausted.
+
+**Consequence worth knowing:** with only one ready resource left a cost still
+takes Lazy Peons — the exceptions are an ordering, not a reservation. A player
+who wants to guarantee the completion must complete it before spending down.
+
+**Enforcement site:** `StackResolver._resource_pay_order` (and
+`_resource_refund_order`, which reverses it).

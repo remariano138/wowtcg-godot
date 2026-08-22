@@ -59,6 +59,11 @@
       "_card_name": "Gertha, The Old Crone"
     },
     {
+      "card_def_id": "azeroth_122",
+      "count": 1,
+      "_card_name": "Dark Pact"
+    },
+    {
       "card_def_id": "azeroth_151",
       "count": 1,
       "_card_name": "From the Shadows"
@@ -154,11 +159,6 @@
       "_card_name": "Mya, Dragonling Wrangler"
     },
     {
-      "card_def_id": "azeroth_221",
-      "count": 1,
-      "_card_name": "Tristan Rapidstrike"
-    },
-    {
       "card_def_id": "azeroth_200",
       "count": 3,
       "_card_name": "Liba Wobblebonk"
@@ -166,7 +166,7 @@
   ],
   "recommended_ai_id": "ai_generic",
   "strategy": "Overrun your opponent with Gnomes and dark magic",
-  "source": "base",
+  "source": "ideas",
   "metadata": {
     "author": "playtest",
     "origin": "migrated from renderer/tests/playtest.gd"

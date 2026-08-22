@@ -9,29 +9,14 @@
       "_card_name": "For the Horde!"
     },
     {
+      "card_def_id": "dark_portal_303",
+      "count": 2,
+      "_card_name": "Lazy Peons"
+    },
+    {
       "card_def_id": "azeroth_345",
       "count": 4,
       "_card_name": "Torek's Assault"
-    },
-    {
-      "card_def_id": "azeroth_347",
-      "count": 2,
-      "_card_name": "Battle of Darrowshire"
-    },
-    {
-      "card_def_id": "azeroth_351",
-      "count": 2,
-      "_card_name": "A Donation of Wool"
-    },
-    {
-      "card_def_id": "azeroth_361",
-      "count": 2,
-      "_card_name": "Zapped Giants"
-    },
-    {
-      "card_def_id": "azeroth_360",
-      "count": 2,
-      "_card_name": "Your Fortune Awaits You"
     },
     {
       "card_def_id": "dark_portal_316",
@@ -44,9 +29,14 @@
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_331",
+      "card_def_id": "dark_portal_302",
+      "count": 4,
+      "_card_name": "Hidden Enemies"
+    },
+    {
+      "card_def_id": "azeroth_312",
       "count": 2,
-      "_card_name": "Krol Blade"
+      "_card_name": "Annihilator"
     },
     {
       "card_def_id": "azeroth_290",
@@ -59,24 +49,29 @@
       "_card_name": "Draconian Deflector"
     },
     {
-      "card_def_id": "dark_portal_235",
+      "card_def_id": "azeroth_154",
       "count": 1,
-      "_card_name": "Tanwa the Marksman"
+      "_card_name": "Lust for Battle"
     },
     {
-      "card_def_id": "azeroth_235",
-      "count": 2,
-      "_card_name": "Elder Moorf"
+      "card_def_id": "dark_portal_241",
+      "count": 1,
+      "_card_name": "Warmaster Hork"
     },
     {
-      "card_def_id": "azeroth_234",
+      "card_def_id": "azeroth_137",
       "count": 2,
-      "_card_name": "Deacon Johanna"
+      "_card_name": "Charge"
     },
     {
-      "card_def_id": "azeroth_242",
+      "card_def_id": "azeroth_149",
+      "count": 1,
+      "_card_name": "Sunder Armor"
+    },
+    {
+      "card_def_id": "azeroth_140",
       "count": 2,
-      "_card_name": "Hierophant Caydiem"
+      "_card_name": "Demoralizing Shout"
     },
     {
       "card_def_id": "azeroth_252",
@@ -84,19 +79,19 @@
       "_card_name": "Moko Hunts-at-Dawn"
     },
     {
-      "card_def_id": "azeroth_248",
-      "count": 4,
-      "_card_name": "Ka'tali Stonetusk"
-    },
-    {
       "card_def_id": "azeroth_246",
       "count": 2,
       "_card_name": "Kagra of the Crossroads"
     },
     {
-      "card_def_id": "azeroth_240",
+      "card_def_id": "azeroth_153",
+      "count": 2,
+      "_card_name": "Into the Fray"
+    },
+    {
+      "card_def_id": "azeroth_266",
       "count": 4,
-      "_card_name": "Guardian Steelhorn"
+      "_card_name": "Voss Treebender"
     },
     {
       "card_def_id": "azeroth_274",
@@ -114,14 +109,14 @@
       "_card_name": "Quick Strike"
     },
     {
-      "card_def_id": "azeroth_264",
+      "card_def_id": "azeroth_135",
       "count": 2,
-      "_card_name": "Vesh'ral"
+      "_card_name": "Battle Shout"
     },
     {
-      "card_def_id": "azeroth_230",
-      "count": 1,
-      "_card_name": "Blood Guard Mal'wani"
+      "card_def_id": "azeroth_226",
+      "count": 4,
+      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_171",
@@ -134,19 +129,24 @@
       "_card_name": "Vaerik Proudhoof"
     },
     {
+      "card_def_id": "azeroth_155",
+      "count": 2,
+      "_card_name": "Skewer"
+    },
+    {
       "card_def_id": "azeroth_249",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kulan Earthguard"
     },
     {
-      "card_def_id": "azeroth_236",
-      "count": 1,
-      "_card_name": "Fa'tafi"
+      "card_def_id": "azeroth_275",
+      "count": 2,
+      "_card_name": "Zygore Bladebreaker"
     }
   ],
   "recommended_ai_id": "ai_generic",
   "strategy": "Grennan shell on a Warrior hero: Tauren Protectors plus Krol Blade hero strikes",
-  "source": "recommended_ai",
+  "source": "ideas",
   "metadata": {
     "author": "playtest",
     "origin": "copied from horde_shaman_grennan_stormspeaker; Shaman abilities swapped for Krol Blades"

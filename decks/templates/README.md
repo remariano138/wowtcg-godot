@@ -8,7 +8,7 @@ template, pick a hero, and swap the flexible slots for hero-class cards.
   from `DeckLibrary.scan()`, so templates never appear in the playtest menu and
   `DeckManager.load_deck()` never sees one. That is what lets them omit the
   hero: `validate_deck` requires a hero and would reject them.
-- **To use one:** copy the JSON into `decks/custom/`, give it a new `deck_id`
+- **To use one:** copy the JSON into `decks/ideas/`, give it a new `deck_id`
   (= filename stem), a `display_name`, and a `hero_card_def_id`. Then run
   `game_logic/tests/test_deck_manager.gd` — it authorizes every shipped deck,
   so faction/class/Talent/4-copy problems fail there rather than at the menu.

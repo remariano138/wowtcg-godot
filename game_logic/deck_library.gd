@@ -10,9 +10,8 @@ const DECKS_ROOT := "res://decks"
 
 static func scan() -> DeckLibraryIndex:
 	var index := DeckLibraryIndex.new()
-	index.base = _scan_folder(DECKS_ROOT + "/base")
-	index.recommended_ai = _scan_folder(DECKS_ROOT + "/recommended_ai")
-	index.custom = _scan_folder(DECKS_ROOT + "/custom")
+	index.battle_ready = _scan_folder(DECKS_ROOT + "/battle_ready")
+	index.ideas = _scan_folder(DECKS_ROOT + "/ideas")
 	return index
 
 

@@ -32,9 +32,9 @@ const RECONCILE_TICK      := 0.3
 # Deck lists live in res://decks/ and are served by DeckManager — this scene
 # only picks ids.
 const DECK_RANDOM := "random"
-const CAT_ALL         := 0
-const CAT_RECOMMENDED := 1
-const CATEGORY_LABELS := ["All decks", "Recommended for AI"]
+const CAT_ALL           := 0
+const CAT_BATTLE_READY  := 1
+const CATEGORY_LABELS := ["All decks", "Battle Ready"]
 
 var _state:  GameState
 var _db:     CardDatabase
@@ -63,6 +63,10 @@ var _hotseat: bool = false
 var _local_player: String = "p1"
 var _handoff_pending: bool = false
 var _handoff_layer: CanvasLayer = null
+# Who the pending handoff is for, and what runs on confirm — kept so the
+# keyboard (Space / Enter) can confirm it exactly like the button does.
+var _handoff_next_player: String = ""
+var _handoff_on_confirm: Callable = Callable()
 var _mulligan_queue: Array[String] = []   # human players still to decide (hotseat)
 var _mulligan_current: String = "p1"      # player the mulligan panel belongs to
 var _mulligan_first: String = ""          # first_player, for the order label
@@ -511,6 +515,7 @@ func _build_scene() -> void:
 	_router.quest_flow_resolved.connect(_on_quest_flow_resolved)
 	_router.discard_mode_started.connect(_on_discard_mode_started)
 	_router.discard_mode_ended.connect(_on_discard_mode_ended)
+	_router.hand_play_mode_ended.connect(_on_hand_play_mode_ended)
 	_router.pet_sacrifice_mode_ended.connect(_on_pet_sacrifice_mode_ended)
 	_router.control_discard_mode_ended.connect(_on_control_discard_mode_ended)
 	_router.equipment_sacrifice_mode_ended.connect(_on_equipment_sacrifice_mode_ended)
@@ -947,8 +952,8 @@ func _ai_profile_label(ai_id: String) -> String:
 # Deck ids for one category dropdown value ("Random" sentinel not included).
 func _deck_ids_for_category(cat_index: int) -> Array[String]:
 	var index := DeckManager.get_available_decks()
-	if cat_index == CAT_RECOMMENDED:
-		return index.recommended_ai.duplicate()
+	if cat_index == CAT_BATTLE_READY:
+		return index.battle_ready.duplicate()
 	return index.all()
 
 
@@ -1048,7 +1053,7 @@ func _on_quick_start() -> void:
 	_menu_error_label.visible = false
 	var resolved := _resolve_matchup(
 		DECK_RANDOM, _deck_ids_for_category(CAT_ALL),
-		DECK_RANDOM, _deck_ids_for_category(CAT_RECOMMENDED),
+		DECK_RANDOM, _deck_ids_for_category(CAT_BATTLE_READY),
 		_avoid_mirror_cb.button_pressed)
 	if resolved.is_empty():
 		_show_menu_error("No non-mirror matchup possible — uncheck 'Avoid mirror matches'.")
@@ -1129,6 +1134,8 @@ func _make_ai(type: String, deck_id: String) -> Object:
 # `on_confirm` runs after the perspective/router switch to that player.
 func _begin_handoff(next_player: String, reason: String, on_confirm: Callable) -> void:
 	_handoff_pending = true
+	_handoff_next_player = next_player
+	_handoff_on_confirm = on_confirm
 	_wrap_up_active = false   # the outgoing player's wrap-up burst ends at the handoff
 	# Hover state belongs to the outgoing seat; drop it so nothing stays magnified
 	# behind the overlay (no unhover fires while card input is blocked).
@@ -1174,7 +1181,7 @@ func _begin_handoff(next_player: String, reason: String, on_confirm: Callable) -
 	box.add_child(hint)
 
 	var btn := Button.new()
-	btn.text = "I'm %s — show my hand" % next_player.to_upper()
+	btn.text = "I'm %s — show my hand [Space]" % next_player.to_upper()
 	btn.custom_minimum_size = Vector2(280, 46)
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.pressed.connect(func() -> void: _confirm_handoff(next_player, on_confirm))
@@ -1187,6 +1194,8 @@ func _confirm_handoff(next_player: String, on_confirm: Callable) -> void:
 		_handoff_layer = null
 	_set_board_block(false)
 	_handoff_pending = false
+	_handoff_next_player = ""
+	_handoff_on_confirm = Callable()
 	_set_local_player(next_player)
 	on_confirm.call()
 
@@ -1758,6 +1767,7 @@ func _clear_combat_buttons() -> void:
 const ROW_GRID_COLS := 6   # slots outlined per ally / hero row
 
 func _draw_zone_grids() -> void:
+	_zone_frames.clear()   # rematch: the old frames were freed with the scene
 	for spec in [
 		{"centre": RES_ZONE_CENTRE, "cols": BoardRenderer.RES_GRID_COLS,
 			"rows": BoardRenderer.RES_GRID_ROWS, "color": RES_ZONE_LINE},
@@ -2657,6 +2667,11 @@ func _update_cancel_btn() -> void:
 # ── Resource readouts (beside each resource zone) ────────────────────────────
 
 func _build_resource_info_labels() -> void:
+	# Rematch rebuilds the scene after freeing every child, so anything still in
+	# these keeps a FREED node — and both are keyed/valued by node, so a stale
+	# entry blows up the next iteration with "Trying to cast a freed object".
+	_res_info_base.clear()
+	_res_info_labels.clear()
 	var zone_size: Vector2 = BoardRenderer.res_grid_size(0)
 	# ONE line per player, hugging the near edge of that player's resource grid.
 	# It used to be two stacked lines sitting well clear of the zone; with the
@@ -2700,6 +2715,8 @@ func _orient_res_info_labels(pid: String = "") -> void:
 		return
 	var flipped := (pid if pid != "" else _local_player) == "p2"
 	for lbl in _res_info_base:
+		if not is_instance_valid(lbl):
+			continue
 		var l := lbl as Control
 		var base: Vector2 = _res_info_base[lbl]
 		l.rotation_degrees = 180.0 if flipped else 0.0
@@ -2710,6 +2727,8 @@ func _update_resource_info() -> void:
 	if _res_info_labels.is_empty() or not _state:
 		return
 	for pid in _res_info_labels:
+		if not is_instance_valid(_res_info_labels[pid]):
+			continue
 		var rtl := _res_info_labels[pid] as RichTextLabel
 		var avail := _state.get_available_resources(pid)
 		var total := _state.get_total_resources(pid)
@@ -2811,6 +2830,48 @@ func _turn_step_bbcode(pid: String) -> String:
 	return "[center]%s[/center]" % "   ·   ".join(parts)
 
 
+## Who owes an open INLINE choice point, or "" when none is open.
+##
+## Every one of these points (protect, strike, ready-on-attack/strike, whelp
+## bounce, feral rage, form return, track look, armor prevention, the Love
+## Potion ally picker) renders its own buttons somewhere on screen and used to
+## HIDE the pass button while it did - which left a hole in a block that is
+## otherwise always the same shape. The pass buttons now stay up and read
+## "Choose" / "Waiting" instead, which is also the only indication the player
+## NOT deciding gets that the game is waiting on the other seat.
+##
+## Deliberately generic: the label never names the point (the point's own UI
+## already does that), so a new inline choice only has to add its pending
+## field to the list here.
+func _inline_choice_decider() -> String:
+	if not _state:
+		return ""
+	# 602.2 has no pending_*_player field - the decision belongs to the
+	# defender's controller.
+	if _state.in_protect_point or _in_protect_mode:
+		var def_id: String = _protect_defender_id if _protect_defender_id != "" \
+			else _state.combat_defender
+		var defender := _state.get_card(def_id)
+		if defender:
+			return defender.controller
+	for pid: String in [
+			_state.pending_strike_player,
+			_state.pending_ready_player,
+			_state.pending_strike_ready_player,
+			_state.pending_whelp_bounce_player,
+			_state.pending_feral_rage_player,
+			_state.pending_form_return_player,
+			_state.pending_track_look_player,
+			_state.pending_prevention_player]:
+		if pid != "":
+			return pid
+	# The Love Potion's cost picker is pre-submission UI, so the engine knows
+	# nothing about it: it is always the seated player's own choice.
+	if _in_ally_exhaust_mode:
+		return _local_player
+	return ""
+
+
 # Status light: lit while the opponent holds priority (the moment the seated
 # player is waiting on them), greyed otherwise — EXCEPT during an ambush stop,
 # where the window has been handed to that off-screen player and this button is
@@ -2831,6 +2892,14 @@ func _update_opponent_pass_btn(opp: String) -> void:
 		_centre_in_pass_block(_opp_pass_btn)
 		return
 	_opp_pass_btn.disabled = true
+	var chooser := _inline_choice_decider()
+	if chooser != "":
+		# An inline choice point owns the window; priority means nothing until
+		# it is answered, so both buttons name who is choosing, not who has it.
+		_opp_pass_btn.text     = "Choose" if chooser == opp else "Waiting"
+		_opp_pass_btn.modulate = Color(1.0, 0.62, 0.2) if chooser == opp \
+			else Color(0.42, 0.42, 0.48)
+		return
 	var theirs := _state.priority_player == opp
 	_opp_pass_btn.text     = "Priority" if theirs else "Waiting"
 	_opp_pass_btn.modulate = Color(1.0, 0.78, 0.3) if theirs \
@@ -2879,6 +2948,16 @@ func _update_pass_btn() -> void:
 		_pass_btn.text     = MULLIGAN_BTN_TEXT
 		_pass_btn.modulate = MULLIGAN_BTN_COLOR
 		return
+	# Inline choice point: it renders its own buttons (and usually accepts a
+	# click on the board), so this button is a status readout here - but it
+	# stays PRESENT, since a missing button reads as a broken panel.
+	var choice_owed := _inline_choice_decider()
+	if choice_owed != "":
+		_pass_btn.disabled = true
+		_pass_btn.text     = "Choose" if choice_owed == _local_player else "Waiting"
+		_pass_btn.modulate = Color(1.0, 0.62, 0.2) if choice_owed == _local_player \
+			else Color(0.42, 0.42, 0.48)
+		return
 	var my_turn    := _state.priority_player == _local_player
 	var has_plays  := _router.has_any_legal_play()
 	var chain_busy := not _state.pending_actions.is_empty()
@@ -2895,6 +2974,7 @@ func _update_pass_btn() -> void:
 			and _state.pending_control_discard_player != _local_player) \
 		or (_state.pending_resource_place_player != "" \
 			and _state.pending_resource_place_player != _local_player) \
+		or _state.pending_hand_play_player != "" \
 		or not _state.pending_enter_play_effect.is_empty()
 
 	if not _state.pending_enter_play_effect.is_empty():
@@ -3039,6 +3119,9 @@ func _input(event: InputEvent) -> void:
 	if _handoff_pending:
 		if event is InputEventKey and event.pressed:
 			get_viewport().set_input_as_handled()
+			# Space / Enter confirms the handoff, same as pressing the button.
+			if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER 					or event.keycode == KEY_KP_ENTER:
+				_confirm_handoff(_handoff_next_player, _handoff_on_confirm)
 		return
 	# Intercept spacebar here (via _input, not _unhandled_input) so we can gate
 	# the pass through _try_pass() before InputRouter's _unhandled_input fires.
@@ -3469,6 +3552,13 @@ func _log_event(event: GameEvent) -> void:
 		"deck_empty":
 			_log_entry("[color=#a66]%s's deck is empty[/color]"
 				% _log_player(event.payload.get("player", "")))
+		"attack_tax_paid":
+			# Rule 600.3 (Winter's Grasp): resources spent just to announce the
+			# attack. Worth a log line — the payment is otherwise invisible.
+			_log_entry("[color=#9cf]%s pays (%d) to attack with %s[/color]"
+				% [_log_player(event.payload.get("player", "")),
+				   int(event.payload.get("amount", 0)),
+				   _log_card(event.payload.get("attacker_id", ""))])
 		"weapon_struck":
 			_log_entry("[color=#fc8]%s strikes with [b]%s[/b][/color]"
 				% [_log_player(event.payload.get("player", "")),
@@ -3787,6 +3877,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_control_discard(event.payload)
 		"resource_place_choice_opened":
 			_handle_resource_place_choice(event.payload)
+		"hand_play_choice_opened":
+			_handle_hand_play_choice(event.payload)
 		"equipment_sacrifice_required":
 			_handle_equipment_sacrifice(event.payload)
 		"unique_sacrifice_required":
@@ -4054,6 +4146,15 @@ func _on_discard_mode_started(count: int) -> void:
 	_refresh_ui()
 
 
+# Seraph's hand-to-play pick is answered (it is mandatory, so this only fires on
+# a real pick) — hand the router back to the seated player if we were peeking.
+func _on_hand_play_mode_ended() -> void:
+	_exit_choice_peek_mode()
+	_set_status("")
+	_refresh_ui()
+	_drain_passes()
+
+
 func _on_discard_mode_ended() -> void:
 	_exit_choice_peek_mode()
 	_set_status("")
@@ -4294,6 +4395,32 @@ func _handle_resource_place_choice(payload: Dictionary) -> void:
 	else:
 		_router.start_resource_place_mode(source_id)
 		_set_status("%s: click a card to put into your resource row, or press Space to decline"
+				% _log_card(source_id))
+		_refresh_ui()
+
+
+# Seraph the Exalted: "[Activate] -> Put an ally card from your hand into play if
+# its cost is <= the number of resources you have." It comes out of a hand, so it
+# is routed PRIVATE like Nightbloom's placement — an off-screen human picks with
+# their hand still hidden. MANDATORY: the engine only opens the choice when an
+# eligible ally exists, so there is nothing to decline and no pass-button branch.
+func _handle_hand_play_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var source_id: String = payload.get("source", "")
+	if _route_choice(player, "private") == "ai":
+		var ai: Object = _p1_ai if player == "p1" else _p2_ai
+		var pick_id := ""
+		if ai is BaseAI:
+			pick_id = (ai as BaseAI).choose_hand_play(_state, _db, player)
+		if pick_id == "":
+			var cands := StackResolver.get_hand_play_candidates(_state, player, _db)
+			pick_id = cands[0] if not cands.is_empty() else ""
+		EventBus.emit_events(StackResolver.choose_hand_play(_state, pick_id, _db))
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_router.start_hand_play_mode(source_id)
+		_set_status("%s: click an ally card in your hand to put it into play"
 				% _log_card(source_id))
 		_refresh_ui()
 
@@ -5889,7 +6016,11 @@ func _show_protect_inline(protectors: Array, attacker_id: String, defender_id: S
 	# Modal except the legal protectors — clicking one is the same as its button
 	# (see _build_choice_popup; the protection point renders inline, not as a popup).
 	_set_board_block(true, protectors)
-	_pass_btn.visible  = false
+	# The pass button STAYS — as at every inline choice point, it is a fixed part
+	# of the block and hiding it left a hole where the seated player's status
+	# light belongs. _update_pass_btn turns it into a disabled "Choose" readout
+	# instead; the decision is made from the Combat window's buttons or by
+	# clicking a protector on the board. See _inline_choice_decider.
 	_cancel_btn.visible = false
 
 	# Resolve display names for attacker and defender.
@@ -5969,7 +6100,6 @@ func _resolve_protection(protector_id: String) -> void:
 			n.queue_free()
 	_protect_nodes.clear()
 	_clear_combat_buttons()
-	_pass_btn.visible = true
 	_renderer.set_card_outline(_protect_attacker_id, false)
 	_renderer.set_card_outline(_protect_defender_id, false)
 	_protect_attacker_id = ""
@@ -6254,7 +6384,6 @@ func _show_strike_inline(weapon_ids: Array, side: String) -> void:
 	_in_strike_mode    = true
 	_strike_weapon_ids = weapon_ids
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var header_text := "Strike with a weapon? (%s)" % \
@@ -6302,7 +6431,6 @@ func _resolve_strike(weapon_id: String) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_strike_nodes.clear()
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_strike(_state, weapon_id, _db)
@@ -6330,7 +6458,6 @@ func _on_ally_exhaust_select_requested(quest_id: String, candidate_ids: Array,
 	_ally_exhaust_selected   = []
 	_ally_exhaust_count      = count
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 	_show_ally_exhaust_popup()
 
@@ -6405,7 +6532,6 @@ func _end_ally_exhaust_mode() -> void:
 	_ally_exhaust_count      = 0
 	_clear_ally_exhaust_nodes()
 	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
-	_pass_btn.visible = true
 
 
 func _confirm_ally_exhaust() -> void:
@@ -6455,7 +6581,6 @@ func _show_prevention_inline(payload: Dictionary) -> void:
 	_prevention_armor_ids = StackResolver.get_ready_def_armor(
 		_state, payload.get("player", ""), _db)
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var amount: int = payload.get("amount", 0)
@@ -6471,8 +6596,10 @@ func _show_prevention_inline(payload: Dictionary) -> void:
 		if card and _db:
 			var def: CardDef = _db.get_def(card.card_def_id)
 			if def:
+				# Effective DEF, never the printed value — under Natural Defenses
+				# the button must promise what the armor will actually prevent.
 				btn_label = "%s  (DEF %d)" % [def.card_name,
-					int(StackResolver._equipment_info(def).get("def", 0))]
+					StackResolver.get_armor_def(_state, cid, _db)]
 		var captured_id: String = cid
 		buttons.append({
 			"text": btn_label,
@@ -6512,7 +6639,6 @@ func _resolve_prevention(armor_id: String) -> void:
 	# Released here, not in _clear_prevention_nodes — that also runs when the point
 	# re-opens for a second armor, which immediately re-blocks with the new list.
 	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_prevention(_state, armor_id, _db)
@@ -6546,7 +6672,6 @@ func _handle_ready_point(payload: Dictionary) -> void:
 func _show_ready_inline(payload: Dictionary) -> void:
 	_in_ready_mode = true
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var card_id: String = payload.get("card_id", "")
@@ -6581,7 +6706,6 @@ func _resolve_ready(pay: bool) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_ready_nodes.clear()
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_ready_on_attack(_state, pay, _db)
@@ -6612,7 +6736,6 @@ func _handle_strike_ready_point(payload: Dictionary) -> void:
 func _show_strike_ready_inline(payload: Dictionary) -> void:
 	_in_strike_ready_mode = true
 	_ai_timer.stop()
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var weapon_id: String = payload.get("weapon_id", "")
@@ -6648,7 +6771,6 @@ func _resolve_strike_ready(pay: bool) -> void:
 		if is_instance_valid(n):
 			n.queue_free()
 	_strike_ready_nodes.clear()
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_ready_on_strike(_state, pay, _db)
@@ -6700,7 +6822,6 @@ func _handle_whelp_bounce(payload: Dictionary) -> void:
 func _show_whelp_bounce_inline(payload: Dictionary) -> void:
 	_in_whelp_bounce_mode = true
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var ally_id: String = payload.get("ally_id", "")
@@ -6752,7 +6873,6 @@ func _handle_feral_rage(payload: Dictionary) -> void:
 func _show_feral_rage_inline(payload: Dictionary) -> void:
 	_in_feral_rage_mode = true
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var cost: int   = payload.get("cost", 0)
@@ -6793,7 +6913,6 @@ func _handle_form_return(payload: Dictionary) -> void:
 func _show_form_return_inline(payload: Dictionary) -> void:
 	_in_form_return_mode = true
 	_ai_timer.stop()
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var card_id: String = payload.get("card_id", "")
@@ -6828,7 +6947,6 @@ func _resolve_form_return(pay: bool) -> void:
 			n.queue_free()
 	_form_return_nodes.clear()
 	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_form_return(_state, pay, _db)
@@ -6862,7 +6980,6 @@ func _handle_track_look(payload: Dictionary) -> void:
 func _show_track_look_inline(payload: Dictionary) -> void:
 	_in_track_look_mode = true
 	_ai_timer.stop()   # no AI actions while the human is deciding
-	_pass_btn.visible   = false
 	_cancel_btn.visible = false
 
 	var card_id: String = payload.get("card", "")
@@ -6903,7 +7020,6 @@ func _resolve_track_look(to_bottom: bool) -> void:
 			n.queue_free()
 	_track_look_nodes.clear()
 	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_track_placement(_state, to_bottom, _db)
@@ -6920,7 +7036,6 @@ func _resolve_whelp_bounce(pay: bool) -> void:
 			n.queue_free()
 	_whelp_bounce_nodes.clear()
 	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_whelp_bounce(_state, pay, _db)
@@ -6938,7 +7053,6 @@ func _resolve_feral_rage(pay: bool) -> void:
 			n.queue_free()
 	_feral_rage_nodes.clear()
 	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
-	_pass_btn.visible = true
 	_router.refresh_highlights()
 
 	var events := StackResolver.choose_feral_rage(_state, pay, _db)
@@ -7032,7 +7146,9 @@ func _stats_grid() -> Control:
 	for h in headers:
 		grid.add_child(_stats_cell(h, true))
 	for pid in ["p1", "p2"]:
-		var row := [pid.to_upper(), _stats.drawn(pid), _stats.played(pid),
+		# The player NAME, not the seat id: "P1" means nothing to someone reading
+		# their own scoreboard, and every other readout already uses the names.
+		var row := [_player_name(pid), _stats.drawn(pid), _stats.played(pid),
 				_stats.resourced(pid), _stats.prevented(pid),
 				_stats.hero_combat_dmg(pid), _stats.hero_ability_dmg(pid),
 				_stats.ally_dmg(pid)]
@@ -7063,12 +7179,15 @@ func _on_rematch() -> void:
 	_camera_tween                 = null   # camera is rebuilt by _build_scene
 	_in_ambush_mode               = false
 	_ambush_player                = ""
+	_hovered_hand_ids             = []   # ids from the finished game's board
 	_in_choice_peek              = false
 	_choice_peek_player          = ""
 	_choice_peek_hides_hand      = false
 	_enter_play_peek             = false
 	_handoff_pending              = false
 	_handoff_layer                = null   # freed with the other children above
+	_handoff_next_player          = ""
+	_handoff_on_confirm           = Callable()
 	_mulligan_queue               = []
 	_mulligan_awaiting_ack        = false
 	_local_player                 = "p1" if _p1_type == "human" \
@@ -7125,6 +7244,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the discard-or-give-control choice before advancing
 	if _state.pending_resource_place_player != "":
 		return  # wait for Nightbloom's optional resource placement before advancing
+	if _state.pending_hand_play_player != "":
+		return  # wait for Seraph's hand-to-play choice before advancing
 	if _state.pending_reveal_pick_player != "":
 		return  # wait for the reveal-and-pick quest choice before advancing
 	if _state.pending_trigger_target_player != "":
@@ -7227,6 +7348,7 @@ func _drain_passes() -> void:
 				or _state.pending_form_return_player != "" or _in_form_return_mode \
 				or _state.pending_control_discard_player != "" \
 				or _state.pending_resource_place_player != "" \
+				or _state.pending_hand_play_player != "" \
 				or _state.pending_reveal_pick_player != "" \
 				or _state.pending_trigger_target_player != "" \
 				or _state.pending_death_target_player != "" \
@@ -7364,6 +7486,9 @@ func _maybe_turbo_pass() -> void:
 		_wrap_up_active = false
 		return
 	if _state.pending_resource_place_player != "":
+		_wrap_up_active = false
+		return
+	if _state.pending_hand_play_player != "":
 		_wrap_up_active = false
 		return
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
@@ -7521,6 +7646,7 @@ func _is_wrap_up_pass() -> bool:
 		return false
 	if _state.pending_control_discard_player == _local_player \
 			or _state.pending_resource_place_player == _local_player \
+			or _state.pending_hand_play_player == _local_player \
 			or _state.pending_pet_sacrifice_player == _local_player \
 			or _state.pending_equip_sacrifice_player == _local_player \
 			or _state.pending_unique_sacrifice_player == _local_player:

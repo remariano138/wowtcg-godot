@@ -520,6 +520,38 @@ static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, d
 					"amount": amount,
 					"dmg_type": dmg_type,
 				}]))
+			"attached_heal_turn_end":
+				# Primal Mending: "Ongoing: At the end of each turn, your hero
+				# heals N damage from attached ally." Fireball's
+				# attached_damage_turn_start with both halves inverted — a heal
+				# rather than a burn, and at the END of EACH turn rather than the
+				# start of the controller's own. That is why it lives in this
+				# sweep and not in the YOUR_TURN_TRIGGERS queue: an "each turn"
+				# trigger placed in the turn-player-scoped sweep would silently
+				# skip the opponent's turn, and the whole point of this card is
+				# that it ticks twice per round.
+				#
+				# "Your hero" is the ATTACHMENT's controller's hero — the healer
+				# — and the target is whatever it is attached to, which may be an
+				# opposing ally (the attach text says simply "target ally"). Both
+				# are read live, so the trigger simply doesn't fire once the
+				# attachment is gone: the sweep only visits cards_in_play, and
+				# 400.5 already destroyed it with any host that left play.
+				#
+				# The heal lands inline (nothing to prevent) and no-ops on an
+				# undamaged host. Resolves inline rather than on the chain, like
+				# every other end-of-turn trigger — mandatory, free, no target,
+				# no choice (see data/rules_deviations.md).
+				if card.attached_to == "":
+					continue
+				var heal_amt := int(parts[1]) if parts.size() > 1 else 1
+				var heal_host := state.get_card(card.attached_to)
+				var heal_hero := state.get_hero(card.controller)
+				if heal_amt <= 0 or not heal_host or not heal_hero:
+					continue
+				events.append_array(GameLogic.heal(
+					state, heal_host.instance_id, heal_amt, db,
+					heal_hero.instance_id))
 			"end_of_turn_damage_own_victims":
 				# Venomstrike: "At the end of each turn, [this] deals AMOUNT
 				# DMG_TYPE damage to each hero and ally it dealt damage to this

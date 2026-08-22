@@ -11,7 +11,7 @@ var hero_card_def_id: String = ""
 var card_entries: Array[DeckCardEntry] = []
 var recommended_ai_id: String = ""  # AIProfile id, empty = use generic fallback
 var strategy: String = ""           # one-line strategy blurb shown in the deck picker
-var source: String = ""             # "base" | "recommended_ai" | "custom"
+var source: String = ""             # "battle_ready" | "ideas"
 var metadata: Dictionary = {}
 
 

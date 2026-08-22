@@ -191,7 +191,7 @@
   ],
   "recommended_ai_id": "ai_generic",
   "strategy": "Guide powerful allies to a swift victory",
-  "source": "recommended_ai",
+  "source": "battle_ready",
   "metadata": {
     "author": "playtest",
     "origin": "migrated from renderer/tests/playtest.gd"

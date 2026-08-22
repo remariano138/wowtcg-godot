@@ -54,9 +54,29 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_50",
+      "count": 1,
+      "_card_name": "Cold Snap"
+    },
+    {
+      "card_def_id": "azeroth_51",
+      "count": 1,
+      "_card_name": "Counterspell"
+    },
+    {
+      "card_def_id": "dark_portal_190",
+      "count": 1,
+      "_card_name": "Seraph the Exalted"
+    },
+    {
       "card_def_id": "azeroth_174",
       "count": 2,
       "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "azeroth_47",
+      "count": 1,
+      "_card_name": "Arcane Intellect"
     },
     {
       "card_def_id": "dark_portal_160",
@@ -67,6 +87,16 @@
       "card_def_id": "azeroth_56",
       "count": 2,
       "_card_name": "Frostbolt"
+    },
+    {
+      "card_def_id": "azeroth_60",
+      "count": 1,
+      "_card_name": "Winter's Grasp"
+    },
+    {
+      "card_def_id": "dark_portal_128",
+      "count": 1,
+      "_card_name": "Diplomacy"
     },
     {
       "card_def_id": "azeroth_181",
@@ -89,23 +119,18 @@
       "_card_name": "Warden Tonarin"
     },
     {
-      "card_def_id": "azeroth_219",
-      "count": 2,
-      "_card_name": "Tracker Gallen"
-    },
-    {
       "card_def_id": "azeroth_183",
       "count": 2,
       "_card_name": "Freya Lightsworn"
     },
     {
-      "card_def_id": "azeroth_180",
-      "count": 3,
-      "_card_name": "Crazy Igvand"
+      "card_def_id": "dark_portal_170",
+      "count": 4,
+      "_card_name": "Jeleane Nightbreeze"
     },
     {
       "card_def_id": "azeroth_197",
-      "count": 4,
+      "count": 3,
       "_card_name": "Latro Abiectus"
     },
     {
@@ -114,9 +139,9 @@
       "_card_name": "Parvink"
     },
     {
-      "card_def_id": "azeroth_192",
+      "card_def_id": "dark_portal_196",
       "count": 4,
-      "_card_name": "Kor Cindervein"
+      "_card_name": "Warden Ravella"
     },
     {
       "card_def_id": "azeroth_171",
@@ -129,18 +154,13 @@
       "_card_name": "Tristan Rapidstrike"
     },
     {
-      "card_def_id": "azeroth_214",
-      "count": 2,
-      "_card_name": "Ryn Dreamstrider"
-    },
-    {
       "card_def_id": "azeroth_210",
       "count": 2,
       "_card_name": "Nerra Lifeboon"
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 4,
+      "count": 2,
       "_card_name": "Liba Wobblebonk"
     },
     {
@@ -150,7 +170,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
-  "source": "recommended_ai",
+  "source": "ideas",
   "metadata": {
     "author": "playtest",
     "origin": "migrated from renderer/tests/playtest.gd"

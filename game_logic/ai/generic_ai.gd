@@ -93,6 +93,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var escape := escape_artist_action(state, db, player_id)
 	if escape != null:
 		return escape
+	var counter := counterspell_action(state, db, player_id)
+	if counter != null:
+		return counter
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
@@ -742,10 +745,9 @@ func _enemy_available_hero_block(state: GameState, db, opp: String) -> int:
 	for card in state.cards_in_zone(opp + "_hero_row"):
 		if card.is_exhausted:
 			continue
-		var def := db.get_def(card.card_def_id) as CardDef
-		if not def or def.card_type != "Equipment":
-			continue
-		var dv := int(StackResolver._equipment_info(def).get("def", 0))
+		# Effective DEF, so the forecast counts Natural Defenses' aura — and
+		# counts a DEF 0 armor the aura has turned into a real shielder.
+		var dv := StackResolver.get_armor_def(state, card.instance_id, db)
 		if dv > 0:
 			block += dv
 	return block

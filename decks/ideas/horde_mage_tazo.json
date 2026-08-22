@@ -54,6 +54,11 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_51",
+      "count": 1,
+      "_card_name": "Counterspell"
+    },
+    {
       "card_def_id": "azeroth_54",
       "count": 1,
       "_card_name": "Flamestrike"
@@ -155,7 +160,7 @@
     },
     {
       "card_def_id": "azeroth_249",
-      "count": 2,
+      "count": 1,
       "_card_name": "Kulan Earthguard"
     },
     {
@@ -165,7 +170,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
-  "source": "recommended_ai",
+  "source": "ideas",
   "metadata": {
     "author": "playtest",
     "origin": "migrated from renderer/tests/playtest.gd"

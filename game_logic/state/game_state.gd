@@ -262,6 +262,15 @@ var pending_control_discard_ids: Array[String] = []  # source instance_ids, reso
 # never touches resource_placed_this_turn.
 var pending_resource_place_player: String = ""
 var pending_resource_place_source: String = ""
+# Seraph the Exalted: "[Activate] -> Put an ally card from your hand into play if
+# its cost is less than or equal to the number of resources you have." Which ally
+# is a resolution CHOICE, not a target (709.2b — nothing is announced, so 706 is
+# irrelevant), so it opens a direct-call choice point like Nightbloom's above.
+# MANDATORY, unlike that one — the printed text has no "may" — so there is no
+# decline; a hand with no eligible ally opens no choice at all.
+var pending_hand_play_player: String = ""
+var pending_hand_play_source: String = ""
+var pending_hand_play_ids: Array[String] = []   # eligible hand card instance_ids
 # Reveal-and-pick quest reward (Big Game Hunter, Kibler's Exotic Pets, Zapped
 # Giants): "Reveal the top N cards; put a revealed <type> card into your hand and
 # the rest on the bottom of your deck." The revealed cards stay physically at the
@@ -653,6 +662,34 @@ func _pending_berserk_atk(player_id: String, db) -> int:
 # controller's party — continuous modifiers that live on another card in play
 # and affect a dynamic set, so they can't be pre-placed as buffs (the source may
 # outlive, or predate, the cards it buffs). New party auras add a match arm here.
+# ── Form state ("your hero is in bear form") ──────────────────────────────────
+# Every form name the player's in-play Form cards declare their hero to be in.
+# The single implementation of that read: StackResolver.hero_is_in_form (the
+# gate for Thangal's power, Feral Rage's trigger and Natural Defenses' aura)
+# delegates here, so a card keying on the form by NAME and an aura keying on it
+# can never disagree. Live scan of the hero_row, so the answer changes the
+# instant a Form arrives or breaks.
+#
+# It lives on GameState rather than on StackResolver because a continuous
+# modifier has to ask it from inside get_atk, and GameState must not depend on
+# the resolver.
+func hero_form_states(player_id: String, db) -> Array:
+	var names: Array = []
+	if not db:
+		return names
+	for card in cards_in_zone(player_id + "_hero_row"):
+		var def: CardDef = db.get_def(card.card_def_id)
+		if not def or def.effects == "":
+			continue
+		for entry in def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			if parts.size() > 1 and parts[0].strip_edges() == "form_state":
+				var n := parts[1].strip_edges().to_lower()
+				if n != "" and not (n in names):
+					names.append(n)
+	return names
+
+
 func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 	var bonus := 0
 	var def: CardDef = db.get_def(inst.card_def_id)
@@ -679,11 +716,47 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 		for seg in src_def2.effects.split("|"):
 			var p := seg.split(":")
 			match p[0]:
+				"party_allies_atk_mod":
+					# Battle Shout: "Ongoing: Allies in your party have +N ATK."
+					# Controller-scoped and UNCONDITIONAL (unlike Zorm's
+					# party_atk_while_attacking above, which only counts while
+					# attacking), so it also applies while defending, protecting
+					# and retaliating. "Allies in your party" is the controller's
+					# ally_row read live, so TOTEMS are included (305.3a) while
+					# the HERO and hero_row equipment are not. Stacks per copy;
+					# lifts the instant the source leaves play. Never cached.
+					if inst_is_ally:
+						bonus += int(p[1]) if p.size() > 1 else 1
 				"pet_atk_health_aura":
 					# Master of the Hunt: "Ongoing: Your Pets have +X ATK and
 					# +Y health." Lives in the hero row (rule 305.2c).
 					if def and def.card_subtype == "Pet":
 						bonus += int(p[1]) if p.size() > 1 else 0
+				"hero_atk_while_attacking_in_form":
+					# Predatory Strikes: "While your hero is in bear form or cat
+					# form, it has +2 ATK while attacking." Cat Form's grant
+					# below, gated on WHICH form the hero is in — field 1 is a
+					# `+`-joined list of qualifying form names, so one segment
+					# covers "bear form or cat form". The form is read LIVE, so
+					# shapeshifting switches the bonus on and breaking the form
+					# drops it, mid-combat included.
+					#
+					# Like the ungated version this is defender-INdependent, so
+					# it is safe inside assume_attacking forecasts and inside the
+					# get_legal_attackers hero gate (unlike Bala's
+					# atk_vs_exhausted_defender). Hero only, never an ally, and
+					# it applies whichever Form card grants the state — the
+					# aura and the Form need not be the same card. Never cached.
+					if is_attacking and p.size() > 2:
+						var f_ps := players.get(inst.controller) as PlayerState
+						if f_ps and f_ps.hero_instance_id == inst.instance_id:
+							var in_form := false
+							var live_forms := hero_form_states(inst.controller, db)
+							for want in p[1].split("+"):
+								if want.strip_edges().to_lower() in live_forms:
+									in_form = true
+							if in_form:
+								bonus += int(p[2])
 				"hero_atk_while_attacking":
 					# Cat Form: "Your hero is in cat form. (+1 ATK while
 					# attacking.)" — the ongoing Form in the hero row grants the
@@ -762,7 +835,14 @@ func _opposing_atk_aura(inst: CardInstance, inst_is_ally: bool, db) -> int:
 					continue
 				for seg in src_def.effects.split("|"):
 					var p := seg.strip_edges().split(":")
-					if p[0].strip_edges() == "opposing_characters_atk_mod" and p.size() > 1:
+					var key := p[0].strip_edges()
+					if key == "opposing_characters_atk_mod" and p.size() > 1:
+						bonus += int(p[1])
+					# Demoralizing Shout: "Ongoing: Opposing allies have -N ATK."
+					# Hootie's aura narrowed to ALLIES — an opposing HERO is
+					# untouched, which is the whole difference between the two
+					# keys. Totems are ally_row cards, so they get it (305.3a).
+					elif key == "opposing_allies_atk_mod" and p.size() > 1 and inst_is_ally:
 						bonus += int(p[1])
 	return bonus
 
@@ -903,9 +983,9 @@ func get_play_cost(instance_id: String, db, x: int = 0) -> int:
 		return 0
 	if def.cost_x:
 		return _next_card_discount(inst,
-			_ability_cost_aura(inst, def, max(def.cost_base + x + inst.sum_stat("cost"), 0), db))
+			_type_cost_auras(inst, def, max(def.cost_base + x + inst.sum_stat("cost"), 0), db))
 	return _next_card_discount(inst,
-		_ability_cost_aura(inst, def, max(def.cost + inst.sum_stat("cost"), 0), db))
+		_type_cost_auras(inst, def, max(def.cost + inst.sum_stat("cost"), 0), db))
 
 
 # Nature's Swiftness: "You pay (5) less to play your next card this turn."
@@ -922,6 +1002,41 @@ func _next_card_discount(inst: CardInstance, cost: int) -> int:
 	if not ps or ps.next_card_cost_mod == 0:
 		return cost
 	return max(cost + ps.next_card_cost_mod, 0)
+
+
+# The play-cost auras, in one place: Elemental Focus' tag-filtered ability
+# discount and Diplomacy's card-type-filtered ally discount. Both are read LIVE
+# off the costed card's controller's hero_row, so neither is ever cached.
+func _type_cost_auras(inst: CardInstance, def: CardDef, cost: int, db) -> int:
+	return _ally_cost_aura(inst, def, _ability_cost_aura(inst, def, cost, db), db)
+
+
+# Diplomacy: "Ongoing: You pay (1) less to play allies, to a minimum of (1)."
+# Recipe `ally_cost_mod:DELTA:FLOOR` — Elemental Focus' aura with the type-line
+# TAG filter swapped for a card-TYPE one. "Allies" is CardDef.is_ally_card, so a
+# Totem card counts (305.3a) and an Instant Ally does too; an Ability, Equipment
+# or Quest never does. Controller-scoped ("YOU pay"), so the opponent's allies
+# are untouched, and stacks per copy in play. As with Elemental Focus the FLOOR
+# is on the REDUCTION, not on the cost: a printed-0 or printed-1 ally is returned
+# untouched (never raised), the discount simply can't take a dearer one below it.
+func _ally_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
+	if not db or not def.is_ally_card():
+		return cost
+	var delta := 0
+	var floor_cost := 0
+	for c in cards_in_zone(inst.controller + "_hero_row"):
+		var a_def: CardDef = db.get_def(c.card_def_id)
+		if not a_def:
+			continue
+		for seg in a_def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0] != "ally_cost_mod" or p.size() < 3:
+				continue
+			delta += int(p[1])
+			floor_cost = max(floor_cost, int(p[2]))
+	if delta == 0 or cost <= floor_cost:
+		return cost
+	return max(cost + delta, floor_cost)
 
 
 # Elemental Focus: "Ongoing: You pay (1) less to play Elemental abilities, to a

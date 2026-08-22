@@ -9,14 +9,39 @@
       "_card_name": "Torek's Assault"
     },
     {
-      "card_def_id": "azeroth_360",
-      "count": 4,
-      "_card_name": "Your Fortune Awaits You"
+      "card_def_id": "azeroth_361",
+      "count": 3,
+      "_card_name": "Zapped Giants"
+    },
+    {
+      "card_def_id": "azeroth_355",
+      "count": 2,
+      "_card_name": "Kibler's Exotic Pets"
     },
     {
       "card_def_id": "dark_portal_316",
       "count": 4,
       "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "dark_portal_305",
+      "count": 2,
+      "_card_name": "Poison Water"
+    },
+    {
+      "card_def_id": "azeroth_26",
+      "count": 1,
+      "_card_name": "Natural Defenses"
+    },
+    {
+      "card_def_id": "azeroth_29",
+      "count": 1,
+      "_card_name": "Predatory Strikes"
+    },
+    {
+      "card_def_id": "dark_portal_137",
+      "count": 1,
+      "_card_name": "War Stomp"
     },
     {
       "card_def_id": "azeroth_235",
@@ -25,8 +50,18 @@
     },
     {
       "card_def_id": "azeroth_18",
-      "count": 4,
+      "count": 2,
       "_card_name": "Bear Form"
+    },
+    {
+      "card_def_id": "azeroth_25",
+      "count": 3,
+      "_card_name": "Maul"
+    },
+    {
+      "card_def_id": "azeroth_22",
+      "count": 1,
+      "_card_name": "Healing Touch"
     },
     {
       "card_def_id": "azeroth_246",
@@ -35,7 +70,7 @@
     },
     {
       "card_def_id": "azeroth_248",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ka'tali Stonetusk"
     },
     {
@@ -44,18 +79,13 @@
       "_card_name": "Voss Treebender"
     },
     {
-      "card_def_id": "azeroth_159",
-      "count": 4,
-      "_card_name": "Exhaustion"
-    },
-    {
       "card_def_id": "azeroth_232",
       "count": 2,
       "_card_name": "Confessor Mildred"
     },
     {
       "card_def_id": "azeroth_240",
-      "count": 2,
+      "count": 1,
       "_card_name": "Guardian Steelhorn"
     },
     {
@@ -110,7 +140,7 @@
     },
     {
       "card_def_id": "azeroth_249",
-      "count": 4,
+      "count": 2,
       "_card_name": "Kulan Earthguard"
     },
     {
@@ -125,7 +155,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
-  "source": "custom",
+  "source": "ideas",
   "metadata": {
     "author": "playtest",
     "origin": "built from decks/templates/horde_exhauster.json, 2026-08-15"

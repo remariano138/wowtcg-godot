@@ -50,6 +50,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var escape := escape_artist_action(state, db, player_id)
 	if escape != null:
 		return escape
+	var counter := counterspell_action(state, db, player_id)
+	if counter != null:
+		return counter
 	# Hero disable flip (BaseAI, e.g. Litori Frostburn) — deterministic too.
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:

@@ -105,6 +105,7 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# The ally-damage watchers' cursor indexes into that log, so it resets with it.
 	state.damage_watch_index = 0
 	state.ally_destroy_watch_index = 0
+	state.destroy_discard_marks.clear()   # Shadow Bolt: "…destroyed THIS TURN"
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false
@@ -144,6 +145,16 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		card.counters.erase("gouge_skip_ready")
 		if blocked:
 			continue
+		# Helwen: "You may choose not to ready Helwen during your ready step."
+		# Leave it exhausted and queue the choice — the DEFAULT is staying
+		# exhausted, so nothing is lost if the step is interrupted, and the
+		# borrowed-control link she may be holding survives until the controller
+		# actually says "ready". Only an exhausted card poses the question:
+		# readying a ready one is a no-op nobody needs to be asked about.
+		if card.is_exhausted and _may_stay_exhausted(card, db):
+			if card.instance_id not in state.pending_ready_choice_ids:
+				state.pending_ready_choice_ids.append(card.instance_id)
+			continue
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
 	for card in state.cards_in_zone(state.turn_player + "_resource_row"):
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
@@ -166,6 +177,14 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# ordered queue; nothing fires yet.
 	_collect_turn_start_triggers(state, db)
 
+	# Helwen's optional-ready choices, opened one at a time. can_submit and
+	# pass_priority are hard-blocked while one is pending, so the window below
+	# opens but the game waits here until the controller answers.
+	if not state.pending_ready_choice_ids.is_empty():
+		state.pending_ready_choice_player = state.turn_player
+		events.append(GameEvent.ready_choice_opened(
+			state.turn_player, state.pending_ready_choice_ids[0]))
+
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "ready", "turn_player": state.turn_player,
 		"turn_number": state.turn_number,
@@ -178,6 +197,14 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# StackResolver.advance_turn_start_triggers.
 	events.append_array(StackResolver.advance_turn_start_triggers(state, db))
 	return events
+
+
+# Helwen: "You may choose not to ready [this] during your ready step."
+static func _may_stay_exhausted(card: CardInstance, db) -> bool:
+	if not db:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	return def != null and StackResolver._has_effect_flag(def, "may_stay_exhausted")
 
 
 static func _enter_draw(state: GameState, _db) -> Array[GameEvent]:
@@ -334,6 +361,7 @@ const YOUR_TURN_TRIGGERS := [
 	"rfg_self_next_turn",               # Tooga
 	"turn_start_discard_or_give_control",  # Infernal
 	"turn_start_look_top_card",         # Track Humanoids
+	"turn_start_pay_or_destroy",        # Rain of Fire (upkeep)
 ]
 
 
@@ -455,6 +483,56 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 					packets.append({"source": card.instance_id,
 						"target": opp_hero.instance_id, "amount": amount})
 				events.append_array(StackResolver.defer_packets(state, db, packets))
+			"end_of_turn_hero_damage_opposing":
+				# Rain of Fire: "At the end of your turn, YOUR HERO deals AMOUNT
+				# DMG_TYPE damage to each opposing hero and ally."
+				#
+				# Infernal's arm above with the source changed, and the source is
+				# the whole difference between the two keys. Here the packets come
+				# from the controller's HERO, so they are tagged `from_ability`
+				# (this is an in-play Ability dealing the damage — the same call as
+				# Fireball's ongoing turn-start burn), which means Chromatic Cloak's
+				# +1 applies; and they carry the printed dmg_type, so a fire version
+				# also doubles under World in Flames. Infernal's packets are dealt
+				# by the ALLY and get neither.
+				#
+				# The board is read HERE, at the end phase, so an ally that arrived
+				# this turn is hit and one that left is not. Rule 703.3 needs no
+				# code: the sweep only visits cards_in_play, so a Rain of Fire
+				# already destroyed this turn — by its own unpaid upkeep, among
+				# other things — never burns.
+				var hero_amount := int(parts[1]) if parts.size() > 1 else 1
+				var hero_type := parts[2].strip_edges() if parts.size() > 2 else ""
+				var own_hero := state.get_hero(card.controller)
+				if not own_hero:
+					continue
+				var foe := ""
+				for pid in state.players:
+					if pid != card.controller:
+						foe = pid
+						break
+				if foe == "":
+					continue
+				# Packets go through defer_packets, so the opposing hero's
+				# controller gets the armor prevention point (717.2c) in a fixed
+				# order — allies first, then their hero.
+				var hero_packets: Array = []
+				for target in state.cards_in_zone(foe + "_ally_row").duplicate():
+					hero_packets.append({
+						"source": own_hero.instance_id,
+						"target": target.instance_id,
+						"amount": hero_amount, "dmg_type": hero_type,
+						"from_ability": true,
+					})
+				var foe_hero := state.get_hero(foe)
+				if foe_hero:
+					hero_packets.append({
+						"source": own_hero.instance_id,
+						"target": foe_hero.instance_id,
+						"amount": hero_amount, "dmg_type": hero_type,
+						"from_ability": true,
+					})
+				events.append_array(StackResolver.defer_packets(state, db, hero_packets))
 			"end_of_turn_destroy_if_no_damage_dealt":
 				# Outrider Zarg: "At the end of your turn, if [this] dealt no damage
 				# this turn, destroy him." Venomstrike's victim list inverted: the

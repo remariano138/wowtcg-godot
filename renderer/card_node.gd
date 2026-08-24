@@ -56,6 +56,8 @@ var _ready_lock_badge: Label = null
 var _outline: ColorRect = null
 var _atk_badge_bg: Panel = null
 var _atk_badge_lbl: Label = null
+var _shield_badge_bg: Label = null    # the 🛡 glyph itself
+var _shield_badge_lbl: Label = null   # the number drawn over it
 var _counter_badge_bg: Panel = null
 var _counter_badge_lbl: Label = null
 var _hp_badge_bg: Panel = null
@@ -213,6 +215,43 @@ static func create(inst_id: String, card_name: String,
 	node.add_child(ctr_lbl)
 	node._counter_badge_lbl = ctr_lbl
 
+	# Damage-prevention badge — a 🛡 glyph with the remaining amount over it,
+	# TOP-RIGHT. The counted "prevent the next N damage" shield banked on this
+	# card (Soul Link). Deliberately the top-right corner: ATK sits bottom-left,
+	# HP bottom-right, so a shield can never cover the two numbers that decide a
+	# combat — and a glyph rather than another coloured disc, so it can't be
+	# misread as the (blue, round) HP-buff badge at a glance. Hidden at 0.
+	var shd_bg := Label.new()
+	shd_bg.text = "🛡"
+	shd_bg.add_theme_font_size_override("font_size", 26)
+	shd_bg.add_theme_color_override("font_color", Color(0.55, 0.78, 1.0))
+	shd_bg.add_theme_constant_override("outline_size", 5)
+	shd_bg.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	shd_bg.size     = Vector2(BADGE_D + 8, BADGE_D + 8)
+	shd_bg.position = Vector2(W * 0.5 - BADGE_D - 8, -H * 0.5 + 1)
+	shd_bg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	shd_bg.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	shd_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shd_bg.visible  = false
+	node.add_child(shd_bg)
+	node._shield_badge_bg = shd_bg
+
+	# The number rides ON the glyph — white with a heavy outline, so it stays
+	# legible whether the emoji renders monochrome or in colour.
+	var shd_lbl := Label.new()
+	shd_lbl.add_theme_font_size_override("font_size", 13)
+	shd_lbl.add_theme_color_override("font_color", Color.WHITE)
+	shd_lbl.add_theme_constant_override("outline_size", 5)
+	shd_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
+	shd_lbl.size     = shd_bg.size
+	shd_lbl.position = shd_bg.position + Vector2(0, 1)
+	shd_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	shd_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	shd_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shd_lbl.visible  = false
+	node.add_child(shd_lbl)
+	node._shield_badge_lbl = shd_lbl
+
 	# HP-buff badge — white number in a blue circle, bottom-right corner.
 	# Hidden by default; shown (replacing the printed HP) while a buff is active.
 	var hp_bg := Panel.new()
@@ -342,7 +381,9 @@ static func create(inst_id: String, card_name: String,
 	lock_lbl.add_theme_constant_override("outline_size", 4)
 	lock_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1.0))
 	lock_lbl.size         = Vector2(30, 26)
-	lock_lbl.position     = Vector2(W * 0.5 - 30, -H * 0.5 + 4)
+	# Left of the shield badge's corner, so the two can show at once (a hero can
+	# be both ready-locked by Gouge and carrying a Soul Link shield).
+	lock_lbl.position     = Vector2(W * 0.5 - 30 - 30, -H * 0.5 + 4)
 	lock_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	lock_lbl.visible      = false
 	node.add_child(lock_lbl)
@@ -362,6 +403,8 @@ static func create(inst_id: String, card_name: String,
 	node._hp_badge_lbl.visible  = false
 	node._counter_badge_bg.visible  = false
 	node._counter_badge_lbl.visible = false
+	node._shield_badge_bg.visible   = false
+	node._shield_badge_lbl.visible  = false
 	return node
 
 
@@ -398,6 +441,19 @@ func update_counter(count: int) -> void:
 	_counter_badge_lbl.visible = show_it
 	if show_it:
 		_counter_badge_lbl.text = str(count)
+
+
+# Show/hide the damage-prevention badge (top-right). `amount` is the counted
+# shield still banked on this card — Soul Link's "prevent the next N damage".
+# Pass 0 to hide it.
+func update_shield(amount: int) -> void:
+	if not _shield_badge_bg or not _shield_badge_lbl:
+		return
+	var show_it := amount > 0
+	_shield_badge_bg.visible  = show_it
+	_shield_badge_lbl.visible = show_it
+	if show_it:
+		_shield_badge_lbl.text = str(amount)
 
 
 func update_atk(current_atk: int, printed_atk: int, atk_if_attacking: int = -1,

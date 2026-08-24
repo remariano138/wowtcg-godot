@@ -17,6 +17,8 @@ extends Resource
 #   "cannot_attack"   — restriction; rules engine treats total > 0 as "can't attack"
 #   "cannot_protect"  — restriction; rules engine treats total > 0 as "can't protect"
 #   "cannot_ready"    — restriction; rules engine treats total > 0 as "can't ready"
+#   "prevent_damage_amount" — a COUNTED damage shield (Soul Link); GameLogic.prevent
+#                     spends it point by point and drops the buff once empty
 #   (add more as needed — the Buff data model doesn't need to change per new stat)
 
 var buff_id: String        # human-readable type name, e.g. "cyclone_restrict_attack"

@@ -68,10 +68,18 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var wrath := bestial_wrath_action(state, db, player_id)
 	if wrath != null:
 		return wrath
+	# Mortal Strike (BaseAI) — lethal on their hero, or a hard counter to a heal on it.
+	var mortal := mortal_strike_action(state, db, player_id)
+	if mortal != null:
+		return mortal
 	# Katsin Bloodoath (BaseAI) — shield an ally that would die in this combat.
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
+	# Soul Link (BaseAI) — move incoming hero damage onto the party.
+	var soul_link := soul_link_action(state, db, player_id)
+	if soul_link != null:
+		return soul_link
 	# Withdraw save-bounce (BaseAI) — deterministic, never left to the dice.
 	var save := save_bounce_action(state, db, player_id)
 	if save != null:

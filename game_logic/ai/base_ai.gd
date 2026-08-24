@@ -90,6 +90,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_155": "combat_instant_ally_atk",  # Skewer — a chosen friendly ally deals its ATK to target ally
 	"dark_portal_129": "combat_instant_escape",   # Escape Artist — modal: interrupt an ability targeting our hero, or remove attackers (see escape_artist_action)
 	"azeroth_51":  "combat_instant_counterspell", # Counterspell — interrupt ANY ability card on the chain (see counterspell_action)
+	"azeroth_145": "combat_instant_mortal_strike", # Mortal Strike — damage + "can't be healed this turn" (see mortal_strike_action)
 }
 
 
@@ -125,10 +126,18 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var wrath := bestial_wrath_action(state, db, player_id)
 	if wrath != null:
 		return wrath
+	# Mortal Strike — lethal on their hero, or a hard counter to a heal on it.
+	var mortal := mortal_strike_action(state, db, player_id)
+	if mortal != null:
+		return mortal
 	# Katsin Bloodoath — shield an ally that would die in this combat.
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
+	# Soul Link — move incoming hero damage onto the party, a point at a time.
+	var soul_link := soul_link_action(state, db, player_id)
+	if soul_link != null:
+		return soul_link
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -770,6 +779,121 @@ func escape_artist_action(state: GameState, db, player_id: String) -> PendingAct
 	return null
 
 
+# ── Mortal Strike (azeroth_145) ───────────────────────────────────────────────
+#
+# "Your hero deals X melee damage to target hero or ally, where X is 1 plus the
+# ATK of one of your Melee weapons. That character can't be healed this turn."
+#
+# Held (COMBAT_INSTANT_TAGS) and never blind-played, and — unlike every other
+# held instant here — it is aimed at the opposing HERO and nothing else. Two
+# reasons to fire it, in order:
+#
+#   1. LETHAL. X is a live board read (weapon ATK included), so the same
+#      question every burn asks: does it finish the hero right now? Armor is
+#      respected — a ready DEF>0 piece can absorb the difference at the
+#      prevention point (717.2c), so a "lethal" that their armor covers is not
+#      one, and firing it there would spend the card for nothing.
+#
+#   2. HARD COUNTER TO A HEAL. An opposing link on the chain heals their hero →
+#      resolve first (the chain is LIFO), stamp "can't be healed this turn", and
+#      their heal resolves into a no-op. Note this is NOT an interrupt: their
+#      card is still spent, which is exactly why it is worth our 2 — we trade a
+#      card for a card AND deal the damage on top.
+#
+# Deliberately never pointed at an ALLY, even to kill one: the two conditions
+# above are what the card is being held for, and an ally kill would spend the
+# resources the heal-counter wants.
+func mortal_strike_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var opp := _other_player_id(state, player_id)
+	var opp_ps := state.players.get(opp) as PlayerState
+	var opp_hero: String = opp_ps.hero_instance_id if opp_ps else ""
+	if opp_hero == "":
+		return null
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_mortal_strike":
+			continue
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var amount := StackResolver.weapon_atk_damage_amount(state, def, player_id, db)
+		var lethal := amount > 0 			and amount - _hero_armor_soak(state, db, opp) >= state.get_current_hp(opp_hero, db)
+		if not (lethal or _chain_heals_hero(state, db, opp, opp_hero)):
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id, {
+			"card_id": card.instance_id, "target_id": opp_hero,
+		})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Damage a player's ready armor could still prevent (717.2c). Used to keep a
+# "lethal" honest — the defender gets the prevention point before the packet
+# lands, and every DEF they can exhaust comes off it.
+func _hero_armor_soak(state: GameState, db, player_id: String) -> int:
+	var soak := 0
+	for armor_id in StackResolver.get_ready_def_armor(state, player_id, db):
+		soak += StackResolver.get_armor_def(state, armor_id, db)
+	return soak
+
+
+# Does a link on the chain heal `hero_id` (that player's own hero)? The chain is
+# just state.pending_actions, and each link names the card that made it —
+# `card_id` for a hand card or an ally/equipment power, `hero_id` for a hero
+# flip power — so the def's effect segments answer "is this a heal", and the
+# announced target slot answers "at their hero".
+#
+# Covers the targeted heals (heal_target, deal_damage_and_heal's second slot, a
+# chosen heal MODE, heal_x_from_target) via the target slots, plus the
+# untargeted party sweeps (heal_party), which name nobody but include their
+# hero by definition. Only the OPPONENT's own links count: a heal we are casting
+# is not something to counter.
+func _chain_heals_hero(state: GameState, db, healer_id: String, hero_id: String) -> bool:
+	if not db:
+		return false
+	for pending in state.pending_actions:
+		var pa := pending as PendingAction
+		if not pa or pa.source_player != healer_id:
+			continue
+		var src_id: String = str(pa.params.get("card_id", ""))
+		if src_id == "":
+			src_id = str(pa.params.get("hero_id", ""))
+		var src := state.get_card(src_id)
+		var src_def := db.get_def(src.card_def_id) as CardDef if src else null
+		if not src_def or src_def.effects == "":
+			continue
+		# A modal link only does what its ANNOUNCED mode says (707.1c), so the
+		# chosen mode's inner segment is the only one that counts.
+		if StackResolver.is_modal_def(src_def):
+			var chosen: String = StackResolver.selected_mode(src_def, pa)
+			if chosen.begins_with("heal_target") 					and str(pa.params.get("target_id", "")) == hero_id:
+				return true
+			continue
+		for entry in src_def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			var head := parts[0].strip_edges()
+			# A party sweep heals their hero without naming it as a target.
+			if head in ["heal_party", "heal_party_each_turn"]:
+				return true
+			# An activated power (a weapon's or ally's) carries its effect key in
+			# field 2; every other heal shape carries it in field 0.
+			var heals := head in ["heal_target", "deal_damage_and_heal", "heal_x_from_target"]
+			if head == "activated_power":
+				heals = parts.size() > 2 and parts[2].strip_edges() == "heal_target"
+			if not heals:
+				continue
+			# heal_target / heal_x_from_target announce the healed character in
+			# target_id; Shock and Soothe's heal half rides heal_target_id.
+			for slot in ["target_id", "heal_target_id"]:
+				if str(pa.params.get(slot, "")) == hero_id:
+					return true
+	return false
+
+
 # ── Counterspell (azeroth_51 / combat_instant_counterspell) ───────────────────
 # "Interrupt target ability card." Escape Artist's interrupt half with the
 # "targeting your hero" clause gone, so the pool is EVERY ability card on the
@@ -1316,6 +1440,151 @@ func katsin_shield_action(state: GameState, db, player_id: String) -> PendingAct
 	return null
 
 
+# ── Soul Link (azeroth_133) ───────────────────────────────────────────────────
+# "Put 1 damage on an ally in your party -> Prevent the next 1 damage that would
+# be dealt to your hero this turn."
+#
+# The card is a way to move damage OFF the hero and ONTO the party, one point at
+# a time, and it is free and repeatable — so the whole policy is (a) when, and
+# (b) which ally eats it.
+#
+# WHEN: only while damage is actually on its way to our hero — an opposing
+# combat where our hero is a combatant, or an opposing link on the chain aimed
+# at it. Priority is LIFO, so a shield announced in response to that link
+# resolves first and is standing when the damage lands. One point is bought per
+# call; decide_action is re-entered after each, so the shield grows to match the
+# forecast and stops there (already-banked shield is netted out, and unpreventable
+# damage buys nothing at all — the shield would not be consumed).
+#
+# WHICH ALLY: deliberately a dumb, cruel heuristic — the sturdiest ally in the
+# party, and NEVER one at 1 health. Putting the last point on an ally destroys
+# it, which trades a whole card for 1 point of hero damage; the card is meant to
+# grind the party down, not to feed it. When every ally is at 1 health the power
+# simply isn't used.
+func soul_link_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return null
+	var hero := state.get_card(ps.hero_instance_id)
+	if not hero:
+		return null
+
+	var needed := _forecast_hero_damage(state, db, player_id)
+	needed -= GameLogic.granted_shield(hero)
+	if needed <= 0:
+		return null   # nothing coming, or already covered
+
+	# The ally that pays: highest remaining health, never one the point would
+	# kill. Ties go to the ally we would miss least.
+	var best := ""
+	var best_hp := 1
+	for ally in state.cards_in_zone(player_id + "_ally_row"):
+		var hp := state.get_current_hp(ally.instance_id, db)
+		if hp < 2:
+			continue   # the last point destroys it — never worth 1 hero damage
+		if hp > best_hp or (hp == best_hp and best != "" 				and card_value_score(state, db, ally.instance_id)
+					< card_value_score(state, db, best)):
+			best_hp = hp
+			best = ally.instance_id
+	if best == "":
+		return null
+
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		if StackResolver._ally_activated_power(def).get(
+				"effect", "") != "prevent_next_hero_damage":
+			continue
+		var act := PendingAction.make("use_ally_power", player_id,
+			{"card_id": card.instance_id, "target_id": best})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# How much damage is on its way to player_id's hero right now: the combat it is
+# in (as defender, or as an attacker facing retaliation) plus any opposing link
+# on the chain aimed at it. Unpreventable sources contribute nothing — a shield
+# is not consumed by them (rule 717), so buying one would be pure waste.
+func _forecast_hero_damage(state: GameState, db, player_id: String) -> int:
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return 0
+	var hero_id := ps.hero_instance_id
+	var total := 0
+
+	# (1) Combat — an open window, or a proposal of theirs still on the chain.
+	var attacker_id := ""
+	var defender_id := ""
+	if state.combat_attack_window or state.combat_defend_window:
+		attacker_id = state.combat_attacker
+		defender_id = state.combat_defender
+	else:
+		for pending in state.pending_actions:
+			var p := pending as PendingAction
+			if p and p.action_type == "propose_combat" and p.source_player != player_id:
+				attacker_id = p.params.get("attacker_id", "")
+				defender_id = p.params.get("defender_id", "")
+				break
+	if state.is_in_play(attacker_id) and state.is_in_play(defender_id):
+		if defender_id == hero_id:
+			if not GameLogic.is_damage_unpreventable(state, db, attacker_id, true):
+				total += max(forecast_atk(state, db, attacker_id, true), 0)
+		elif attacker_id == hero_id 				and not StackResolver._has_keyword(
+					state.get_card(hero_id), "long_range", db, state):
+			# Our own hero swinging: the defender's retaliation comes back at it.
+			if not GameLogic.is_damage_unpreventable(state, db, defender_id, true):
+				total += max(state.get_atk(defender_id, db), 0)
+
+	# (2) An opposing damage link on the chain aimed at our hero. Only the
+	# announced target is read — the shield has to be standing before the link
+	# resolves, and by then nothing else is knowable.
+	for pending in state.pending_actions:
+		var p := pending as PendingAction
+		if not p or p.source_player == player_id:
+			continue
+		var src: String = p.params.get("card_id", p.params.get("hero_id", ""))
+		var src_card := state.get_card(src)
+		var src_def := db.get_def(src_card.card_def_id) as CardDef if src_card else null
+		if not src_def:
+			continue
+		var aimed := false
+		for slot in ["target_id", "target_id_2", "target_id_3"]:
+			if p.params.get(slot, "") == hero_id:
+				aimed = true
+		if not aimed:
+			continue
+		if GameLogic.is_damage_unpreventable(state, db, src, false):
+			continue
+		for seg in src_def.effects.split("|"):
+			var parts := seg.split(":")
+			if parts[0] in ["deal_damage_to_target", "multi_shot",
+					"deal_damage_and_heal", "deal_damage_weapon_atk"] 					and parts.size() > 1:
+				total += int(p.params.get("x_value", 0)) if parts[1] == "X" 					else int(parts[1])
+	return total
+
+
+# ── Helwen (azeroth_126) — the optional ready ────────────────────────────────
+# "You may choose not to ready Helwen during your ready step."
+#
+# Readying her ENDS the control link she is holding ("while Helwen remains
+# exhausted"), so the question is only ever "is the stolen ally worth more than
+# having her back?" — and while she holds anything the answer is yes: an ally we
+# took is a body they don't have AND one we do, whereas a readied Helwen is a
+# 2/2. So: stay exhausted while holding something, ready otherwise (a Helwen
+# exhausted for any other reason — she attacked, she protected — should come
+# back). Overridable.
+func choose_ready_card(state: GameState, db, player_id: String,
+		card_id: String) -> bool:
+	var card := state.get_card(card_id)
+	if not card:
+		return true   # ready it — nothing to protect
+	return card.stolen_ids.is_empty()
+
+
 func must_attack_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null
@@ -1805,6 +2074,17 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if gx_act:
 					result.append(gx_act)
 				continue
+			if def and StackResolver._has_effect_flag_prefix(def, "enters_with_counters"):
+				# Blood Fury: the card does nothing on its own — its whole value is
+				# the X counters it enters play with, and X is also the price. So the
+				# AI buys the largest X it can afford right now and holds the card
+				# entirely below X = 2: at X = 1 it is a 5-resource ability granting
+				# +1 ATK on hero attacks, which is not worth a card.
+				var bf_act := _counter_x_action(state, db, player_id, card.instance_id,
+					action_type, 2)
+				if bf_act:
+					result.append(bf_act)
+				continue
 			if def and StackResolver._has_effect_flag_prefix(def, "next_card_cost_mod"):
 				# Nature's Swiftness: only play it when the discount can be spent
 				# on a big card in hand this turn — otherwise it's a dead 3 drop.
@@ -2270,13 +2550,69 @@ static func forecast_atk(state: GameState, db, attacker_id: String,
 	var atk := state.get_atk(attacker_id, db, assume_attacking)
 	var card := state.get_card(attacker_id)
 	if card and db:
-		var best := 0
-		for wid in StackResolver.get_strikeable_weapons(state, card.controller, attacker_id, db):
-			if _is_power_weapon(state, db, wid):
-				continue   # held for its activated power, never forecast as strike ATK
-			best = maxi(best, state.get_atk(wid, db))
-		atk += best
+		atk += _forecast_strike_atk(state, db, card.controller, attacker_id)
 	return atk
+
+
+# The ATK a wielder would ADD by striking, forecast honestly. Rule 406.6 lets a
+# Dual Wield hero strike with TWO Melee weapons in one combat, and 303.2b sums
+# every struck weapon's ATK into the one combat packet — so forecasting a single
+# best weapon under-reads both our own lethals and the opponent's threat.
+#
+# Two things the naive "best weapon" version got to ignore and this can't:
+#   • RESOURCES. get_strikeable_weapons filters each weapon against the CURRENT
+#     pool, but strikes are paid one at a time, so a second one is only real if
+#     the budget survives the first. Tracked here as a running budget, which is
+#     what the engine does for real when it re-opens the strike point.
+#   • 406.6 forbids mixing a Melee and a Ranged strike in one combat, so once
+#     the first pick is made the rest must match its damage type.
+# Greedy by ATK, which is optimal here: the cap is a count, and taking the
+# biggest affordable weapon first can only ever be right.
+static func _forecast_strike_atk(state: GameState, db, player_id: String,
+		wielder_id: String) -> int:
+	var offered := StackResolver.get_strikeable_weapons(state, player_id, wielder_id, db)
+	if offered.is_empty():
+		return 0
+	# (atk, cost, type) per candidate, power weapons dropped — the AI never
+	# strikes with one, so counting it would forecast damage it won't deal.
+	var cands: Array = []
+	for wid in offered:
+		if _is_power_weapon(state, db, wid):
+			continue
+		var wcard := state.get_card(wid)
+		var wdef := (db.get_def(wcard.card_def_id) as CardDef) if wcard else null
+		if not wdef:
+			continue
+		cands.append({
+			"atk":  state.get_atk(wid, db),
+			"cost": StackResolver.get_strike_cost(state, player_id, wdef, db),
+			"type": wdef.dmg_type.to_lower(),
+		})
+	cands.sort_custom(func(a, b): return int(a["atk"]) > int(b["atk"]))
+	var limits := StackResolver.get_wielding_limits(state, player_id, db)
+	var budget := state.get_available_resources(player_id)
+	var total := 0
+	var taken := 0
+	var cap := 1
+	var required_type := ""
+	for c in cands:
+		if required_type != "" and str(c["type"]) != required_type:
+			continue
+		var cost := int(c["cost"])
+		if cost < 0 or cost > budget:
+			continue
+		if taken >= cap:
+			break
+		budget -= cost
+		total += int(c["atk"])
+		taken += 1
+		if required_type == "":
+			required_type = str(c["type"])
+			# Only the Melee cap is raised by anything shipped (Dual Wield);
+			# Ranged stays at 1 until a Ranged Dual Wield dial exists.
+			cap = int(limits.get("melee_strikes", StackResolver.BASE_MELEE_STRIKES)) \
+				if required_type == "melee" else StackResolver.BASE_MELEE_STRIKES
+	return total
 
 
 # "Power weapon" (effects flag `power_weapon`, e.g. Rod of the Ogre Magi):
@@ -2916,6 +3252,74 @@ func choose_feral_rage(_state: GameState, _db, _player_id: String) -> bool:
 	return true
 
 
+# The smallest end-of-turn burn worth an upkeep payment. With Rain of Fire's
+# printed 1 damage that means the opponent must hold at least two allies (hero +
+# 2 allies = 3), which is roughly where a 4-resource-a-turn tax starts paying for
+# itself. Below it the card is bleeding us dry for chip damage and is better let
+# go — the alternative heuristic, "always pay", loses games to its own upkeep.
+const UPKEEP_MIN_DAMAGE := 3
+
+
+# Rain of Fire: "At the start of your turn, pay (COST) or destroy [this]."
+# Return true to pay and keep the card, false to let it be destroyed.
+#
+# The decision is entirely about what the card will DO at the end of this turn,
+# because that is all we are buying: the burn hits the opposing hero and every
+# opposing ally, so its value is read live off their board (`_upkeep_burn_value`)
+# rather than off the card's cost.
+#
+# Three bars, in order:
+#  1. LETHAL — the burn kills their hero this turn. Pay whatever it costs; there
+#     is no next turn to save the resources for.
+#  2. Too small to matter — pay only once the burn totals UPKEEP_MIN_DAMAGE.
+#  3. Never tap out for chip damage. The upkeep is charged at the START of our
+#     turn, so every resource spent here is one we do not have for the rest of
+#     it; we keep at least one back unless the payment is lethal.
+#
+# The engine has already checked affordability (the point never opens otherwise).
+func choose_upkeep(state: GameState, db, player_id: String,
+		card_id: String, cost: int) -> bool:
+	var burn := _upkeep_burn_amount(state, db, card_id)
+	if burn <= 0:
+		return false   # nothing to buy — the card does nothing at end of turn
+	var opp := ""
+	for pid in state.players:
+		if pid != player_id:
+			opp = pid
+			break
+	if opp == "":
+		return false
+	var opp_hero := state.get_hero(opp)
+	if opp_hero and state.get_current_hp(opp_hero.instance_id, db) <= burn:
+		return true    # (1) lethal on their hero — buy it at any price
+	var total := burn * (state.cards_in_zone(opp + "_ally_row").size() + (1 if opp_hero else 0))
+	if total < UPKEEP_MIN_DAMAGE:
+		return false   # (2) not worth the tax yet
+	# (3) keep something back to actually play with this turn.
+	return state.get_available_resources(player_id) - cost >= 1
+
+
+# How much the card charging us upkeep will deal to each opposing character at
+# the end of this turn, 0 if it has no such power. Read off the def rather than
+# assumed, so a future upkeep card with a different burn — or none at all — is
+# judged on what it actually does.
+func _upkeep_burn_amount(state: GameState, db, card_id: String) -> int:
+	if not db:
+		return 0
+	var card := state.get_card(card_id)
+	if not card:
+		return 0
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def or def.effects == "":
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() in [
+				"end_of_turn_hero_damage_opposing", "end_of_turn_damage_opposing"]:
+			return int(parts[1]) if parts.size() > 1 else 1
+	return 0
+
+
 # Returns activate_power actions for the player's hero.
 func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[PendingAction]:
 	var result: Array[PendingAction] = []
@@ -2991,6 +3395,24 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			var own_hero: String = (state.players.get(player_id) as PlayerState).hero_instance_id
 			if own_hero != "" \
 					and state.get_current_hp(own_hero, db) <= int(ap.get("amount", 0)):
+				continue
+		# The Immovable Object / The Unstoppable Force: the destroy is symmetric
+		# and costs us the card, so firing it with nothing of theirs to break is
+		# a straight card loss. Only fire when the OPPONENT actually controls a
+		# matching card; our own matching copy going with it is priced in (the
+		# pair is mutually exclusive by design, and their copy is the threat).
+		if ap.get("effect", "") == "destroy_all_named":
+			var dn_spec := StackResolver.destroy_named_spec(def)
+			var dn_opp := _other_player_id(state, player_id)
+			var dn_hits := StackResolver.get_named_destroy_targets(
+				state, db, dn_spec, player_id)
+			var dn_worth := false
+			for dn_id in dn_hits:
+				var dn_card := state.get_card(dn_id)
+				if dn_card and dn_card.controller == dn_opp:
+					dn_worth = true
+					break
+			if not dn_worth:
 				continue
 		if ap.get("effect", "") == "buff_atk_target_attacking":
 			# Ryn Dreamstrider: friendly +ATK buff — never target the enemy.
@@ -3412,6 +3834,59 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# every turn for no effect. Held for a combat one of our allies would
 			# not survive; see katsin_shield_action().
 			continue
+		elif ap.get("effect", "") == "prevent_next_hero_damage":
+			# Soul Link: "Put 1 damage on an ally in your party -> Prevent the
+			# next 1 damage that would be dealt to your hero this turn." The
+			# power is FREE and repeatable, so the generic branch below would
+			# chew through the whole party every turn for a shield nothing is
+			# about to test. Held for damage actually on its way to our hero;
+			# see soul_link_action().
+			continue
+		elif ap.get("effect", "") == "gain_control_ally":
+			# Staff of Dominance: "(X), [Activate], Destroy [this] -> Gain control
+			# of target ally with cost X." TARGET-FIRST, which is what the X
+			# demands: the printed text reads "choose X, then find a match", but a
+			# heuristic has to see an ally it can afford and pay accordingly. So
+			# enumerate the OPPONENT's allies (taking our own does nothing and
+			# burns the staff), drop the ones we can't pay for INSIDE the loop —
+			# a rich target we can't afford must not hide a cheaper one we can —
+			# and take the most valuable that remains. The steal is PERMANENT, so
+			# there is no value floor beyond affordability: any body is worth a
+			# staff that has already been paid for.
+			var gc_opp := _other_player_id(state, player_id)
+			var gc_pool: Array[String] = []
+			for enemy in state.cards_in_zone(gc_opp + "_ally_row"):
+				gc_pool.append(enemy.instance_id)
+			for gc_best in sort_valuable_cards(state, db, gc_pool):
+				var gc_target := state.get_card(gc_best)
+				var gc_def := db.get_def(gc_target.card_def_id) as CardDef if gc_target else null
+				if not gc_def:
+					continue
+				var gc_act := PendingAction.make("use_ally_power", player_id, {
+					"card_id": card.instance_id, "target_id": gc_best,
+					"x_value": StackResolver.printed_cost(gc_def),
+				})
+				if StackResolver.can_submit(state, gc_act, db):
+					result.append(gc_act)
+					break
+		elif ap.get("effect", "") == "control_ally_while_exhausted":
+			# Helwen: "[Activate] -> While Helwen remains exhausted, you control
+			# target ally." Taking our OWN ally does nothing and taps her for
+			# free, so the generic "ally" branch below (which aims at our own
+			# board) is exactly wrong — steal the opponent's most valuable ally
+			# instead. Her tap costs us a 2/2 attack, so it is only worth doing
+			# when there is something on their side to take.
+			var opp_id := _other_player_id(state, player_id)
+			var steal_pool: Array[String] = []
+			for enemy in state.cards_in_zone(opp_id + "_ally_row"):
+				steal_pool.append(enemy.instance_id)
+			if not steal_pool.is_empty():
+				for best_steal in sort_valuable_cards(state, db, steal_pool):
+					var steal_act := PendingAction.make("use_ally_power", player_id,
+						{"card_id": card.instance_id, "target_id": best_steal})
+					if StackResolver.can_submit(state, steal_act, db):
+						result.append(steal_act)
+						break
 		elif ap.get("targets", "") == "ally":
 			# Friendly buff powers (Elder Moorf): target our own highest-ATK ally
 			# so the +ATK swing lands where it matters most. Never buffs the enemy.
@@ -4183,6 +4658,18 @@ static func combat_kills(state: GameState, db, source: String, target: String,
 	var atk := forecast_atk(state, db, source, source_is_attacker)
 	if atk >= state.get_current_hp(target, db):
 		return true
+	# Plagueborn Meatwall: "When he DEFENDS against an ally, remove all damage
+	# from him, and he deals that much melee damage to each attacking ally." The
+	# reflect resolves in the defend window, BEFORE the conclusion, so a damaged
+	# wall kills an attacking ally outright — and without this the AI reads him
+	# as the 0-ATK body he looks like and never blocks with him on purpose.
+	# Defending only, and never against a hero (the "against an ally" clause).
+	if not source_is_attacker and StackResolver._is_ally(state, target):
+		var wall := state.get_card(source)
+		var wall_def := db.get_def(wall.card_def_id) as CardDef if wall else null
+		if wall_def and StackResolver._has_effect_flag_prefix(
+				wall_def, "on_defend_vs_ally_reflect_damage") 				and wall.damage_taken >= state.get_current_hp(target, db):
+			return true
 	if atk <= 0:
 		return false   # no damage dealt → no "deals combat damage" trigger
 	var src := state.get_card(source)
@@ -4383,6 +4870,31 @@ func _other_player_id(state: GameState, player_id: String) -> String:
 		if pid != player_id:
 			return pid
 	return player_id
+
+
+# An X-cost hand card with no target whose X is simply "how much do I want to
+# buy" (Blood Fury: X fury counters, each worth +1 hero ATK while attacking
+# for the rest of the game). Announces the largest X the player can pay for
+# right now, asked of get_play_cost one X at a time so a cost aura buys the
+# extra counter it should, and returns null below `min_x` — a token X on a
+# card whose fixed cost is already high is how it gets wasted.
+func _counter_x_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String, min_x: int) -> PendingAction:
+	var avail := state.get_available_resources(player_id)
+	var max_x := 0
+	for x in range(1, avail + 1):
+		if state.get_play_cost(card_id, db, x) <= avail:
+			max_x = x
+		else:
+			break
+	if max_x < min_x:
+		return null
+	var action := PendingAction.make(action_type, player_id, {
+		"card_id": card_id, "x_value": max_x,
+	})
+	if StackResolver.can_submit(state, action, db):
+		return action
+	return null
 
 
 # Multi-Shot (azeroth_41): builds a single action announcing up to 3 distinct

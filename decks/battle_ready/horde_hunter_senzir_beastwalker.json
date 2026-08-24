@@ -74,11 +74,6 @@
       "_card_name": "Chops"
     },
     {
-      "card_def_id": "azeroth_42",
-      "count": 1,
-      "_card_name": "Old Bones"
-    },
-    {
       "card_def_id": "azeroth_36",
       "count": 4,
       "_card_name": "Bloodclaw"
@@ -115,7 +110,7 @@
     },
     {
       "card_def_id": "azeroth_172",
-      "count": 2,
+      "count": 1,
       "_card_name": "Withdraw"
     },
     {
@@ -127,6 +122,11 @@
       "card_def_id": "dark_portal_224",
       "count": 2,
       "_card_name": "Morik"
+    },
+    {
+      "card_def_id": "azeroth_226",
+      "count": 2,
+      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_247",
@@ -155,6 +155,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
+  "strategy": "Attack the enemy hero with your hunting companion",
   "source": "battle_ready",
   "metadata": {
     "author": "playtest",

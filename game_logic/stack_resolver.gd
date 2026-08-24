@@ -260,6 +260,18 @@ static func drain_uniqueness_checks(state: GameState, db = null) -> Array[GameEv
 		events.append_array(_check_pet_uniqueness(state, card_id, db))
 		events.append_array(_check_unique_uniqueness(state, card_id, db))
 		events.append_array(_check_form_uniqueness(state, card_id, db))
+	# Wielding (406 / 414.3b / 414.3c) is a per-PLAYER question, not a per-card
+	# one: rule 406.2b makes a board violate when the hero LOSES a wielding
+	# keyword, and nothing entered play then, so no queue entry exists to hang
+	# the check on. Asked unconditionally here instead — the drain IS the
+	# state-based moment, and check_wielding is a cheap self-guarding scan.
+	for pid in state.players:
+		if state.pending_pet_sacrifice_player != "" \
+				or state.pending_equip_sacrifice_player != "" \
+				or state.pending_unique_sacrifice_player != "" \
+				or state.pending_form_sacrifice_player != "":
+			break
+		events.append_array(check_wielding(state, pid, db))
 	return events
 
 
@@ -352,6 +364,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_whelp_bounce() before priority can move.
 	if state.pending_whelp_bounce_player != "":
 		return []
+	# Helwen's optional ready must be answered via choose_stay_exhausted()
+	# before priority can move (501.1a — a ready-step choice, not a link).
+	if state.pending_ready_choice_player != "":
+		return []
 	# A pending Feral Rage draw offer must be resolved (or declined) via
 	# choose_feral_rage() before priority can move.
 	if state.pending_feral_rage_player != "":
@@ -359,6 +375,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# A pending Track Humanoids look must be resolved via
 	# choose_track_placement() before priority can move.
 	if state.pending_track_look_player != "":
+		return []
+	# A pending upkeep (Rain of Fire: "pay (4) or destroy Rain of Fire") must be
+	# resolved via choose_upkeep() before priority can move.
+	if state.pending_upkeep_player != "":
 		return []
 	# A pending Galway Steamwhistle weapon-ready pick must be resolved via
 	# choose_weapon_ready() before priority can move.
@@ -576,6 +596,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	if state.pending_whelp_bounce_player != "":
 		return false
 
+	# Helwen's optional ready blocks everything until answered via
+	# choose_stay_exhausted().
+	if state.pending_ready_choice_player != "":
+		return false
+
 	# Feral Rage's draw offer blocks everything until resolved (or declined) via
 	# choose_feral_rage().
 	if state.pending_feral_rage_player != "":
@@ -584,6 +609,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Track Humanoids' look blocks everything until resolved via
 	# choose_track_placement().
 	if state.pending_track_look_player != "":
+		return false
+
+	# Rain of Fire's upkeep ("pay (4) or destroy [this]") blocks everything until
+	# resolved via choose_upkeep().
+	if state.pending_upkeep_player != "":
 		return false
 
 	# Galway Steamwhistle's weapon-ready pick blocks everything until resolved
@@ -1239,7 +1269,7 @@ static func _instant_needs_target(def: CardDef) -> bool:
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
 				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
 				"grant_keyword_target", "divided_damage", "buff_atk_target",
-				"ally_atk_damage", "heal_target",
+				"ally_atk_damage", "heal_target", "deal_damage_weapon_atk",
 				# Counterspell: a top-level interrupt announces a chain LINK.
 				# Validated by its own pool, not by _is_legal_target — see the
 				# interrupt branch in _can_play_instant.
@@ -1523,7 +1553,8 @@ static func _instant_targets_hero_or_ally_only(def: CardDef) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
-		if parts[0] in ["deal_damage_to_target", "heal_target"]:
+		if parts[0] in ["deal_damage_to_target", "heal_target",
+				"deal_damage_weapon_atk"]:
 			return true
 		if parts[0] in ["exhaust_target", "attach", "grant_keyword_target"] \
 				and parts.size() > 1 and parts[1] == "hero_or_ally":
@@ -1965,6 +1996,48 @@ static func _attach_targets_weapon_only(def: CardDef) -> bool:
 	return parts.size() > 1 and parts[1] == "melee_weapon"
 
 
+# The ATK of the best Melee weapon a player controls, or 0 with none in play
+# (Mortal Strike: "1 plus the ATK of ONE of your Melee weapons"). Read LIVE off
+# the hero row at resolution, so an ATK aura on the weapon counts and one
+# answered in the response window does not; a weapon destroyed in that window
+# drops out of the pool entirely and the spell simply deals its flat part.
+#
+# WHICH weapon is auto-picked (the best) rather than chosen — see
+# data/rules_deviations.md "Mortal Strike".
+#
+# Ready state is deliberately NOT checked — the card says "one of your Melee
+# weapons", not a ready or struck one, so an exhausted weapon still supplies its
+# ATK (this is not a strike, 303.2b never enters into it).
+#
+# Public: the AI's lethal math and the UI's targeting cursor must agree with the
+# resolution about what the spell deals, so all three ask this.
+static func best_melee_weapon_atk(state: GameState, player_id: String, db) -> int:
+	if db == null:
+		return 0
+	var best := 0
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if not _is_melee_weapon(state, card.instance_id, db):
+			continue
+		best = max(best, state.get_atk(card.instance_id, db))
+	return best
+
+
+# The full damage a `deal_damage_weapon_atk` spell would deal for this player
+# right now: the segment's flat part plus best_melee_weapon_atk. Returns 0 when
+# the def carries no such segment.
+static func weapon_atk_damage_amount(state: GameState, def: CardDef,
+		player_id: String, db) -> int:
+	if def == null or def.effects == "":
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() != "deal_damage_weapon_atk":
+			continue
+		var base := int(parts[1]) if parts.size() > 1 else 0
+		return base + best_melee_weapon_atk(state, player_id, db)
+	return 0
+
+
 # True if target_id is an in-play Melee weapon (Equipment with a weapon segment
 # and dmg_type "Melee"). Used by Windfury Weapon's attach target check.
 static func _is_melee_weapon(state: GameState, target_id: String, db) -> bool:
@@ -2125,6 +2198,72 @@ static func _is_in_play_equipment(state: GameState, target_id: String, db) -> bo
 static func _is_destroyable_armor(state: GameState, target_id: String, db) -> bool:
 	return _is_in_play_equipment(state, target_id, db) \
 			and _is_armor_equipment(state, target_id, db)
+
+
+# ── The Immovable Object / The Unstoppable Force (dark_portal_254 / 285) ──
+# "Destroy <self> -> Destroy all <weapons|armor> named <NAME>." A matched pair:
+# each is the other's answer, and each pays for it with itself. The name and the
+# kind ride a rider segment beside the activated_power, so the fixed-position
+# power grammar doesn't grow a name field:
+#
+#     destroy_named:<NAME>:<KIND>          KIND is "weapon" or "armor"
+#
+# Returns {} when the def carries no such rider.
+static func destroy_named_spec(def: CardDef) -> Dictionary:
+	if not def:
+		return {}
+	for seg in def.effects.split("|"):
+		var p := seg.strip_edges().split(":")
+		if p[0] == "destroy_named" and p.size() > 2:
+			return {"name": p[1].strip_edges(), "kind": p[2].strip_edges().to_lower()}
+	return {}
+
+
+# An in-play WEAPON (rule 303): Equipment carrying a strike_cost segment. The
+# mirror of _is_armor_equipment — between armor, weapons and Items, those two
+# predicates and "neither" cover every Equipment card (rule 304).
+static func _is_weapon_equipment(state: GameState, card_id: String, db) -> bool:
+	if not _is_in_play_equipment(state, card_id, db):
+		return false
+	var card := state.get_card(card_id)
+	if not card:
+		return false
+	var def := db.get_def(card.card_def_id) as CardDef
+	return def != null and not _weapon_info(def).is_empty()
+
+
+# Every in-play card matching a destroy_named spec, BOTH players' — the printed
+# text carries no "opposing" clause, so a player firing one of the pair breaks
+# their own copy of the other card too. Nothing is TARGETED (the text says
+# "all ... named X", not "target"), so rule 706 Untargetable is irrelevant here
+# and _is_legal_target is deliberately not consulted. Returned in a fixed order
+# (the firing controller's side first) so destruction triggers resolve
+# deterministically.
+static func get_named_destroy_targets(state: GameState, db, spec: Dictionary,
+		controller: String) -> Array[String]:
+	var out: Array[String] = []
+	if spec.is_empty() or not db:
+		return out
+	var want_name: String = str(spec.get("name", ""))
+	var kind: String = str(spec.get("kind", ""))
+	if want_name == "":
+		return out
+	for pid in [controller, _other_player(state, controller)]:
+		for inst in state.cards_in_zone(pid + "_hero_row"):
+			var d := db.get_def(inst.card_def_id) as CardDef
+			if not d or d.card_name.strip_edges() != want_name:
+				continue
+			var ok := false
+			match kind:
+				"weapon":
+					ok = _is_weapon_equipment(state, inst.instance_id, db)
+				"armor":
+					ok = _is_armor_equipment(state, inst.instance_id, db)
+				_:
+					ok = _is_in_play_equipment(state, inst.instance_id, db)
+			if ok:
+				out.append(inst.instance_id)
+	return out
 
 
 # All in-play cards that match a destroy_target kind of "ability", "equipment"
@@ -2486,6 +2625,23 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						if token_def_id != "":
 							events.append_array(_put_token_into_play(
 								state, card.controller, token_def_id, token_n, db))
+					"reveal_pick":
+						# Overseer Oilfist: "When Overseer Oilfist enters play,
+						# reveal the top four cards of your deck. Put a revealed
+						# equipment card into your hand and the rest on the bottom
+						# of your deck." Big Game Hunter's quest reward reached from
+						# an enter-play trigger — the shared _reveal_pick helper
+						# opens the same mandatory post-resolution choice
+						# (choose_reveal_pick), so the browser UI, the blocking
+						# gates and the AI's pick quality all come along for free.
+						# Revealing is NOT a draw (410.6b): a short deck reveals
+						# only what it has and an empty one is a harmless no-op.
+						# Nothing is targeted and nothing is optional, so it fires
+						# inline like the other non-targeted on_enter effects.
+						var want := parts[2].strip_edges() if parts.size() > 2 else "Any"
+						var reveal_count := int(parts[3]) if parts.size() > 3 else 1
+						events.append_array(_reveal_pick(state, card.controller,
+								want, reveal_count, db))
 					"discard_opponent":
 						var n := int(parts[2]) if parts.size() > 2 else 1
 						var opp := _other_player(state, card.controller)
@@ -2703,6 +2859,15 @@ static func _resolve_play_equipment(state: GameState,
 		return fizzle_events
 
 	var events: Array[GameEvent] = []
+	# Staff of Dominance: "Staff of Dominance enters play exhausted." Rule 710.1b
+	# — processed DURING entry, not as a ready entry followed by an exhaust, so
+	# the flag is set before the move rather than exhausted after it. Combined
+	# with an [Activate] power this is a full turn's delay: the card can't be
+	# used until its controller's next ready step. Same flag Lazy Peons uses on
+	# the resource-row path.
+	var eq_def := db.get_def(card.card_def_id) as CardDef if db else null
+	if eq_def and enters_play_exhausted(eq_def):
+		card.is_exhausted = true
 	# Rule 304.1 / 303.1: equipment enters play in its controller's hero row.
 	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
 
@@ -2933,8 +3098,46 @@ static func _resolve_play_ongoing_ability(state: GameState,
 	# effect) until removed from play — it does not resolve-and-graveyard
 	# like a non-ongoing ability.
 	events.append_array(GameLogic.move_card(state, card_id, card.controller + "_hero_row"))
+	# Blood Fury: "Blood Fury enters play WITH X fury counters on it." The
+	# counters are part of the card entering play, so they are placed right
+	# after the move rather than as an on-play effect — nothing can respond
+	# between the two, and a reader that finds the card in the hero row always
+	# finds its counters with it. X is the value announced with the play
+	# (707.1), locked in at announcement like every other X.
+	events.append_array(_apply_enters_with_counters(state, card_id, def,
+			int(action.params.get("x_value", 0))))
 	# Form/Aspect (1) tag-count uniqueness (414.3b) is checked from the move_card
 	# queue — see drain_uniqueness_checks.
+	return events
+
+
+# `enters_with_counters:NAME:AMOUNT` — counters placed on a card as it enters
+# play. AMOUNT is either a literal number or the token `X`, in which case it is
+# the x_value announced with the play (Blood Fury, "4+X"). X is not re-derived
+# here: an X-cost card can't be announced with X < 1 (_can_afford_play), and the
+# resources were paid at announcement, so what entered play must match what was
+# bought. Emits counter_changed so the badge tracks it like a berserk counter.
+static func _apply_enters_with_counters(state: GameState, card_id: String,
+		def: CardDef, x_value: int) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not def or def.effects == "":
+		return events
+	var card := state.get_card(card_id)
+	if not card:
+		return events
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() != "enters_with_counters" or parts.size() < 3:
+			continue
+		var name := parts[1].strip_edges()
+		var raw := parts[2].strip_edges()
+		var amount: int = max(x_value, 0) if raw.to_upper() == "X" else int(raw)
+		if name == "" or amount <= 0:
+			continue
+		var old_val := int(card.counters.get(name, 0))
+		card.counters[name] = old_val + amount
+		events.append(GameEvent.counter_changed(card_id, name, old_val,
+				int(card.counters[name])))
 	return events
 
 
@@ -3290,6 +3493,15 @@ static func _resolve_play_instant(state: GameState,
 						var hero_id: String = ps.hero_instance_id if ps else ""
 						if hero_id != "" and amount > 0 \
 								and _is_legal_target(state, target_id, db):
+							# Shadow Bolt: "When that character is destroyed this
+							# turn, its controller discards a card." The mark is
+							# placed BEFORE the damage lands, which is what makes
+							# the spell's OWN kill fire it — the delayed trigger
+							# exists from the moment the spell resolves, and the
+							# damage is then just the first thing that can satisfy
+							# it. See _mark_destroy_discard.
+							if _has_effect_flag_prefix(def, "mark_destroy_discard"):
+								events.append_array(_mark_destroy_discard(state, target_id))
 							# Packet pipeline (717.2c): the paired riders — drain
 							# heal (Steal Essence), discard-per-damage (Mind
 							# Spike/Blast), restriction riders (Frostbolt / Frost
@@ -3303,6 +3515,44 @@ static func _resolve_play_instant(state: GameState,
 								"drain_heal_to": hero_id,
 								"discard_per": _discard_per_damage(def),
 								"riders": parts[3] if parts.size() > 3 else "",
+								"from_ability": true,
+							}]))
+					"deal_damage_weapon_atk":
+						# Mortal Strike: "Your hero deals X melee damage to target
+						# hero or ally, where X is 1 plus the ATK of one of your
+						# Melee weapons. That character can't be healed this turn."
+						# Quick Strike's branch with the amount read LIVE off the
+						# board instead of printed (Skewer's trick, but off a
+						# WEAPON rather than an ally): field 1 is the flat part,
+						# field 2 the damage type.
+						#
+						# WHICH Melee weapon is a choice the printed card leaves
+						# open; picking a weaker one is never advantageous, so the
+						# best is taken automatically rather than opening a choice
+						# point (same reasoning as Augustus' auto-chosen
+						# rfg_allies — see data/rules_deviations.md). With NO Melee
+						# weapon in play there is nothing to add and X is the flat
+						# part alone (709.2c — as much as possible happens), so the
+						# card stays castable purely for the heal lock.
+						#
+						# The HERO is the source per the card text, so the packet
+						# is `from_ability` (Chromatic Cloak boosts it) and carries
+						# the printed type. The no-heal clause rides as a packet
+						# RIDER, so like Frostbolt's restrictions it lands only on
+						# a target that SURVIVED — a dead character can't be healed
+						# anyway.
+						var mw_base := int(parts[1]) if parts.size() > 1 else 0
+						var mw_ps := state.players.get(action.source_player) as PlayerState
+						var mw_hero: String = mw_ps.hero_instance_id if mw_ps else ""
+						var mw_amount := mw_base + best_melee_weapon_atk(
+								state, action.source_player, db)
+						if mw_hero != "" and mw_amount > 0 								and _is_legal_target(state, target_id, db):
+							events.append_array(defer_packets(state, db, [{
+								"source": mw_hero, "target": target_id,
+								"amount": mw_amount,
+								"dmg_type": parts[2].to_lower().strip_edges() if parts.size() > 2 else "",
+								"riders": "cannot_be_healed" if _has_effect_flag_prefix(
+										def, "cant_be_healed_this_turn") else "",
 								"from_ability": true,
 							}]))
 					"ally_atk_damage":
@@ -4010,13 +4260,34 @@ static func get_strikeable_weapons(state: GameState, player_id: String,
 	# Only heroes are wielders (303.2), and only the hero's own controller strikes.
 	if not ps or ps.hero_instance_id != wielder_id:
 		return result
-	if not (state.combat_struck_weapons.get(wielder_id, []) as Array).is_empty():
-		return result
+	# 303.2c caps a hero at one weapon per combat; rule 406.6 raises that cap for
+	# the wielding keywords (Dual Wield: two Melee weapons). Two consequences of
+	# 406.6 beyond the number: a player may never mix a Melee and a Ranged strike
+	# in one combat, and a weapon already struck this combat is not a second
+	# weapon — "strike with two Melee weapons", so a weapon readied mid-combat
+	# (Windfury) still doesn't come round again.
+	var struck: Array = state.combat_struck_weapons.get(wielder_id, [])
+	var limits := get_wielding_limits(state, player_id, db)
+	var required_type := ""
+	if not struck.is_empty():
+		var first := state.get_card(str(struck[0]))
+		var first_def := (db.get_def(first.card_def_id) as CardDef) if first else null
+		required_type = first_def.dmg_type.to_lower() if first_def else ""
+		# Only the Melee cap is raised by anything shipped; Ranged stays at 1
+		# until a Ranged Dual Wield dial exists (see WIELDING_GRANTS).
+		var cap := int(limits.get("melee_strikes", BASE_MELEE_STRIKES)) \
+			if required_type == "melee" else BASE_MELEE_STRIKES
+		if struck.size() >= cap:
+			return result
 	var available := state.get_available_resources(player_id)
 	for card in state.cards_in_zone(player_id + "_hero_row"):
 		if card.is_exhausted:
 			continue
+		if card.instance_id in struck:
+			continue
 		var def := db.get_def(card.card_def_id) as CardDef
+		if required_type != "" and (not def or def.dmg_type.to_lower() != required_type):
+			continue
 		var cost := get_strike_cost(state, player_id, def, db)
 		if cost >= 0 and cost <= available:
 			result.append(card.instance_id)
@@ -4085,10 +4356,28 @@ static func choose_strike(state: GameState, weapon_id: String,
 			if not sr.is_empty():
 				events.append_array(sr)
 				return events
+			# Rule 406.6: with Dual Wield the hero may strike again this combat.
+			# Re-opening the point (rather than offering both weapons at once) is
+			# the same shape as the prevention point re-opening per armor — each
+			# strike is its own decision, and each is paid for separately.
+			events.append_array(_after_strike_resolved(state, side, db))
+			return events
 
-	# Open the window this strike point was holding up.
+	# Declined (or an illegal pick): open the window this point was holding up.
+	# Never re-open here, or a decline would loop forever.
 	events.append_array(_open_combat_window(state, side, db))
 	return events
+
+
+# After a strike has been fully resolved (including any ready-on-strike point),
+# offer another one if rule 406.6 allows it, else open the held combat window.
+static func _after_strike_resolved(state: GameState, side: String,
+		db) -> Array[GameEvent]:
+	var wielder_id := state.combat_attacker if side == "attack" else state.combat_defender
+	var again := _open_strike_point(state, wielder_id, side, db)
+	if not again.is_empty():
+		return again
+	return _open_combat_window(state, side, db)
 
 
 # Opens a ready-on-strike point for the striking player. Two independent sources
@@ -4180,8 +4469,9 @@ static func choose_ready_on_strike(state: GameState, pay: bool,
 			events.append_array(GameLogic.ready_card(state, ps.hero_instance_id))
 		events.append(GameEvent.readied_on_strike(player_id, weapon_id, cost))
 
-	# Open the combat window this strike (and its ready point) was holding up.
-	events.append_array(_open_combat_window(state, side, db))
+	# A strike happened to get here, so 406.6 may allow another one before the
+	# combat window this point was holding up finally opens.
+	events.append_array(_after_strike_resolved(state, side, db))
 	return events
 
 
@@ -4286,6 +4576,12 @@ static func _prevention_offer(state: GameState, db, target_id: String,
 	var ps := state.players.get(card.controller) as PlayerState
 	if not ps or ps.hero_instance_id != target_id:
 		return {}   # only heroes are shielders (717.2c)
+	# Soul Link's counted shield is free, automatic and spent BEFORE the armor
+	# pool (GameLogic.prevent), so the point is offered only for what the shield
+	# does not already cover — and not at all when it covers the whole packet.
+	amount -= GameLogic.granted_shield(card)
+	if amount <= 0:
+		return {}
 	if get_ready_def_armor(state, card.controller, db).is_empty():
 		return {}
 	return {"player": card.controller, "amount": amount,
@@ -4556,6 +4852,7 @@ static func _apply_packet_group(state: GameState, db,
 	# group (including to Cold Blood just above) offers its owner a fetch.
 	events.append_array(_fire_recombobulation(state, db))
 	events.append_array(_fire_circle_of_life(state, db))
+	events.append_array(_fire_shadow_bolt(state, db))
 	# Skorn: any ally this group damaged reflects that amount onto its own
 	# party's hero. Last, so the destroy bookkeeping above is settled first — the
 	# reflect reads the log's snapshot, not the board, so a dead ally still pays.
@@ -4866,8 +5163,40 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 	# "hero_or_ally" needs no such gate: a hero is always in play.
 	if targets_kind == "ally" and not _any_legal_ally_target(state, db):
 		return false
+	# Staff of Dominance: "Gain control of target ally with cost X." As with
+	# "Chipper" Ironbane, X is not a free choice — it must equal the target's
+	# PRINTED cost, so the power is really "pick an ally you can afford, then pay
+	# its cost". The no-target highlight probe therefore also needs an AFFORDABLE
+	# candidate to exist, or the card would stay lit with only unpayable allies
+	# on the board.
+	if targets_kind == "ally" and bool(ap.get("cost_x", false)):
+		var avail_x := state.get_available_resources(action.source_player)
+		if skip_target:
+			for pid in state.players:
+				for enemy in state.cards_in_zone(pid + "_ally_row"):
+					var e_def := db.get_def(enemy.card_def_id) as CardDef
+					if e_def and printed_cost(e_def) <= avail_x \
+							and _is_legal_target(state, enemy.instance_id, db):
+						return true
+			return false
+		if not power_cost_matches_target(ap, state,
+				action.params.get("target_id", ""), ap_x, db):
+			return false
 	if skip_target:
 		return true
+	# Soul Link: "Put 1 damage on AN ALLY in your party" — a CHOICE, not a target
+	# (the printed text says "an ally", not "target ally"), so rule 706 does not
+	# apply: an Untargetable ally in your own party is perfectly choosable, and
+	# nothing is announced for an opponent to answer with a 4217 fizzle. The pool
+	# is the source player's own ally_row read live, totems included (305.3a).
+	# Kept as its own kind rather than as a flag on `friendly_ally`, so a card
+	# that really does say "target ally in your party" (Into the Fray, Bizzik)
+	# keeps the 706 check it is entitled to.
+	if targets_kind == "chosen_friendly_ally":
+		var chosen_id: String = action.params.get("target_id", "")
+		var chosen := state.get_card(chosen_id)
+		return _is_ally(state, chosen_id) and chosen != null \
+			and chosen.controller == action.source_player
 	if targets_kind in ["hero_or_ally", "ally", "friendly_ally"]:
 		var target_id: String = action.params.get("target_id", "")
 		if not _is_legal_target(state, target_id, db):
@@ -4943,13 +5272,21 @@ static func _can_pay_one_extra_power_cost(state: GameState, player_id: String,
 			# the game. Payable only if the graveyard holds at least N of them.
 			var need := int(entry.split(":")[1]) if entry.split(":").size() > 1 else 0
 			return _count_graveyard_allies(state, player_id, db) >= need
+		"put_damage_ally":
+			# Soul Link: put 1 damage on an ally in your party as a cost. Rule
+			# 405.3 — the damage can be exactly fatal, so ANY ally you control
+			# can pay it; only an empty party makes the power unusable. Which
+			# ally is the power's own chosen_friendly_ally pick — a choice, not
+			# a target, so an Untargetable ally of yours can pay it.
+			return not state.cards_in_zone(player_id + "_ally_row").is_empty()
 		"sacrifice_ally":
 			# Bizzik Sparkcog: destroy an ally in your party as a cost. Payable
 			# while you control at least one ally (Bizzik himself qualifies).
 			return not state.cards_in_zone(player_id + "_ally_row").is_empty()
-		"sacrifice_self":
-			# Kavai the Wanderer: destroy the power's source itself as a cost.
-			# Always payable while the source is in play (checked by the caller).
+		"sacrifice_self", "activate_sacrifice_self":
+			# Kavai the Wanderer / Staff of Dominance: destroy the power's source
+			# itself as a cost. Always payable while the source is in play
+			# (checked by the caller).
 			return true
 	return true
 
@@ -5018,6 +5355,20 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				events.append_array(GameLogic.move_card(state, gy_card.instance_id, gy_card.owner + "_rfg"))
 				events.append(GameEvent.card_removed_from_game(gy_card.instance_id, action.source_player))
 				removed += 1
+	elif power_has_extra_cost(extra_cost, "put_damage_ally"):
+		# Soul Link: "Put 1 damage on an ally in your party ->". The ally IS the
+		# power's own chosen_friendly_ally pick (a CHOICE, not a target — 706
+		# does not apply), so it rides target_id like Bizzik's sacrifice.
+		# Like every sacrifice-style cost this is paid at RESOLUTION: an ally
+		# killed in response no-ops the cost and the effect still resolves.
+		# Rule 405.3 — put (not deal) damage, so it is unpreventable, it feeds
+		# no damage watchers, and it can be exactly fatal.
+		var pda_id: String = action.params.get("target_id", "")
+		var pda_amount := power_extra_cost_arg(extra_cost, "put_damage_ally", 1)
+		var pda_card := state.get_card(pda_id)
+		if _is_ally(state, pda_id) and pda_card 				and pda_card.controller == action.source_player:
+			events.append_array(GameLogic.put_damage(state, pda_id, pda_amount, db))
+			events.append_array(_check_destroyed_trigger(state, pda_id, card_id, db))
 	elif power_has_extra_cost(extra_cost, "sacrifice_ally"):
 		# Destroy a chosen ally in your party as a cost. Bizzik Sparkcog's
 		# sacrifice IS its only target, so it rides target_id (may be Bizzik
@@ -5038,8 +5389,10 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			# (for nothing), exactly as for Gertha and Besh'iah.
 			sac_atk = state.get_atk(sac_id, db)
 			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
-	elif power_has_extra_cost(extra_cost, "sacrifice_self"):
-		# Kavai the Wanderer / Mana Agate: destroy the source itself as a cost.
+	elif power_has_extra_cost(extra_cost, "sacrifice_self") \
+			or power_has_extra_cost(extra_cost, "activate_sacrifice_self"):
+		# Kavai the Wanderer / Mana Agate / Staff of Dominance: destroy the
+		# source itself as a cost.
 		# The source may be an ally (Kavai) or an ongoing ability in the hero row
 		# (Mana Agate) — any in-play source works. If an opponent already
 		# destroyed it in response, the destroy no-ops and the effect still
@@ -5073,6 +5426,83 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				state.pending_discard_player = disc_opp
 				state.pending_discard_count  = disc_n
 				events.append(GameEvent.discard_choice_opened(disc_opp, disc_n, "card_effect"))
+		"gain_control_ally":
+			# Staff of Dominance: "(X), [Activate], Destroy Staff of Dominance ->
+			# Gain control of target ally with cost X."
+			#
+			# PERMANENT control (401.3), unlike Helwen's and Nyn'jah's borrowed
+			# links: the printed text names no sustaining condition, and the staff
+			# destroys itself paying for it, so there is nothing left to hang a
+			# condition on. No stolen_by / stolen_condition here — nothing will
+			# ever hand this ally back.
+			#
+			# The ally moves to the new controller's ally row and is newly under
+			# their control, so it is summoning sick and can't attack this turn;
+			# ownership never changes, so it still reaches its OWNER's graveyard
+			# when destroyed (415.9d) and a Pet counts against the NEW
+			# controller's capacity (the move queues that check).
+			var gc_target: String = action.params.get("target_id", "")
+			# 706 / 4217 re-check: an ally destroyed, bounced or made Untargetable
+			# in the response window fizzles the steal — and the staff is destroyed
+			# either way, since the cost was paid above.
+			if not _is_legal_target(state, gc_target, db) \
+					or not _is_ally(state, gc_target):
+				return events
+			var gc_ally := state.get_card(gc_target)
+			if gc_ally.controller == action.source_player:
+				return events   # already ours — legal, and a waste of the staff
+			var gc_old := gc_ally.controller
+			gc_ally.controller    = action.source_player
+			gc_ally.just_summoned = true
+			events.append_array(GameLogic.move_card(
+				state, gc_target, action.source_player + "_ally_row"))
+			events.append(GameEvent.control_changed(gc_target, gc_old, action.source_player))
+		"control_ally_while_exhausted":
+			# Helwen: "[Activate] -> While Helwen remains exhausted, you control
+			# target ally." The [Activate] tap symbol exhausted her at
+			# ANNOUNCEMENT (412.2), so the "while exhausted" condition is already
+			# true when this resolves — and per 401.3 the ally moves to the new
+			# controller's ally row and is newly under their control (summoning
+			# sick, so it can't attack the turn it changes hands).
+			#
+			# Borrowed control is a LINK, not a permanent flip: Nyn'jah's
+			# stolen_by / stolen_ids relationship with a stricter condition
+			# (stolen_condition "source_exhausted"), re-checked by
+			# GameLogic._check_borrowed_control after every zone move AND after
+			# every ready. So control returns to the OWNER the moment Helwen
+			# readies, leaves play by any route, or stops sharing a controller
+			# with what she took.
+			var hw_target: String = action.params.get("target_id", "")
+			var hw_thief := state.get_card(card_id)
+			# 706 / 4217 re-check: an ally destroyed, bounced, made Untargetable
+			# or already taken over in the response window fizzles the steal.
+			if not _is_legal_target(state, hw_target, db) \
+					or not _is_ally(state, hw_target):
+				return events
+			if not hw_thief or not state.is_in_play(card_id):
+				return events   # 709.2c — no party to take it into
+			# Readied in response (Galway, Dragonkin Menace): "while Helwen
+			# remains exhausted" is already false, so there is no window in which
+			# control could be held. 709.2c — as much as possible happens, and
+			# that is nothing.
+			if not hw_thief.is_exhausted:
+				return events
+			var hw_ally := state.get_card(hw_target)
+			if hw_ally.controller == hw_thief.controller:
+				return events   # already ours: nothing to change (a legal, wasted use)
+			var hw_old := hw_ally.controller
+			hw_ally.controller      = hw_thief.controller
+			hw_ally.stolen_by       = card_id
+			hw_ally.stolen_condition = "source_exhausted"
+			hw_ally.just_summoned   = true
+			hw_thief.stolen_ids.append(hw_target)
+			events.append_array(GameLogic.move_card(
+				state, hw_target, hw_thief.controller + "_ally_row"))
+			events.append(GameEvent.control_changed(hw_target, hw_old, hw_thief.controller))
+			# The stolen ally may be a Pet — it counts against the NEW
+			# controller's pet capacity exactly as if one had entered play. The
+			# move above queued the check; the drain at the end of this
+			# resolution's pass_priority opens the choice.
 		"rfg_graveyard_ally":
 			# Ophelia Barrows: "Remove target ally card in any graveyard from the
 			# game. If you do, [she] heals 1 damage from herself." Re-check the
@@ -5151,6 +5581,20 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				packets.append({"source": card_id,
 					"target": ally.instance_id, "amount": amount})
 			events.append_array(defer_packets(state, db, packets))
+		"destroy_all_named":
+			# The Immovable Object / The Unstoppable Force: "Destroy <self> ->
+			# Destroy all <weapons|armor> named <NAME>." Non-targeted and
+			# mandatory — nothing is announced, so 706 Untargetable is
+			# irrelevant — and symmetric: BOTH players' matching cards go, the
+			# controller's own included. The self-destroy is the sacrifice_self
+			# cost paid just above, so a source killed in response no-ops the
+			# cost and this still resolves; the pool is read LIVE here, so a
+			# matching card that arrived in the response window is caught and
+			# one that left is not. Each destruction goes through
+			# _destroy_card_trigger, so on_destroyed triggers fire normally.
+			var dn_spec := destroy_named_spec(def)
+			for dn_id in get_named_destroy_targets(state, db, dn_spec, card.controller):
+				events.append_array(_destroy_card_trigger(state, dn_id, card_id, db))
 		"deal_damage_aoe_all":
 			# "Your hero deals N <type> damage to each hero and ally."
 			# (Ramstein's Lightning Bolts.) Symmetric and non-targeted: it hits
@@ -5264,6 +5708,28 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 					"prevent_combat_damage", 1, "turns", 1))
 				events.append(GameEvent.make("damage_shield_granted", {
 					"target": pc_target, "source": card_id, "kind": "combat",
+				}))
+		"prevent_next_hero_damage":
+			# Soul Link: "-> Prevent the next 1 damage that would be dealt to
+			# your hero this turn." Katsin's instance-scoped shield Buff made
+			# COUNTED instead of absolute: a `prevent_damage_amount` grant on the
+			# controller's own HERO, spent point by point in GameLogic.prevent
+			# (before the armor pool) and expiring with the end-of-turn sweep, so
+			# "this turn" is correct even when the power is used on the
+			# opponent's turn. Nothing is announced and nothing is targeted by
+			# this half — the hero is named by the card, so 706 is irrelevant and
+			# it can never fizzle; the chosen ally belongs to the COST.
+			# The grants STACK, which is the point: the power is repeatable, so
+			# the shield is as big as the party's health can pay for.
+			var sl_hero := state.get_hero(card.controller)
+			if sl_hero:
+				sl_hero.active_buffs.append(Buff.make(
+					"prevent_next_damage", card_id,
+					"prevent_damage_amount", int(ap.get("amount", 1)), "turns", 1))
+				events.append(GameEvent.make("damage_shield_granted", {
+					"target": sl_hero.instance_id, "source": card_id,
+					"kind": "counted",
+					"amount": int(ap.get("amount", 1)),
 				}))
 		"must_attack_target":
 			# Lynda Steele: "(1) -> Target ally must attack this turn if able."
@@ -5745,6 +6211,8 @@ static func _apply_damage_riders(state: GameState, target_id: String,
 			events.append(GameEvent.cant_protect_applied(target_id, source_id))
 		elif r == "must_attack":
 			events.append(GameEvent.must_attack_applied(target_id, source_id))
+		elif r == "cannot_be_healed":
+			events.append(GameEvent.cant_be_healed_applied(target_id, source_id))
 	return events
 
 
@@ -6560,6 +7028,17 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		atk_events, def_events, db))
 
+	# Wraith Scythe (rule 305.2 triggered equipment power): "When your hero
+	# deals combat damage, it heals that amount of damage from itself." Devilsaur
+	# Leggings' trigger point with BOTH of its restrictions dropped: the card
+	# names no weapon (so it fires whatever the hero struck with, or nothing at
+	# all) and names no victim (so damage to a hero counts as much as damage to
+	# an ally). Runs AFTER the state-based destruction check above on purpose —
+	# combat damage is simultaneous, so a hero that died to the retaliation is
+	# already gone and heals nothing.
+	events.append_array(_fire_hero_combat_dmg_heals_hero(
+		state, attacker_id, defender_id, atk_events, def_events, db))
+
 	# Brigg (rule 703 triggered ally power): "When Brigg deals combat damage to
 	# an ally with damage on it, destroy that ally." Devilsaur Leggings' shape
 	# with the source being the ALLY itself rather than the wielder's hero, and
@@ -6696,6 +7175,33 @@ static func _fire_hero_combat_dmg_locks_ally_ready(state: GameState,
 		state.get_card(attacker_id).counters["gouge_skip_ready"] = 1
 		events.append(GameEvent.make("card_ready_locked",
 				{"card_id": attacker_id, "source_id": defender_id}))
+	return events
+
+
+# hero_combat_dmg_heals_hero equipment flag (Wraith Scythe). See the call site
+# in _do_combat_conclusion. Mirrors _fire_hero_combat_dmg_destroys_ally, but
+# both of that trigger's conditions are gone: the victim's card type is
+# irrelevant (the card says "deals combat damage", full stop) and so is which
+# weapon — if any — the hero struck with, since unlike Annihilator the text
+# doesn't name this card. The heal is the damage actually DEALT (prevention
+# reduces it, 717.2b; 405.2 overkill counts in full), read off the packets'
+# damage_dealt events. Mandatory, free, no target and no choice, so nothing goes
+# on the chain; GameLogic.heal no-ops on an undamaged or out-of-play hero and on
+# one under a "can't be healed" lock (Mortal Strike).
+static func _fire_hero_combat_dmg_heals_hero(state: GameState,
+		attacker_id: String, defender_id: String,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Hero as attacker → damage it dealt to the defender (hero or ally).
+	if _hero_wields_flag(state, attacker_id, "hero_combat_dmg_heals_hero", db):
+		events.append_array(GameLogic.heal(state, attacker_id,
+				_combat_dmg_landed(atk_events, defender_id), db, attacker_id))
+	# Hero as defender (attacked directly or protecting) → its retaliation.
+	if _hero_wields_flag(state, defender_id, "hero_combat_dmg_heals_hero", db):
+		events.append_array(GameLogic.heal(state, defender_id,
+				_combat_dmg_landed(def_events, attacker_id), db, defender_id))
 	return events
 
 
@@ -6868,6 +7374,63 @@ static func _fire_recombobulation(state: GameState, db) -> Array[GameEvent]:
 			state.pending_recomb_queue.append(pid)
 		ps.recomb_from_index = state.turn_events.size()
 	events.append_array(_open_next_recomb(state, db))
+	return events
+
+
+# ── Shadow Bolt (azeroth_132) ─────────────────────────────────────────────────
+# "Your hero deals 3 shadow damage to target hero or ally. When that character is
+# destroyed this turn, its controller discards a card."
+#
+# A DELAYED trigger, not a rider on the damage: the second sentence has its own
+# trigger event ("is destroyed"), its own duration ("this turn") and no clause
+# tying the destruction to this spell — ANY destruction of that character, by any
+# player and any means, satisfies it. So it is not implemented on the damage
+# packet (which would only ever cover the spell's own kill) but as a MARK on the
+# character, swept off the same `ally_destroyed` turn-log entries as
+# Recombobulation and Circle of Life above — which is what makes combat, other
+# removal spells, sacrifice costs and state-based deaths all count for free.
+#
+# The mark is placed as the spell resolves and BEFORE its damage lands, so a
+# target the 3 damage kills outright fires it too.
+#
+# No cursor is needed, unlike the two sweeps above: a character is destroyed
+# once, so each mark is CONSUMED as it fires and a re-scan of old entries is
+# harmless. The whole list is cleared at every turn start ("this turn").
+static func _mark_destroy_discard(state: GameState, target_id: String) -> Array[GameEvent]:
+	if target_id == "" or target_id in state.destroy_discard_marks:
+		return []
+	state.destroy_discard_marks.append(target_id)
+	return [GameEvent.make("destroy_discard_marked", {"target": target_id})]
+
+
+static func _fire_shadow_bolt(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if state.destroy_discard_marks.is_empty():
+		return events
+	for entry_v in state.turn_events:
+		var entry: Dictionary = entry_v
+		if entry.get("type", "") != "ally_destroyed":
+			continue
+		var dead_id := str(entry.get("card_id", ""))
+		if not dead_id in state.destroy_discard_marks:
+			continue
+		state.destroy_discard_marks.erase(dead_id)
+		# "ITS controller" — the controller at the moment it died, read from the
+		# entry's frozen snapshot (by now the card is in a graveyard, and control
+		# may have changed on the way there).
+		var owner_id := str(entry.get("controller", ""))
+		if owner_id == "" or state.cards_in_zone(owner_id + "_hand").is_empty():
+			continue   # no-op against an empty hand
+		# Reuses the Mias the Putrid pending-discard machinery. Two marks firing
+		# on one player in one event stack their counts rather than the second
+		# silently replacing the first.
+		if state.pending_discard_player == owner_id:
+			state.pending_discard_count += 1
+		else:
+			state.pending_discard_player = owner_id
+			state.pending_discard_count = 1
+		events.append(GameEvent.discard_choice_opened(owner_id,
+			state.pending_discard_count, "card_effect"))
 	return events
 
 
@@ -8634,6 +9197,38 @@ static func _advance_control_discard_queue(state: GameState,
 			state.pending_control_discard_ids[0]))
 
 
+# ── Helwen's optional ready (azeroth_126) ─────────────────────────────────────
+# "You may choose not to ready Helwen during your ready step."
+#
+# The ready step's automatic actions do NOT use the chain (501.1a), so this is a
+# direct call like the strike point, not a link — `can_submit` / `pass_priority`
+# are hard-blocked while it is pending. TurnManager leaves such a card EXHAUSTED
+# and queues it, so "stay exhausted" is the default and answering `true` is what
+# readies it; the borrowed-control link she may be holding therefore survives the
+# whole decision and only breaks if the controller actually readies her.
+#
+# Drained one card at a time — several copies each get their own question.
+static func choose_stay_exhausted(state: GameState, do_ready: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_ready_choice_player == "" \
+			or state.pending_ready_choice_ids.is_empty():
+		return []
+	var events: Array[GameEvent] = []
+	var player_id := state.pending_ready_choice_player
+	var card_id: String = state.pending_ready_choice_ids.pop_front()
+	if do_ready:
+		# ready_card re-checks borrowed control, so a link conditioned on this
+		# card staying exhausted ends right here and the ally goes home.
+		events.append_array(GameLogic.ready_card(state, card_id))
+	events.append(GameEvent.ready_choice_resolved(player_id, card_id, do_ready))
+	if state.pending_ready_choice_ids.is_empty():
+		state.pending_ready_choice_player = ""
+	else:
+		events.append(GameEvent.ready_choice_opened(
+			player_id, state.pending_ready_choice_ids[0]))
+	return events
+
+
 # Nightbloom's resolution choice: put the chosen hand card into its controller's
 # resource row FACE DOWN and EXHAUSTED. Direct call — no chain, no priority pass
 # (`can_submit` / `pass_priority` are hard-blocked while it is pending).
@@ -8814,9 +9409,37 @@ static func power_extra_cost_arg(extra_cost: String, token: String, fallback: in
 # Kavai / Mana Agate's sacrifice_self). Note activate_put_damage_self (Kena
 # Shadowbrand) is deliberately NOT in this set: it KEEPS the tap symbol.
 static func _power_has_no_activate_symbol(extra_cost: String) -> bool:
+	# NOTE activate_sacrifice_self (Staff of Dominance) is deliberately absent:
+	# it is the same self-destroy cost but the printed cost KEEPS the [Activate]
+	# tap symbol, so the source must be READY to use it and exhausts at
+	# announcement — which, paired with enters_play_exhausted, is a full turn of
+	# delay. Same split as activate_put_damage_self (Kena) vs put_damage_self.
 	return power_has_extra_cost(extra_cost, "put_damage_self") \
 		or power_has_extra_cost(extra_cost, "no_activate") \
 		or power_has_extra_cost(extra_cost, "sacrifice_self")
+
+
+# UI convenience, with no rules meaning: powers a player naturally uses SEVERAL
+# times in one priority window, so the interface asks "how many?" once instead of
+# making them click through N identical activations. Each count still becomes N
+# separate announcements on the chain, each paying its own cost — the engine
+# never sees a "repeat" concept.
+#
+# Soul Link is the case: 1 damage on an ally buys 1 point of shield, and the
+# damage heading for your hero is rarely exactly 1.
+# Ophelia Barrows is the graveyard flavour: 1 resource exiles one ally card and
+# heals her 1, so "how much do I want to heal?" is the real question and the
+# count is asked BEFORE the browser opens — it then takes exactly that many
+# cards. Soul Link asks after the ally is picked, because there the ceiling
+# depends on which ally pays. Both submit N separate announcements.
+const REPEATABLE_COUNT_POWERS: Array = ["prevent_next_hero_damage",
+	"rfg_graveyard_ally"]
+
+static func power_repeats_by_count(def: CardDef) -> bool:
+	if def == null:
+		return false
+	var ap := _ally_activated_power(def)
+	return not ap.is_empty() and ap.get("effect", "") in REPEATABLE_COUNT_POWERS
 
 
 # Whether the sacrifice_ally cost is picked SEPARATELY from the power's own
@@ -9891,6 +10514,38 @@ static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 		# WHICH card is looked at is read at RESOLUTION (709.2b — 707.1 locks in
 		# only X, modes and targets), so a mill or a draw in the response window
 		# changes what the controller sees.
+		# Rain of Fire: "At the start of your turn, pay (COST) or destroy [this]."
+		# The engine's first UPKEEP — a recurring cost the card charges its own
+		# controller to stay in play.
+		#
+		# 709.2b: the payment is made HERE, as the link resolves — 707.1 locks in
+		# only X, modes and targets, and a payment is none of those. So resources
+		# readied or freed in the response window can still pay it, exactly as
+		# with Infernal's discard.
+		#
+		# UNAFFORDABLE IS NOT A CHOICE. "Pay or destroy" offers a decision only to
+		# a player who could actually pay; with too few resources the card is
+		# simply destroyed and no point opens — the same reasoning that keeps
+		# Feral Rage's offer shut when it can't be afforded, except that here the
+		# failure has a consequence.
+		#
+		# 709.2c: if the source left play in the response window there is nothing
+		# to pay for and nothing to destroy, so the link resolves into nothing.
+		# Sacrificing it in response is therefore a clean escape from the upkeep,
+		# just as it is from Infernal's control clause.
+		"turn_start_pay_or_destroy":
+			if source and state.is_in_play(source_id):
+				var upkeep_cost := int(args[0]) if args.size() > 0 else 0
+				if state.get_available_resources(controller) < upkeep_cost:
+					events.append_array(_destroy_card_trigger(
+						state, source_id, source_id, db))
+				else:
+					state.pending_upkeep_player  = controller
+					state.pending_upkeep_card_id = source_id
+					state.pending_upkeep_cost    = upkeep_cost
+					events.append(GameEvent.upkeep_choice_opened(
+						controller, source_id, upkeep_cost))
+
 		"turn_start_look_top_card":
 			var t_deck := state.zones.get(controller + "_deck") as Zone
 			if t_deck and not t_deck.card_ids.is_empty():
@@ -9932,6 +10587,41 @@ static func choose_track_placement(state: GameState, to_bottom: bool,
 		# bottom (the Blueleaf Tubers / reveal-pick convention).
 		events.append_array(GameLogic.move_card(state, card_id, player_id + "_deck"))
 	events.append(GameEvent.track_look_resolved(player_id, to_bottom))
+	return events
+
+
+# Entry point for the upkeep decision (Rain of Fire: "At the start of your turn,
+# pay (4) or destroy Rain of Fire"). `pay` false declines. Called directly by the
+# scene, NOT via submit_action — like choose_feral_rage / choose_whelp_bounce.
+#
+# The point only ever opens when the cost was affordable (see the
+# `turn_start_pay_or_destroy` arm), but affordability is re-checked here anyway:
+# nothing can resolve while this point holds priority, so the guard is belt and
+# braces, and it makes an unaffordable `pay` fall through to the destroy rather
+# than silently keeping the card for free.
+#
+# Declining destroys the card through _destroy_card_trigger, so `on_destroyed`
+# triggers and the `ally_destroyed` turn-log entry behave as for any other
+# destruction, and the card reaches its OWNER's graveyard (415.9d).
+static func choose_upkeep(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_upkeep_player == "":
+		return []
+	var player_id := state.pending_upkeep_player
+	var card_id   := state.pending_upkeep_card_id
+	var cost      := state.pending_upkeep_cost
+	state.pending_upkeep_player  = ""
+	state.pending_upkeep_card_id = ""
+	state.pending_upkeep_cost    = 0
+
+	var events: Array[GameEvent] = []
+	if pay and state.get_available_resources(player_id) >= cost:
+		events.append_array(_pay_resources(state, player_id, cost, db))
+		events.append(GameEvent.upkeep_paid(player_id, card_id, cost))
+	else:
+		if state.is_in_play(card_id):
+			events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
+		events.append(GameEvent.upkeep_declined(player_id, card_id))
 	return events
 
 
@@ -10012,12 +10702,18 @@ static func get_turn_start_trigger_targets(state: GameState, db) -> Array[String
 const COMBAT_TRIGGERS := {
 	# Morik: "When Morik attacks, each player draws a card."
 	"on_attack_draw_each_player":                   {"moment": "attack", "scope": "self"},
+	# Elithys Firestorm: "When she attacks, she deals 1 fire damage to each
+	# other hero and ally."
+	"on_attack_damage_each_other":                  {"moment": "attack", "scope": "self"},
 	# Berserking: "When your hero attacks, remove all berserk counters…"
 	"berserk_atk_on_hero_attack":                   {"moment": "attack", "scope": "board"},
 	# Donna Calister: "When an opposing hero or ally attacks, ready Donna Calister."
 	"ready_on_opposing_attack":                     {"moment": "attack", "scope": "board"},
 	# Grunt Baranka: "When Grunt Baranka defends against an ally, destroy her…"
 	"on_defend_vs_ally_destroy_self_and_attackers": {"moment": "defend", "scope": "self"},
+	# Plagueborn Meatwall: "When he defends against an ally, remove all damage
+	# from him, and he deals that much melee damage to each attacking ally."
+	"on_defend_vs_ally_reflect_damage":             {"moment": "defend", "scope": "self"},
 }
 
 
@@ -10035,6 +10731,10 @@ static func _combat_trigger_watches(state: GameState, watcher: CardInstance,
 		# never triggers her — which is the card's real limit, since a hero attack
 		# is exactly what a 2/2 Protector otherwise wants to stop.
 		"on_defend_vs_ally_destroy_self_and_attackers":
+			return _is_ally(state, state.combat_attacker)
+		# Plagueborn Meatwall: same "against an ALLY" clause — an attacking hero
+		# never triggers the reflect, so the damage stays on him.
+		"on_defend_vs_ally_reflect_damage":
 			return _is_ally(state, state.combat_attacker)
 		# "When YOUR HERO attacks" — the attacker must be this player's own hero.
 		"berserk_atk_on_hero_attack":
@@ -10159,6 +10859,44 @@ static func _resolve_combat_trigger(state: GameState, action: PendingAction,
 				for _i in range(amount):
 					events.append_array(_draw_one(state, pid))
 
+		# Elithys Firestorm: "When Elithys Firestorm attacks, she deals 1 fire
+		# damage to each other hero and ally." Morik's on-attack trigger with a
+		# board sweep instead of a draw, and Ramstein's deal_damage_aoe_all with
+		# the SOURCE excluded — "each OTHER hero and ally", so everything in play
+		# but herself, the controller's own hero and allies included and the
+		# defender among them. Non-targeted and symmetric, so nothing is
+		# announced and 706 Untargetable is irrelevant.
+		#
+		# The board is read LIVE at resolution (an ally that arrived in the
+		# response window is hit, one that left is not), controller's side first
+		# so sequential armor prevention points are deterministic. The source is
+		# the ALLY, so the packets are NOT tagged from_ability (no Chromatic
+		# Cloak) and World in Flames' fire doubling — which keys on the hero
+		# being the source — does not see them either; they carry the segment's
+		# dmg_type and go through defer_packets, so armor prevention opens
+		# normally. Per 707.3 killing her in the response window does not stop
+		# the burn, and by then she is simply not in play to be excluded.
+		"on_attack_damage_each_other":
+			var each_amount := int(args[0]) if args.size() > 0 else 1
+			var each_type   := String(args[1]) if args.size() > 1 else ""
+			if each_amount > 0:
+				var each_packets: Array = []
+				for pid in [controller, _other_player(state, controller)]:
+					if pid == "":
+						continue
+					var each_ps := state.players.get(pid) as PlayerState
+					if each_ps and each_ps.hero_instance_id != "" 							and each_ps.hero_instance_id != source_id:
+						each_packets.append({"source": source_id,
+							"target": each_ps.hero_instance_id,
+							"amount": each_amount, "dmg_type": each_type})
+					for each_ally in state.cards_in_zone(pid + "_ally_row"):
+						if each_ally.instance_id == source_id:
+							continue   # "each OTHER hero and ally"
+						each_packets.append({"source": source_id,
+							"target": each_ally.instance_id,
+							"amount": each_amount, "dmg_type": each_type})
+				events.append_array(defer_packets(state, db, each_packets))
+
 		# Berserking: "remove all berserk counters from Berserking. Your hero has
 		# +1 ATK this combat for each counter you removed." The counters are read
 		# at RESOLUTION (709.2b) — damage dealt to the hero in the response window
@@ -10215,6 +10953,46 @@ static func _resolve_combat_trigger(state: GameState, action: PendingAction,
 			# destroyed. One attacker per combat in this engine's combat model.
 			for attacker_id in _attacking_ally_ids(state):
 				events.append_array(_destroy_card_trigger(state, attacker_id, source_id, db))
+
+		# Plagueborn Meatwall: "When Plagueborn Meatwall defends against an ally,
+		# remove all damage from Plagueborn Meatwall, and he deals that much melee
+		# damage to each attacking ally."
+		#
+		# Two clauses, and the SECOND is measured by the FIRST: X is the damage
+		# actually REMOVED, read at resolution (709.2b) — so damage he took in the
+		# response window counts, and an undamaged Meatwall reflects nothing at
+		# all (408.2a: a packet of 0 or less is never created). Removing damage IS
+		# healing per 407.1, so it goes through GameLogic.heal — the one choke
+		# point — and a "can't be healed" lock (Mortal Strike) therefore removes
+		# nothing and leaves X at 0. See data/rules_deviations.md "Plagueborn
+		# Meatwall".
+		#
+		# The whole thing resolves DURING the defend window, before the combat
+		# conclusion — that is what the chain placement of a 602.3 trigger means,
+		# and it is the card: an attacker killed by the reflect is gone by the
+		# time the conclusion runs, which then cancels under 603.1b and deals no
+		# damage in either direction.
+		"on_defend_vs_ally_reflect_damage":
+			if not state.is_in_play(source_id):
+				return events   # 709.2c — no damage to remove, so nothing to deal
+			var mw_card := state.get_card(source_id)
+			var mw_before: int = mw_card.damage_taken
+			events.append_array(GameLogic.heal(state, source_id, mw_before, db, source_id))
+			var mw_removed: int = mw_before - mw_card.damage_taken
+			if mw_removed <= 0:
+				return events
+			# "Each attacking ally" — read LIVE at resolution, so an attacker
+			# removed from combat or already dead in the response window takes
+			# nothing. One attacker per combat in this engine's combat model.
+			var mw_type: String = args[0] if args.size() > 0 else "melee"
+			var mw_packets: Array = []
+			for attacker_id in _attacking_ally_ids(state):
+				mw_packets.append({
+					"source": source_id, "target": attacker_id,
+					"amount": mw_removed, "dmg_type": mw_type,
+				})
+			if not mw_packets.is_empty():
+				events.append_array(defer_packets(state, db, mw_packets))
 
 	return events
 
@@ -10457,6 +11235,7 @@ static func _check_destroyed_trigger(state: GameState, card_id: String,
 			break
 	events.append_array(_fire_recombobulation(state, db))
 	events.append_array(_fire_circle_of_life(state, db))
+	events.append_array(_fire_shadow_bolt(state, db))
 	return events
 
 
@@ -10494,6 +11273,7 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 			events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 	events.append_array(_fire_recombobulation(state, db))
 	events.append_array(_fire_circle_of_life(state, db))
+	events.append_array(_fire_shadow_bolt(state, db))
 	return events
 
 
@@ -10571,60 +11351,183 @@ static func _check_equipment_uniqueness(state: GameState, card_id: String, db) -
 	var card := state.get_card(card_id)
 	if not card:
 		return []
-	var def := db.get_def(card.card_def_id) as CardDef
-	if not def:
-		return []
+	return check_wielding(state, card.controller, db)
+
+
+# -- Wielding: the hands model (rules 406, 414.3b, 414.3c) ---------------------
+#
+# Two INDEPENDENT caps decide whether a player's equipment is legal, and every
+# variety of wielding uniqueness falls out of them:
+#
+#   1. SLOT capacity (414.3b) - the "(N)" on the type line. Head (1), Off-Hand
+#      (1), Trinket (2), Melee (1)... Read off `equipment:SLOT:DEF:CAPACITY`.
+#   2. HANDS - a hero has BASE_HAND_CAPACITY hands. A One-Handed Melee weapon
+#      occupies one, a Two-Handed weapon two, an Off-Hand equipment one
+#      (406.3a). Exceeding the capacity is a uniqueness violation.
+#
+# **414.3c needs no rule of its own**: a Two-Handed weapon (2 hands) plus an
+# Off-Hand equipment (1) is 3 hands against a capacity of 2. That is the whole
+# of "a player can't control both a Two-Handed and an Off-Hand card", and it is
+# why this replaced the old hard-coded two_handed/off_hand cross-conflict.
+#
+# The rule 406 wielding keywords are then just numbers on these two dials - see
+# WIELDING_GRANTS. Dual Wield raises the MELEE SLOT capacity to 2 and nothing
+# else, which is exactly right: 1H+1H is 2 hands (legal), while 2H+1H is 3 and
+# 2H+2H is 4 - both still violations, as the CR's own table says.
+#
+# Everything is read LIVE off the board, which is what makes **406.2b** - a hero
+# LOSING the keyword while holding an allowed combination - work with no
+# bookkeeping: drain_uniqueness_checks re-asks this question for both players at
+# every priority gate, so destroying Dual Wield puts the second weapon in
+# violation on the spot. That is also why this is a per-PLAYER question rather
+# than a per-card one: nothing entered play, so no per-card queue entry exists.
+#
+# Ranged weapons deliberately occupy ZERO hands here. They have their own slot
+# ("Ranged (1)") and their own wielding keyword (406.4 Ranged Dual Wield), and
+# nothing in the pool makes them compete for a hand - giving them a hand cost
+# would silently forbid the legal Ranged + Off-Hand board.
+
+const BASE_HAND_CAPACITY  := 2
+const BASE_MELEE_CAPACITY := 1
+const BASE_MELEE_STRIKES  := 1
+
+# Rule 406 wielding keywords, granted by `wielding:NAME` on an in-play card (or
+# printed as a hero keyword). Each entry is the dials it RAISES - the best value
+# across every source wins, and an absent field leaves the base alone.
+#
+# Only Dual Wield is shipped. To add another, put its numbers here:
+#   two_handed_dual_wield  hands 4, melee_capacity 2, melee_strikes 2
+#   sextuple_wield         hands 6, melee_capacity 6, melee_strikes 6
+#   dual_shield            off_hand slot capacity 2 (needs a slot_capacity dial)
+#   ranged_dual_wield      the Ranged slot + strike cap (needs a Ranged dial)
+#   infinite_wield         1H only, so it needs a per-hand-cost cap, not a flat one
+const WIELDING_GRANTS := {
+	"dual_wield": {"melee_capacity": 2, "melee_strikes": 2},
+}
+
+
+# The wielding dials for a player, read live. Sources: any in-play card of
+# theirs carrying a `wielding:NAME` segment ("Your hero has dual wield"), plus
+# the hero's own printed keywords. Best value wins; grants don't stack.
+static func get_wielding_limits(state: GameState, player_id: String, db) -> Dictionary:
+	var limits := {
+		"hands":          BASE_HAND_CAPACITY,
+		"melee_capacity": BASE_MELEE_CAPACITY,
+		"melee_strikes":  BASE_MELEE_STRIKES,
+	}
+	if not db:
+		return limits
+	for gname in _wielding_grant_names(state, player_id, db):
+		var grant: Dictionary = WIELDING_GRANTS.get(gname, {})
+		for key in grant:
+			limits[key] = max(int(limits.get(key, 0)), int(grant[key]))
+	return limits
+
+
+static func _wielding_grant_names(state: GameState, player_id: String, db) -> Array[String]:
+	var names: Array[String] = []
+	for zone_suffix in ["_hero_row", "_ally_row"]:
+		for inst in state.cards_in_zone(player_id + zone_suffix):
+			var d := db.get_def(inst.card_def_id) as CardDef
+			if not d:
+				continue
+			for seg in d.effects.split("|"):
+				var parts := seg.strip_edges().split(":")
+				if parts[0] == "wielding" and parts.size() > 1:
+					var n := parts[1].strip_edges().to_lower().replace(" ", "_")
+					if n not in names:
+						names.append(n)
+	# A hero may simply be printed with the keyword.
+	var ps := state.players.get(player_id) as PlayerState
+	var hero := state.get_card(ps.hero_instance_id) if ps else null
+	var hero_def := (db.get_def(hero.card_def_id) as CardDef) if hero else null
+	if hero_def:
+		for kw in hero_def.keywords:
+			var hn := str(kw).to_lower().replace(" ", "_")
+			if WIELDING_GRANTS.has(hn) and hn not in names:
+				names.append(hn)
+	return names
+
+
+# How many hands a card occupies. Two-Handed weapon 2, One-Handed Melee weapon
+# 1, Off-Hand equipment 1 (406.3a), everything else 0.
+static func equipment_hand_cost(def: CardDef) -> int:
+	if not def or def.card_type != "Equipment":
+		return 0
+	if _has_effect_flag(def, "two_handed"):
+		return 2
 	var info := _equipment_info(def)
-	var slot: String = info.get("slot", "")
-	if slot == "":
-		return []
-	# Gather all equipment in the controller's hero row that conflicts with this
-	# card: same slot (414.3), or Two-Handed vs Off-Hand (414.3c — a Two-Handed
-	# weapon carries the `two_handed` effects flag and occupies both hands, so it
-	# can't coexist with an off_hand-slot equipment).
-	var two_handed := _has_effect_flag(def, "two_handed")
-	var same_slot_ids: Array[String] = []
-	for c in state.cards_in_zone(card.controller + "_hero_row"):
-		var d := db.get_def(c.card_def_id) as CardDef
+	if info.is_empty():
+		return 0
+	if str(info.get("slot", "")) == "off_hand":
+		return 1
+	if not _weapon_info(def).is_empty() and def.dmg_type.to_lower() == "melee":
+		return 1
+	return 0
+
+
+# The conflicting cards in a player's hero row, or [] when everything is legal.
+# Both caps in one place, so a board violating slot capacity AND hands opens one
+# choice covering both, and so the post-sacrifice re-check asks exactly the same
+# question the opening one did.
+static func get_wielding_violation(state: GameState, player_id: String, db) -> Array[String]:
+	var conflicting: Array[String] = []
+	if not db:
+		return conflicting
+	var limits := get_wielding_limits(state, player_id, db)
+	var by_slot: Dictionary = {}          # slot -> [ids]
+	var slot_capacity: Dictionary = {}    # slot -> strictest printed capacity
+	var hands_used := 0
+	var hand_ids: Array[String] = []
+	for inst in state.cards_in_zone(player_id + "_hero_row"):
+		var d := db.get_def(inst.card_def_id) as CardDef
 		if not d or d.card_type != "Equipment":
 			continue
-		var d_slot: String = _equipment_info(d).get("slot", "")
-		if d_slot == slot \
-				or (two_handed and d_slot == "off_hand") \
-				or (slot == "off_hand" and _has_effect_flag(d, "two_handed")):
-			same_slot_ids.append(c.instance_id)
-	# 414.3b: the slot's capacity, not a flat 1 — Trinket (2) allows two. Taken as
-	# the STRICTEST capacity in the conflicting set, so the Two-Handed/Off-Hand
-	# cross-conflicts folded in above (414.3c, always capacity 1) still violate
-	# on the second card the way they always did.
-	if same_slot_ids.size() <= _equipment_slot_capacity(state, same_slot_ids, db):
+		var info := _equipment_info(d)
+		var slot: String = str(info.get("slot", ""))
+		if slot != "":
+			var ids: Array = by_slot.get(slot, [])
+			ids.append(inst.instance_id)
+			by_slot[slot] = ids
+			# 414.3b: the STRICTEST printed capacity in the group wins.
+			var cap := int(info.get("capacity", 1))
+			if not slot_capacity.has(slot) or cap < int(slot_capacity[slot]):
+				slot_capacity[slot] = cap
+		var cost := equipment_hand_cost(d)
+		if cost > 0:
+			hands_used += cost
+			hand_ids.append(inst.instance_id)
+	# (1) Slot capacity. Dual Wield raises the MELEE slot's cap and nothing else.
+	for slot2 in by_slot:
+		var cap2 := int(slot_capacity.get(slot2, 1))
+		if slot2 == "melee_weapon":
+			cap2 = max(cap2, int(limits.get("melee_capacity", BASE_MELEE_CAPACITY)))
+		if (by_slot[slot2] as Array).size() > cap2:
+			for cid in by_slot[slot2]:
+				if cid not in conflicting:
+					conflicting.append(cid)
+	# (2) Hands - this is where 414.3c lives.
+	if hands_used > int(limits.get("hands", BASE_HAND_CAPACITY)):
+		for cid2 in hand_ids:
+			if cid2 not in conflicting:
+				conflicting.append(cid2)
+	return conflicting
+
+
+# Opens the equipment-sacrifice choice if the player's equipment violates either
+# cap. Self-guarding (no violation -> no events), like every other uniqueness
+# check, so callers need no knowledge of which rule could apply.
+static func check_wielding(state: GameState, player_id: String, db) -> Array[GameEvent]:
+	if state.pending_equip_sacrifice_player != "":
 		return []
-	state.pending_equip_sacrifice_player = card.controller
-	state.pending_equip_sacrifice_ids.assign(same_slot_ids)
+	var conflicting := get_wielding_violation(state, player_id, db)
+	if conflicting.is_empty():
+		return []
+	state.pending_equip_sacrifice_player = player_id
+	state.pending_equip_sacrifice_ids.assign(conflicting)
 	var typed_ids: Array[String] = []
-	typed_ids.assign(same_slot_ids)
-	return [GameEvent.equipment_sacrifice_required(card.controller, typed_ids)]
-
-
-# How many of a conflicting equipment set a player may control (rule 414.3b) —
-# the strictest `equipment:SLOT:DEF:CAPACITY` capacity among them, so a set mixing
-# a Two-Handed weapon with an Off-Hand equipment (414.3c) stays at 1. Falls back
-# to 1 without a database, which is the pre-Trinket behaviour.
-static func _equipment_slot_capacity(state: GameState, ids: Array, db) -> int:
-	if db == null:
-		return 1
-	var capacity := -1
-	for cid in ids:
-		var c := state.get_card(cid)
-		if not c:
-			continue
-		var d := db.get_def(c.card_def_id) as CardDef
-		if not d:
-			continue
-		var cap := int(_equipment_info(d).get("capacity", 1))
-		if capacity < 0 or cap < capacity:
-			capacity = cap
-	return capacity if capacity > 0 else 1
+	typed_ids.assign(conflicting)
+	return [GameEvent.equipment_sacrifice_required(player_id, typed_ids)]
 
 
 # Called directly by the scene (not via submit_action), like choose_pet_sacrifice.
@@ -10637,23 +11540,17 @@ static func choose_equipment_sacrifice(state: GameState, card_id: String,
 	var card := state.get_card(card_id)
 	if not card or card.controller != state.pending_equip_sacrifice_player:
 		return []
+	var player_id := state.pending_equip_sacrifice_player
 	var events: Array[GameEvent] = []
 	events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
-	state.pending_equip_sacrifice_ids.erase(card_id)
-	# Re-check: still a violation if more than one same-slot equipment remains.
-	var surviving: Array[String] = []
-	for cid in state.pending_equip_sacrifice_ids:
-		if state.is_in_play(cid):
-			surviving.append(cid)
-	if surviving.size() <= _equipment_slot_capacity(state, surviving, db):
-		state.pending_equip_sacrifice_player = ""
-		state.pending_equip_sacrifice_ids.clear()
-	else:
-		state.pending_equip_sacrifice_ids.assign(surviving)
-		var typed_ids: Array[String] = []
-		typed_ids.assign(surviving)
-		events.append(GameEvent.equipment_sacrifice_required(
-			state.pending_equip_sacrifice_player, typed_ids))
+	# Re-ask the SAME question the opening check asked, over the player's whole
+	# hero row (get_wielding_violation) rather than over the remembered id list:
+	# a destroy can change the answer in ways a shrinking list can't express —
+	# it frees hands as well as a slot, and destroying the Two-Handed weapon of
+	# a 2H+Off-Hand pair repairs the board without the Off-Hand going anywhere.
+	state.pending_equip_sacrifice_player = ""
+	state.pending_equip_sacrifice_ids.clear()
+	events.append_array(check_wielding(state, player_id, db))
 	return events
 
 

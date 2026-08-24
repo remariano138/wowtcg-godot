@@ -292,6 +292,12 @@ static func cant_attack_applied(target_id: String, source_id: String) -> GameEve
 static func cant_protect_applied(target_id: String, source_id: String) -> GameEvent:
 	return make("cant_protect_applied", {"target_id": target_id, "source_id": source_id})
 
+# "Can't be healed this turn" placed on a hero or ally (Mortal Strike). Every
+# heal in the game goes through GameLogic.heal, which checks it — the heal does
+# not happen at all rather than being reduced.
+static func cant_be_healed_applied(target_id: String, source_id: String) -> GameEvent:
+	return make("cant_be_healed_applied", {"target_id": target_id, "source_id": source_id})
+
 # "Must attack this turn if able" placed on a character (rule 600.2 — Lynda
 # Steele, Mocking Blow). Its controller can't pass priority at sorcery speed
 # while a legal combat could be proposed with it.
@@ -402,6 +408,25 @@ static func feral_rage_resolved(player_id: String) -> GameEvent:
 
 static func feral_rage_declined(player_id: String) -> GameEvent:
 	return make("feral_rage_declined", {"player": player_id})
+
+# ── Upkeep (Rain of Fire, azeroth_129) ────────────────────────────────────────
+# "At the start of your turn, pay (COST) or destroy [this]." The point opens only
+# when the controller can actually afford it; declining (or being unable to pay)
+# destroys the card, which is reported by the ordinary card_destroyed event that
+# accompanies upkeep_declined.
+static func upkeep_choice_opened(player_id: String, card_id: String,
+		cost: int) -> GameEvent:
+	return make("upkeep_choice_opened", {
+		"player": player_id, "card_id": card_id, "cost": cost,
+	})
+
+static func upkeep_paid(player_id: String, card_id: String, cost: int) -> GameEvent:
+	return make("upkeep_paid", {
+		"player": player_id, "card_id": card_id, "cost": cost,
+	})
+
+static func upkeep_declined(player_id: String, card_id: String) -> GameEvent:
+	return make("upkeep_declined", {"player": player_id, "card_id": card_id})
 
 # Chops / Voss Treebender: attack-exhaust point opened (attacker's controller MAY
 # exhaust target hero or ally), and resolved (target_id == "" = declined).
@@ -645,3 +670,16 @@ static func hand_returned_to_deck(player_id: String, count: int) -> GameEvent:
 	return make("hand_returned_to_deck", {
 		"player": player_id, "count": count,
 	})
+
+
+# Helwen: the optional-ready choice point opened during its controller's ready
+# step ("You may choose not to ready Helwen"). Direct call, never the chain.
+static func ready_choice_opened(player: String, card_id: String) -> GameEvent:
+	return make("ready_choice_opened", {"player": player, "card": card_id})
+
+
+static func ready_choice_resolved(player: String, card_id: String,
+		readied: bool) -> GameEvent:
+	return make("ready_choice_resolved",
+		{"player": player, "card": card_id, "readied": readied})
+

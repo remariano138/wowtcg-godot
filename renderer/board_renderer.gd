@@ -59,8 +59,12 @@ var _ui_hover_tex: Texture2D = null       # card texture hovered inside a HUD po
 var _hovered_card_id: String = ""         # instance_id of card under cursor
 
 # ── Graveyard peek (Alt + hover over a graveyard pile) ──────────────────────────
+# Also drives the ATTACHMENT peek (Alt + hover over a stack of attachments):
+# both open the same non-modal browser, so only one can be up at a time and
+# `_gy_peek_key` records which hover is driving it ("<zone_id>" for a pile,
+# "att:<host_id>" for an attachment stack).
 var _gy_peek_open: bool = false
-var _gy_peek_zone: String = ""            # zone_id currently driving the peek
+var _gy_peek_key: String = ""
 
 # ── Targeting overlay ──────────────────────────────────────────────────────────
 var _targeting_line:      Line2D  = null
@@ -360,6 +364,18 @@ func _try_show_inspector() -> void:
 		_inspector.visible = false
 		_open_graveyard_peek(zone_id)
 		return
+	# Attachments (rule 400) all sit at the same place behind their host, so a
+	# host carrying several (three Rends on a hero) shows only the top one and
+	# the inspector could never reach the others. With more than one on the
+	# host, Alt+hover opens the whole stack in the graveyard-style browser
+	# instead of magnifying the single card under the cursor.
+	if zone_id == "attached":
+		var host_id: String = str(_attachment_hosts.get(_hovered_card_id, ""))
+		var att_ids: Array = _attachments_of(host_id) if host_id != "" else []
+		if att_ids.size() > 1:
+			_inspector.visible = false
+			_open_attachment_peek(host_id, att_ids)
+			return
 	_close_graveyard_peek()
 	var cn := card_nodes.get(_hovered_card_id) as CardNode
 	if not cn or not cn._tex_rect or not cn._tex_rect.texture:
@@ -372,20 +388,33 @@ func _try_show_inspector() -> void:
 # screen for that whole pile. Re-entrant-safe: repeated calls while already
 # peeking the same zone are no-ops so the dialog doesn't rebuild every frame.
 func _open_graveyard_peek(zone_id: String) -> void:
-	if _gy_peek_open and _gy_peek_zone == zone_id:
+	if _gy_peek_open and _gy_peek_key == zone_id:
 		return
 	_gy_peek_open = true
-	_gy_peek_zone = zone_id
+	_gy_peek_key = zone_id
 	if _input_router:
 		var gy_player := "p1" if zone_id.begins_with("p1") else "p2"
 		_input_router.request_graveyard_peek(gy_player)
+
+
+# Same non-modal browser as the graveyard peek, over every attachment on one
+# host. Re-entrant-safe the same way: repeated calls for the same host while
+# already peeking it are no-ops so the dialog doesn't rebuild every frame.
+func _open_attachment_peek(host_id: String, att_ids: Array) -> void:
+	var key := "att:" + host_id
+	if _gy_peek_open and _gy_peek_key == key:
+		return
+	_gy_peek_open = true
+	_gy_peek_key = key
+	if _input_router:
+		_input_router.request_attachment_peek(host_id, att_ids)
 
 
 func _close_graveyard_peek() -> void:
 	if not _gy_peek_open:
 		return
 	_gy_peek_open = false
-	_gy_peek_zone = ""
+	_gy_peek_key = ""
 	if _input_router:
 		_input_router.close_graveyard_peek()
 

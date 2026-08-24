@@ -82,6 +82,22 @@ var damage_watch_index: int = 0
 # play, so one board-global cursor serves every copy. Reset with turn_events.
 var ally_destroy_watch_index: int = 0
 
+# Shadow Bolt: "When that character is destroyed this turn, its controller
+# discards a card." One entry per marked character — a CARD, not a player, since
+# the discard follows whoever controlled it when it died. Marks are consumed as
+# they fire (a character is destroyed once), so no cursor is needed, and the
+# whole list is cleared at every turn start with the turn event log.
+# See game_logic/turn_state_flags.md.
+var destroy_discard_marks: Array[String] = []
+
+# Helwen: "You may choose NOT to ready Helwen during your ready step." The ready
+# step's automatic actions don't use the chain (501.1a), so this is a direct-call
+# choice point (StackResolver.choose_stay_exhausted) drained one card at a time.
+# Such a card is left EXHAUSTED by the ready loop and queued here — the default
+# is therefore "stays exhausted", and answering "ready" readies it then.
+var pending_ready_choice_player: String = ""
+var pending_ready_choice_ids: Array[String] = []
+
 # The one append site. Keep new record calls co-located with the matching
 # GameEvent construction in the primitive, so log truth == event truth.
 func record(event_type: String, data: Dictionary) -> void:
@@ -185,6 +201,19 @@ var pending_feral_rage_cost: int = 0
 # (direct call, like the whelp bounce). "" = none pending.
 var pending_track_look_player: String = ""
 var pending_track_look_card_id: String = ""
+# Rain of Fire (azeroth_129): "Ongoing: At the start of your turn, pay (4) or
+# destroy Rain of Fire." The upkeep point — a pay-or-lose-it decision opened from
+# the RESOLUTION of the card's start-of-turn trigger (709.2b: the payment is
+# neither X, a mode nor a target, so it belongs to resolution, not announcement —
+# Infernal's discard is the same call). Resolved via
+# StackResolver.choose_upkeep() (direct call, like the whelp bounce);
+# can_submit / pass_priority hard-block while pending.
+# No queue is needed even with several copies in play: the turn-start triggers go
+# on the chain ONE AT A TIME (see advance_turn_start_triggers), and this block
+# stops the next link being announced until the point is answered.
+var pending_upkeep_player: String = ""    # who must decide now; "" = none
+var pending_upkeep_card_id: String = ""   # the card that will be destroyed if unpaid
+var pending_upkeep_cost: int = 0
 # Attack-exhaust point (Chops / Voss Treebender: "When [this] attacks, you may
 # exhaust target hero or ally."): non-empty while the attacker's controller may
 # pick a target to exhaust (or decline). Opened at combat-step start (602.1),
@@ -757,6 +786,26 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 									in_form = true
 							if in_form:
 								bonus += int(p[2])
+				"hero_atk_while_attacking_per_counter":
+					# Blood Fury: "Ongoing: Your hero has +1 ATK while attacking
+					# for each fury counter on Blood Fury." Cat Form's grant
+					# below, scaled by a COUNTER count read live off the source
+					# card (field 1 is the counter name, field 2 the per-counter
+					# amount). Nothing adds or removes fury counters after the
+					# card enters play — unlike Berserking, which cashes its own
+					# in when the hero attacks — so the bonus is fixed for as
+					# long as the card is in play, and stacks per copy.
+					#
+					# Like the ungated version this is defender-INdependent, so
+					# it is safe inside assume_attacking forecasts and inside the
+					# get_legal_attackers hero gate (unlike Bala's
+					# atk_vs_exhausted_defender). Hero only, never an ally, and
+					# controller-scoped ("YOUR hero"). Never cached.
+					if is_attacking and p.size() > 2:
+						var c_ps := players.get(inst.controller) as PlayerState
+						if c_ps and c_ps.hero_instance_id == inst.instance_id:
+							var n := int(source.counters.get(p[1].strip_edges(), 0))
+							bonus += n * int(p[2])
 				"hero_atk_while_attacking":
 					# Cat Form: "Your hero is in cat form. (+1 ATK while
 					# attacking.)" — the ongoing Form in the hero row grants the
@@ -1124,6 +1173,7 @@ func to_dict() -> Dictionary:
 		"turn_events":       turn_events.duplicate(true),
 		"damage_watch_index": damage_watch_index,
 		"ally_destroy_watch_index": ally_destroy_watch_index,
+		"destroy_discard_marks": destroy_discard_marks,
 		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
@@ -1144,6 +1194,8 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.turn_events        = (d.get("turn_events", []) as Array).duplicate(true)
 	gs.damage_watch_index = d.get("damage_watch_index", 0)
 	gs.ally_destroy_watch_index = d.get("ally_destroy_watch_index", 0)
+	for mark in d.get("destroy_discard_marks", []):
+		gs.destroy_discard_marks.append(str(mark))
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
 	for a in d.get("pending_actions", []):
 		gs.pending_actions.append(PendingAction.from_dict(a))

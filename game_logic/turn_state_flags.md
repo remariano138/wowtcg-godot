@@ -136,4 +136,6 @@ turn. Not log candidates — they're state, not history.
 | `cold_blood_from_index` | `PlayerState` | Cold Blood — an INDEX into `turn_events` (Category A is where the effect's facts live); makes the trigger forward-looking |
 | `next_card_cost_mod` | `PlayerState` | Nature's Swiftness — one-shot: consumed at the chain entry of the next card played (restored by `retract_last`), cleared at turn start if unused |
 | `damage_prevention` | `PlayerState` | Armor pool (safety clear — scoped to its combat) |
+| `destroy_discard_marks` | `GameState` | Shadow Bolt: characters whose destruction THIS TURN makes their controller discard. Consumed as each fires (a character dies once), so no cursor; swept off the `ally_destroyed` entries by `StackResolver._fire_shadow_bolt` |
+| `pending_ready_choice_ids` / `_player` | `GameState` | Helwen: cards left EXHAUSTED by the ready step whose controller still owes an answer ("you may choose not to ready"). Direct call (`StackResolver.choose_stay_exhausted`), drained one at a time; blocks `can_submit` / `pass_priority` while set |
 | `gouge_skip_ready` (counter) | `CardInstance` | Gouge, Iceblade Hacker — consumed at the ready step rather than cleared |

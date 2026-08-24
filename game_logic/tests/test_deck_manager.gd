@@ -25,6 +25,8 @@ func _ready() -> void:
 	_test_tokens_csv_loads()
 	_test_form_state_flags()
 	_test_cold_snap_pool()
+	_test_rain_of_fire_recipe()
+	_test_soul_link_count_power()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -247,6 +249,62 @@ func _test_cold_snap_pool() -> void:
 		_check(d != null and d.card_type == "Ability" and "Frost" in d.tags,
 			"%s is a Frost ability card (tags: '%s')"
 				% [def_id, d.tags if d else "<missing>"])
+
+
+# Rain of Fire is driven entirely by its CSV recipe — no card-specific code — so
+# a typo in either segment key would silently turn it into a vanilla 4-cost
+# ongoing that charges nothing and burns nothing, with no test to fail. Pin both
+# halves against the real database, and pin the two things about them that are
+# easy to get wrong in a rewrite: the upkeep key must be one TurnManager
+# actually collects, and the burn must be the HERO-sourced key, not Infernal's.
+func _test_rain_of_fire_recipe() -> void:
+	var db := _make_db()
+	var rof := db.get_def("azeroth_129") as CardDef
+	_check(rof != null, "azeroth_129 (Rain of Fire) resolves in the database")
+	if rof == null:
+		return
+	_check(rof.card_type == "Ability" and not rof.is_instant,
+		"Rain of Fire is a plain (sorcery-speed) Ability")
+	_check(rof.cost == 4, "Rain of Fire costs 4")
+	var segments: Array = []
+	for entry in rof.effects.split("|"):
+		segments.append(entry.strip_edges().split(":")[0].strip_edges())
+	_check("ongoing" in segments, "…and is ongoing, so it stays in the hero row")
+	_check("turn_start_pay_or_destroy" in segments, "…carries the upkeep segment")
+	_check("end_of_turn_hero_damage_opposing" in segments,
+		"…and the HERO-sourced end-of-turn burn (not Infernal's ally-sourced key)")
+	_check(TurnManager.YOUR_TURN_TRIGGERS.has("turn_start_pay_or_destroy"),
+		"the upkeep key is one the ready step actually collects")
+	_check(not TurnManager.EACH_TURN_TRIGGERS.has("turn_start_pay_or_destroy"),
+		"…on YOUR turn only — an each-turn upkeep would charge twice a round")
+
+
+# The repeat-count UI (ally first, then "how many?") is opened off
+# StackResolver.power_repeats_by_count, keyed on the POWER'S EFFECT — so a
+# rewritten recipe would silently drop Soul Link back to one click per point
+# with nothing to fail on. Pin it against the real database.
+func _test_soul_link_count_power() -> void:
+	var db := _make_db()
+	var link := db.get_def("azeroth_133") as CardDef
+	_check(link != null, "azeroth_133 (Soul Link) resolves in the database")
+	if link == null:
+		return
+	_check(StackResolver.power_repeats_by_count(link),
+		"Soul Link's power opens the repeat-count dialog")
+	var ap := StackResolver._ally_activated_power(link)
+	_check(ap.get("targets", "") == "chosen_friendly_ally",
+		"…and picks the ally as a CHOICE, not a target (706 n/a)")
+	_check(StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "put_damage_ally"),
+		"…paying 1 damage put on that ally per use")
+	# Every other implemented activated power must NOT open it — the dialog
+	# submits N copies of the power, which is only ever right for a free one.
+	for def_id in ["azeroth_125", "azeroth_244", "dark_portal_218", "azeroth_211"]:
+		var other := db.get_def(def_id) as CardDef
+		if other == null:
+			continue
+		_check(not StackResolver.power_repeats_by_count(other),
+			"%s (%s) keeps the single-use power flow"
+				% [def_id, other.card_name])
 
 
 func _test_runtime_deck_expansion() -> void:

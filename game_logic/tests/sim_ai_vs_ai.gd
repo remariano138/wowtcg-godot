@@ -93,6 +93,13 @@ func _run_game(db: CardDatabase, deck_id1: String, deck_id2: String) -> String:
 			else:
 				StackResolver.decline_control_discard(state, db)
 			continue
+		if state.pending_upkeep_player != "":
+			# Rain of Fire: pay the upkeep, or let the card be destroyed.
+			var up := state.pending_upkeep_player
+			StackResolver.choose_upkeep(state, (ais[up] as BaseAI).choose_upkeep(
+					state, db, up, state.pending_upkeep_card_id,
+					state.pending_upkeep_cost), db)
+			continue
 		if state.pending_pet_sacrifice_player != "":
 			# Sacrifice the first candidate (keep-best logic lives in the scene).
 			var sac := state.cards_in_zone(state.pending_pet_sacrifice_player + "_ally_row")

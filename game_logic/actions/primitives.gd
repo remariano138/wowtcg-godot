@@ -137,6 +137,20 @@ static func move_card(state: GameState, card_id: String, to_zone_id: String) -> 
 		card.chosen_x = 0
 		card.just_summoned = false
 		card.used_this_turn = false
+		# Control is a property of cards IN PLAY (401.1/401.3 both scope it that
+		# way) — text about cards in any other zone refers to their OWNERS
+		# (401.2). So a card that leaves play stops being controlled by whoever
+		# took it and belongs to its owner again, wherever it lands.
+		#
+		# The borrowed-control sweep below already did this for a Nyn'jah /
+		# Helwen LINK, but a PERMANENT control change (Staff of Dominance) sets
+		# no link — so a stolen ally bounced back to its owner's hand kept the
+		# thief as its controller and its owner could no longer play it. One
+		# reset here covers every route out of play and every future steal.
+		if card.controller != card.owner:
+			var old_ctrl := card.controller
+			card.controller = card.owner
+			events.append(GameEvent.control_changed(card_id, old_ctrl, card.owner))
 
 	# Nyn'jah: "You control that equipment while Nyn'jah remains in your party."
 	# Borrowed control is conditional, so the link is re-checked after every zone
@@ -190,14 +204,30 @@ static func _check_borrowed_control(state: GameState, card: CardInstance) -> Arr
 		if not held:
 			card.stolen_ids.erase(held_id)
 			continue
-		if thief_in_play and held.controller == card.controller:
-			continue   # link intact
+		var link_intact := thief_in_play and held.controller == card.controller
+		# Helwen: "While Helwen remains EXHAUSTED, you control target ally." The
+		# extra condition rides on the stolen card (stolen_condition) rather than
+		# being read off the thief's def, so this primitive needs no database —
+		# and readying the thief by ANY route (the ready step, Galway's power,
+		# Dragonkin Menace) breaks the link, because ready_card re-checks here.
+		if link_intact and held.stolen_condition == "source_exhausted" \
+				and not card.is_exhausted:
+			link_intact = false
+		if link_intact:
+			continue
 		card.stolen_ids.erase(held_id)
 		held.stolen_by = ""
+		held.stolen_condition = "in_party"
 		var old_ctrl := held.controller
 		held.controller = held.owner
 		if state.is_in_play(held_id) and old_ctrl != held.owner:
-			events.append_array(move_card(state, held_id, held.owner + "_hero_row"))
+			# Back to the OWNER's copy of whatever row it is sitting in —
+			# equipment to the hero row (Nyn'jah), an ally to the ally row
+			# (Helwen). Reading the current zone rather than assuming keeps the
+			# two cases in one branch.
+			var held_zone := state.zones.get(held.zone_id) as Zone
+			var row: String = held_zone.zone_type if held_zone else "ally_row"
+			events.append_array(move_card(state, held_id, held.owner + "_" + row))
 			events.append(GameEvent.control_changed(held_id, old_ctrl, held.owner))
 	return events
 
@@ -394,6 +424,24 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 		events.append(GameEvent.damage_prevented(target_id, amount, 0, target.controller))
 		return {"amount": 0, "events": events}
 
+	# (a4) Soul Link: "Prevent the next 1 damage that would be dealt to your hero
+	# this turn." A COUNTED shield rather than an all-or-nothing one, so unlike
+	# the shields above it absorbs part of a packet and is consumed point by
+	# point. It rides the hero INSTANCE as a `prevent_damage_amount` Buff
+	# (turns:1), so the end-of-turn sweep gives "this turn" for free and it times
+	# correctly when the power is used on the opponent's turn. Applied BEFORE the
+	# armor pool: it is free and automatic, so spending it first is what keeps a
+	# player from exhausting armor they didn't need (the prevention point also
+	# nets it out — see StackResolver._prevention_offer). Skipped entirely for
+	# unpreventable damage, which returned above without consuming anything.
+	var shielded := consume_granted_shield(target, amount)
+	if shielded > 0:
+		amount -= shielded
+		events.append(GameEvent.damage_prevented(
+			target_id, shielded, granted_shield(target), target.controller))
+		if amount <= 0:
+			return {"amount": 0, "events": events}
+
 	# (b) Rule 717.2c: exhausted armor prevents damage dealt to the controller's
 	# HERO. The pool (PlayerState.damage_prevention) was built at the prevention
 	# point (StackResolver.choose_prevention) opened right before this packet.
@@ -421,6 +469,40 @@ static func _has_prevent_all_shield(target: CardInstance) -> bool:
 		if (buff as Buff).stat == "prevent_all_damage":
 			return true
 	return false
+
+
+# Soul Link's counted shield: the total "prevent the next N damage" still
+# banked on a character (summed across copies/uses). Read live off active_buffs,
+# so it expires with the normal end-of-turn sweep with no bookkeeping of its own.
+static func granted_shield(target: CardInstance) -> int:
+	if target == null:
+		return 0
+	var total := 0
+	for buff in target.active_buffs:
+		if (buff as Buff).stat == "prevent_damage_amount":
+			total += (buff as Buff).amount
+	return total
+
+
+# Spend up to `amount` of that banked shield, oldest grant first, and report how
+# much was actually spent. Exhausted grants are dropped so nothing stale is left
+# for the buff sweep to carry.
+static func consume_granted_shield(target: CardInstance, amount: int) -> int:
+	if target == null or amount <= 0:
+		return 0
+	var spent := 0
+	var survivors: Array[Buff] = []
+	for buff in target.active_buffs:
+		var b := buff as Buff
+		if b.stat == "prevent_damage_amount" and spent < amount:
+			var take: int = min(b.amount, amount - spent)
+			spent += take
+			b.amount -= take
+			if b.amount <= 0:
+				continue
+		survivors.append(b)
+	target.active_buffs = survivors
+	return spent
 
 
 # A "prevent all COMBAT damage dealt to and by this character" grant sitting on
@@ -468,6 +550,13 @@ static func is_damage_unpreventable(state: GameState, db, source_id: String,
 	var ps := state.players.get(source.controller) as PlayerState
 	if not ps or ps.hero_instance_id != source_id:
 		return false   # only "your hero" — ally/totem/equipment damage is unaffected
+	# Under Dual Wield (406.6) several weapons may be associated with one wielder,
+	# but 303.2b folds them all into ONE combat damage packet — so if ANY struck
+	# weapon carries the flag, the whole packet is unpreventable, the other
+	# weapon's contribution included. See data/rules_deviations.md "Annihilator
+	# under Dual Wield". Read live off the hero row below, so the clause is a
+	# static power on a card IN PLAY: destroying the weapon after the strike
+	# makes the damage preventable again even though the association survives.
 	var struck: Array = state.combat_struck_weapons.get(source_id, [])
 	for card in state.cards_in_zone(source.controller + "_hero_row"):
 		var def: CardDef = db.get_def(card.card_def_id)
@@ -609,6 +698,16 @@ static func heal(state: GameState, target_id: String, amount: int, db, source_id
 	var target := state.get_card(target_id)
 	if not target or not state.is_in_play(target_id) or target.damage_taken == 0:
 		return []
+	# Mortal Strike: "That character can't be healed this turn." A restriction
+	# Buff (stat `cannot_be_healed`, duration turns:1) placed by the damage
+	# riders, so the end-of-turn sweep gives "this turn" for free and leaving
+	# play clears it. Checked HERE because heal() is the one choke point every
+	# heal in the game goes through — combat-free abilities, activated powers,
+	# enter-play triggers, party sweeps and turn-start triggers alike — so a new
+	# healing effect respects the lock by construction. The heal is not
+	# redirected or reduced: it simply does not happen (no event, no partial).
+	if is_heal_blocked(target):
+		return []
 
 	var events: Array[GameEvent] = []
 	var old_hp := state.get_current_hp(target_id, db)
@@ -620,6 +719,18 @@ static func heal(state: GameState, target_id: String, amount: int, db, source_id
 		events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, state.get_max_hp(target_id, db), source_id))
 
 	return events
+
+
+# Is this character under a "can't be healed" restriction (Mortal Strike)?
+# A live read of the instance's buffs — never cached, so it lifts with the
+# end-of-turn sweep or the moment the card leaves play.
+static func is_heal_blocked(target: CardInstance) -> bool:
+	if not target:
+		return false
+	for buff in target.active_buffs:
+		if (buff as Buff).stat == "cannot_be_healed":
+			return true
+	return false
 
 
 # ── exhaust_card ───────────────────────────────────────────────────────────────
@@ -639,7 +750,13 @@ static func ready_card(state: GameState, card_id: String) -> Array[GameEvent]:
 	if not card or not card.is_exhausted or not state.is_in_play(card_id):
 		return []
 	card.is_exhausted = false
-	return [GameEvent.card_readied(card_id)]
+	var events: Array[GameEvent] = [GameEvent.card_readied(card_id)]
+	# Helwen: a borrowed-control link conditioned on the thief staying EXHAUSTED
+	# ends the moment it readies — however it readied. Re-checked here for the
+	# same reason move_card re-checks it: one hook makes the rule hold for every
+	# present and future way a card can ready.
+	events.append_array(_check_borrowed_control(state, card))
+	return events
 
 
 # ── destroy_card ──────────────────────────────────────────────────────────────

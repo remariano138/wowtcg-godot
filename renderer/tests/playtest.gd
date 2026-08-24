@@ -369,6 +369,10 @@ var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
 var _in_feral_rage_mode: bool = false
 var _feral_rage_nodes: Array[Node] = []
+var _in_upkeep_mode: bool = false        # human deciding a Rain of Fire upkeep
+var _upkeep_nodes: Array[Node] = []
+var _in_ready_choice_mode: bool = false
+var _ready_choice_nodes: Array[Node] = []
 var _in_track_look_mode: bool = false
 var _track_look_nodes: Array[Node] = []
 var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
@@ -522,13 +526,16 @@ func _build_scene() -> void:
 	_router.unique_sacrifice_mode_ended.connect(_on_unique_sacrifice_mode_ended)
 	_router.form_sacrifice_mode_ended.connect(_on_form_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
+	_router.repeat_count_requested.connect(_on_repeat_count_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.ally_exhaust_select_requested.connect(_on_ally_exhaust_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
 	_router.graveyard_peek_requested.connect(_on_graveyard_peek_requested)
+	_router.attachment_peek_requested.connect(_on_attachment_peek_requested)
 	_router.graveyard_peek_closed.connect(_on_graveyard_peek_closed)
 	_router.card_mute_changed.connect(_on_card_mute_changed)
 	_build_x_dialog()
+	_build_repeat_dialog()
 	_build_graveyard_dialog()
 
 	# ── Control panel ────────────────────────────────────────────────────────────
@@ -1082,10 +1089,14 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 	# gate that catches hand-edited custom decks (unknown/unimplemented ids,
 	# >4 copies, wrong faction/class) with a readable message instead of a
 	# broken game. Runs before the menu is torn down so errors land in it.
-	var auth_db := CardDatabase.new()
-	auth_db.load_all()
+	# One database per session: a loaded CardDatabase is immutable, so the same
+	# instance authorizes the decks here and then runs the game (and any rematch,
+	# which calls _setup_game_state directly and skips this path entirely).
+	if _db == null:
+		_db = CardDatabase.new()
+		_db.load_all()
 	for pick in [["P1", p1_deck_id], ["P2", p2_deck_id]]:
-		var auth_errors := DeckManager.authorize_deck(pick[1], auth_db)
+		var auth_errors := DeckManager.authorize_deck(pick[1], _db)
 		if not auth_errors.is_empty():
 			_show_menu_error("%s deck '%s' is not legal:\n%s"
 				% [pick[0], pick[1], "\n".join(auth_errors)])
@@ -1337,6 +1348,54 @@ func _exit_ambush_mode() -> void:
 	_router.setup(_state, _db, _local_player)
 	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
 	_router.refresh_highlights()
+
+
+# Is the engine currently waiting on a mandatory choice from somebody? Every one
+# of these hard-blocks can_submit / pass_priority, so while one is set the UI
+# must not re-point the router or repaint highlights for a different player.
+func _mandatory_choice_open() -> bool:
+	if not _state:
+		return false
+	for pid: String in [
+			_state.pending_discard_player,
+			_state.pending_control_discard_player,
+			_state.pending_resource_place_player,
+			_state.pending_hand_play_player,
+			_state.pending_reveal_pick_player,
+			_state.pending_trigger_target_player,
+			_state.pending_death_target_player,
+			_state.pending_prevention_player,
+			_state.pending_ready_choice_player,
+			_state.pending_weapon_ready_player,
+			_state.pending_whelp_bounce_player,
+			_state.pending_track_look_player,
+			_state.pending_upkeep_player]:
+		if pid != "":
+			return true
+	return not _state.pending_enter_play_effect.is_empty()
+
+
+# Re-open the discard UI if the engine is waiting on one and nothing is
+# collecting it. Guarded against re-entry: the AI branch of
+# _handle_discard_choice emits events, which comes back through _refresh_ui.
+var _ensuring_discard: bool = false
+
+func _ensure_discard_ui() -> void:
+	if _ensuring_discard or not _state or not _router:
+		return
+	if _state.pending_discard_player == "":
+		return
+	# In discard mode, but pointed at the WRONG player, is just as stuck as not
+	# being in it at all — that is exactly what the ambush-exit bug produced.
+	if _router._in_discard_mode 			and _router.local_player == _state.pending_discard_player:
+		return
+	_ensuring_discard = true
+	_handle_discard_choice({
+		"player": _state.pending_discard_player,
+		"count":  _state.pending_discard_count,
+		"reason": _discard_reason,
+	})
+	_ensuring_discard = false
 
 
 # ── Mandatory-choice routing ───────────────────────────────────────────────────
@@ -2079,13 +2138,12 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	if _hotseat:
 		_renderer.set_perspective("__handoff__")
 
-	# Real database — only engine_status=implemented cards are loaded.
-	_db = CardDatabase.new()
-	_db.load_all()
-
-	# Mock-only cards (no CSV row yet): instants and quest placeholder.
-	_db.add_def(_make_mock_def("mock_quick_shot", "Quick Shot", 0, 0, true, "Ability"))
-	_db.add_def(_make_mock_def("mock_dark_bolt",  "Dark Bolt",  0, 0, true, "Ability"))
+	# Real database — only engine_status=implemented cards are loaded. Normally
+	# already loaded by _launch_game's deck authorization; the rematch path
+	# reuses that same instance and never reloads the CSVs.
+	if _db == null:
+		_db = CardDatabase.new()
+		_db.load_all()
 
 	# GameManager builds the full state: creates zones, places heroes, shuffles
 	# decks, draws 7-card starting hands.
@@ -2266,15 +2324,30 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 func _refresh_ui() -> void:
 	# Ambush stop is over the moment priority leaves the ambusher (they played
 	# and passed, or their link fizzled) — restore router/highlights to the seat.
-	if _in_ambush_mode and _state and _state.priority_player != _ambush_player:
+	#
+	# EXCEPT while a mandatory choice is owed. Exiting re-points the router at
+	# the seated player and resets the highlight colour, which silently steals a
+	# choice that was just opened for somebody else: an instant flashed in from
+	# an ambush stop resolves, its effect opens (say) a discard for the ally's
+	# controller, and priority has ALREADY moved on — so the exit fires in the
+	# same batch, the red discard highlights turn green, the router points at the
+	# wrong hand, and every click is rejected while the engine stays blocked on
+	# the pending choice. The stop ends once the choice is answered.
+	if _in_ambush_mode and _state and _state.priority_player != _ambush_player \
+			and not _mandatory_choice_open():
 		_exit_ambush_mode()
+	# Self-heal: the engine is hard-blocked until a pending discard is answered,
+	# so if the mode is not up for any reason, the game is simply stuck. Re-open
+	# it rather than leaving a dead board.
+	_ensure_discard_ui()
 	_update_priority_label()
 	_update_chain_panel()
 	_update_combat_window()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_strike_ready_mode and not _in_whelp_bounce_mode \
-			and not _in_feral_rage_mode \
+			and not _in_feral_rage_mode and not _in_upkeep_mode \
+			and not _in_ready_choice_mode \
 			and not _in_track_look_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
@@ -2859,7 +2932,9 @@ func _inline_choice_decider() -> String:
 			_state.pending_ready_player,
 			_state.pending_strike_ready_player,
 			_state.pending_whelp_bounce_player,
+			_state.pending_ready_choice_player,
 			_state.pending_feral_rage_player,
+			_state.pending_upkeep_player,
 			_state.pending_form_return_player,
 			_state.pending_track_look_player,
 			_state.pending_prevention_player]:
@@ -3132,6 +3207,15 @@ func _input(event: InputEvent) -> void:
 	# by accident. Ctrl+Space is a deliberate two-key combo → skip the confirm dialog.
 	# (A modifier makes the physical event stop matching the plain-Space "ui_accept"
 	# action, so it needs its own branch by keycode.)
+	# The repeat-count dialog owns Enter while it is up: Enter = OK, Ctrl+Enter =
+	# OK and Pass. Handled here rather than on the LineEdit's text_submitted so
+	# it still works when focus has wandered off the field.
+	if event is InputEventKey and event.pressed and _repeat_dialog \
+			and _repeat_dialog.visible \
+			and event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+		get_viewport().set_input_as_handled()
+		_confirm_repeat(_repeat_input.text, event.ctrl_pressed)
+		return
 	if event is InputEventKey and event.pressed and event.ctrl_pressed \
 			and (event.keycode == KEY_SPACE or event.keycode == KEY_ENTER):
 		if (_x_dialog and _x_dialog.visible) \
@@ -3194,6 +3278,12 @@ func _input(event: InputEvent) -> void:
 			_set_status("")
 			get_viewport().set_input_as_handled()
 			return
+		# Escape: close the repeat-count dialog (Soul Link). Nothing was
+		# submitted, so this is a free cancel.
+		if _repeat_dialog and _repeat_dialog.visible:
+			_cancel_repeat()
+			get_viewport().set_input_as_handled()
+			return
 		# Escape: cancel the quest ally-exhaust cost picker (nothing was paid).
 		if _in_ally_exhaust_mode:
 			_cancel_ally_exhaust()
@@ -3216,12 +3306,14 @@ func _input(event: InputEvent) -> void:
 	# human's own chain links. Toggle to Tactical, play the chain, pass manually, then
 	# toggle back. Ignored while the X-value dialog is open (the user may be typing).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_T \
-			and not (_x_dialog and _x_dialog.visible):
+			and not (_x_dialog and _x_dialog.visible) \
+			and not (_repeat_dialog and _repeat_dialog.visible):
 		_toggle_speed_mode()
 		get_viewport().set_input_as_handled()
 	# L toggles the game log panel (hidden by default so it doesn't clutter the board).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_L \
-			and not (_x_dialog and _x_dialog.visible):
+			and not (_x_dialog and _x_dialog.visible) \
+			and not (_repeat_dialog and _repeat_dialog.visible):
 		_log_visible = not _log_visible
 		_log_bg.visible = _log_visible
 		_log.visible    = _log_visible
@@ -3853,7 +3945,17 @@ func _on_game_event(event: GameEvent) -> void:
 		"feral_rage_opened":
 			_window_generation += 1
 			_handle_feral_rage(event.payload)
+		"ready_choice_opened":
+			_window_generation += 1
+			_handle_ready_choice(event.payload)
+		"ready_choice_resolved":
+			_refresh_ui()
 		"feral_rage_resolved", "feral_rage_declined":
+			_refresh_ui()
+		"upkeep_choice_opened":
+			_window_generation += 1
+			_handle_upkeep(event.payload)
+		"upkeep_paid", "upkeep_declined":
 			_refresh_ui()
 		"track_look_opened":
 			_window_generation += 1
@@ -3958,10 +4060,20 @@ func _refresh_atk_badges() -> void:
 						_state.get_atk_if_attacking(card.instance_id, _db),
 						_state.get_atk_raw(card.instance_id, _db))
 				cn.update_hp(_state.get_max_hp(card.instance_id, _db), def.printed_health)
-				# Berserk counters (Berserking) — same badge treatment as a
-				# buffed ATK value, in the ATK badge's corner (the card has
-				# no printed ATK of its own).
-				cn.update_counter(int(card.counters.get("berserk", 0)))
+				# Counters (Berserking's berserk, Blood Fury's fury) — same
+				# badge treatment as a buffed ATK value, in the ATK badge's
+				# corner (these cards have no printed ATK of their own). The
+				# total across counter kinds is shown, so a new counter card
+				# needs no change here; no card in the pool carries two kinds.
+				var counter_total := 0
+				for counter_n in card.counters.values():
+					counter_total += int(counter_n)
+				cn.update_counter(counter_total)
+				# Counted damage-prevention shield (Soul Link), top-right corner
+				# — read live off the card's buffs, so it grows as the power is
+				# used, shrinks as damage eats it, and disappears when the
+				# end-of-turn sweep expires it, with no event of its own.
+				cn.update_shield(GameLogic.granted_shield(card))
 
 
 func _on_window_closed() -> void:
@@ -5270,7 +5382,12 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	# same pick — so the hint must not advertise one.
 	var cancel_hint := "  [mandatory]" if _router.targeting_is_mandatory() \
 		else "  [right-click to cancel]"
-	if dmg_type == "heal":
+	# Soul Link: the pick is which of OUR OWN allies absorbs the damage, and the
+	# count comes next — the generic "select a target" reads like an attack.
+	if def and StackResolver.power_repeats_by_count(def):
+		_set_status("🛡 %s — select the ally that will take the damage%s"
+			% [name_str, cancel_hint])
+	elif dmg_type == "heal":
 		_set_status("✚ %s — select a target to heal%s" % [name_str, cancel_hint])
 	# Phase 1 of a two-pick sacrifice power (Gertha, Besh'iah): the cost, not the
 	# effect's target — say so, or the player can't tell the two picks apart.
@@ -5411,6 +5528,154 @@ func _on_targeting_cancelled() -> void:
 
 # ── X-select dialog ────────────────────────────────────────────────────────────
 
+# ── Repeat-count dialog (Soul Link) ───────────────────────────────────────────
+# The ally is already chosen, so this asks only "how many points?" — with that
+# ally's remaining health as the ceiling and a warning once the count would
+# destroy it (405.3 allows an exactly-fatal cost, so it is permitted, not
+# blocked). "OK and Pass" submits and passes in one click, which is the normal
+# case: the player is answering incoming damage and has nothing else to do.
+var _repeat_dialog: Panel
+var _repeat_label: Label
+var _repeat_warn: Label
+var _repeat_input: LineEdit
+var _repeat_max: int = 0
+var _repeat_target_name: String = ""
+
+
+func _build_repeat_dialog() -> void:
+	_repeat_dialog = Panel.new()
+	_repeat_dialog.visible = false
+	_repeat_dialog.custom_minimum_size = Vector2(380, 210)
+	_repeat_dialog.size = Vector2(380, 210)
+	# Above the chain window (z 12), which sits at the board centre and is
+	# ALWAYS up when this dialog opens — answering incoming damage means there is
+	# a link on the chain. An opaque panel, like the other choice popups: a
+	# see-through one over a card reads as broken.
+	_repeat_dialog.z_index = 30
+	_repeat_dialog.add_theme_stylebox_override("panel",
+		_make_stylebox(Color(0.10, 0.11, 0.16, 0.97)))
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 12)
+	vbox.add_theme_constant_override("separation", 8)
+	_repeat_dialog.add_child(vbox)
+
+	_repeat_label = Label.new()
+	_repeat_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_repeat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_repeat_label)
+
+	_repeat_input = LineEdit.new()
+	_repeat_input.placeholder_text = "how many"
+	_repeat_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_repeat_input.text_submitted.connect(func(t: String) -> void: _confirm_repeat(t, false))
+	_repeat_input.text_changed.connect(_on_repeat_text_changed)
+	vbox.add_child(_repeat_input)
+
+	_repeat_warn = Label.new()
+	_repeat_warn.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_repeat_warn.add_theme_color_override("font_color", Color(1.0, 0.45, 0.45))
+	_repeat_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_repeat_warn.text = ""
+	vbox.add_child(_repeat_warn)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 8)
+	vbox.add_child(row)
+
+	var cancel_btn := Button.new()
+	cancel_btn.text = "Cancel"
+	cancel_btn.pressed.connect(_cancel_repeat)
+	row.add_child(cancel_btn)
+
+	var ok_btn := Button.new()
+	ok_btn.text = "OK"
+	ok_btn.pressed.connect(func() -> void: _confirm_repeat(_repeat_input.text, false))
+	row.add_child(ok_btn)
+
+	var ok_pass_btn := Button.new()
+	ok_pass_btn.text = "OK and Pass"
+	ok_pass_btn.pressed.connect(func() -> void: _confirm_repeat(_repeat_input.text, true))
+	row.add_child(ok_pass_btn)
+
+	_hud.add_child(_repeat_dialog)
+
+
+func _on_repeat_count_requested(source_id: String, target_id: String, max_n: int) -> void:
+	_repeat_max = max_n
+	var src_name := "the power"
+	var src := _state.get_card(source_id)
+	if src and _db:
+		var sdef: CardDef = _db.get_def(src.card_def_id)
+		if sdef:
+			src_name = sdef.card_name
+	_repeat_target_name = "the ally"
+	var tgt := _state.get_card(target_id)
+	if tgt and _db:
+		var tdef: CardDef = _db.get_def(tgt.card_def_id)
+		if tdef:
+			_repeat_target_name = tdef.card_name
+	_repeat_label.text = "%s — how many?\n1 – %d  (%s survives up to %d)" % [
+		src_name, max_n, _repeat_target_name, max(max_n - 1, 0)]
+	# Prefilled, so OK and Enter both do the obvious thing immediately — an
+	# empty field silently rejecting the click is worse than a default.
+	_repeat_input.text = "1"
+	_repeat_input.select_all()
+	_repeat_warn.text = ""
+	_repeat_dialog.position = CHOICE_POPUP_CENTER - _repeat_dialog.size * 0.5
+	_repeat_dialog.visible = true
+	_set_board_block(true)
+	# The chain window overlaps this popup and would otherwise take the clicks
+	# meant for its buttons. Restored in _close_repeat_dialog.
+	if _chain_window:
+		_chain_window.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_repeat_input.grab_focus()
+	_set_status("How many points to move onto %s?" % _repeat_target_name)
+
+
+func _on_repeat_text_changed(text: String) -> void:
+	var n := text.strip_edges().to_int()
+	# 405.3: damage put on a character can be exactly fatal, so a lethal count is
+	# a legal (if grim) choice — warn, never block.
+	if n >= _repeat_max and _repeat_max > 0:
+		_repeat_warn.text = "This will destroy %s." % _repeat_target_name
+	else:
+		_repeat_warn.text = ""
+
+
+func _close_repeat_dialog() -> void:
+	_repeat_dialog.visible = false
+	_repeat_warn.text = ""
+	_set_board_block(false)
+	if _chain_window:
+		_chain_window.mouse_filter = Control.MOUSE_FILTER_STOP
+	_set_status("")
+
+
+func _cancel_repeat() -> void:
+	# Nothing was submitted, so the board is byte-identical to before the click.
+	_close_repeat_dialog()
+	_router.cancel_repeat_count()
+	_refresh_ui()
+
+
+func _confirm_repeat(text: String, then_pass: bool) -> void:
+	var n := text.strip_edges().to_int()
+	if n < 1 or n > _repeat_max:
+		_repeat_input.text = ""
+		_repeat_input.placeholder_text = "1 – %d" % _repeat_max
+		_repeat_input.grab_focus()
+		return
+	_close_repeat_dialog()
+	# The pass (if any) happens inside the router call, for the player who used
+	# the power — see confirm_repeat_count.
+	_router.confirm_repeat_count(n, then_pass)
+	_clear_pass_hint()
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 func _build_x_dialog() -> void:
 	_x_dialog = Panel.new()
 	_x_dialog.visible = false
@@ -5452,7 +5717,13 @@ func _on_x_select_requested(hero_id: String, max_x: int) -> void:
 	_x_input.grab_focus()
 	var hero_card := _router.state.get_card(hero_id) if _router.state else null
 	var hero_def: CardDef = _router.db.get_def(hero_card.card_def_id) if hero_card and _router.db else null
-	if hero_def and hero_def.cost_x:
+	if hero_def and StackResolver.power_repeats_by_count(hero_def):
+		# Ophelia Barrows: X is how many times the power is used — one graveyard
+		# card and one resource each — and the browser then takes exactly X.
+		_x_label.text = "%s — how many? (1 – %d)" % [hero_def.card_name, max_x]
+		_set_status("How many cards to remove — %s heals 1 for each"
+			% hero_def.card_name)
+	elif hero_def and hero_def.cost_x:
 		# X-cost hand card (Aimed Shot): X is both the extra cost and the amount.
 		_set_status("Enter X — %s costs %d+X" % [hero_def.card_name, hero_def.cost_base])
 	elif hero_def and StackResolver._power_effect_is(hero_def, "heal_x_from_target"):
@@ -5612,6 +5883,15 @@ func _on_graveyard_peek_requested(graveyard_player: String, card_ids: Array) -> 
 	var who := "Your" if graveyard_player == _local_player else "Opponent's"
 	_open_gy_dialog(card_ids, true,
 			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0, false)
+
+
+# Alt+hover over a host's attachment stack (rule 400): they all render at the
+# same spot behind the host, so with more than one only the top card is visible.
+# Same non-modal browser as the graveyard peek.
+func _on_attachment_peek_requested(host_name: String, card_ids: Array) -> void:
+	var who := host_name if host_name != "" else "Host"
+	_open_gy_dialog(card_ids, true,
+			"%s — %d attachment(s)" % [who, card_ids.size()], 0, 0, false)
 
 
 func _on_graveyard_peek_closed() -> void:
@@ -6893,6 +7173,144 @@ func _show_feral_rage_inline(payload: Dictionary) -> void:
 	_feral_rage_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
 
 
+# ── Upkeep (Rain of Fire) ─────────────────────────────────────────────────────
+# "At the start of your turn, pay (4) or destroy Rain of Fire." Board-public
+# (spending resources and losing a card in play are both open information), so
+# any human decides inline like the Feral Rage offer — the off-screen hotseat
+# player included. The engine only opens this when the cost is affordable, so
+# both buttons are always live; declining destroys the card.
+func _handle_upkeep(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pay: bool = ai.choose_upkeep(_state, _db, player,
+				String(payload.get("card_id", "")),
+				int(payload.get("cost", 0))) if ai else false
+		var events := StackResolver.choose_upkeep(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_upkeep_inline(payload)
+
+
+func _show_upkeep_inline(payload: Dictionary) -> void:
+	_in_upkeep_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_cancel_btn.visible = false
+
+	var cost: int    = payload.get("cost", 0)
+	var who: String  = payload.get("player", "")
+	var card_id: String = payload.get("card_id", "")
+	var card := _state.get_card(card_id)
+	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
+	var card_name: String = def.name if def else "this card"
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var header_text := "%s%s — pay %d or destroy it" % [prefix, card_name, cost]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: keep %s" % [cost, card_name],
+			"callback": func() -> void: _resolve_upkeep(true),
+		},
+		{
+			"text": "Destroy %s" % card_name,
+			"callback": func() -> void: _resolve_upkeep(false),
+		},
+	]
+
+	_upkeep_nodes.append(_build_choice_popup(header_text, Color(0.95, 0.6, 0.35), buttons, true))
+
+
+func _resolve_upkeep(pay: bool) -> void:
+	_in_upkeep_mode = false
+	for n in _upkeep_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_upkeep_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_upkeep(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
+# ── Helwen's optional ready (501.1a) ──────────────────────────────────────────
+# "You may choose not to ready Helwen during your ready step." Board-public
+# (whether a card in play is ready is open information), so any human decides
+# inline like the whelp bounce, the off-screen hotseat player included. The
+# engine has already left her exhausted and is blocked until this is answered.
+func _handle_ready_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var card_id: String = payload.get("card", "")
+		# A null AI readies — the printed default is to ready, and staying
+		# exhausted is the exception the card grants.
+		var do_ready: bool = ai.choose_ready_card(_state, _db, player, card_id) \
+			if ai else true
+		var events := StackResolver.choose_stay_exhausted(_state, do_ready, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_ready_choice_inline(payload)
+
+
+func _show_ready_choice_inline(payload: Dictionary) -> void:
+	_in_ready_choice_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_cancel_btn.visible = false
+
+	var card_id: String = payload.get("card", "")
+	var card := _state.get_card(card_id)
+	var card_name := "it"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	# Name the consequence rather than the rule: readying her is what gives the
+	# stolen ally back, and that is the whole decision.
+	var holding: bool = card != null and not card.stolen_ids.is_empty()
+	var tail := " (readying returns what it controls)" if holding else ""
+	var header_text := "%sReady %s?%s" % [prefix, card_name, tail]
+	var buttons: Array = [
+		{
+			"text": "Keep %s exhausted" % card_name,
+			"callback": func() -> void: _resolve_ready_choice(false),
+		},
+		{
+			"text": "Ready %s" % card_name,
+			"callback": func() -> void: _resolve_ready_choice(true),
+		},
+	]
+	_ready_choice_nodes.append(
+		_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
+
+
+func _resolve_ready_choice(do_ready: bool) -> void:
+	_in_ready_choice_mode = false
+	for n in _ready_choice_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_ready_choice_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_stay_exhausted(_state, do_ready, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 # Form pay-return choice (Bear/Cat Form death trigger). Board-public like the
 # whelp bounce: AI seats auto-resolve (always pay — see BaseAI.choose_form_return),
 # any human gets the inline pay/decline popup.
@@ -7262,8 +7680,12 @@ func _schedule_next_turn() -> void:
 		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
 		return  # wait for the Green Whelp Armor bounce choice before advancing
+	if _state.pending_ready_choice_player != "" or _in_ready_choice_mode:
+		return  # wait for Helwen's optional-ready choice before advancing
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		return  # wait for Track Humanoids' top/bottom choice before advancing
+	if _state.pending_upkeep_player != "" or _in_upkeep_mode:
+		return  # wait for the upkeep pay-or-destroy choice (Rain of Fire)
 	if _state.pending_weapon_ready_player != "":
 		return  # wait for Galway Steamwhistle's weapon pick before advancing
 	if _state.pending_prevention_player != "" or _in_prevention_mode:
@@ -7355,7 +7777,10 @@ func _drain_passes() -> void:
 				or StackResolver._quest_choice_pending(_state) \
 				or _in_quest_choice_mode \
 				or _state.pending_whelp_bounce_player != "" \
-				or _state.pending_track_look_player != "" or _in_track_look_mode 				or _state.pending_weapon_ready_player != "":
+				or _state.pending_ready_choice_player != "" \
+				or _state.pending_upkeep_player != "" or _in_upkeep_mode \
+				or _state.pending_track_look_player != "" or _in_track_look_mode \
+				or _state.pending_weapon_ready_player != "":
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
@@ -7492,6 +7917,9 @@ func _maybe_turbo_pass() -> void:
 		_wrap_up_active = false
 		return
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
+		_wrap_up_active = false
+		return
+	if _state.pending_upkeep_player != "" or _in_upkeep_mode:
 		_wrap_up_active = false
 		return
 	if _state.pending_weapon_ready_player != "":
@@ -7789,17 +8217,3 @@ func _resize_prompt_window(lines: int) -> void:
 		if child is Button and (child as Button).text == "Close":
 			(child as Button).position = Vector2(PROMPT_BODY_W - 100,
 				TOOL_WINDOW_TITLE_H + body_h + 6)
-
-
-# ── Mock card helper ───────────────────────────────────────────────────────────
-
-static func _make_mock_def(id: String, def_name: String, atk: int, health: int,
-		instant: bool, ctype: String) -> CardDef:
-	var d := CardDef.new()
-	d.card_def_id    = id
-	d.card_name      = def_name
-	d.printed_atk    = atk
-	d.printed_health = health
-	d.is_instant     = instant
-	d.card_type      = ctype
-	return d

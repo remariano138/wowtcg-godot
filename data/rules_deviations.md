@@ -429,6 +429,40 @@ cost and drop this deviation.
 
 ---
 
+## Mortal Strike — "one of your Melee weapons" is auto-chosen (the best)
+
+**Card:** Mortal Strike (`azeroth_145`, 2, Instant Ability — Arms Talent).
+Printed text: "Your hero deals X melee damage to target hero or ally, where X is
+1 plus the ATK of one of your Melee weapons. That character can't be healed this
+turn." Recipe `deal_damage_weapon_atk:1:melee|cant_be_healed_this_turn`.
+
+**Deviation:** the printed text leaves the choice of weapon to the caster. The
+engine takes the highest-ATK Melee weapon its controller has in play
+(`StackResolver.best_melee_weapon_atk`) with no choice point.
+
+**Why:** the choice is never interesting — the weapon is not exhausted, spent or
+otherwise consumed by the spell (this is not a strike; 303.2b never enters into
+it), so naming a weaker one is strictly worse in every board state, with no
+information or tempo consideration on the other side. Same reasoning as
+Augustus' auto-chosen `rfg_allies` above: the count and the pool are enforced
+exactly, only the identity is auto-picked. The value is read at RESOLUTION off
+the live board, so a weapon destroyed in the response window correctly drops out
+of the pool and shrinks the spell — the auto-pick decides only *which* survivor
+is used, never *when* the pool is read.
+
+**If this ever needs to become a real choice** (a card that punishes naming a
+particular weapon, or one that exhausts the named weapon as a cost), the choice
+point is Galway Steamwhistle's weapon pick verbatim — `pending_weapon_ready_*`
+already prompts only when two or more candidates exist, which is the same shape.
+
+**Note this is only about the choice.** Two things that look like deviations are
+not: with NO Melee weapon in play the spell still resolves and deals its flat 1
+(709.2c — as much as possible happens), and the weapon's ready state is
+deliberately ignored, because the card says "one of your Melee weapons" rather
+than a ready or struck one.
+
+---
+
 ## Hypnotic Blade — "target player" is auto-chosen as the opponent
 
 **Card:** Hypnotic Blade (`azeroth_327`, 2-cost Weapon—Dagger). Printed text:
@@ -1227,3 +1261,97 @@ who wants to guarantee the completion must complete it before spending down.
 
 **Enforcement site:** `StackResolver._resource_pay_order` (and
 `_resource_refund_order`, which reverses it).
+## Annihilator under Dual Wield — one packet, one tag
+
+**Card:** Annihilator (`azeroth_312`) — "Combat damage dealt by your hero with
+Annihilator can't be prevented." Reachable only since Dual Wield
+(`dark_portal_127`) made two struck weapons possible.
+
+**The rules position.** Rule 303.2b makes each struck weapon a modifier on the
+WIELDER's ATK, and combat conclusion deals a single combat damage packet off
+that total. So a hero that strikes Annihilator (3) and a plain sword (4) deals
+one packet of 7 — there is no "3 of it came from the Annihilator". The damage is
+dealt with both weapons, so it is dealt with Annihilator, and the whole packet
+is unpreventable.
+
+**What the engine does.** `GameLogic.is_damage_unpreventable` returns true when
+ANY weapon associated with the wielder this combat carries the flag. The
+alternative — apportioning the packet by weapon and preventing only part of it —
+has no basis in the CR's damage model, which never splits a combat packet.
+
+**Consequence worth knowing:** pairing Annihilator with a bigger weapon under
+Dual Wield makes the bigger weapon's damage unpreventable too, which is a real
+(and probably unintended by the designers) combo. Flagged here rather than
+patched, because the packet model is what the rest of prevention depends on.
+
+**Enforcement site:** `GameLogic.is_damage_unpreventable`
+(`game_logic/actions/primitives.gd`), read at `_do_combat_conclusion` before the
+303.2a associations are cleared. Test: `_test_annihilator_packet_scope`.
+
+
+## Soul Link — the chosen ally is picked at announcement, not at resolution
+
+**Card:** Soul Link (`azeroth_133`) — "Ongoing: Put 1 damage on an ally in your
+party ➜ Prevent the next 1 damage that would be dealt to your hero this turn."
+
+**Printed rules:** the ally is *chosen*, not targeted — "an ally", not "target
+ally" — so per 707.1 nothing is announced (only X, modes and targets are locked
+in at announcement) and per 709.2b the pick would belong to RESOLUTION.
+
+**Engine:** the pick rides the power as its `chosen_friendly_ally` value in
+`target_id`, so it is named when the power is announced.
+
+**Rule 706 is correctly NOT applied.** `chosen_friendly_ally` exists precisely so
+this pick skips the `_is_legal_target` gate that the real target kinds
+(`friendly_ally`, `ally`, `hero_or_ally`) go through: an **Untargetable** ally in
+your own party may pay the cost, and there is no 4217 fizzle for an opponent to
+engineer. A card that really does say "target ally in your party" (Into the Fray,
+Bizzik Sparkcog) keeps `friendly_ally` and its 706 check.
+
+**Why announce it at all:** the alternative is a direct-call choice point with
+its own UI for a decision that hides nothing — the party is public and the power
+is free, so choosing late conceals no information from anyone.
+
+**Consequence, and it is small:** the ally is fixed once the power is on the
+chain, so an opponent can respond by removing it. That is not a fizzle — like
+every sacrifice-style cost this one is paid at RESOLUTION
+(`_resolve_use_ally_power`), so the cost simply no-ops and the shield still
+resolves (709.2c, "as much as possible happens"). The damage itself is *put*,
+not dealt (405.3): unpreventable, invisible to every damage watcher, and
+permitted to be exactly fatal.
+
+**Enforcement sites:** `StackResolver._can_use_ally_power` (the
+`chosen_friendly_ally` branch), `StackResolver._can_pay_one_extra_power_cost`
+(`put_damage_ally`), `StackResolver._resolve_use_ally_power` (the
+`put_damage_ally` cost block).
+
+
+## Plagueborn Meatwall — "remove all damage" is treated as healing
+
+**Card:** Plagueborn Meatwall (`dark_portal_228`) — "When Plagueborn Meatwall
+defends against an ally, remove all damage from Plagueborn Meatwall, and he
+deals that much melee damage to each attacking ally."
+
+**The question:** the card says *remove damage*, not *heal*. Rule 407.1 defines
+the other direction — "to heal an amount of damage from a character is to remove
+that much damage from it" — but never says every removal of damage is a heal.
+
+**Engine:** the removal goes through `GameLogic.heal`, the one choke point every
+damage removal in the game already passes through.
+
+**Consequence, and it is the only one:** a "can't be healed this turn"
+restriction (Mortal Strike's `cant_be_healed_this_turn` rider) stops the removal,
+which also empties the reflect — X is the damage *actually removed*, so a
+heal-locked Meatwall removes nothing and deals nothing. Nothing else in the game
+distinguishes the two phrasings today.
+
+**Why:** routing it anywhere else would mean a second damage-removal primitive
+that silently ignores every existing and future heal-modifying effect, for the
+sake of one contested interaction. The alternative reading (removal is not
+healing, so the lock doesn't apply) is defensible; if it is preferred, the fix is
+one call in the `on_defend_vs_ally_reflect_damage` arm of
+`StackResolver._resolve_combat_trigger` and this entry goes away.
+
+**Enforcement site:** `StackResolver._resolve_combat_trigger`, the
+`on_defend_vs_ally_reflect_damage` arm.
+

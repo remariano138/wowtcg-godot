@@ -47,6 +47,12 @@ var attachments: Array[String] = []    # instance_ids of cards attached to this 
 #   stolen_ids     — on the thief: instance_ids of every card it currently holds.
 # When the link breaks (the thief leaves play, or stops being in the same party
 # because its own controller changed) control reverts to the card's OWNER.
+# Which condition keeps a borrowed-control link alive (see
+# GameLogic._check_borrowed_control). Carried on the STOLEN card so the
+# primitive can evaluate it without a database:
+#   "in_party"         — Nyn'jah: the thief is in play and shares its controller
+#   "source_exhausted" — Helwen: …and the thief is still EXHAUSTED
+var stolen_condition: String = "in_party"
 var stolen_by: String = ""
 var stolen_ids: Array[String] = []
 
@@ -135,6 +141,7 @@ func to_dict() -> Dictionary:
 		"attached_to":      attached_to,
 		"attachments":      attachments.duplicate(),
 		"stolen_by":        stolen_by,
+		"stolen_condition": stolen_condition,
 		"stolen_ids":       stolen_ids.duplicate(),
 		"is_exhausted":     is_exhausted,
 		"face_down":        face_down,
@@ -160,6 +167,7 @@ static func from_dict(d: Dictionary) -> CardInstance:
 	inst.attached_to     = d.get("attached_to", "")
 	inst.attachments.assign(d.get("attachments", []))
 	inst.stolen_by       = d.get("stolen_by", "")
+	inst.stolen_condition = d.get("stolen_condition", "in_party")
 	inst.stolen_ids.assign(d.get("stolen_ids", []))
 	inst.is_exhausted    = d.get("is_exhausted", false)
 	inst.face_down       = d.get("face_down", false)

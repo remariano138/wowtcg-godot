@@ -209,11 +209,29 @@ static func control_discard_choice_opened(player_id: String, source_card_id: Str
 # player's own screen can show it; the RESOLVED event deliberately does not —
 # it is a "look at", so the card stays private and the shared game log may only
 # say where it went (same rule as It's a Secret to Everybody's private pick).
-static func track_look_opened(player_id: String, card_id: String) -> GameEvent:
-	return make("track_look_opened", {"player": player_id, "card": card_id})
+# `dest` is where the "move it" answer sends the card — "bottom" (Track
+# Humanoids) or "graveyard" (Gustaf Trueshot). It rides on both events so the
+# popup can label its buttons and the log can say where it went.
+static func track_look_opened(player_id: String, card_id: String,
+		dest: String = "bottom") -> GameEvent:
+	return make("track_look_opened", {"player": player_id, "card": card_id, "dest": dest})
 
-static func track_look_resolved(player_id: String, to_bottom: bool) -> GameEvent:
-	return make("track_look_resolved", {"player": player_id, "to_bottom": to_bottom})
+static func track_look_resolved(player_id: String, moved: bool,
+		dest: String = "bottom") -> GameEvent:
+	return make("track_look_resolved", {"player": player_id, "to_bottom": moved,
+		"moved": moved, "dest": dest})
+
+# Stoneform: "Destroy any number of abilities attached to your hero." A choice
+# (not a target), so candidate_ids are the caster's own hero's current
+# attachments — board-public, unlike Track Humanoids' private look.
+static func stoneform_destroy_required(player_id: String, source_card_id: String,
+		candidate_ids: Array[String]) -> GameEvent:
+	return make("stoneform_destroy_required", {
+		"player": player_id, "source": source_card_id, "candidates": candidate_ids,
+	})
+
+static func stoneform_destroy_resolved(player_id: String, destroyed_ids: Array[String]) -> GameEvent:
+	return make("stoneform_destroy_resolved", {"player": player_id, "destroyed": destroyed_ids})
 
 static func control_changed(card_id: String, old_controller: String, new_controller: String) -> GameEvent:
 	return make("control_changed", {"card": card_id, "old": old_controller, "new": new_controller})
@@ -414,10 +432,13 @@ static func feral_rage_declined(player_id: String) -> GameEvent:
 # when the controller can actually afford it; declining (or being unable to pay)
 # destroys the card, which is reported by the ordinary card_destroyed event that
 # accompanies upkeep_declined.
+# `kind` is what the upkeep is paid in: "resources" (Rain of Fire) or "discard"
+# (Last Stand), where `cost` is a card count. It rides on the event so the popup
+# can word itself without re-reading the source card.
 static func upkeep_choice_opened(player_id: String, card_id: String,
-		cost: int) -> GameEvent:
+		cost: int, kind: String = "resources") -> GameEvent:
 	return make("upkeep_choice_opened", {
-		"player": player_id, "card_id": card_id, "cost": cost,
+		"player": player_id, "card_id": card_id, "cost": cost, "kind": kind,
 	})
 
 static func upkeep_paid(player_id: String, card_id: String, cost: int) -> GameEvent:
@@ -594,11 +615,14 @@ static func quest_choice_opened(player_id: String, quest_id: String,
 		"modes": modes, "can_both": can_both,
 	})
 
-# Hidden Enemies: the completer must pick the ally that gains ferocity this turn.
-static func quest_ferocity_target_required(quest_id: String,
-		player_id: String) -> GameEvent:
-	return make("quest_ferocity_target_required", {
-		"quest_id": quest_id, "player": player_id,
+# The completer must pick the ally that receives this reward's this-turn grant.
+# `kind` says which grant, so the UI can word the prompt and the AI can pick a
+# side: "ferocity" (Hidden Enemies — you want it on your OWN ally) or
+# "cannot_attack" (The Perfect Stout — you want it on an OPPOSING one).
+static func quest_ally_grant_target_required(quest_id: String,
+		player_id: String, kind: String = "ferocity") -> GameEvent:
+	return make("quest_ally_grant_target_required", {
+		"quest_id": quest_id, "player": player_id, "kind": kind,
 	})
 
 # Dragonkin Menace: the completer must choose a hero or ally in their own party

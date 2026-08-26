@@ -1458,6 +1458,36 @@ func _has_live_pos_tween(card_id: String) -> bool:
 # Skips cards with a live position tween (_pos_tweens) so it never fights motion.
 # The pulse cue does NOT block it — that cue animates scale, not rotation, so
 # ready/exhaust can be reasserted at any time while a card is pulsing.
+# ── Summoning-sickness badge (Zzz / Rrrrr) ──────────────────────────────────
+# Generic over how a card entered the ally_row — hand play, a minted token,
+# reanimation, a control steal (Nyn'jah, Staff of Dominance) — since it reads
+# only CardInstance.just_summoned rather than the specific transition that
+# caused it. `refresh_sick_badge` is the per-card entry point (called right
+# after a card_moved event); `reconcile_from_state`'s self-heal pass below
+# calls the same logic for every card, so a transition that isn't reachable
+# through card_moved (or is missed by it) still corrects itself at the next
+# turn/phase change.
+func _update_sick_badge(cn: CardNode, card, db, state = null) -> void:
+	if not cn or not is_instance_valid(cn):
+		return
+	if card == null or not str(card.zone_id).ends_with("_ally_row") or not card.just_summoned:
+		cn.hide_sick_badge()
+		return
+	# Ferocity can be printed OR granted (Lust for Battle's "all allies have
+	# ferocity" aura, Into the Fray's this-turn grant) — StackResolver._has_keyword
+	# is the one live read that covers both, so the badge can't disagree with
+	# what get_legal_attackers actually allows.
+	var is_ferocity := StackResolver._has_keyword(card, "ferocity", db, state)
+	cn.show_sick_badge(is_ferocity)
+
+
+func refresh_sick_badge(card_id: String, state, db) -> void:
+	var cn := card_nodes.get(card_id) as CardNode
+	if not cn:
+		return
+	_update_sick_badge(cn, state.get_card(card_id) if state else null, db, state)
+
+
 func reconcile_from_state(state, force := false) -> void:
 	if state == null:
 		return
@@ -1491,6 +1521,7 @@ func reconcile_from_state(state, force := false) -> void:
 						host_cn, host_cn.global_position, max(idx, 0), cn)
 			continue
 		cn.is_attachment = false
+		_update_sick_badge(cn, card, _stack_db, state)
 		# Self-heal chain visibility: a card on the chain is represented by the
 		# Chain window, never on the board. Cards mid-flight are skipped above
 		# (live pos tween), so this never cuts an animation short.

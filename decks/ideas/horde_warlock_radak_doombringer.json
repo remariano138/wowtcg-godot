@@ -9,6 +9,11 @@
       "_card_name": "Lazy Peons"
     },
     {
+      "card_def_id": "azeroth_347",
+      "count": 1,
+      "_card_name": "Battle of Darrowshire"
+    },
+    {
       "card_def_id": "azeroth_355",
       "count": 3,
       "_card_name": "Kibler's Exotic Pets"
@@ -29,19 +34,14 @@
       "_card_name": "Hidden Enemies"
     },
     {
-      "card_def_id": "azeroth_347",
+      "card_def_id": "azeroth_327",
       "count": 1,
-      "_card_name": "Battle of Darrowshire"
+      "_card_name": "Hypnotic Blade"
     },
     {
-      "card_def_id": "dark_portal_282",
+      "card_def_id": "azeroth_282",
       "count": 1,
-      "_card_name": "Staff of Dominance"
-    },
-    {
-      "card_def_id": "azeroth_298",
-      "count": 1,
-      "_card_name": "Mooncloth Robe"
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_133",
@@ -49,9 +49,9 @@
       "_card_name": "Soul Link"
     },
     {
-      "card_def_id": "azeroth_126",
+      "card_def_id": "azeroth_154",
       "count": 1,
-      "_card_name": "Helwen"
+      "_card_name": "Lust for Battle"
     },
     {
       "card_def_id": "azeroth_127",
@@ -69,24 +69,39 @@
       "_card_name": "Shadow Bolt"
     },
     {
-      "card_def_id": "azeroth_225",
+      "card_def_id": "azeroth_258",
       "count": 2,
-      "_card_name": "Arnold Flem"
+      "_card_name": "Samuel Grey"
     },
     {
-      "card_def_id": "azeroth_248",
+      "card_def_id": "azeroth_266",
       "count": 4,
-      "_card_name": "Ka'tali Stonetusk"
+      "_card_name": "Voss Treebender"
     },
     {
-      "card_def_id": "azeroth_246",
-      "count": 3,
-      "_card_name": "Kagra of the Crossroads"
+      "card_def_id": "azeroth_153",
+      "count": 2,
+      "_card_name": "Into the Fray"
     },
     {
       "card_def_id": "azeroth_232",
       "count": 2,
       "_card_name": "Confessor Mildred"
+    },
+    {
+      "card_def_id": "dark_portal_208",
+      "count": 2,
+      "_card_name": "Elithys Firestorm"
+    },
+    {
+      "card_def_id": "azeroth_251",
+      "count": 4,
+      "_card_name": "Mias the Putrid"
+    },
+    {
+      "card_def_id": "dark_portal_112",
+      "count": 1,
+      "_card_name": "Ritual Sacrifice"
     },
     {
       "card_def_id": "azeroth_260",
@@ -100,13 +115,18 @@
     },
     {
       "card_def_id": "azeroth_130",
-      "count": 3,
+      "count": 4,
       "_card_name": "Sarmoth"
     },
     {
       "card_def_id": "dark_portal_215",
-      "count": 4,
+      "count": 2,
       "_card_name": "Ja'zaron"
+    },
+    {
+      "card_def_id": "azeroth_226",
+      "count": 1,
+      "_card_name": "Bala Silentblade"
     },
     {
       "card_def_id": "azeroth_230",
@@ -114,18 +134,13 @@
       "_card_name": "Blood Guard Mal'wani"
     },
     {
-      "card_def_id": "azeroth_262",
-      "count": 2,
-      "_card_name": "Vaerik Proudhoof"
-    },
-    {
-      "card_def_id": "azeroth_253",
-      "count": 2,
-      "_card_name": "Ophelia Barrows"
+      "card_def_id": "azeroth_247",
+      "count": 1,
+      "_card_name": "Karkas Deathhowl"
     },
     {
       "card_def_id": "dark_portal_233",
-      "count": 2,
+      "count": 1,
       "_card_name": "Sister Rot"
     },
     {
@@ -134,9 +149,9 @@
       "_card_name": "Plagueborn Meatwall"
     },
     {
-      "card_def_id": "azeroth_236",
-      "count": 3,
-      "_card_name": "Fa'tafi"
+      "card_def_id": "azeroth_229",
+      "count": 1,
+      "_card_name": "Besh'iah"
     }
   ],
   "recommended_ai_id": "ai_generic",

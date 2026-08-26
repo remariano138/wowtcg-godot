@@ -309,7 +309,7 @@ following protect point (the normal `choose_protector` then decides whether the
 hero actually steps in). Gates: attack window open with an empty chain, we
 control the defender, the attacker's forecast ATK > 0, our hero is **ready**
 (an exhausted hero can't protect), the hero is **not already in bear form**
-(no in-play Form of ours carrying `hero_has_protector`), and no board
+(`hero_is_in_form(state, player_id, "bear", db)` — asked by NAME; the grant is not on the card to test), and no board
 protector already answers the attack (`choose_protector == ""`). Wired into
 all three AIs' `decide_action`, after `instant_protector_action`.
 

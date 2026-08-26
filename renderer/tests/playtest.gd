@@ -273,6 +273,7 @@ var _gy_view_only:     bool = false     # true = examine mode (no selection, no 
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
 var _gy_quest_shuffle_mode: bool = false  # true = Poison Water's graveyard→deck pick (multi-select; Cancel/Esc = the empty pick, not a decline)
+var _gy_stoneform_mode: bool = false   # true = Stoneform's own-hero-attachment destroy pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_circle_mode:   bool = false    # true = Circle of Life deck search (choose_circle_of_life; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
 var _gy_jocasta_mode:  bool = false    # true = Dark Cleric Jocasta's enter-play fetch (a choose_enter_play_target chain link; Cancel/Esc = decline — "you may")
@@ -2568,15 +2569,31 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 	entry.position = pos
 	entry.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
+	# Interrupt targeting (Counterspell / Escape Artist's interrupt mode) points
+	# at a LINK on the chain, not at a card in a play row — and chain cards are
+	# invisible on the board (BoardRenderer keeps their CardNode hidden), so
+	# there is no board sprite for the normal click path to hit. _chain_shield_
+	# suspended() deliberately leaves the chain window's input shield UP during
+	# interrupt mode so THIS entry can own the click instead. See the comment
+	# there.
+	var card_id: String = str(action.params.get("card_id", ""))
+	var interruptable := card_id != "" and _router != null \
+		and _router._is_interrupt_mode() \
+		and card_id in _router._get_instant_targets(_router._targeting_source)
+
 	var frame := Panel.new()
 	frame.custom_minimum_size = Vector2.ZERO
 	frame.size = Vector2(CHAIN_CARD_W, CHAIN_CARD_H)
 	frame.clip_contents = true   # belt-and-suspenders: never let a child's own minimum size push the box larger
-	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.mouse_filter = Control.MOUSE_FILTER_STOP if interruptable else Control.MOUSE_FILTER_IGNORE
+	if interruptable:
+		frame.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		frame.gui_input.connect(_on_chain_entry_gui_input.bind(card_id))
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.12, 0.13, 0.16, 0.92)
 	sb.set_border_width_all(2)
-	sb.border_color = Color(1.0, 0.9, 0.3) if is_top else Color(0.45, 0.48, 0.55)
+	sb.border_color = Color(0.2, 1.0, 0.3) if interruptable \
+		else (Color(1.0, 0.9, 0.3) if is_top else Color(0.45, 0.48, 0.55))
 	frame.add_theme_stylebox_override("panel", sb)
 	entry.add_child(frame)
 
@@ -2666,6 +2683,14 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 		tgt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		entry.add_child(tgt)
 	return entry
+
+
+# Interrupt targeting only (see the comment in _make_chain_entry): clicking a
+# green-bordered chain entry targets that link, same as clicking a board card
+# under any other targeting mode.
+func _on_chain_entry_gui_input(ev: InputEvent, card_id: String) -> void:
+	if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+		_router.handle_card_click(card_id)
 
 
 # The targets announced with a pending action, for the chain entry's second
@@ -3834,15 +3859,6 @@ func _on_game_event(event: GameEvent) -> void:
 				SoundManager.play_random("SFX_CardGrab")
 			elif from_zone.ends_with("_hand") and not to_zone.ends_with("_hand"):
 				SoundManager.play_random("SFX_CardMoveFast")
-			# Show summoning-sickness badge when an ally enters the ally_row from hand.
-			if to_zone.ends_with("_ally_row") and from_zone.ends_with("_hand") and _state and _db:
-				var sick_card := _state.get_card(moved_id)
-				if sick_card and sick_card.just_summoned:
-					var sick_def := _db.get_def(sick_card.card_def_id) as CardDef
-					var is_ferocity := sick_def != null and "ferocity" in sick_def.keywords
-					var sick_cn := _renderer.card_nodes.get(moved_id) as CardNode
-					if sick_cn:
-						sick_cn.show_sick_badge(is_ferocity)
 			# A token is minted mid-game and has never been in a zone, so no node
 			# exists for it — spawn one as it enters the ally_row (same pattern as
 			# the drawn-card branch below).
@@ -3867,6 +3883,11 @@ func _on_game_event(event: GameEvent) -> void:
 					# Renderer's _animate_move already ran before this node existed,
 					# so trigger the layout manually now that the node is registered.
 					_renderer.relayout_zone(to_zone)
+			# Summoning-sickness badge (Zzz / Rrrrr): generic over the route into
+			# or out of the ally_row (hand play, a minted token, reanimation, a
+			# control steal…) — see BoardRenderer.refresh_sick_badge.
+			if (to_zone.ends_with("_ally_row") or from_zone.ends_with("_ally_row")) and _state and _db:
+				_renderer.refresh_sick_badge(moved_id, _state, _db)
 			_refresh_ui()
 			if event.payload.get("from", "") == "chain":
 				_schedule_next_turn()
@@ -3998,8 +4019,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_reveal_pick(event.payload)
 		"quest_choice_opened":
 			_handle_quest_choice(event.payload)
-		"quest_ferocity_target_required":
-			_handle_quest_ferocity_target(event.payload)
+		"quest_ally_grant_target_required":
+			_handle_quest_ally_grant_target(event.payload)
 		"quest_ready_target_required":
 			_handle_quest_ready_target(event.payload)
 		"weapon_ready_required":
@@ -4008,6 +4029,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_plague_destroy(event.payload)
 		"quest_shuffle_required":
 			_handle_quest_shuffle(event.payload)
+		"stoneform_destroy_required":
+			_handle_stoneform_destroy(event.payload)
 		"quest_facedown_required":
 			_handle_quest_facedown(event.payload)
 		"ferocity_granted":
@@ -4941,7 +4964,38 @@ func _handle_trigger_target(payload: Dictionary) -> void:
 	var ctrl: String     = payload.get("player", "")
 	var dmg_type: String = payload.get("dmg_type", "")
 	var amount: int      = payload.get("amount", 0)
+	var key: String      = payload.get("key", "")
 	var ctrl_type := _p1_type if ctrl == "p1" else _p2_type
+	# Spiritual Healing's trigger HEALS, so the generic opponent-only enumeration
+	# below is exactly backwards for it — repair our own board instead (the same
+	# friendly arm Ra'chee's enter-play heal needed). Our most damaged character,
+	# hero winning a tie: it is the one character whose loss ends the game.
+	if ctrl_type != "human" and key == "on_play_ability_heal":
+		var best := ""
+		var best_dmg := -1
+		var ps_own := _state.players.get(ctrl) as PlayerState
+		var own_legal := StackResolver.get_turn_start_trigger_targets(_state, _db)
+		var own_pool: Array[String] = []
+		if ps_own and ps_own.hero_instance_id != "":
+			own_pool.append(ps_own.hero_instance_id)
+		for ally in _state.cards_in_zone(ctrl + "_ally_row"):
+			own_pool.append(ally.instance_id)
+		for tid in own_pool:
+			if not (tid in own_legal):
+				continue
+			var c := _state.get_card(tid)
+			if not c:
+				continue
+			# Strictly greater, and the hero is first in the pool, so it keeps a tie.
+			if c.damage_taken > best_dmg:
+				best_dmg = c.damage_taken
+				best = tid
+		if best == "" and not own_legal.is_empty():
+			best = own_legal[0]   # forced to pick: a no-op heal is still legal
+		EventBus.emit_events(StackResolver.choose_trigger_target(_state, best, _db))
+		_refresh_ui()
+		_schedule_next_turn()
+		return
 	if ctrl_type != "human":
 		# AI picks a target: prefer an opposing character it can kill with this
 		# damage, else the opposing hero. Never self-harm (AI convention).
@@ -5197,25 +5251,31 @@ func _clear_quest_choice_nodes() -> void:
 	_quest_choice_nodes.clear()
 
 
-# Hidden Enemies: the completer picks the ally that gains ferocity this turn.
-func _handle_quest_ferocity_target(payload: Dictionary) -> void:
+# The completer picks the ally that receives this reward's this-turn grant:
+# Hidden Enemies' ferocity, or The Perfect Stout's attack lock. One choice
+# point, one pool — `kind` only changes the wording of the prompt.
+func _handle_quest_ally_grant_target(payload: Dictionary) -> void:
 	var player: String   = payload.get("player", "")
 	var quest_id: String = payload.get("quest_id", "")
+	var kind: String     = payload.get("kind", "ferocity")
 	if _route_choice(player, "public") == "ai":
 		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
 		var target_id := ""
 		if ai_obj is BaseAI:
-			target_id = (ai_obj as BaseAI).choose_quest_ferocity_target(_state, _db, player)
+			target_id = (ai_obj as BaseAI).choose_quest_ally_grant_target(_state, _db, player)
 		else:
-			var legal := StackResolver.get_quest_ferocity_targets(_state, _db)
+			var legal := StackResolver.get_quest_ally_grant_targets(_state, _db)
 			target_id = legal[0] if not legal.is_empty() else ""
-		var events := StackResolver.choose_quest_ferocity_target(_state, target_id, _db)
+		var events := StackResolver.choose_quest_ally_grant_target(_state, target_id, _db)
 		EventBus.emit_events(events)
 		_refresh_ui()
 		_schedule_next_turn()
 	else:
-		_router.start_quest_ferocity_targeting(quest_id)
-		_set_status("🐺 Select the ally that gains ferocity this turn")
+		_router.start_quest_ally_grant_targeting(quest_id)
+		if kind == "cannot_attack":
+			_set_status("🍺 Select the ally that can't attack this turn")
+		else:
+			_set_status("🐺 Select the ally that gains ferocity this turn")
 		_refresh_ui()
 
 
@@ -5330,6 +5390,44 @@ func _resolve_quest_shuffle_choice(picks: Array) -> void:
 	var events := StackResolver.choose_quest_graveyard_shuffle(_state, picks, _db)
 	EventBus.emit_events(events)
 	_on_quest_flow_resolved()
+
+
+# Stoneform: "Destroy any number of abilities attached to your hero." Board-
+# public (both players already see attachments in play), like the quest
+# reward choices, so no hand hiding / handoff.
+func _handle_stoneform_destroy(payload: Dictionary) -> void:
+	var player: String  = payload.get("player", "")
+	var card_ids: Array = payload.get("candidates", [])
+	if _route_choice(player, "public") == "ai":
+		var picks: Array = []
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			picks = (ai_obj as BaseAI).choose_stoneform_destroy(_state, _db, player)
+		var events := StackResolver.choose_stoneform_destroy(_state, picks, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Stoneform — destroy any number of abilities attached to your hero",
+			0, card_ids.size())
+	_gy_stoneform_mode = true
+	_gy_confirm_btn.text = "Destroy them (C)"
+	_gy_cancel_btn.text  = "Destroy none (Esc)"
+	_set_status("🪨 Choose any number of abilities attached to your hero to destroy")
+	_refresh_ui()
+
+
+# Shared exit for the Stoneform browser: an empty array is a legal answer.
+func _resolve_stoneform_choice(picks: Array) -> void:
+	_gy_stoneform_mode = false
+	_close_gy_dialog()
+	var events := StackResolver.choose_stoneform_destroy(_state, picks, _db)
+	_exit_choice_peek_mode()
+	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
 
 
 # Kolkar: the TARGET player turns one of their face-up quests face down.
@@ -5467,6 +5565,14 @@ func _on_targeting_cancelled() -> void:
 	# bow out of picking. If one is still pending after a cancel, restart targeting
 	# from the front queued trigger so the human is asked again instead of locked.
 	if _state and _state.pending_trigger_target_player != "" \
+			and not _state.pending_play_triggers.is_empty() \
+			and _state.pending_trigger_kind == "play":
+		var ptrig: Dictionary = _state.pending_play_triggers[0]
+		var ptrig_args: Array = ptrig.get("args", [])
+		_router.start_trigger_targeting(ptrig.get("card_id", ""), "",
+			int(ptrig_args[0]) if ptrig_args.size() > 0 else 0)
+		return
+	if _state and _state.pending_trigger_target_player != "" \
 			and not _state.pending_turn_start_triggers.is_empty():
 		var trig: Dictionary = _state.pending_turn_start_triggers[0]
 		# The queue carries the raw effects args (see GameState.pending_turn_start_triggers);
@@ -5479,8 +5585,8 @@ func _on_targeting_cancelled() -> void:
 		return
 	# Hidden Enemies' ferocity pick is mandatory once the mode was chosen — if a
 	# cancel somehow fired while it is pending, restart targeting.
-	if _state and _state.pending_quest_ferocity_player != "":
-		_router.start_quest_ferocity_targeting(_state.pending_quest_ferocity_source)
+	if _state and _state.pending_quest_ally_grant_player != "":
+		_router.start_quest_ally_grant_targeting(_state.pending_quest_ally_grant_source)
 		return
 	# Dragonkin Menace's ready pick is mandatory too — restart it on a stray cancel.
 	if _state and _state.pending_quest_ready_player != "":
@@ -6029,6 +6135,9 @@ func _on_gy_confirm_pressed() -> void:
 	if _gy_quest_shuffle_mode:
 		_resolve_quest_shuffle_choice(_gy_selected.duplicate())
 		return
+	if _gy_stoneform_mode:
+		_resolve_stoneform_choice(_gy_selected.duplicate())
+		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
 		return
@@ -6117,6 +6226,11 @@ func _on_gy_cancel_pressed() -> void:
 		# empty pick, which still resolves it (and still shuffles the deck).
 		_resolve_quest_shuffle_choice([])
 		return
+	if _gy_stoneform_mode:
+		# Mandatory choice point, but "any number" includes zero — Esc/Cancel
+		# is the empty pick, which still resolves it (destroying nothing).
+		_resolve_stoneform_choice([])
+		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice("")   # "you may" — Esc/Cancel declines the fetch
 		return
@@ -6190,6 +6304,7 @@ func _close_gy_dialog() -> void:
 	_gy_jocasta_mode = false
 	_gy_jocasta_source = ""
 	_gy_quest_shuffle_mode = false
+	_gy_stoneform_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
 	_gy_dialog.visible = false
@@ -7208,10 +7323,22 @@ func _show_upkeep_inline(payload: Dictionary) -> void:
 	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
 	var card_name: String = def.name if def else "this card"
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
-	var header_text := "%s%s — pay %d or destroy it" % [prefix, card_name, cost]
+	# The upkeep is paid in resources (Rain of Fire) or in CARDS (Last Stand) —
+	# same choice point, so only the wording differs. Paying a discard cost then
+	# opens the ordinary discard picker for which cards go.
+	var pay_in_cards: bool = String(payload.get("kind", "resources")) == "discard"
+	var header_text: String
+	var pay_label: String
+	if pay_in_cards:
+		var noun := "card" if cost == 1 else "cards"
+		header_text = "%s%s — discard %d %s or destroy it" % [prefix, card_name, cost, noun]
+		pay_label = "Discard %d %s: keep %s" % [cost, noun, card_name]
+	else:
+		header_text = "%s%s — pay %d or destroy it" % [prefix, card_name, cost]
+		pay_label = "Pay %d: keep %s" % [cost, card_name]
 	var buttons: Array = [
 		{
-			"text": "Pay %d: keep %s" % [cost, card_name],
+			"text": pay_label,
 			"callback": func() -> void: _resolve_upkeep(true),
 		},
 		{
@@ -7416,14 +7543,24 @@ func _show_track_look_inline(payload: Dictionary) -> void:
 
 	var who: String = payload.get("player", "")
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
-	var header_text := "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
+	# Same binary choice on the same private card in both flavours — only the
+	# destination differs (Track Humanoids buries, Gustaf Trueshot mills).
+	var to_graveyard: bool = String(payload.get("dest", "bottom")) == "graveyard"
+	var header_text: String
+	var move_label: String
+	if to_graveyard:
+		header_text = "%sGustaf Trueshot — top card is %s. Keep it or bin it?" % [prefix, card_name]
+		move_label = "Graveyard"
+	else:
+		header_text = "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
+		move_label = "Bottom"
 	var buttons: Array = [
 		{
 			"text": "Top (keep it)",
 			"callback": func() -> void: _resolve_track_look(false),
 		},
 		{
-			"text": "Bottom",
+			"text": move_label,
 			"callback": func() -> void: _resolve_track_look(true),
 		},
 	]

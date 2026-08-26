@@ -201,6 +201,22 @@ var pending_feral_rage_cost: int = 0
 # (direct call, like the whelp bounce). "" = none pending.
 var pending_track_look_player: String = ""
 var pending_track_look_card_id: String = ""
+# Where the "move it" answer sends the looked-at card. "bottom" = Track
+# Humanoids ("put it on the bottom of your deck"); "graveyard" = Gustaf
+# Trueshot ("put it into your graveyard"). The two cards are the same binary
+# choice on the same private card, so they share the whole point — the
+# destination is the only thing that differs, and it rides here rather than
+# being re-derived from the source at resolution.
+var pending_track_look_dest: String = "bottom"
+# Stoneform (dark_portal_132): "Destroy any number of abilities attached to
+# your hero." A CHOICE (not a target — nothing is announced), opened as
+# Stoneform resolves into play. Candidates are recomputed live from the
+# caster's hero's attachments (StackResolver.get_stoneform_destroy_candidates),
+# so only the source card id needs to be tracked here. Resolved via
+# StackResolver.choose_stoneform_destroy() (direct call, like the whelp
+# bounce). "" = none pending.
+var pending_stoneform_player: String = ""
+var pending_stoneform_source: String = ""
 # Rain of Fire (azeroth_129): "Ongoing: At the start of your turn, pay (4) or
 # destroy Rain of Fire." The upkeep point — a pay-or-lose-it decision opened from
 # the RESOLUTION of the card's start-of-turn trigger (709.2b: the payment is
@@ -214,6 +230,11 @@ var pending_track_look_card_id: String = ""
 var pending_upkeep_player: String = ""    # who must decide now; "" = none
 var pending_upkeep_card_id: String = ""   # the card that will be destroyed if unpaid
 var pending_upkeep_cost: int = 0
+# What the upkeep is paid IN. "resources" = Rain of Fire ("pay (4) or destroy
+# it"); "discard" = Last Stand ("discard two cards or destroy it"), where
+# pending_upkeep_cost is a CARD count and paying opens the ordinary pending
+# discard. Same choice point either way — only the currency differs.
+var pending_upkeep_kind: String = "resources"
 # Attack-exhaust point (Chops / Voss Treebender: "When [this] attacks, you may
 # exhaust target hero or ally."): non-empty while the attacker's controller may
 # pick a target to exhaust (or decline). Opened at combat-step start (602.1),
@@ -341,6 +362,28 @@ var pending_reveal_pick_private: bool = false
 # per 709.2b they are made as the link resolves (Infernal's discard).
 var pending_turn_start_triggers: Array = []
 var pending_trigger_target_player: String = ""  # must pick a target for triggers[0]; "" = none
+# WHICH queue that pending target choice belongs to: "turn_start" or "play".
+# The two share the choice point (and therefore the whole UI and AI flow), so
+# this is what tells StackResolver.choose_trigger_target which queue to pop and
+# which link type to announce — the pending_attack_exhaust_kind pattern.
+var pending_trigger_kind: String = "turn_start"
+
+# ── Play-triggered effects (rule 708.1 — "When you play a Holy ability, …") ───
+# The third twin of pending_turn_start_triggers, for ongoing powers that watch
+# their own controller PLAYING a card (Spiritual Healing). Per 708.1 the trigger
+# fires as the card is played — i.e. as it is announced onto the chain — and the
+# effect it creates is added to the chain during that same PPP, ON TOP of the
+# card that triggered it. So the trigger RESOLVES FIRST, and it still resolves
+# when the card beneath it is interrupted (711) or fizzles.
+#
+# Entries are {card_id, controller, key, args} like the other two queues, so the
+# dispatch lives in one place (StackResolver._resolve_play_trigger).
+#
+# Drained ONE AT A TIME by StackResolver.advance_play_triggers: called as the
+# play is announced, and again after each such link resolves — the chain is NOT
+# empty while this drains (the triggering card is still on it), which is exactly
+# why it can't reuse the turn-start queue's chain-empty drain point.
+var pending_play_triggers: Array = []
 
 # ── Combat-step triggered effects (rule 602.1 / 602.3 / 708.1) ───────────────
 # The combat-step twin of pending_turn_start_triggers, and it exists for the same
@@ -377,9 +420,16 @@ var pending_quest_choice_quest: String = ""    # quest instance id (UI)
 var pending_quest_choice_modes: Array = []     # [{mode: String, available: bool}] in printed order
 var pending_quest_choice_can_both: bool = false
 var quest_mode_queue: Array = []               # [{player, quest_id, mode}] — front = next to run
-# Hidden Enemies "Target ally has ferocity this turn": completer picks the ally.
-var pending_quest_ferocity_player: String = ""
-var pending_quest_ferocity_source: String = ""  # quest instance id (buff source / UI)
+# A quest reward that grants a this-turn effect to a TARGET ally the completer
+# picks: Hidden Enemies' "Target ally has ferocity this turn" and The Perfect
+# Stout's "Target ally can't attack this turn". Same choice point, same pool
+# (any in-play ally either party, 706 respected) — only the grant differs, so
+# WHICH one rides here rather than being re-derived from the quest at
+# resolution. The UI and AI ask for "the legal targets" without knowing which
+# reward opened the point (the Gartok pending_attack_exhaust_kind pattern).
+var pending_quest_ally_grant_player: String = ""
+var pending_quest_ally_grant_source: String = ""  # quest instance id (buff source / UI)
+var pending_quest_ally_grant_kind: String = ""    # "ferocity" | "cannot_attack"
 # Dragonkin Menace "Reward: Ready a hero or ally in your party": the completer
 # CHOOSES one of their own characters (not a target — Untargetable is irrelevant).
 var pending_quest_ready_player: String = ""
@@ -691,6 +741,64 @@ func _pending_berserk_atk(player_id: String, db) -> int:
 # controller's party — continuous modifiers that live on another card in play
 # and affect a dynamic set, so they can't be pre-placed as buffs (the source may
 # outlive, or predate, the cards it buffs). New party auras add a match arm here.
+# ── Form definitions ─────────────────────────────────────────────
+# What each named form MEANS. A form is not a bag of segments a card happens to
+# carry — it is a glossary entry, and the parenthetical reminder text printed on
+# every card that grants one ("bear form (Has protector. Destroy this card when
+# you strike with a weapon or play a non-Feral ability.)") is restating THIS,
+# not saying anything card-specific. So the properties live here, keyed on the
+# name, and a card grants them by declaring `form_state:<name>` and nothing more.
+#
+# That is what makes the form name the single source of truth: reading "bear"
+# implies protector and the Feral break, with no way for a card to declare the
+# state and forget the grant. Before this table each Form card repeated
+# `hero_has_protector|form_break:Feral` by hand, and omitting either silently
+# produced a bear form that didn't protect or couldn't break.
+#
+# Entry fields (all optional):
+#   keywords            Array  — keywords granted to the controller's HERO
+#   atk_while_attacking int    — +N ATK to the HERO while it is attacking
+#   break_tag           String — `form_break` tag: destroyed when its controller
+#                                strikes with a weapon or plays an ability
+#                                WITHOUT this tag. "" / absent = never breaks
+#                                that way (Travel Form).
+#
+# It lives on GameState, beside hero_form_states, because being in a form IS
+# game state and a continuous modifier has to read both from inside get_atk —
+# and GameState must not depend on StackResolver.
+#
+# NOT for unnamed forms: Shadowform occupies the Form (1) slot but declares no
+# `form_state`, and its inverted break (`form_break_on:Holy`) is genuinely its
+# own text. Such cards keep their explicit segments.
+const FORM_GRANTS := {
+	"bear": {"keywords": ["protector"], "break_tag": "Feral"},
+	"cat": {"atk_while_attacking": 1, "break_tag": "Feral"},
+}
+
+
+# The FORM_GRANTS entry for a form name, or {} when the name is unknown.
+static func form_grants(form_name: String) -> Dictionary:
+	if form_name == "":
+		return {}
+	return FORM_GRANTS.get(form_name.to_lower(), {})
+
+
+# Every form name a DEF declares its controller's hero to be in (`form_state:X`).
+# The def-side half of hero_form_states, split out so the resolver can ask what
+# a card in hand would grant without it being in play yet.
+static func def_form_states(def: CardDef) -> Array:
+	var names: Array = []
+	if not def or def.effects == "":
+		return names
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() > 1 and parts[0].strip_edges() == "form_state":
+			var n := parts[1].strip_edges().to_lower()
+			if n != "" and not (n in names):
+				names.append(n)
+	return names
+
+
 # ── Form state ("your hero is in bear form") ──────────────────────────────────
 # Every form name the player's in-play Form cards declare their hero to be in.
 # The single implementation of that read: StackResolver.hero_is_in_form (the
@@ -707,16 +815,38 @@ func hero_form_states(player_id: String, db) -> Array:
 	if not db:
 		return names
 	for card in cards_in_zone(player_id + "_hero_row"):
-		var def: CardDef = db.get_def(card.card_def_id)
-		if not def or def.effects == "":
-			continue
-		for entry in def.effects.split("|"):
-			var parts := entry.strip_edges().split(":")
-			if parts.size() > 1 and parts[0].strip_edges() == "form_state":
-				var n := parts[1].strip_edges().to_lower()
-				if n != "" and not (n in names):
-					names.append(n)
+		for n in def_form_states(db.get_def(card.card_def_id)):
+			if not (n in names):
+				names.append(n)
 	return names
+
+
+# True when a form the player's hero is currently in grants `keyword` to it
+# (FORM_GRANTS → "keywords"). Read live off hero_form_states, so the grant lifts
+# the instant the Form leaves play by any route — a break, a destroy, a second
+# Form sacrificed to the 414.3b slot check. StackResolver._has_keyword funnels
+# every hero keyword question through this, so bear form's protector needs no
+# flag on the card and no branch of its own in get_legal_protectors.
+func hero_form_keyword(player_id: String, keyword: String, db) -> bool:
+	if keyword == "":
+		return false
+	for form_name in hero_form_states(player_id, db):
+		if keyword in form_grants(form_name).get("keywords", []):
+			return true
+	return false
+
+
+# Total "+N ATK while attacking" the player's live forms grant their hero
+# (FORM_GRANTS → "atk_while_attacking") — cat form's +1. Summed across forms
+# rather than short-circuited: the Form (1) slot allows only one today, but the
+# arithmetic should not be the thing that assumes it. Defender-INdependent, so
+# it is safe inside assume_attacking forecasts and the get_legal_attackers hero
+# gate (unlike Bala's atk_vs_exhausted_defender). Never cached.
+func hero_form_atk_while_attacking(player_id: String, db) -> int:
+	var total := 0
+	for form_name in hero_form_states(player_id, db):
+		total += int(form_grants(form_name).get("atk_while_attacking", 0))
+	return total
 
 
 func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
@@ -817,6 +947,16 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 						var owner_ps := players.get(inst.controller) as PlayerState
 						if owner_ps and owner_ps.hero_instance_id == inst.instance_id:
 							bonus += int(p[1]) if p.size() > 1 else 1
+	# Form-derived hero ATK (cat form's "+1 ATK while attacking"). Sourced from
+	# the FORM_GRANTS table keyed on the form NAME, not from a segment on the
+	# Form card — so Cat Form and Claw both grant it by declaring `form_state:cat`
+	# and nothing else. The explicit `hero_atk_while_attacking` arm above stays
+	# for a future NON-form card printing the same grant; no shipped card carries
+	# both, so there is nothing to double-count.
+	if is_attacking:
+		var form_ps := players.get(inst.controller) as PlayerState
+		if form_ps and form_ps.hero_instance_id == inst.instance_id:
+			bonus += hero_form_atk_while_attacking(inst.controller, db)
 	bonus += _opposing_atk_aura(inst, inst_is_ally, db)
 	bonus += _marked_target_atk_aura(inst, inst_is_ally, db)
 	return bonus
@@ -980,6 +1120,27 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 	var bonus := 0
 	var def: CardDef = db.get_def(inst.card_def_id)
 	if def and def.card_type == "Hero":
+		# "Ongoing: Your hero has +N health." (Last Stand) — the ONLY health aura
+		# that reaches a hero, so it is answered here and the ally-scoped auras
+		# below are skipped entirely (they are explicitly "allies in your party"
+		# and a hero is not an ally). Controller-scoped: the scan reads only this
+		# hero's own controller's hero_row, so the opponent's hero is never
+		# touched. Stacks per copy.
+		#
+		# Read LIVE, never cached, so the bonus lifts the instant the source
+		# leaves play — which can leave an already-damaged hero at 0 or fewer
+		# effective health. That is a state-based death (118.4/704) and it ENDS
+		# THE GAME; it is swept by StackResolver._check_aura_loss_deaths (the
+		# source being destroyed) and by drain_state_based_deaths at the priority
+		# gate (every other way it could leave play).
+		for source in cards_in_zone(inst.controller + "_hero_row"):
+			var hero_src: CardDef = db.get_def(source.card_def_id)
+			if not hero_src or hero_src.effects == "":
+				continue
+			for seg in hero_src.effects.split("|"):
+				var hp_parts := seg.strip_edges().split(":")
+				if hp_parts[0] == "hero_health_bonus" and hp_parts.size() > 1:
+					bonus += int(hp_parts[1])
 		return bonus
 	for source in cards_in_zone(inst.controller + "_ally_row"):
 		if source.instance_id == inst.instance_id:
@@ -1094,9 +1255,15 @@ func _ally_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 # after the aura resolved and lifts the instant the aura leaves play.
 # The floor is on the REDUCTION, not on the cost: a printed-0 or printed-1
 # ability is left alone entirely (the early return), the discount simply can't
-# take a more expensive one below FLOOR. TAG matches the def's type-line tags by
-# substring, the way form_break does ("Elemental Talent" matches "Elemental").
-# Stacks per copy in play.
+# take a more expensive one below FLOOR. TAG matches the def's type line by
+# substring the way form_break does — but the CSV splits a type line across TWO
+# columns (subtype_detail is card_def.gd:46 "tags"; subtype is card_def.gd:50),
+# and the school name (e.g. "Instant Ability — Elemental, Shaman") lands in
+# `card_subtype`, not `tags` — `tags` only carries it for a "TAG Talent" card
+# (Elemental Focus itself: "Elemental Talent"). Both are checked so a plain
+# Elemental ability (Purge, Lightning Bolt, Earthbind/Searing Totem — 305.3a,
+# a Totem's type line carries the school in card_subtype too) is discounted,
+# not just a same-named Talent. Stacks per copy in play.
 func _ability_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 	if not db or def.card_type != "Ability":
 		return cost
@@ -1111,7 +1278,7 @@ func _ability_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 			if p[0] != "ability_cost_mod_by_tag" or p.size() < 4:
 				continue
 			var tag := p[1].strip_edges()
-			if tag == "" or not (tag in def.tags):
+			if tag == "" or not (tag in def.card_subtype or tag in def.tags):
 				continue
 			delta += int(p[2])
 			floor_cost = max(floor_cost, int(p[3]))

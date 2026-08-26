@@ -589,7 +589,10 @@ func show_sick_badge(ferocity: bool) -> void:
 	if not _sick_badge:
 		return
 	if ferocity:
-		_sick_badge.text = "Grr"
+		# Ferocity allies ARE summoning-sick (can't use activated powers the
+		# turn they're played) but CAN still attack — distinct badge/color
+		# from the plain Zzz so that difference reads at a glance.
+		_sick_badge.text = "Rrrrr"
 		_sick_badge.add_theme_color_override("font_color", Color(0.95, 0.25, 0.15))
 	else:
 		_sick_badge.text = "Zzz"

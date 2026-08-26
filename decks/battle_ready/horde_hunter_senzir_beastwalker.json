@@ -30,27 +30,27 @@
     },
     {
       "card_def_id": "azeroth_312",
-      "count": 3,
+      "count": 2,
       "_card_name": "Annihilator"
     },
     {
-      "card_def_id": "azeroth_35",
+      "card_def_id": "azeroth_311",
       "count": 1,
+      "_card_name": "Ancient Bone Bow"
+    },
+    {
+      "card_def_id": "azeroth_35",
+      "count": 2,
       "_card_name": "Bestial Wrath"
     },
     {
-      "card_def_id": "dark_portal_39",
-      "count": 1,
-      "_card_name": "Spirit Bond"
-    },
-    {
       "card_def_id": "azeroth_40",
-      "count": 2,
+      "count": 1,
       "_card_name": "Master of the Hunt"
     },
     {
       "card_def_id": "azeroth_154",
-      "count": 1,
+      "count": 2,
       "_card_name": "Lust for Battle"
     },
     {
@@ -70,8 +70,13 @@
     },
     {
       "card_def_id": "dark_portal_32",
-      "count": 4,
+      "count": 3,
       "_card_name": "Chops"
+    },
+    {
+      "card_def_id": "azeroth_271",
+      "count": 1,
+      "_card_name": "Windseer Tarus"
     },
     {
       "card_def_id": "azeroth_36",
@@ -84,14 +89,9 @@
       "_card_name": "Voss Treebender"
     },
     {
-      "card_def_id": "azeroth_153",
-      "count": 1,
-      "_card_name": "Into the Fray"
-    },
-    {
-      "card_def_id": "azeroth_33",
+      "card_def_id": "azeroth_260",
       "count": 2,
-      "_card_name": "Arcane Shot"
+      "_card_name": "Taz'dingo"
     },
     {
       "card_def_id": "azeroth_244",
@@ -109,14 +109,14 @@
       "_card_name": "Zorm Stonefury"
     },
     {
-      "card_def_id": "azeroth_172",
-      "count": 1,
-      "_card_name": "Withdraw"
+      "card_def_id": "azeroth_45",
+      "count": 2,
+      "_card_name": "Rayder"
     },
     {
-      "card_def_id": "azeroth_156",
-      "count": 2,
-      "_card_name": "Burn Away"
+      "card_def_id": "azeroth_264",
+      "count": 3,
+      "_card_name": "Vesh'ral"
     },
     {
       "card_def_id": "dark_portal_224",
@@ -124,14 +124,9 @@
       "_card_name": "Morik"
     },
     {
-      "card_def_id": "azeroth_226",
-      "count": 2,
-      "_card_name": "Bala Silentblade"
-    },
-    {
-      "card_def_id": "azeroth_247",
-      "count": 1,
-      "_card_name": "Karkas Deathhowl"
+      "card_def_id": "azeroth_232",
+      "count": 3,
+      "_card_name": "Confessor Mildred"
     },
     {
       "card_def_id": "azeroth_155",
@@ -139,18 +134,8 @@
       "_card_name": "Skewer"
     },
     {
-      "card_def_id": "azeroth_168",
-      "count": 2,
-      "_card_name": "Shattering Blow"
-    },
-    {
-      "card_def_id": "azeroth_270",
-      "count": 1,
-      "_card_name": "Wazzuli Wildmender"
-    },
-    {
       "card_def_id": "dark_portal_226",
-      "count": 2,
+      "count": 4,
       "_card_name": "Nyn'jah"
     }
   ],

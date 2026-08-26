@@ -4,11 +4,6 @@
   "hero_card_def_id": "azeroth_1",
   "card_entries": [
     {
-      "card_def_id": "azeroth_340",
-      "count": 2,
-      "_card_name": "The Defias Brotherhood"
-    },
-    {
       "card_def_id": "azeroth_351",
       "count": 2,
       "_card_name": "A Donation of Wool"
@@ -27,6 +22,11 @@
       "card_def_id": "azeroth_350",
       "count": 3,
       "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "dark_portal_293",
+      "count": 2,
+      "_card_name": "The Perfect Stout"
     },
     {
       "card_def_id": "azeroth_342",
@@ -49,6 +49,31 @@
       "_card_name": "Mooncloth Robe"
     },
     {
+      "card_def_id": "azeroth_191",
+      "count": 1,
+      "_card_name": "King Magni Bronzebeard"
+    },
+    {
+      "card_def_id": "azeroth_90",
+      "count": 1,
+      "_card_name": "Spiritual Healing"
+    },
+    {
+      "card_def_id": "azeroth_86",
+      "count": 1,
+      "_card_name": "Resurrection"
+    },
+    {
+      "card_def_id": "azeroth_89",
+      "count": 1,
+      "_card_name": "Smite"
+    },
+    {
+      "card_def_id": "dark_portal_166",
+      "count": 1,
+      "_card_name": "Gustaf Trueshot"
+    },
+    {
       "card_def_id": "azeroth_77",
       "count": 1,
       "_card_name": "Dispel Magic"
@@ -59,19 +84,24 @@
       "_card_name": "Adept Breton"
     },
     {
+      "card_def_id": "azeroth_76",
+      "count": 2,
+      "_card_name": "Chastise"
+    },
+    {
       "card_def_id": "dark_portal_160",
       "count": 2,
       "_card_name": "\"Chipper\" Ironbane"
     },
     {
+      "card_def_id": "azeroth_181",
+      "count": 1,
+      "_card_name": "Donna Calister"
+    },
+    {
       "card_def_id": "azeroth_173",
       "count": 1,
       "_card_name": "Acolyte Demia"
-    },
-    {
-      "card_def_id": "azeroth_179",
-      "count": 1,
-      "_card_name": "Braxiss the Sleeper"
     },
     {
       "card_def_id": "azeroth_176",
@@ -85,7 +115,7 @@
     },
     {
       "card_def_id": "azeroth_219",
-      "count": 3,
+      "count": 2,
       "_card_name": "Tracker Gallen"
     },
     {
@@ -97,11 +127,6 @@
       "card_def_id": "azeroth_180",
       "count": 4,
       "_card_name": "Crazy Igvand"
-    },
-    {
-      "card_def_id": "azeroth_197",
-      "count": 2,
-      "_card_name": "Latro Abiectus"
     },
     {
       "card_def_id": "azeroth_212",
@@ -135,18 +160,13 @@
     },
     {
       "card_def_id": "azeroth_200",
-      "count": 3,
+      "count": 2,
       "_card_name": "Liba Wobblebonk"
     },
     {
       "card_def_id": "azeroth_175",
-      "count": 4,
+      "count": 2,
       "_card_name": "Anika Berlyn"
-    },
-    {
-      "card_def_id": "azeroth_218",
-      "count": 1,
-      "_card_name": "Stylean Silversteel"
     }
   ],
   "recommended_ai_id": "ai_generic",

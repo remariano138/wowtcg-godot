@@ -361,7 +361,8 @@ const YOUR_TURN_TRIGGERS := [
 	"rfg_self_next_turn",               # Tooga
 	"turn_start_discard_or_give_control",  # Infernal
 	"turn_start_look_top_card",         # Track Humanoids
-	"turn_start_pay_or_destroy",        # Rain of Fire (upkeep)
+	"turn_start_pay_or_destroy",        # Rain of Fire (upkeep, paid in resources)
+	"turn_start_discard_or_destroy",    # Last Stand (upkeep, paid in cards)
 ]
 
 
@@ -598,6 +599,34 @@ static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, d
 					"amount": amount,
 					"dmg_type": dmg_type,
 				}]))
+			"end_of_turn_create_token":
+				# King Magni Bronzebeard: "At the end of each turn, put an
+				# Alliance Dwarf Warrior ally token with 1 ATK and 1 health into
+				# play." Mya's on_enter token creation moved onto the each-turn
+				# end sweep — "each turn", so it lives HERE and not in the
+				# turn-player-scoped _apply_end_of_turn_effects: it must tick on
+				# the OPPONENT's turn too, which is what makes it two bodies a
+				# round rather than one.
+				#
+				# The token enters the SOURCE's controller's party ("into play",
+				# with no other player named), through _put_token_into_play →
+				# _bring_ally_into_play like any other entry — so summoning
+				# sickness, the uniqueness queue and the opposing-ally-enters
+				# watchers (Stone Guard Rashun) all apply. It arrives during the
+				# END phase, so it is summoning-sick either way and can attack on
+				# its controller's next turn.
+				#
+				# Rule 703.3 needs no code: this sweep only visits cards_in_play,
+				# so a Magni destroyed earlier in the turn makes nothing.
+				# Mandatory, free, no target and no choice, so it resolves inline
+				# rather than on the chain, like every other end-of-turn trigger
+				# (see data/rules_deviations.md).
+				var token_def: String = parts[1].strip_edges() if parts.size() > 1 else ""
+				var token_count: int = int(parts[2]) if parts.size() > 2 else 1
+				if token_def == "" or token_count <= 0:
+					continue
+				events.append_array(StackResolver.put_token_into_play(
+					state, card.controller, token_def, token_count, db))
 			"attached_heal_turn_end":
 				# Primal Mending: "Ongoing: At the end of each turn, your hero
 				# heals N damage from attached ally." Fireball's

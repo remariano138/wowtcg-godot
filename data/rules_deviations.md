@@ -655,25 +655,34 @@ Enforcement site: the `pay_return_hand` branch of `_fire_on_destroyed` +
 
 ---
 
-## Form break timing ("play a non-Feral ability")
+## Form break timing ("play a non-Feral ability") — RESOLVED, no longer a deviation
 
 **Rule:** glossary Bear Form / Cat Form — "When you play a non-Feral ability or
 strike with a weapon, destroy each ability that's the source of a modifier
 granting your hero bear or cat form." A triggered effect fires when the ability
 is PLAYED (announced).
 
-**Engine model:** `form_break:TAG` destroys the controller's Forms as part of
-the played ability's **resolution** (`_check_form_break_ability`, called from
-`_resolve_play_instant` and `_resolve_play_ongoing_ability`), not at announce —
-and consequently not at all if the play fizzles (card left the chain). The
-weapon-strike branch (`_check_form_break_strike` in `choose_strike`) is
-timing-faithful. Observable difference: while a non-Feral ability sits on the
-chain the form is still in play (e.g. the hero could still protect with Bear
-Form against something resolving first); by strict rules the form would already
-be destroyed. Accepted for v1.
+**Engine model:** timing-faithful on both branches. `_check_form_break_ability`
+now runs from **`submit_action`**, as the ability is announced onto the chain
+(412.1a is what "played" means), rather than from the played card's resolution;
+`_check_form_break_strike` in `choose_strike` was always faithful. So the form
+is gone before anyone gets priority on the ability — the hero can no longer
+protect with Bear Form against something that resolves first, and interrupting
+the ability (711) does not give the form back.
 
-Enforcement sites: `_check_form_break_ability` / `_check_form_break_strike` in
-`game_logic/stack_resolver.gd`.
+Two consequences of moving it, both deliberate:
+
+* **The announcement is no longer retractable** once a form has actually broken
+  — a destroyed card can't be un-destroyed, so the play carries Sever the Cord's
+  `_cost_paid_irreversibly` mark. Playing an ability that breaks no form stays
+  freely retractable.
+* The destroy is still performed **inline**, not added to the chain as its own
+  triggered effect (708.1). It is mandatory, free, targetless and choiceless, so
+  nothing could be done with the window — the same deviation Thysta / Venomstrike
+  / Watcher Mal'wi carry, and it is what "immediately" means here.
+
+Enforcement sites: `submit_action` (announcement) and `_check_form_break_strike`
+in `game_logic/stack_resolver.gd`.
 
 ## Replacement-effect order — flat bonuses before World in Flames
 

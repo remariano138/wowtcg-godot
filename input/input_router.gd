@@ -177,7 +177,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("ui_cancel"): # Escape
 		if _modal_pending_card != "":
 			cancel_modal_choice()
-		elif _targeting_action_type == "choose_quest_ferocity":
+		elif _targeting_action_type == "choose_quest_ally_grant":
 			pass   # mandatory quest-reward pick — Esc must not strand the choice
 		elif _targeting_source != "":
 			cancel_targeting()
@@ -1083,10 +1083,13 @@ func start_death_target_targeting(card_id: String) -> void:
 	start_targeting(card_id, "choose_death_target", "", 0)
 
 
-# Convenience wrapper for Hidden Enemies' "target ally has ferocity this turn"
-# reward pick. Mandatory — Esc is absorbed while this targeting is active.
-func start_quest_ferocity_targeting(quest_id: String) -> void:
-	start_targeting(quest_id, "choose_quest_ferocity", "", 0)
+# Convenience wrapper for a quest reward that grants a this-turn effect to a
+# target ally — Hidden Enemies' ferocity, The Perfect Stout's attack lock. The
+# pool is identical for both, so which grant it is never reaches the router;
+# the scene words the prompt from the event's `kind`.
+# Mandatory — Esc is absorbed while this targeting is active.
+func start_quest_ally_grant_targeting(quest_id: String) -> void:
+	start_targeting(quest_id, "choose_quest_ally_grant", "", 0)
 
 
 # Convenience wrapper for Dragonkin Menace's "ready a hero or ally in your party"
@@ -1175,7 +1178,7 @@ func targeting_action_type() -> String:
 # offering a cancel that doesn't exist.
 func targeting_is_mandatory() -> bool:
 	match _targeting_action_type:
-		"choose_trigger_target", "choose_death_target", "choose_quest_ferocity":
+		"choose_trigger_target", "choose_death_target", "choose_quest_ally_grant":
 			return true
 		"choose_enter_play_target":
 			# Optional enter-play triggers (Ghank, Karkas, Sister Rot, Bhenn) can
@@ -1324,7 +1327,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"choose_trigger_target":       _handle_trigger_targeting_click(instance_id)
 		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
-		"choose_quest_ferocity":     _handle_quest_ferocity_targeting_click(instance_id)
+		"choose_quest_ally_grant":     _handle_quest_ally_grant_targeting_click(instance_id)
 		"choose_quest_ready":        _handle_quest_ready_targeting_click(instance_id)
 		"choose_weapon_ready":       _handle_weapon_ready_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
@@ -1390,10 +1393,10 @@ func _handle_death_target_targeting_click(instance_id: String) -> void:
 		death_target_resolved.emit()
 
 
-func _handle_quest_ferocity_targeting_click(instance_id: String) -> void:
+func _handle_quest_ally_grant_targeting_click(instance_id: String) -> void:
 	# Hidden Enemies reward pick. Mandatory, direct-call resolution (no chain).
-	if instance_id in StackResolver.get_quest_ferocity_targets(state, db):
-		var events := StackResolver.choose_quest_ferocity_target(state, instance_id, db)
+	if instance_id in StackResolver.get_quest_ally_grant_targets(state, db):
+		var events := StackResolver.choose_quest_ally_grant_target(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
 		quest_flow_resolved.emit()
@@ -2023,8 +2026,8 @@ func get_playable_card_ids() -> Array:
 				return StackResolver.get_turn_start_trigger_targets(state, db)
 			"choose_death_target":
 				return StackResolver.get_active_death_target_targets(state, db)
-			"choose_quest_ferocity":
-				return StackResolver.get_quest_ferocity_targets(state, db)
+			"choose_quest_ally_grant":
+				return StackResolver.get_quest_ally_grant_targets(state, db)
 			"choose_quest_ready":
 				return StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player)
 			"choose_weapon_ready":
@@ -2134,7 +2137,9 @@ func get_playable_card_ids() -> Array:
 						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 						and state.priority_player == local_player \
 						and (not StackResolver.requires_turn_player(def) \
-							or state.turn_player == local_player):
+							or state.turn_player == local_player) \
+						and StackResolver._can_pay_extra_power_cost(
+							state, local_player, ap_extra_cost, db):
 					result.append(card.instance_id)
 			else:
 				# graveyard_ally powers (Ophelia Barrows) pick their target in the
@@ -3436,6 +3441,43 @@ func _is_ally_sacrifice_destroy_power(ally_id: String) -> bool:
 		StackResolver._ally_activated_power(def))
 
 
+# Phase-2 cursor for a two-phase sacrifice power (Gertha/Besh'iah destroy
+# something else; Mezzik/Ritual Sacrifice instead deal damage). Phase 1 is
+# always the "sacrifice" cursor (picking the body to eat); this is what the
+# EFFECT actually does with it, so a damage power gets its real damage icon
+# and amount instead of inheriting phase 1's skull.
+# Returns [dmg_type: String, amount: int].
+func _ally_sacrifice_power_effect_cursor(ally_id: String, sacrifice_id: String) -> Array:
+	var ally := state.get_card(ally_id) if state else null
+	var def := db.get_def(ally.card_def_id) as CardDef if ally and db else null
+	var ap := StackResolver._ally_activated_power(def) if def else {}
+	if ap.is_empty():
+		return ["destroy", 0]
+	var effect := ap.get("effect", "") as String
+	if effect == "deal_damage_to_target":
+		var dmg_type := (ap.get("dmg_type", "") as String).to_lower()
+		if dmg_type == "":
+			dmg_type = "melee"
+		var amount: int
+		if str(ap.get("amount_raw", "")) == "sac_atk":
+			# Mezzik Darkspark: X is the sacrificed ally's live ATK.
+			amount = state.get_atk(sacrifice_id, db) if sacrifice_id != "" else 0
+		else:
+			# Ritual Sacrifice's `hero_deals_damage` rider makes the packet
+			# hero-sourced, so it runs through Chromatic Cloak / Shadowform /
+			# World in Flames like any other hero ability damage — preview it
+			# the same way _card_dmg_amount does for hand cards.
+			var from_ability := StackResolver._has_effect_flag(def, "hero_deals_damage") \
+				and def.card_type == "Ability"
+			amount = _preview_dmg(int(ap.get("amount", 0)), dmg_type, from_ability)
+		return [dmg_type, amount]
+	if effect in ["heal_target", "heal_x_from_target"]:
+		return ["heal", 0]
+	# destroy_ally / destroy_ability / destroy_ability_or_equipment / … —
+	# Gertha, Besh'iah, and the fallback for anything future.
+	return ["destroy", 0]
+
+
 func _is_ally_damage_and_heal_power(ally_id: String) -> bool:
 	if not db or not state:
 		return false
@@ -3653,11 +3695,14 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 			# the source herself included). Esc cancels; a non-candidate no-ops.
 			if instance_id in sd_legal:
 				_targeting_first_target = instance_id
-				targeting_started.emit(_targeting_source, "destroy", 0)
+				var sd_cursor := _ally_sacrifice_power_effect_cursor(
+					_targeting_source, _targeting_first_target)
+				targeting_started.emit(_targeting_source, sd_cursor[0], sd_cursor[1])
 				refresh_highlights()
 			return
-		# Phase 2: instance_id is what the EFFECT destroys — an ally either party
-		# for Gertha, an in-play ability for Besh'iah.
+		# Phase 2: instance_id is what the EFFECT does with the sacrifice — an
+		# ally either party for Gertha, an in-play ability for Besh'iah, a
+		# damage target for Mezzik/Ritual Sacrifice.
 		if instance_id == _targeting_first_target:
 			# Clicked the sacrifice again — step back to the sacrifice pick.
 			_targeting_first_target = ""

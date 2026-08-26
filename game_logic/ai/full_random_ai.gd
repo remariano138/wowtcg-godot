@@ -46,6 +46,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var thangal := thangal_ready_action(state, db, player_id)
 	if thangal != null:
 		return thangal
+	var warrax := warrax_protector_action(state, db, player_id)
+	if warrax != null:
+		return warrax
 	# Escape Artist (BaseAI) — deterministic too.
 	var escape := escape_artist_action(state, db, player_id)
 	if escape != null:

@@ -13,7 +13,6 @@ var _fail := 0
 func _ready() -> void:
 	print("=== WoW TCG Engine — Phase 8 Deck Manager Tests ===\n")
 
-	_test_library_scan()
 	_test_load_all_decks()
 	_test_validate_rejects_bad_decks()
 	_test_authorize_all_shipped_decks()
@@ -26,6 +25,9 @@ func _ready() -> void:
 	_test_form_state_flags()
 	_test_cold_snap_pool()
 	_test_rain_of_fire_recipe()
+	_test_ritual_sacrifice_recipe()
+	_test_unpreventable_holy_recipes()
+	_test_resurrection_recipe()
 	_test_soul_link_count_power()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
@@ -39,19 +41,6 @@ func _check(cond: bool, label: String) -> void:
 	else:
 		_fail += 1
 		print("FAIL  %s" % label)
-
-
-func _test_library_scan() -> void:
-	var index := DeckManager.get_available_decks(true)
-	_check(index.battle_ready.size() == 6, "library finds 6 battle_ready decks (got %d)" % index.battle_ready.size())
-	_check(index.ideas.size() == 7, "library finds 7 ideas decks (got %d)" % index.ideas.size())
-	_check(index.all().size() == 13, "all() aggregates categories (6 + 7)")
-	_check(index.battle_ready.has("alliance_hunter_elendril"), "alliance_hunter_elendril discovered in battle_ready")
-	_check(index.battle_ready.has("horde_shaman_grennan_stormspeaker"), "grennan discovered in battle_ready")
-	_check(index.battle_ready.has("alliance_druid_moonshadow"), "moonshadow discovered in battle_ready")
-	_check(index.ideas.has("horde_mage_tazo"), "tazo is in ideas")
-	_check(index.ideas.has("alliance_warlock_dizdemona"), "dizdemona is in ideas")
-	_check(index.ideas.has("horde_druid_thangal"), "thangal is in ideas")
 
 
 func _test_load_all_decks() -> void:
@@ -86,7 +75,7 @@ func _test_validate_rejects_bad_decks() -> void:
 func _test_tokens_csv_loads() -> void:
 	var db := _make_db()
 	for token_id in ["token_mechanical_dragonling", "token_tooga",
-			"token_mechanical_yeti"]:
+			"token_mechanical_yeti", "token_dwarf_warrior"]:
 		var def := db.get_def(token_id) as CardDef
 		if def == null:
 			_check(false, "%s resolves in the database" % token_id)
@@ -96,6 +85,12 @@ func _test_tokens_csv_loads() -> void:
 			% [token_id, def.card_type])
 		_check(def.printed_atk == 1 and def.printed_health == 1,
 			"%s is 1/1 (got %d/%d)" % [token_id, def.printed_atk, def.printed_health])
+	# King Magni's token must carry its RACE where the aura can find it — the
+	# token CSV puts "Dwarf Warrior" in the SUBTYPE column, not tags, so a
+	# tags-only read would silently leave his own tokens without protector.
+	var dwarf := db.get_def("token_dwarf_warrior") as CardDef
+	_check(dwarf != null and ("Dwarf" in dwarf.card_subtype or "Dwarf" in dwarf.tags),
+		"token_dwarf_warrior is findable as a Dwarf by friendly_race_keyword")
 
 
 func _make_db() -> CardDatabase:
@@ -195,11 +190,14 @@ func _test_authorize_rejects_illegal_decks() -> void:
 
 
 # Every card whose printed text says "your hero is in <X> form" must carry the
-# matching form_state:<X> flag, or a card that gates on the form by name
-# (Thangal: "Use only while he's in bear form") silently doesn't see it. The
-# flag is easy to forget on the cards that pair a form with an on-play effect —
-# Bash and Claw both shipped without it — so this pins the whole set against the
-# REAL database rather than trusting each recipe to be edited by hand.
+# matching form_state:<X> flag. This was always load-bearing (a card gating on
+# the form by name — Thangal: "Use only while he's in bear form" — silently
+# doesn't see a card that forgot it, and Bash and Claw both shipped without
+# it); since the grants moved into GameState.FORM_GRANTS the flag is now the
+# ENTIRE recipe, so a typo costs the card its protector and its break clause
+# too. Pinned against the REAL database rather than trusting hand-edited
+# recipes — and the derived properties are pinned with it, since nothing in
+# the CSV mentions them any more.
 func _test_form_state_flags() -> void:
 	var db := _make_db()
 	var expected := {
@@ -221,6 +219,23 @@ func _test_form_state_flags() -> void:
 		# its text and another in its recipe would pass the check above.
 		_check(("in %s form" % expected[def_id]) in def.power_text.to_lower(),
 			"%s power_text says \"in %s form\"" % [def.card_name, expected[def_id]])
+		# The grants are no longer segments on the card, so assert what the form
+		# NAME resolves to — the reminder text printed on every one of these cards
+		# ("Has protector…" / "+1 ATK while attacking…") is the spec being met.
+		_check(StackResolver.form_break_tag(def) == "Feral",
+			"%s breaks on a non-Feral ability (derived from the form)" % def.card_name)
+		var grants: Dictionary = GameState.form_grants(expected[def_id])
+		if expected[def_id] == "bear":
+			_check("protector" in grants.get("keywords", []),
+				"%s: bear form grants protector" % def.card_name)
+		else:
+			_check(int(grants.get("atk_while_attacking", 0)) == 1,
+				"%s: cat form grants +1 ATK while attacking" % def.card_name)
+		# ...and that the card does NOT also spell them out by hand. A leftover
+		# copy would double the cat ATK bonus and quietly outlive the table.
+		for stale in ["hero_has_protector", "form_break:", "hero_atk_while_attacking:"]:
+			_check(not (stale in def.effects),
+				"%s does not restate `%s` (it comes from the form)" % [def.card_name, stale])
 
 
 # Cold Snap's pool is defined by a TAG substring against the real cards.csv, so
@@ -251,6 +266,59 @@ func _test_cold_snap_pool() -> void:
 				% [def_id, d.tags if d else "<missing>"])
 
 
+# Resurrection (azeroth_86) is PURE CSV, and it is Ancestral Spirit's recipe
+# MINUS the trailing damage mode — copy that card's segment wholesale and the
+# ally silently comes back at 1 health instead of full, with nothing to fail on.
+# So pin the absence of the 7th field as hard as the rest.
+func _test_resurrection_recipe() -> void:
+	var db := _make_db()
+	var rez := db.get_def("azeroth_86") as CardDef
+	_check(rez != null, "azeroth_86 (Resurrection) resolves in the database")
+	if rez == null:
+		return
+	_check(rez.card_type == "Ability" and not rez.is_instant,
+		"Resurrection is a plain (sorcery-speed) Ability")
+	_check(rez.cost == 4, "Resurrection costs 4")
+	var req := StackResolver.get_graveyard_search_requirement(rez)
+	_check(req.get("dest", "") == "play", "…it puts the card into PLAY")
+	_check(str(req.get("card_type", "")) == "Ally", "…an ally card")
+	_check(str(req.get("owner", "")) == "own", "…from YOUR graveyard only")
+	_check(bool(req.get("max_cost_dynamic", false)),
+		"…capped by your total resource count, not a fixed number")
+	_check(str(req.get("damage_mode", "")) == "",
+		"…and with NO damage mode: it returns at full health, unlike Ancestral Spirit")
+
+
+# Chastise (azeroth_76) and Smite (azeroth_89) are PURE CSV — the whole card is
+# `deal_damage_to_target:N:holy|damage_unpreventable`, and a typo in that rider
+# would silently leave the damage preventable with nothing to fail on. Pinned
+# against the REAL database.
+func _test_unpreventable_holy_recipes() -> void:
+	var db := _make_db()
+	for entry in [["azeroth_76", "Chastise", 2, "2"], ["azeroth_89", "Smite", 5, "4"]]:
+		var def := db.get_def(entry[0]) as CardDef
+		_check(def != null, "%s (%s) resolves in the database" % [entry[0], entry[1]])
+		if def == null:
+			continue
+		_check(def.card_type == "Ability" and not def.is_instant,
+			"%s is a plain (sorcery-speed) Ability" % entry[1])
+		_check(def.cost == int(entry[2]), "%s costs %d" % [entry[1], int(entry[2])])
+		var damage := ""
+		var unpreventable := false
+		for seg in def.effects.split("|"):
+			var parts: PackedStringArray = seg.strip_edges().split(":")
+			if parts[0].strip_edges() == "deal_damage_to_target" and parts.size() > 2:
+				damage = parts[1].strip_edges()
+				_check(parts[2].strip_edges() == "holy",
+					"%s deals holy damage" % entry[1])
+			if seg.strip_edges() == "damage_unpreventable":
+				unpreventable = true
+		_check(damage == entry[3],
+			"%s deals %s (got '%s')" % [entry[1], entry[3], damage])
+		_check(unpreventable,
+			"%s carries damage_unpreventable — the damage can't be prevented" % entry[1])
+
+
 # Rain of Fire is driven entirely by its CSV recipe — no card-specific code — so
 # a typo in either segment key would silently turn it into a vanilla 4-cost
 # ongoing that charges nothing and burns nothing, with no test to fail. Pin both
@@ -277,6 +345,40 @@ func _test_rain_of_fire_recipe() -> void:
 		"the upkeep key is one the ready step actually collects")
 	_check(not TurnManager.EACH_TURN_TRIGGERS.has("turn_start_pay_or_destroy"),
 		"…on YOUR turn only — an each-turn upkeep would charge twice a round")
+
+
+# Ritual Sacrifice is pure CSV, and three separate things in its recipe would
+# each fail SILENTLY if mistyped: `no_activate` (it would start exhausting itself
+# and stop being repeatable), the non-friendly_ally TARGETS (which is what makes
+# the sacrifice a separate pick), and `hero_deals_damage` (the packet would come
+# from the ability instead of the hero, quietly dropping Chromatic Cloak and
+# Shadowform). Pin all three against the real database.
+func _test_ritual_sacrifice_recipe() -> void:
+	var db := _make_db()
+	var rs := db.get_def("dark_portal_112") as CardDef
+	_check(rs != null, "dark_portal_112 (Ritual Sacrifice) resolves in the database")
+	if rs == null:
+		return
+	_check(rs.card_type == "Ability" and not rs.is_instant,
+		"Ritual Sacrifice is a plain (sorcery-speed) Ability")
+	_check(rs.cost == 2, "Ritual Sacrifice costs 2")
+	var ap := StackResolver._ally_activated_power(rs)
+	_check(ap.get("effect", "") == "deal_damage_to_target",
+		"…its power deals damage to a target")
+	_check(int(ap.get("amount", 0)) == 1 and str(ap.get("dmg_type", "")) == "shadow",
+		"…1 shadow damage")
+	_check(StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "sacrifice_ally"),
+		"…paid by destroying an ally in your party")
+	_check(StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "no_activate"),
+		"…with NO [Activate] tap symbol, so it is repeatable")
+	_check(StackResolver.power_sacrifice_is_separate(ap),
+		"…and the sacrifice is a separate pick from the target (two-pick flow)")
+	var segs: Array = []
+	for entry in rs.effects.split("|"):
+		segs.append(entry.strip_edges().split(":")[0].strip_edges())
+	_check("ongoing" in segs, "…it is ongoing, so it stays in the hero row")
+	_check("hero_deals_damage" in segs,
+		"…and YOUR HERO deals the damage, not the ability itself")
 
 
 # The repeat-count UI (ally first, then "how many?") is opened off

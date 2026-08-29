@@ -273,6 +273,7 @@ var _gy_view_only:     bool = false     # true = examine mode (no selection, no 
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
 var _gy_quest_shuffle_mode: bool = false  # true = Poison Water's graveyard→deck pick (multi-select; Cancel/Esc = the empty pick, not a decline)
+var _gy_stoneform_mode: bool = false   # true = Stoneform's own-hero-attachment destroy pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_circle_mode:   bool = false    # true = Circle of Life deck search (choose_circle_of_life; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
 var _gy_jocasta_mode:  bool = false    # true = Dark Cleric Jocasta's enter-play fetch (a choose_enter_play_target chain link; Cancel/Esc = decline — "you may")
@@ -369,6 +370,10 @@ var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
 var _in_feral_rage_mode: bool = false
 var _feral_rage_nodes: Array[Node] = []
+var _in_upkeep_mode: bool = false        # human deciding a Rain of Fire upkeep
+var _upkeep_nodes: Array[Node] = []
+var _in_ready_choice_mode: bool = false
+var _ready_choice_nodes: Array[Node] = []
 var _in_track_look_mode: bool = false
 var _track_look_nodes: Array[Node] = []
 var _in_form_return_mode: bool = false   # human deciding a Form pay-return choice
@@ -522,13 +527,16 @@ func _build_scene() -> void:
 	_router.unique_sacrifice_mode_ended.connect(_on_unique_sacrifice_mode_ended)
 	_router.form_sacrifice_mode_ended.connect(_on_form_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
+	_router.repeat_count_requested.connect(_on_repeat_count_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.ally_exhaust_select_requested.connect(_on_ally_exhaust_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
 	_router.graveyard_peek_requested.connect(_on_graveyard_peek_requested)
+	_router.attachment_peek_requested.connect(_on_attachment_peek_requested)
 	_router.graveyard_peek_closed.connect(_on_graveyard_peek_closed)
 	_router.card_mute_changed.connect(_on_card_mute_changed)
 	_build_x_dialog()
+	_build_repeat_dialog()
 	_build_graveyard_dialog()
 
 	# ── Control panel ────────────────────────────────────────────────────────────
@@ -1082,10 +1090,14 @@ func _launch_game(p1_type: String, p1_deck_id: String,
 	# gate that catches hand-edited custom decks (unknown/unimplemented ids,
 	# >4 copies, wrong faction/class) with a readable message instead of a
 	# broken game. Runs before the menu is torn down so errors land in it.
-	var auth_db := CardDatabase.new()
-	auth_db.load_all()
+	# One database per session: a loaded CardDatabase is immutable, so the same
+	# instance authorizes the decks here and then runs the game (and any rematch,
+	# which calls _setup_game_state directly and skips this path entirely).
+	if _db == null:
+		_db = CardDatabase.new()
+		_db.load_all()
 	for pick in [["P1", p1_deck_id], ["P2", p2_deck_id]]:
-		var auth_errors := DeckManager.authorize_deck(pick[1], auth_db)
+		var auth_errors := DeckManager.authorize_deck(pick[1], _db)
 		if not auth_errors.is_empty():
 			_show_menu_error("%s deck '%s' is not legal:\n%s"
 				% [pick[0], pick[1], "\n".join(auth_errors)])
@@ -1337,6 +1349,54 @@ func _exit_ambush_mode() -> void:
 	_router.setup(_state, _db, _local_player)
 	_renderer.refresh_hand_visibility()   # re-hide any hover-peeked card
 	_router.refresh_highlights()
+
+
+# Is the engine currently waiting on a mandatory choice from somebody? Every one
+# of these hard-blocks can_submit / pass_priority, so while one is set the UI
+# must not re-point the router or repaint highlights for a different player.
+func _mandatory_choice_open() -> bool:
+	if not _state:
+		return false
+	for pid: String in [
+			_state.pending_discard_player,
+			_state.pending_control_discard_player,
+			_state.pending_resource_place_player,
+			_state.pending_hand_play_player,
+			_state.pending_reveal_pick_player,
+			_state.pending_trigger_target_player,
+			_state.pending_death_target_player,
+			_state.pending_prevention_player,
+			_state.pending_ready_choice_player,
+			_state.pending_weapon_ready_player,
+			_state.pending_whelp_bounce_player,
+			_state.pending_track_look_player,
+			_state.pending_upkeep_player]:
+		if pid != "":
+			return true
+	return not _state.pending_enter_play_effect.is_empty()
+
+
+# Re-open the discard UI if the engine is waiting on one and nothing is
+# collecting it. Guarded against re-entry: the AI branch of
+# _handle_discard_choice emits events, which comes back through _refresh_ui.
+var _ensuring_discard: bool = false
+
+func _ensure_discard_ui() -> void:
+	if _ensuring_discard or not _state or not _router:
+		return
+	if _state.pending_discard_player == "":
+		return
+	# In discard mode, but pointed at the WRONG player, is just as stuck as not
+	# being in it at all — that is exactly what the ambush-exit bug produced.
+	if _router._in_discard_mode 			and _router.local_player == _state.pending_discard_player:
+		return
+	_ensuring_discard = true
+	_handle_discard_choice({
+		"player": _state.pending_discard_player,
+		"count":  _state.pending_discard_count,
+		"reason": _discard_reason,
+	})
+	_ensuring_discard = false
 
 
 # ── Mandatory-choice routing ───────────────────────────────────────────────────
@@ -2079,13 +2139,12 @@ func _setup_game_state(deck_p1: Deck, deck_p2: Deck) -> void:
 	if _hotseat:
 		_renderer.set_perspective("__handoff__")
 
-	# Real database — only engine_status=implemented cards are loaded.
-	_db = CardDatabase.new()
-	_db.load_all()
-
-	# Mock-only cards (no CSV row yet): instants and quest placeholder.
-	_db.add_def(_make_mock_def("mock_quick_shot", "Quick Shot", 0, 0, true, "Ability"))
-	_db.add_def(_make_mock_def("mock_dark_bolt",  "Dark Bolt",  0, 0, true, "Ability"))
+	# Real database — only engine_status=implemented cards are loaded. Normally
+	# already loaded by _launch_game's deck authorization; the rematch path
+	# reuses that same instance and never reloads the CSVs.
+	if _db == null:
+		_db = CardDatabase.new()
+		_db.load_all()
 
 	# GameManager builds the full state: creates zones, places heroes, shuffles
 	# decks, draws 7-card starting hands.
@@ -2266,15 +2325,30 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 func _refresh_ui() -> void:
 	# Ambush stop is over the moment priority leaves the ambusher (they played
 	# and passed, or their link fizzled) — restore router/highlights to the seat.
-	if _in_ambush_mode and _state and _state.priority_player != _ambush_player:
+	#
+	# EXCEPT while a mandatory choice is owed. Exiting re-points the router at
+	# the seated player and resets the highlight colour, which silently steals a
+	# choice that was just opened for somebody else: an instant flashed in from
+	# an ambush stop resolves, its effect opens (say) a discard for the ally's
+	# controller, and priority has ALREADY moved on — so the exit fires in the
+	# same batch, the red discard highlights turn green, the router points at the
+	# wrong hand, and every click is rejected while the engine stays blocked on
+	# the pending choice. The stop ends once the choice is answered.
+	if _in_ambush_mode and _state and _state.priority_player != _ambush_player \
+			and not _mandatory_choice_open():
 		_exit_ambush_mode()
+	# Self-heal: the engine is hard-blocked until a pending discard is answered,
+	# so if the mode is not up for any reason, the game is simply stuck. Re-open
+	# it rather than leaving a dead board.
+	_ensure_discard_ui()
 	_update_priority_label()
 	_update_chain_panel()
 	_update_combat_window()
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_strike_ready_mode and not _in_whelp_bounce_mode \
-			and not _in_feral_rage_mode \
+			and not _in_feral_rage_mode and not _in_upkeep_mode \
+			and not _in_ready_choice_mode \
 			and not _in_track_look_mode:
 		_router.refresh_highlights()
 	_update_pass_btn()
@@ -2495,15 +2569,31 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 	entry.position = pos
 	entry.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
+	# Interrupt targeting (Counterspell / Escape Artist's interrupt mode) points
+	# at a LINK on the chain, not at a card in a play row — and chain cards are
+	# invisible on the board (BoardRenderer keeps their CardNode hidden), so
+	# there is no board sprite for the normal click path to hit. _chain_shield_
+	# suspended() deliberately leaves the chain window's input shield UP during
+	# interrupt mode so THIS entry can own the click instead. See the comment
+	# there.
+	var card_id: String = str(action.params.get("card_id", ""))
+	var interruptable := card_id != "" and _router != null \
+		and _router._is_interrupt_mode() \
+		and card_id in _router._get_instant_targets(_router._targeting_source)
+
 	var frame := Panel.new()
 	frame.custom_minimum_size = Vector2.ZERO
 	frame.size = Vector2(CHAIN_CARD_W, CHAIN_CARD_H)
 	frame.clip_contents = true   # belt-and-suspenders: never let a child's own minimum size push the box larger
-	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.mouse_filter = Control.MOUSE_FILTER_STOP if interruptable else Control.MOUSE_FILTER_IGNORE
+	if interruptable:
+		frame.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		frame.gui_input.connect(_on_chain_entry_gui_input.bind(card_id))
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.12, 0.13, 0.16, 0.92)
 	sb.set_border_width_all(2)
-	sb.border_color = Color(1.0, 0.9, 0.3) if is_top else Color(0.45, 0.48, 0.55)
+	sb.border_color = Color(0.2, 1.0, 0.3) if interruptable \
+		else (Color(1.0, 0.9, 0.3) if is_top else Color(0.45, 0.48, 0.55))
 	frame.add_theme_stylebox_override("panel", sb)
 	entry.add_child(frame)
 
@@ -2593,6 +2683,14 @@ func _make_chain_entry(action: PendingAction, pos: Vector2, is_top: bool) -> Con
 		tgt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		entry.add_child(tgt)
 	return entry
+
+
+# Interrupt targeting only (see the comment in _make_chain_entry): clicking a
+# green-bordered chain entry targets that link, same as clicking a board card
+# under any other targeting mode.
+func _on_chain_entry_gui_input(ev: InputEvent, card_id: String) -> void:
+	if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+		_router.handle_card_click(card_id)
 
 
 # The targets announced with a pending action, for the chain entry's second
@@ -2859,7 +2957,9 @@ func _inline_choice_decider() -> String:
 			_state.pending_ready_player,
 			_state.pending_strike_ready_player,
 			_state.pending_whelp_bounce_player,
+			_state.pending_ready_choice_player,
 			_state.pending_feral_rage_player,
+			_state.pending_upkeep_player,
 			_state.pending_form_return_player,
 			_state.pending_track_look_player,
 			_state.pending_prevention_player]:
@@ -3132,6 +3232,15 @@ func _input(event: InputEvent) -> void:
 	# by accident. Ctrl+Space is a deliberate two-key combo → skip the confirm dialog.
 	# (A modifier makes the physical event stop matching the plain-Space "ui_accept"
 	# action, so it needs its own branch by keycode.)
+	# The repeat-count dialog owns Enter while it is up: Enter = OK, Ctrl+Enter =
+	# OK and Pass. Handled here rather than on the LineEdit's text_submitted so
+	# it still works when focus has wandered off the field.
+	if event is InputEventKey and event.pressed and _repeat_dialog \
+			and _repeat_dialog.visible \
+			and event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+		get_viewport().set_input_as_handled()
+		_confirm_repeat(_repeat_input.text, event.ctrl_pressed)
+		return
 	if event is InputEventKey and event.pressed and event.ctrl_pressed \
 			and (event.keycode == KEY_SPACE or event.keycode == KEY_ENTER):
 		if (_x_dialog and _x_dialog.visible) \
@@ -3194,6 +3303,12 @@ func _input(event: InputEvent) -> void:
 			_set_status("")
 			get_viewport().set_input_as_handled()
 			return
+		# Escape: close the repeat-count dialog (Soul Link). Nothing was
+		# submitted, so this is a free cancel.
+		if _repeat_dialog and _repeat_dialog.visible:
+			_cancel_repeat()
+			get_viewport().set_input_as_handled()
+			return
 		# Escape: cancel the quest ally-exhaust cost picker (nothing was paid).
 		if _in_ally_exhaust_mode:
 			_cancel_ally_exhaust()
@@ -3216,12 +3331,14 @@ func _input(event: InputEvent) -> void:
 	# human's own chain links. Toggle to Tactical, play the chain, pass manually, then
 	# toggle back. Ignored while the X-value dialog is open (the user may be typing).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_T \
-			and not (_x_dialog and _x_dialog.visible):
+			and not (_x_dialog and _x_dialog.visible) \
+			and not (_repeat_dialog and _repeat_dialog.visible):
 		_toggle_speed_mode()
 		get_viewport().set_input_as_handled()
 	# L toggles the game log panel (hidden by default so it doesn't clutter the board).
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_L \
-			and not (_x_dialog and _x_dialog.visible):
+			and not (_x_dialog and _x_dialog.visible) \
+			and not (_repeat_dialog and _repeat_dialog.visible):
 		_log_visible = not _log_visible
 		_log_bg.visible = _log_visible
 		_log.visible    = _log_visible
@@ -3742,15 +3859,6 @@ func _on_game_event(event: GameEvent) -> void:
 				SoundManager.play_random("SFX_CardGrab")
 			elif from_zone.ends_with("_hand") and not to_zone.ends_with("_hand"):
 				SoundManager.play_random("SFX_CardMoveFast")
-			# Show summoning-sickness badge when an ally enters the ally_row from hand.
-			if to_zone.ends_with("_ally_row") and from_zone.ends_with("_hand") and _state and _db:
-				var sick_card := _state.get_card(moved_id)
-				if sick_card and sick_card.just_summoned:
-					var sick_def := _db.get_def(sick_card.card_def_id) as CardDef
-					var is_ferocity := sick_def != null and "ferocity" in sick_def.keywords
-					var sick_cn := _renderer.card_nodes.get(moved_id) as CardNode
-					if sick_cn:
-						sick_cn.show_sick_badge(is_ferocity)
 			# A token is minted mid-game and has never been in a zone, so no node
 			# exists for it — spawn one as it enters the ally_row (same pattern as
 			# the drawn-card branch below).
@@ -3775,6 +3883,11 @@ func _on_game_event(event: GameEvent) -> void:
 					# Renderer's _animate_move already ran before this node existed,
 					# so trigger the layout manually now that the node is registered.
 					_renderer.relayout_zone(to_zone)
+			# Summoning-sickness badge (Zzz / Rrrrr): generic over the route into
+			# or out of the ally_row (hand play, a minted token, reanimation, a
+			# control steal…) — see BoardRenderer.refresh_sick_badge.
+			if (to_zone.ends_with("_ally_row") or from_zone.ends_with("_ally_row")) and _state and _db:
+				_renderer.refresh_sick_badge(moved_id, _state, _db)
 			_refresh_ui()
 			if event.payload.get("from", "") == "chain":
 				_schedule_next_turn()
@@ -3853,7 +3966,17 @@ func _on_game_event(event: GameEvent) -> void:
 		"feral_rage_opened":
 			_window_generation += 1
 			_handle_feral_rage(event.payload)
+		"ready_choice_opened":
+			_window_generation += 1
+			_handle_ready_choice(event.payload)
+		"ready_choice_resolved":
+			_refresh_ui()
 		"feral_rage_resolved", "feral_rage_declined":
+			_refresh_ui()
+		"upkeep_choice_opened":
+			_window_generation += 1
+			_handle_upkeep(event.payload)
+		"upkeep_paid", "upkeep_declined":
 			_refresh_ui()
 		"track_look_opened":
 			_window_generation += 1
@@ -3896,8 +4019,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_reveal_pick(event.payload)
 		"quest_choice_opened":
 			_handle_quest_choice(event.payload)
-		"quest_ferocity_target_required":
-			_handle_quest_ferocity_target(event.payload)
+		"quest_ally_grant_target_required":
+			_handle_quest_ally_grant_target(event.payload)
 		"quest_ready_target_required":
 			_handle_quest_ready_target(event.payload)
 		"weapon_ready_required":
@@ -3906,6 +4029,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_plague_destroy(event.payload)
 		"quest_shuffle_required":
 			_handle_quest_shuffle(event.payload)
+		"stoneform_destroy_required":
+			_handle_stoneform_destroy(event.payload)
 		"quest_facedown_required":
 			_handle_quest_facedown(event.payload)
 		"ferocity_granted":
@@ -3958,10 +4083,21 @@ func _refresh_atk_badges() -> void:
 						_state.get_atk_if_attacking(card.instance_id, _db),
 						_state.get_atk_raw(card.instance_id, _db))
 				cn.update_hp(_state.get_max_hp(card.instance_id, _db), def.printed_health)
-				# Berserk counters (Berserking) — same badge treatment as a
-				# buffed ATK value, in the ATK badge's corner (the card has
-				# no printed ATK of its own).
-				cn.update_counter(int(card.counters.get("berserk", 0)))
+				# Counters (Berserking's berserk, Blood Fury's fury) — same
+				# badge treatment as a buffed ATK value, in the ATK badge's
+				# corner (these cards have no printed ATK of their own). The
+				# total across counter kinds is shown, so a new counter card
+				# needs no change here; no card in the pool carries two kinds.
+				# real_counter_total() skips the turn-scoped bookkeeping keys
+				# that share the same dictionary (CardInstance.BOOKKEEPING_COUNTERS)
+				# — otherwise an ally that had merely attacked or been ready-locked
+				# by Iceblade Hacker would show a phantom "1".
+				cn.update_counter(card.real_counter_total())
+				# Counted damage-prevention shield (Soul Link), top-right corner
+				# — read live off the card's buffs, so it grows as the power is
+				# used, shrinks as damage eats it, and disappears when the
+				# end-of-turn sweep expires it, with no event of its own.
+				cn.update_shield(GameLogic.granted_shield(card))
 
 
 func _on_window_closed() -> void:
@@ -4829,7 +4965,38 @@ func _handle_trigger_target(payload: Dictionary) -> void:
 	var ctrl: String     = payload.get("player", "")
 	var dmg_type: String = payload.get("dmg_type", "")
 	var amount: int      = payload.get("amount", 0)
+	var key: String      = payload.get("key", "")
 	var ctrl_type := _p1_type if ctrl == "p1" else _p2_type
+	# Spiritual Healing's trigger HEALS, so the generic opponent-only enumeration
+	# below is exactly backwards for it — repair our own board instead (the same
+	# friendly arm Ra'chee's enter-play heal needed). Our most damaged character,
+	# hero winning a tie: it is the one character whose loss ends the game.
+	if ctrl_type != "human" and key == "on_play_ability_heal":
+		var best := ""
+		var best_dmg := -1
+		var ps_own := _state.players.get(ctrl) as PlayerState
+		var own_legal := StackResolver.get_turn_start_trigger_targets(_state, _db)
+		var own_pool: Array[String] = []
+		if ps_own and ps_own.hero_instance_id != "":
+			own_pool.append(ps_own.hero_instance_id)
+		for ally in _state.cards_in_zone(ctrl + "_ally_row"):
+			own_pool.append(ally.instance_id)
+		for tid in own_pool:
+			if not (tid in own_legal):
+				continue
+			var c := _state.get_card(tid)
+			if not c:
+				continue
+			# Strictly greater, and the hero is first in the pool, so it keeps a tie.
+			if c.damage_taken > best_dmg:
+				best_dmg = c.damage_taken
+				best = tid
+		if best == "" and not own_legal.is_empty():
+			best = own_legal[0]   # forced to pick: a no-op heal is still legal
+		EventBus.emit_events(StackResolver.choose_trigger_target(_state, best, _db))
+		_refresh_ui()
+		_schedule_next_turn()
+		return
 	if ctrl_type != "human":
 		# AI picks a target: prefer an opposing character it can kill with this
 		# damage, else the opposing hero. Never self-harm (AI convention).
@@ -5085,25 +5252,31 @@ func _clear_quest_choice_nodes() -> void:
 	_quest_choice_nodes.clear()
 
 
-# Hidden Enemies: the completer picks the ally that gains ferocity this turn.
-func _handle_quest_ferocity_target(payload: Dictionary) -> void:
+# The completer picks the ally that receives this reward's this-turn grant:
+# Hidden Enemies' ferocity, or The Perfect Stout's attack lock. One choice
+# point, one pool — `kind` only changes the wording of the prompt.
+func _handle_quest_ally_grant_target(payload: Dictionary) -> void:
 	var player: String   = payload.get("player", "")
 	var quest_id: String = payload.get("quest_id", "")
+	var kind: String     = payload.get("kind", "ferocity")
 	if _route_choice(player, "public") == "ai":
 		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
 		var target_id := ""
 		if ai_obj is BaseAI:
-			target_id = (ai_obj as BaseAI).choose_quest_ferocity_target(_state, _db, player)
+			target_id = (ai_obj as BaseAI).choose_quest_ally_grant_target(_state, _db, player)
 		else:
-			var legal := StackResolver.get_quest_ferocity_targets(_state, _db)
+			var legal := StackResolver.get_quest_ally_grant_targets(_state, _db)
 			target_id = legal[0] if not legal.is_empty() else ""
-		var events := StackResolver.choose_quest_ferocity_target(_state, target_id, _db)
+		var events := StackResolver.choose_quest_ally_grant_target(_state, target_id, _db)
 		EventBus.emit_events(events)
 		_refresh_ui()
 		_schedule_next_turn()
 	else:
-		_router.start_quest_ferocity_targeting(quest_id)
-		_set_status("🐺 Select the ally that gains ferocity this turn")
+		_router.start_quest_ally_grant_targeting(quest_id)
+		if kind == "cannot_attack":
+			_set_status("🍺 Select the ally that can't attack this turn")
+		else:
+			_set_status("🐺 Select the ally that gains ferocity this turn")
 		_refresh_ui()
 
 
@@ -5220,6 +5393,44 @@ func _resolve_quest_shuffle_choice(picks: Array) -> void:
 	_on_quest_flow_resolved()
 
 
+# Stoneform: "Destroy any number of abilities attached to your hero." Board-
+# public (both players already see attachments in play), like the quest
+# reward choices, so no hand hiding / handoff.
+func _handle_stoneform_destroy(payload: Dictionary) -> void:
+	var player: String  = payload.get("player", "")
+	var card_ids: Array = payload.get("candidates", [])
+	if _route_choice(player, "public") == "ai":
+		var picks: Array = []
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			picks = (ai_obj as BaseAI).choose_stoneform_destroy(_state, _db, player)
+		var events := StackResolver.choose_stoneform_destroy(_state, picks, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Stoneform — destroy any number of abilities attached to your hero",
+			0, card_ids.size())
+	_gy_stoneform_mode = true
+	_gy_confirm_btn.text = "Destroy them (C)"
+	_gy_cancel_btn.text  = "Destroy none (Esc)"
+	_set_status("🪨 Choose any number of abilities attached to your hero to destroy")
+	_refresh_ui()
+
+
+# Shared exit for the Stoneform browser: an empty array is a legal answer.
+func _resolve_stoneform_choice(picks: Array) -> void:
+	_gy_stoneform_mode = false
+	_close_gy_dialog()
+	var events := StackResolver.choose_stoneform_destroy(_state, picks, _db)
+	_exit_choice_peek_mode()
+	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+
+
 # Kolkar: the TARGET player turns one of their face-up quests face down.
 func _handle_quest_facedown(payload: Dictionary) -> void:
 	var player: String  = payload.get("player", "")
@@ -5270,7 +5481,12 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 	# same pick — so the hint must not advertise one.
 	var cancel_hint := "  [mandatory]" if _router.targeting_is_mandatory() \
 		else "  [right-click to cancel]"
-	if dmg_type == "heal":
+	# Soul Link: the pick is which of OUR OWN allies absorbs the damage, and the
+	# count comes next — the generic "select a target" reads like an attack.
+	if def and StackResolver.power_repeats_by_count(def):
+		_set_status("🛡 %s — select the ally that will take the damage%s"
+			% [name_str, cancel_hint])
+	elif dmg_type == "heal":
 		_set_status("✚ %s — select a target to heal%s" % [name_str, cancel_hint])
 	# Phase 1 of a two-pick sacrifice power (Gertha, Besh'iah): the cost, not the
 	# effect's target — say so, or the player can't tell the two picks apart.
@@ -5350,6 +5566,14 @@ func _on_targeting_cancelled() -> void:
 	# bow out of picking. If one is still pending after a cancel, restart targeting
 	# from the front queued trigger so the human is asked again instead of locked.
 	if _state and _state.pending_trigger_target_player != "" \
+			and not _state.pending_play_triggers.is_empty() \
+			and _state.pending_trigger_kind == "play":
+		var ptrig: Dictionary = _state.pending_play_triggers[0]
+		var ptrig_args: Array = ptrig.get("args", [])
+		_router.start_trigger_targeting(ptrig.get("card_id", ""), "",
+			int(ptrig_args[0]) if ptrig_args.size() > 0 else 0)
+		return
+	if _state and _state.pending_trigger_target_player != "" \
 			and not _state.pending_turn_start_triggers.is_empty():
 		var trig: Dictionary = _state.pending_turn_start_triggers[0]
 		# The queue carries the raw effects args (see GameState.pending_turn_start_triggers);
@@ -5362,8 +5586,8 @@ func _on_targeting_cancelled() -> void:
 		return
 	# Hidden Enemies' ferocity pick is mandatory once the mode was chosen — if a
 	# cancel somehow fired while it is pending, restart targeting.
-	if _state and _state.pending_quest_ferocity_player != "":
-		_router.start_quest_ferocity_targeting(_state.pending_quest_ferocity_source)
+	if _state and _state.pending_quest_ally_grant_player != "":
+		_router.start_quest_ally_grant_targeting(_state.pending_quest_ally_grant_source)
 		return
 	# Dragonkin Menace's ready pick is mandatory too — restart it on a stray cancel.
 	if _state and _state.pending_quest_ready_player != "":
@@ -5411,6 +5635,154 @@ func _on_targeting_cancelled() -> void:
 
 # ── X-select dialog ────────────────────────────────────────────────────────────
 
+# ── Repeat-count dialog (Soul Link) ───────────────────────────────────────────
+# The ally is already chosen, so this asks only "how many points?" — with that
+# ally's remaining health as the ceiling and a warning once the count would
+# destroy it (405.3 allows an exactly-fatal cost, so it is permitted, not
+# blocked). "OK and Pass" submits and passes in one click, which is the normal
+# case: the player is answering incoming damage and has nothing else to do.
+var _repeat_dialog: Panel
+var _repeat_label: Label
+var _repeat_warn: Label
+var _repeat_input: LineEdit
+var _repeat_max: int = 0
+var _repeat_target_name: String = ""
+
+
+func _build_repeat_dialog() -> void:
+	_repeat_dialog = Panel.new()
+	_repeat_dialog.visible = false
+	_repeat_dialog.custom_minimum_size = Vector2(380, 210)
+	_repeat_dialog.size = Vector2(380, 210)
+	# Above the chain window (z 12), which sits at the board centre and is
+	# ALWAYS up when this dialog opens — answering incoming damage means there is
+	# a link on the chain. An opaque panel, like the other choice popups: a
+	# see-through one over a card reads as broken.
+	_repeat_dialog.z_index = 30
+	_repeat_dialog.add_theme_stylebox_override("panel",
+		_make_stylebox(Color(0.10, 0.11, 0.16, 0.97)))
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 12)
+	vbox.add_theme_constant_override("separation", 8)
+	_repeat_dialog.add_child(vbox)
+
+	_repeat_label = Label.new()
+	_repeat_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_repeat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_repeat_label)
+
+	_repeat_input = LineEdit.new()
+	_repeat_input.placeholder_text = "how many"
+	_repeat_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_repeat_input.text_submitted.connect(func(t: String) -> void: _confirm_repeat(t, false))
+	_repeat_input.text_changed.connect(_on_repeat_text_changed)
+	vbox.add_child(_repeat_input)
+
+	_repeat_warn = Label.new()
+	_repeat_warn.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_repeat_warn.add_theme_color_override("font_color", Color(1.0, 0.45, 0.45))
+	_repeat_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_repeat_warn.text = ""
+	vbox.add_child(_repeat_warn)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 8)
+	vbox.add_child(row)
+
+	var cancel_btn := Button.new()
+	cancel_btn.text = "Cancel"
+	cancel_btn.pressed.connect(_cancel_repeat)
+	row.add_child(cancel_btn)
+
+	var ok_btn := Button.new()
+	ok_btn.text = "OK"
+	ok_btn.pressed.connect(func() -> void: _confirm_repeat(_repeat_input.text, false))
+	row.add_child(ok_btn)
+
+	var ok_pass_btn := Button.new()
+	ok_pass_btn.text = "OK and Pass"
+	ok_pass_btn.pressed.connect(func() -> void: _confirm_repeat(_repeat_input.text, true))
+	row.add_child(ok_pass_btn)
+
+	_hud.add_child(_repeat_dialog)
+
+
+func _on_repeat_count_requested(source_id: String, target_id: String, max_n: int) -> void:
+	_repeat_max = max_n
+	var src_name := "the power"
+	var src := _state.get_card(source_id)
+	if src and _db:
+		var sdef: CardDef = _db.get_def(src.card_def_id)
+		if sdef:
+			src_name = sdef.card_name
+	_repeat_target_name = "the ally"
+	var tgt := _state.get_card(target_id)
+	if tgt and _db:
+		var tdef: CardDef = _db.get_def(tgt.card_def_id)
+		if tdef:
+			_repeat_target_name = tdef.card_name
+	_repeat_label.text = "%s — how many?\n1 – %d  (%s survives up to %d)" % [
+		src_name, max_n, _repeat_target_name, max(max_n - 1, 0)]
+	# Prefilled, so OK and Enter both do the obvious thing immediately — an
+	# empty field silently rejecting the click is worse than a default.
+	_repeat_input.text = "1"
+	_repeat_input.select_all()
+	_repeat_warn.text = ""
+	_repeat_dialog.position = CHOICE_POPUP_CENTER - _repeat_dialog.size * 0.5
+	_repeat_dialog.visible = true
+	_set_board_block(true)
+	# The chain window overlaps this popup and would otherwise take the clicks
+	# meant for its buttons. Restored in _close_repeat_dialog.
+	if _chain_window:
+		_chain_window.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_repeat_input.grab_focus()
+	_set_status("How many points to move onto %s?" % _repeat_target_name)
+
+
+func _on_repeat_text_changed(text: String) -> void:
+	var n := text.strip_edges().to_int()
+	# 405.3: damage put on a character can be exactly fatal, so a lethal count is
+	# a legal (if grim) choice — warn, never block.
+	if n >= _repeat_max and _repeat_max > 0:
+		_repeat_warn.text = "This will destroy %s." % _repeat_target_name
+	else:
+		_repeat_warn.text = ""
+
+
+func _close_repeat_dialog() -> void:
+	_repeat_dialog.visible = false
+	_repeat_warn.text = ""
+	_set_board_block(false)
+	if _chain_window:
+		_chain_window.mouse_filter = Control.MOUSE_FILTER_STOP
+	_set_status("")
+
+
+func _cancel_repeat() -> void:
+	# Nothing was submitted, so the board is byte-identical to before the click.
+	_close_repeat_dialog()
+	_router.cancel_repeat_count()
+	_refresh_ui()
+
+
+func _confirm_repeat(text: String, then_pass: bool) -> void:
+	var n := text.strip_edges().to_int()
+	if n < 1 or n > _repeat_max:
+		_repeat_input.text = ""
+		_repeat_input.placeholder_text = "1 – %d" % _repeat_max
+		_repeat_input.grab_focus()
+		return
+	_close_repeat_dialog()
+	# The pass (if any) happens inside the router call, for the player who used
+	# the power — see confirm_repeat_count.
+	_router.confirm_repeat_count(n, then_pass)
+	_clear_pass_hint()
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 func _build_x_dialog() -> void:
 	_x_dialog = Panel.new()
 	_x_dialog.visible = false
@@ -5452,7 +5824,13 @@ func _on_x_select_requested(hero_id: String, max_x: int) -> void:
 	_x_input.grab_focus()
 	var hero_card := _router.state.get_card(hero_id) if _router.state else null
 	var hero_def: CardDef = _router.db.get_def(hero_card.card_def_id) if hero_card and _router.db else null
-	if hero_def and hero_def.cost_x:
+	if hero_def and StackResolver.power_repeats_by_count(hero_def):
+		# Ophelia Barrows: X is how many times the power is used — one graveyard
+		# card and one resource each — and the browser then takes exactly X.
+		_x_label.text = "%s — how many? (1 – %d)" % [hero_def.card_name, max_x]
+		_set_status("How many cards to remove — %s heals 1 for each"
+			% hero_def.card_name)
+	elif hero_def and hero_def.cost_x:
 		# X-cost hand card (Aimed Shot): X is both the extra cost and the amount.
 		_set_status("Enter X — %s costs %d+X" % [hero_def.card_name, hero_def.cost_base])
 	elif hero_def and StackResolver._power_effect_is(hero_def, "heal_x_from_target"):
@@ -5487,6 +5865,16 @@ func _confirm_x_value(text: String) -> void:
 # Confirm submits via InputRouter.confirm_graveyard_selection.
 
 const GY_CARD_SIZE := Vector2(150, 210)
+# Selected-card outline in the graveyard/reveal browser (Poison Water, Finkle
+# Einhorn, Cannibalize, Stoneform…). The Button's own "pressed" look is a dark
+# stylebox, which is invisible against a card's own black border — and the card
+# art covers it anyway, since expand_icon fills the button. So selection is drawn
+# as a blue frame ON TOP of the art instead. Same blue as the board's ally-exhaust
+# picker (ALLY_EXHAUST_SELECTED_COLOR), so "blue = I picked this" reads the same
+# in both flows.
+const GY_SELECTED_COLOR := Color(0.35, 0.6, 1.0)
+const GY_SELECTED_BORDER := 5
+
 
 func _build_graveyard_dialog() -> void:
 	_gy_dimmer = ColorRect.new()
@@ -5614,6 +6002,15 @@ func _on_graveyard_peek_requested(graveyard_player: String, card_ids: Array) -> 
 			"%s graveyard — %d card(s)" % [who, card_ids.size()], 0, 0, false)
 
 
+# Alt+hover over a host's attachment stack (rule 400): they all render at the
+# same spot behind the host, so with more than one only the top card is visible.
+# Same non-modal browser as the graveyard peek.
+func _on_attachment_peek_requested(host_name: String, card_ids: Array) -> void:
+	var who := host_name if host_name != "" else "Host"
+	_open_gy_dialog(card_ids, true,
+			"%s — %d attachment(s)" % [who, card_ids.size()], 0, 0, false)
+
+
 func _on_graveyard_peek_closed() -> void:
 	if _gy_peek_active:
 		_close_gy_dialog()
@@ -5726,14 +6123,28 @@ func _make_gy_card_button(instance_id: String) -> Button:
 		btn.modulate = Color(1.0, 0.45, 0.45)
 		return btn
 	if not _gy_view_only:
+		# Blue selection frame, drawn over the card art (children render after the
+		# Button's icon). Ignores the mouse so the click still reaches the button.
+		var sel_frame := Panel.new()
+		sel_frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+		sel_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		sel_frame.visible = false
+		var sel_style := StyleBoxFlat.new()
+		sel_style.bg_color = Color(0, 0, 0, 0)
+		sel_style.border_color = GY_SELECTED_COLOR
+		sel_style.set_border_width_all(GY_SELECTED_BORDER)
+		sel_frame.add_theme_stylebox_override("panel", sel_style)
+		btn.add_child(sel_frame)
 		btn.toggled.connect(func(pressed: bool) -> void:
 			if pressed:
 				if _gy_selected.size() >= _gy_max:
 					btn.set_pressed_no_signal(false)   # over the limit — refuse the pick
+					sel_frame.visible = false
 					return
 				_gy_selected.append(instance_id)
 			else:
 				_gy_selected.erase(instance_id)
+			sel_frame.visible = btn.button_pressed
 			_update_gy_confirm())
 	return btn
 
@@ -5748,6 +6159,9 @@ func _on_gy_confirm_pressed() -> void:
 		return
 	if _gy_quest_shuffle_mode:
 		_resolve_quest_shuffle_choice(_gy_selected.duplicate())
+		return
+	if _gy_stoneform_mode:
+		_resolve_stoneform_choice(_gy_selected.duplicate())
 		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
@@ -5837,6 +6251,11 @@ func _on_gy_cancel_pressed() -> void:
 		# empty pick, which still resolves it (and still shuffles the deck).
 		_resolve_quest_shuffle_choice([])
 		return
+	if _gy_stoneform_mode:
+		# Mandatory choice point, but "any number" includes zero — Esc/Cancel
+		# is the empty pick, which still resolves it (destroying nothing).
+		_resolve_stoneform_choice([])
+		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice("")   # "you may" — Esc/Cancel declines the fetch
 		return
@@ -5910,6 +6329,7 @@ func _close_gy_dialog() -> void:
 	_gy_jocasta_mode = false
 	_gy_jocasta_source = ""
 	_gy_quest_shuffle_mode = false
+	_gy_stoneform_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
 	_gy_dialog.visible = false
@@ -6893,6 +7313,156 @@ func _show_feral_rage_inline(payload: Dictionary) -> void:
 	_feral_rage_nodes.append(_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
 
 
+# ── Upkeep (Rain of Fire) ─────────────────────────────────────────────────────
+# "At the start of your turn, pay (4) or destroy Rain of Fire." Board-public
+# (spending resources and losing a card in play are both open information), so
+# any human decides inline like the Feral Rage offer — the off-screen hotseat
+# player included. The engine only opens this when the cost is affordable, so
+# both buttons are always live; declining destroys the card.
+func _handle_upkeep(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pay: bool = ai.choose_upkeep(_state, _db, player,
+				String(payload.get("card_id", "")),
+				int(payload.get("cost", 0))) if ai else false
+		var events := StackResolver.choose_upkeep(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_upkeep_inline(payload)
+
+
+func _show_upkeep_inline(payload: Dictionary) -> void:
+	_in_upkeep_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_cancel_btn.visible = false
+
+	var cost: int    = payload.get("cost", 0)
+	var who: String  = payload.get("player", "")
+	var card_id: String = payload.get("card_id", "")
+	var card := _state.get_card(card_id)
+	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
+	var card_name: String = def.name if def else "this card"
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	# The upkeep is paid in resources (Rain of Fire) or in CARDS (Last Stand) —
+	# same choice point, so only the wording differs. Paying a discard cost then
+	# opens the ordinary discard picker for which cards go.
+	var pay_in_cards: bool = String(payload.get("kind", "resources")) == "discard"
+	var header_text: String
+	var pay_label: String
+	if pay_in_cards:
+		var noun := "card" if cost == 1 else "cards"
+		header_text = "%s%s — discard %d %s or destroy it" % [prefix, card_name, cost, noun]
+		pay_label = "Discard %d %s: keep %s" % [cost, noun, card_name]
+	else:
+		header_text = "%s%s — pay %d or destroy it" % [prefix, card_name, cost]
+		pay_label = "Pay %d: keep %s" % [cost, card_name]
+	var buttons: Array = [
+		{
+			"text": pay_label,
+			"callback": func() -> void: _resolve_upkeep(true),
+		},
+		{
+			"text": "Destroy %s" % card_name,
+			"callback": func() -> void: _resolve_upkeep(false),
+		},
+	]
+
+	_upkeep_nodes.append(_build_choice_popup(header_text, Color(0.95, 0.6, 0.35), buttons, true))
+
+
+func _resolve_upkeep(pay: bool) -> void:
+	_in_upkeep_mode = false
+	for n in _upkeep_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_upkeep_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_upkeep(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
+# ── Helwen's optional ready (501.1a) ──────────────────────────────────────────
+# "You may choose not to ready Helwen during your ready step." Board-public
+# (whether a card in play is ready is open information), so any human decides
+# inline like the whelp bounce, the off-screen hotseat player included. The
+# engine has already left her exhausted and is blocked until this is answered.
+func _handle_ready_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var card_id: String = payload.get("card", "")
+		# A null AI readies — the printed default is to ready, and staying
+		# exhausted is the exception the card grants.
+		var do_ready: bool = ai.choose_ready_card(_state, _db, player, card_id) \
+			if ai else true
+		var events := StackResolver.choose_stay_exhausted(_state, do_ready, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+	else:
+		_show_ready_choice_inline(payload)
+
+
+func _show_ready_choice_inline(payload: Dictionary) -> void:
+	_in_ready_choice_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_cancel_btn.visible = false
+
+	var card_id: String = payload.get("card", "")
+	var card := _state.get_card(card_id)
+	var card_name := "it"
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			card_name = def.card_name
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	# Name the consequence rather than the rule: readying her is what gives the
+	# stolen ally back, and that is the whole decision.
+	var holding: bool = card != null and not card.stolen_ids.is_empty()
+	var tail := " (readying returns what it controls)" if holding else ""
+	var header_text := "%sReady %s?%s" % [prefix, card_name, tail]
+	var buttons: Array = [
+		{
+			"text": "Keep %s exhausted" % card_name,
+			"callback": func() -> void: _resolve_ready_choice(false),
+		},
+		{
+			"text": "Ready %s" % card_name,
+			"callback": func() -> void: _resolve_ready_choice(true),
+		},
+	]
+	_ready_choice_nodes.append(
+		_build_choice_popup(header_text, Color(0.5, 0.9, 0.6), buttons, true))
+
+
+func _resolve_ready_choice(do_ready: bool) -> void:
+	_in_ready_choice_mode = false
+	for n in _ready_choice_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_ready_choice_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_stay_exhausted(_state, do_ready, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 # Form pay-return choice (Bear/Cat Form death trigger). Board-public like the
 # whelp bounce: AI seats auto-resolve (always pay — see BaseAI.choose_form_return),
 # any human gets the inline pay/decline popup.
@@ -6998,14 +7568,24 @@ func _show_track_look_inline(payload: Dictionary) -> void:
 
 	var who: String = payload.get("player", "")
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
-	var header_text := "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
+	# Same binary choice on the same private card in both flavours — only the
+	# destination differs (Track Humanoids buries, Gustaf Trueshot mills).
+	var to_graveyard: bool = String(payload.get("dest", "bottom")) == "graveyard"
+	var header_text: String
+	var move_label: String
+	if to_graveyard:
+		header_text = "%sGustaf Trueshot — top card is %s. Keep it or bin it?" % [prefix, card_name]
+		move_label = "Graveyard"
+	else:
+		header_text = "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
+		move_label = "Bottom"
 	var buttons: Array = [
 		{
 			"text": "Top (keep it)",
 			"callback": func() -> void: _resolve_track_look(false),
 		},
 		{
-			"text": "Bottom",
+			"text": move_label,
 			"callback": func() -> void: _resolve_track_look(true),
 		},
 	]
@@ -7262,8 +7842,12 @@ func _schedule_next_turn() -> void:
 		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
 		return  # wait for the Green Whelp Armor bounce choice before advancing
+	if _state.pending_ready_choice_player != "" or _in_ready_choice_mode:
+		return  # wait for Helwen's optional-ready choice before advancing
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		return  # wait for Track Humanoids' top/bottom choice before advancing
+	if _state.pending_upkeep_player != "" or _in_upkeep_mode:
+		return  # wait for the upkeep pay-or-destroy choice (Rain of Fire)
 	if _state.pending_weapon_ready_player != "":
 		return  # wait for Galway Steamwhistle's weapon pick before advancing
 	if _state.pending_prevention_player != "" or _in_prevention_mode:
@@ -7355,7 +7939,10 @@ func _drain_passes() -> void:
 				or StackResolver._quest_choice_pending(_state) \
 				or _in_quest_choice_mode \
 				or _state.pending_whelp_bounce_player != "" \
-				or _state.pending_track_look_player != "" or _in_track_look_mode 				or _state.pending_weapon_ready_player != "":
+				or _state.pending_ready_choice_player != "" \
+				or _state.pending_upkeep_player != "" or _in_upkeep_mode \
+				or _state.pending_track_look_player != "" or _in_track_look_mode \
+				or _state.pending_weapon_ready_player != "":
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
@@ -7492,6 +8079,9 @@ func _maybe_turbo_pass() -> void:
 		_wrap_up_active = false
 		return
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
+		_wrap_up_active = false
+		return
+	if _state.pending_upkeep_player != "" or _in_upkeep_mode:
 		_wrap_up_active = false
 		return
 	if _state.pending_weapon_ready_player != "":
@@ -7690,6 +8280,18 @@ func _do_turbo_pass() -> void:
 		return
 	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
 		return
+	# Same exclusion _maybe_turbo_pass makes before it call_deferred()s us here:
+	# combat windows and a non-empty chain belong to _drain_passes alone. That
+	# check ran a frame ago, and a combat window can have OPENED since (the
+	# attack-exhaust point, the strike point and the ready-on-attack point all
+	# hold a window up and open it from their own direct-call resolution, which
+	# lands between the defer and this call). Without re-checking we would pass a
+	# window _drain_passes had just held for the human — and since _drain_passes
+	# marks the window "seen" as it holds, the _human_has_new_info test below
+	# reads back "nothing new" and passes it silently.
+	if _state.combat_attack_window or _state.combat_defend_window \
+			or not _state.pending_actions.is_empty():
+		return
 	if StackResolver.must_attack_blocks_pass(_state, _local_player, _db):
 		_wrap_up_active = false
 		return   # rule 600.2 — see _maybe_turbo_pass
@@ -7789,17 +8391,3 @@ func _resize_prompt_window(lines: int) -> void:
 		if child is Button and (child as Button).text == "Close":
 			(child as Button).position = Vector2(PROMPT_BODY_W - 100,
 				TOOL_WINDOW_TITLE_H + body_h + 6)
-
-
-# ── Mock card helper ───────────────────────────────────────────────────────────
-
-static func _make_mock_def(id: String, def_name: String, atk: int, health: int,
-		instant: bool, ctype: String) -> CardDef:
-	var d := CardDef.new()
-	d.card_def_id    = id
-	d.card_name      = def_name
-	d.printed_atk    = atk
-	d.printed_health = health
-	d.is_instant     = instant
-	d.card_type      = ctype
-	return d

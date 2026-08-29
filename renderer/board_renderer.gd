@@ -59,8 +59,12 @@ var _ui_hover_tex: Texture2D = null       # card texture hovered inside a HUD po
 var _hovered_card_id: String = ""         # instance_id of card under cursor
 
 # ── Graveyard peek (Alt + hover over a graveyard pile) ──────────────────────────
+# Also drives the ATTACHMENT peek (Alt + hover over a stack of attachments):
+# both open the same non-modal browser, so only one can be up at a time and
+# `_gy_peek_key` records which hover is driving it ("<zone_id>" for a pile,
+# "att:<host_id>" for an attachment stack).
 var _gy_peek_open: bool = false
-var _gy_peek_zone: String = ""            # zone_id currently driving the peek
+var _gy_peek_key: String = ""
 
 # ── Targeting overlay ──────────────────────────────────────────────────────────
 var _targeting_line:      Line2D  = null
@@ -360,6 +364,18 @@ func _try_show_inspector() -> void:
 		_inspector.visible = false
 		_open_graveyard_peek(zone_id)
 		return
+	# Attachments (rule 400) all sit at the same place behind their host, so a
+	# host carrying several (three Rends on a hero) shows only the top one and
+	# the inspector could never reach the others. With more than one on the
+	# host, Alt+hover opens the whole stack in the graveyard-style browser
+	# instead of magnifying the single card under the cursor.
+	if zone_id == "attached":
+		var host_id: String = str(_attachment_hosts.get(_hovered_card_id, ""))
+		var att_ids: Array = _attachments_of(host_id) if host_id != "" else []
+		if att_ids.size() > 1:
+			_inspector.visible = false
+			_open_attachment_peek(host_id, att_ids)
+			return
 	_close_graveyard_peek()
 	var cn := card_nodes.get(_hovered_card_id) as CardNode
 	if not cn or not cn._tex_rect or not cn._tex_rect.texture:
@@ -372,20 +388,33 @@ func _try_show_inspector() -> void:
 # screen for that whole pile. Re-entrant-safe: repeated calls while already
 # peeking the same zone are no-ops so the dialog doesn't rebuild every frame.
 func _open_graveyard_peek(zone_id: String) -> void:
-	if _gy_peek_open and _gy_peek_zone == zone_id:
+	if _gy_peek_open and _gy_peek_key == zone_id:
 		return
 	_gy_peek_open = true
-	_gy_peek_zone = zone_id
+	_gy_peek_key = zone_id
 	if _input_router:
 		var gy_player := "p1" if zone_id.begins_with("p1") else "p2"
 		_input_router.request_graveyard_peek(gy_player)
+
+
+# Same non-modal browser as the graveyard peek, over every attachment on one
+# host. Re-entrant-safe the same way: repeated calls for the same host while
+# already peeking it are no-ops so the dialog doesn't rebuild every frame.
+func _open_attachment_peek(host_id: String, att_ids: Array) -> void:
+	var key := "att:" + host_id
+	if _gy_peek_open and _gy_peek_key == key:
+		return
+	_gy_peek_open = true
+	_gy_peek_key = key
+	if _input_router:
+		_input_router.request_attachment_peek(host_id, att_ids)
 
 
 func _close_graveyard_peek() -> void:
 	if not _gy_peek_open:
 		return
 	_gy_peek_open = false
-	_gy_peek_zone = ""
+	_gy_peek_key = ""
 	if _input_router:
 		_input_router.close_graveyard_peek()
 
@@ -1429,6 +1458,36 @@ func _has_live_pos_tween(card_id: String) -> bool:
 # Skips cards with a live position tween (_pos_tweens) so it never fights motion.
 # The pulse cue does NOT block it — that cue animates scale, not rotation, so
 # ready/exhaust can be reasserted at any time while a card is pulsing.
+# ── Summoning-sickness badge (Zzz / Rrrrr) ──────────────────────────────────
+# Generic over how a card entered the ally_row — hand play, a minted token,
+# reanimation, a control steal (Nyn'jah, Staff of Dominance) — since it reads
+# only CardInstance.just_summoned rather than the specific transition that
+# caused it. `refresh_sick_badge` is the per-card entry point (called right
+# after a card_moved event); `reconcile_from_state`'s self-heal pass below
+# calls the same logic for every card, so a transition that isn't reachable
+# through card_moved (or is missed by it) still corrects itself at the next
+# turn/phase change.
+func _update_sick_badge(cn: CardNode, card, db, state = null) -> void:
+	if not cn or not is_instance_valid(cn):
+		return
+	if card == null or not str(card.zone_id).ends_with("_ally_row") or not card.just_summoned:
+		cn.hide_sick_badge()
+		return
+	# Ferocity can be printed OR granted (Lust for Battle's "all allies have
+	# ferocity" aura, Into the Fray's this-turn grant) — StackResolver._has_keyword
+	# is the one live read that covers both, so the badge can't disagree with
+	# what get_legal_attackers actually allows.
+	var is_ferocity := StackResolver._has_keyword(card, "ferocity", db, state)
+	cn.show_sick_badge(is_ferocity)
+
+
+func refresh_sick_badge(card_id: String, state, db) -> void:
+	var cn := card_nodes.get(card_id) as CardNode
+	if not cn:
+		return
+	_update_sick_badge(cn, state.get_card(card_id) if state else null, db, state)
+
+
 func reconcile_from_state(state, force := false) -> void:
 	if state == null:
 		return
@@ -1462,6 +1521,7 @@ func reconcile_from_state(state, force := false) -> void:
 						host_cn, host_cn.global_position, max(idx, 0), cn)
 			continue
 		cn.is_attachment = false
+		_update_sick_badge(cn, card, _stack_db, state)
 		# Self-heal chain visibility: a card on the chain is represented by the
 		# Chain window, never on the board. Cards mid-flight are skipped above
 		# (live pos tween), so this never cuts an animation short.

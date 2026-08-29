@@ -429,6 +429,40 @@ cost and drop this deviation.
 
 ---
 
+## Mortal Strike — "one of your Melee weapons" is auto-chosen (the best)
+
+**Card:** Mortal Strike (`azeroth_145`, 2, Instant Ability — Arms Talent).
+Printed text: "Your hero deals X melee damage to target hero or ally, where X is
+1 plus the ATK of one of your Melee weapons. That character can't be healed this
+turn." Recipe `deal_damage_weapon_atk:1:melee|cant_be_healed_this_turn`.
+
+**Deviation:** the printed text leaves the choice of weapon to the caster. The
+engine takes the highest-ATK Melee weapon its controller has in play
+(`StackResolver.best_melee_weapon_atk`) with no choice point.
+
+**Why:** the choice is never interesting — the weapon is not exhausted, spent or
+otherwise consumed by the spell (this is not a strike; 303.2b never enters into
+it), so naming a weaker one is strictly worse in every board state, with no
+information or tempo consideration on the other side. Same reasoning as
+Augustus' auto-chosen `rfg_allies` above: the count and the pool are enforced
+exactly, only the identity is auto-picked. The value is read at RESOLUTION off
+the live board, so a weapon destroyed in the response window correctly drops out
+of the pool and shrinks the spell — the auto-pick decides only *which* survivor
+is used, never *when* the pool is read.
+
+**If this ever needs to become a real choice** (a card that punishes naming a
+particular weapon, or one that exhausts the named weapon as a cost), the choice
+point is Galway Steamwhistle's weapon pick verbatim — `pending_weapon_ready_*`
+already prompts only when two or more candidates exist, which is the same shape.
+
+**Note this is only about the choice.** Two things that look like deviations are
+not: with NO Melee weapon in play the spell still resolves and deals its flat 1
+(709.2c — as much as possible happens), and the weapon's ready state is
+deliberately ignored, because the card says "one of your Melee weapons" rather
+than a ready or struck one.
+
+---
+
 ## Hypnotic Blade — "target player" is auto-chosen as the opponent
 
 **Card:** Hypnotic Blade (`azeroth_327`, 2-cost Weapon—Dagger). Printed text:
@@ -621,25 +655,34 @@ Enforcement site: the `pay_return_hand` branch of `_fire_on_destroyed` +
 
 ---
 
-## Form break timing ("play a non-Feral ability")
+## Form break timing ("play a non-Feral ability") — RESOLVED, no longer a deviation
 
 **Rule:** glossary Bear Form / Cat Form — "When you play a non-Feral ability or
 strike with a weapon, destroy each ability that's the source of a modifier
 granting your hero bear or cat form." A triggered effect fires when the ability
 is PLAYED (announced).
 
-**Engine model:** `form_break:TAG` destroys the controller's Forms as part of
-the played ability's **resolution** (`_check_form_break_ability`, called from
-`_resolve_play_instant` and `_resolve_play_ongoing_ability`), not at announce —
-and consequently not at all if the play fizzles (card left the chain). The
-weapon-strike branch (`_check_form_break_strike` in `choose_strike`) is
-timing-faithful. Observable difference: while a non-Feral ability sits on the
-chain the form is still in play (e.g. the hero could still protect with Bear
-Form against something resolving first); by strict rules the form would already
-be destroyed. Accepted for v1.
+**Engine model:** timing-faithful on both branches. `_check_form_break_ability`
+now runs from **`submit_action`**, as the ability is announced onto the chain
+(412.1a is what "played" means), rather than from the played card's resolution;
+`_check_form_break_strike` in `choose_strike` was always faithful. So the form
+is gone before anyone gets priority on the ability — the hero can no longer
+protect with Bear Form against something that resolves first, and interrupting
+the ability (711) does not give the form back.
 
-Enforcement sites: `_check_form_break_ability` / `_check_form_break_strike` in
-`game_logic/stack_resolver.gd`.
+Two consequences of moving it, both deliberate:
+
+* **The announcement is no longer retractable** once a form has actually broken
+  — a destroyed card can't be un-destroyed, so the play carries Sever the Cord's
+  `_cost_paid_irreversibly` mark. Playing an ability that breaks no form stays
+  freely retractable.
+* The destroy is still performed **inline**, not added to the chain as its own
+  triggered effect (708.1). It is mandatory, free, targetless and choiceless, so
+  nothing could be done with the window — the same deviation Thysta / Venomstrike
+  / Watcher Mal'wi carry, and it is what "immediately" means here.
+
+Enforcement sites: `submit_action` (announcement) and `_check_form_break_strike`
+in `game_logic/stack_resolver.gd`.
 
 ## Replacement-effect order — flat bonuses before World in Flames
 
@@ -1227,3 +1270,179 @@ who wants to guarantee the completion must complete it before spending down.
 
 **Enforcement site:** `StackResolver._resource_pay_order` (and
 `_resource_refund_order`, which reverses it).
+## Annihilator under Dual Wield — one packet, one tag
+
+**Card:** Annihilator (`azeroth_312`) — "Combat damage dealt by your hero with
+Annihilator can't be prevented." Reachable only since Dual Wield
+(`dark_portal_127`) made two struck weapons possible.
+
+**The rules position.** Rule 303.2b makes each struck weapon a modifier on the
+WIELDER's ATK, and combat conclusion deals a single combat damage packet off
+that total. So a hero that strikes Annihilator (3) and a plain sword (4) deals
+one packet of 7 — there is no "3 of it came from the Annihilator". The damage is
+dealt with both weapons, so it is dealt with Annihilator, and the whole packet
+is unpreventable.
+
+**What the engine does.** `GameLogic.is_damage_unpreventable` returns true when
+ANY weapon associated with the wielder this combat carries the flag. The
+alternative — apportioning the packet by weapon and preventing only part of it —
+has no basis in the CR's damage model, which never splits a combat packet.
+
+**Consequence worth knowing:** pairing Annihilator with a bigger weapon under
+Dual Wield makes the bigger weapon's damage unpreventable too, which is a real
+(and probably unintended by the designers) combo. Flagged here rather than
+patched, because the packet model is what the rest of prevention depends on.
+
+**Enforcement site:** `GameLogic.is_damage_unpreventable`
+(`game_logic/actions/primitives.gd`), read at `_do_combat_conclusion` before the
+303.2a associations are cleared. Test: `_test_annihilator_packet_scope`.
+
+
+## Soul Link — the chosen ally is picked at announcement, not at resolution
+
+**Card:** Soul Link (`azeroth_133`) — "Ongoing: Put 1 damage on an ally in your
+party ➜ Prevent the next 1 damage that would be dealt to your hero this turn."
+
+**Printed rules:** the ally is *chosen*, not targeted — "an ally", not "target
+ally" — so per 707.1 nothing is announced (only X, modes and targets are locked
+in at announcement) and per 709.2b the pick would belong to RESOLUTION.
+
+**Engine:** the pick rides the power as its `chosen_friendly_ally` value in
+`target_id`, so it is named when the power is announced.
+
+**Rule 706 is correctly NOT applied.** `chosen_friendly_ally` exists precisely so
+this pick skips the `_is_legal_target` gate that the real target kinds
+(`friendly_ally`, `ally`, `hero_or_ally`) go through: an **Untargetable** ally in
+your own party may pay the cost, and there is no 4217 fizzle for an opponent to
+engineer. A card that really does say "target ally in your party" (Into the Fray,
+Bizzik Sparkcog) keeps `friendly_ally` and its 706 check.
+
+**Why announce it at all:** the alternative is a direct-call choice point with
+its own UI for a decision that hides nothing — the party is public and the power
+is free, so choosing late conceals no information from anyone.
+
+**Consequence, and it is small:** the ally is fixed once the power is on the
+chain, so an opponent can respond by removing it. That is not a fizzle — like
+every sacrifice-style cost this one is paid at RESOLUTION
+(`_resolve_use_ally_power`), so the cost simply no-ops and the shield still
+resolves (709.2c, "as much as possible happens"). The damage itself is *put*,
+not dealt (405.3): unpreventable, invisible to every damage watcher, and
+permitted to be exactly fatal.
+
+**Enforcement sites:** `StackResolver._can_use_ally_power` (the
+`chosen_friendly_ally` branch), `StackResolver._can_pay_one_extra_power_cost`
+(`put_damage_ally`), `StackResolver._resolve_use_ally_power` (the
+`put_damage_ally` cost block).
+
+
+## Plagueborn Meatwall — "remove all damage" is treated as healing
+
+**Card:** Plagueborn Meatwall (`dark_portal_228`) — "When Plagueborn Meatwall
+defends against an ally, remove all damage from Plagueborn Meatwall, and he
+deals that much melee damage to each attacking ally."
+
+**The question:** the card says *remove damage*, not *heal*. Rule 407.1 defines
+the other direction — "to heal an amount of damage from a character is to remove
+that much damage from it" — but never says every removal of damage is a heal.
+
+**Engine:** the removal goes through `GameLogic.heal`, the one choke point every
+damage removal in the game already passes through.
+
+**Consequence, and it is the only one:** a "can't be healed this turn"
+restriction (Mortal Strike's `cant_be_healed_this_turn` rider) stops the removal,
+which also empties the reflect — X is the damage *actually removed*, so a
+heal-locked Meatwall removes nothing and deals nothing. Nothing else in the game
+distinguishes the two phrasings today.
+
+**Why:** routing it anywhere else would mean a second damage-removal primitive
+that silently ignores every existing and future heal-modifying effect, for the
+sake of one contested interaction. The alternative reading (removal is not
+healing, so the lock doesn't apply) is defensible; if it is preferred, the fix is
+one call in the `on_defend_vs_ally_reflect_damage` arm of
+`StackResolver._resolve_combat_trigger` and this entry goes away.
+
+**Enforcement site:** `StackResolver._resolve_combat_trigger`, the
+`on_defend_vs_ally_reflect_damage` arm.
+
+## Brain Freeze — a blocked draw does not deck you
+
+**Card:** Brain Freeze (`azeroth_49`), 3, Instant Ability — Frost, Mage:
+"Players can't draw cards this turn."
+
+**The question:** rule 410.6b decks "all players who have been required to draw a
+card from an empty deck". Under Brain Freeze a player whose deck is empty is
+still *required* to draw — by the draw step, or by a draw effect — and simply
+can't. Does the requirement alone deck him?
+
+**Engine:** no. The prohibition is applied at the top of `GameLogic.draw_one`,
+ahead of the empty-deck branch, so the draw event never happens at all and
+nothing is recorded. A locked player is never decked, whatever the state of his
+deck.
+
+**Consequence:** Brain Freeze can never win the game on its own. It cannot be
+pointed at an opponent who has just run out of cards to convert a draw step into
+a loss, which the opposite reading would make it — a 3-cost instant alternate
+win condition, on a card whose printed text is plainly about denying card
+advantage for a turn.
+
+**Why:** 410.6b describes an event ("required to draw ... from an empty deck")
+rather than a standing obligation, and the rulebook's one worked example of a
+draw that doesn't happen — Forbidden Knowledge (716.1d) — explicitly does NOT
+deck its controller. That is a replacement rather than a prohibition, so it is
+not authority, but it is the closest thing the CR offers and it points this way.
+
+**Note this is a lock on DRAWING alone** (rule 415.9f: an event that puts a card
+into a hand from a deck is a draw only if it says the card is *drawn*). A
+graveyard fetch (Call the Spirit), a reveal-and-pick (Eagle Eye) and a "look at"
+(Track Humanoids) are unaffected. That is the rules reading, not a deviation, and
+it is what the AI's `_chain_draws_cards` scan encodes.
+
+**Enforcement site:** `GameLogic.draw_one` in
+`game_logic/actions/primitives.gd`.
+
+## Polymorph — the printed text vs the errata
+
+**Card:** Polymorph (`azeroth_58`), 2, Ability — Arcane, Mage. Printed:
+"Attach to target ally. Ongoing: Attached ally can't attack or protect, loses
+all powers, and is a Sheep."
+
+**What is implemented is the ERRATA**, which the official FAQ and the CR both
+carry, and which differs from the printed card in two places:
+
+- **"is a Sheep" is ADDITIVE.** Per 202.3 ("a modifier that adds a tag to a card
+  doesn't remove any tags or that card's type unless specified") and the FAQ
+  ("It gains the Sheep tag in addition to any others it has"), a Polymorphed
+  Bloodclaw is a Sheep *and* still an ally, a Raptor and a Pet (1). The engine
+  appends the tag and removes nothing.
+- **Card TYPE is untouched.** The FAQ is explicit: "Polymorph doesn't change or
+  remove the attached ally's card type. That ally can still be exhausted to
+  complete The Love Potion." So the host stays a legal "target ally", still
+  counts toward party size, and can still pay an exhaust cost.
+
+The CR (701.4a, 202.3) quotes a further variant, "loses **and can't have**
+powers". That is NOT implemented: the FAQ text the card actually shipped with
+says a blanked character "can later gain powers", so a keyword granted
+afterwards (Sneak's elusive, Into the Fray's ferocity, an aura) does land on a
+Polymorphed ally. Only what is PRINTED on the card is silenced.
+
+**Enforcement site:** `GameState.effective_def` in
+`game_logic/state/game_state.gd`.
+
+
+## Polymorph — "Unique" survives a blank text box
+
+**The question:** rule 700.1 makes keywords powers, and the engine's CSV
+`keywords` column holds both true keyword powers (protector, ferocity, elusive,
+stealth, ranged, untargetable) and the type-line **tags** of 202.2 — `Unique`,
+and `Unlimited` if one is ever printed. Blanking the column wholesale would make
+a Polymorphed Lady Jaina non-Unique, so a second copy could be played beside
+her.
+
+**Engine:** `GameState.TYPE_LINE_TAGS` lists the entries of that column that are
+tags rather than powers, and they are kept when the text box is blanked. Rule
+202.2 puts them on the RIGHT side of the type line, which is not the text box, so
+this is the rules-correct split — it is recorded here only because the CSV
+conflates the two and a reader of `effective_def` would not otherwise expect any
+keyword to survive.
+
+**Enforcement site:** `GameState.effective_def`.

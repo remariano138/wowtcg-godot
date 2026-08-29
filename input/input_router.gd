@@ -58,6 +58,10 @@ signal quest_facedown_mode_ended()
 # Emitted when a power requires the player to select a numeric X value before targeting.
 # hero_id: the hero whose power is being used. max_x: maximum selectable value (hero HP - 1).
 signal x_select_requested(hero_id: String, max_x: int)
+# Soul Link: the ally has been picked, now ask how many times to use the power.
+# `max_n` is that ally's remaining health — the point at which the cost destroys
+# it (405.3 permits exactly-fatal damage, so it is a warning, not a cap).
+signal repeat_count_requested(source_id: String, target_id: String, max_n: int)
 # Emitted when a quest reward needs graveyard cards chosen before submitting.
 # The UI shows a browser over candidate_ids; it must call
 # confirm_graveyard_selection(ids) or cancel_graveyard_selection().
@@ -73,6 +77,9 @@ signal ally_exhaust_select_requested(quest_id: String, candidate_ids: Array,
 signal graveyard_examine_requested(graveyard_player: String, card_ids: Array)
 # Alt+hover peek over a graveyard pile (view-only, non-modal, closes on its own).
 signal graveyard_peek_requested(graveyard_player: String, card_ids: Array)
+# Alt+hover peek over a stack of attachments on one host (view-only, non-modal).
+# Shares graveyard_peek_closed and the same browser — only one peek is ever up.
+signal attachment_peek_requested(host_name: String, card_ids: Array)
 signal graveyard_peek_closed()
 # Emitted when a card's muted flag flips (context-menu Mute/Unmute) so the
 # renderer can show/hide the 🔇 badge.
@@ -170,7 +177,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("ui_cancel"): # Escape
 		if _modal_pending_card != "":
 			cancel_modal_choice()
-		elif _targeting_action_type == "choose_quest_ferocity":
+		elif _targeting_action_type == "choose_quest_ally_grant":
 			pass   # mandatory quest-reward pick — Esc must not strand the choice
 		elif _targeting_source != "":
 			cancel_targeting()
@@ -276,6 +283,14 @@ func handle_card_click(instance_id: String) -> void:
 				var legal := StackResolver.get_legal_attackers(state, local_player, db)
 				if instance_id in legal:
 					start_attack_targeting(instance_id)
+					return
+			# Left-click shortcut for the context menu's "Activate Power", on the
+			# powers whose whole use is a repeated count (Soul Link): answering
+			# incoming damage is a race, and making the player open a context
+			# menu for it is the wrong interface. Deliberately narrow — every
+			# other in-play card keeps its current click behaviour, where a
+			# left-click is an ATTACK and nothing else.
+			_try_begin_repeat_power(instance_id)
 			return
 		# ── Face-up quest in resource row left-click → complete quest ───────────
 		if zone and zone.zone_type == "resource_row" and not card.face_down:
@@ -323,6 +338,41 @@ func handle_card_click(instance_id: String) -> void:
 	refresh_highlights()
 
 
+# Open the targeting flow for a count power (Soul Link) if this card has one and
+# it is usable right now. No-op otherwise, so it is safe as a click fallback.
+func _try_begin_repeat_power(instance_id: String) -> void:
+	if not db or not state:
+		return
+	var card := state.get_card(instance_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def or not StackResolver.power_repeats_by_count(def):
+		return
+	# Board targeting only. A count power whose target lives in a GRAVEYARD
+	# (Ophelia Barrows) opens the browser from the context menu instead, and its
+	# count is asked before that — see start_ally_graveyard_selection.
+	if (StackResolver._ally_activated_power(def).get("targets", "") as String) \
+			== "graveyard_ally":
+		return
+	# The resolver stays the authority on whether the power is usable at all —
+	# the probe checks everything except the specific target.
+	var probe := PendingAction.make("use_ally_power", local_player,
+		{"card_id": instance_id, "_skip_target_check": true})
+	if not StackResolver.can_submit(state, probe, db):
+		return
+	# Same cursor the context-menu route uses for this power: the melee icon and
+	# the 1 damage each use puts on the ally. HOW MANY is the dialog's question.
+	start_targeting(instance_id, "use_ally_power", "melee", 1)
+
+
+# Does playing this hand card announce a target? The two play action types ask
+# different resolver gates; both callers (the pre-submission flow and the X
+# dialog's confirm) need the same answer, so it lives in one place.
+func _play_needs_target(instance_id: String, action_type: String) -> bool:
+	if action_type == "play_ability":
+		return _ability_needs_target(instance_id)
+	return _instant_needs_target(instance_id)
+
+
 # Opens whatever pre-submission flow a hand card needs before it can be played:
 # the X dialog, a modal "Choose one", the graveyard browser, or targeting mode
 # (single or two-phase). Returns true when one was opened — the caller must NOT
@@ -333,16 +383,17 @@ func handle_card_click(instance_id: String) -> void:
 func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 	if not (action_type in ["play_ability", "play_instant"]):
 		return false
-	var needs_target := _ability_needs_target(instance_id) \
-		if action_type == "play_ability" else _instant_needs_target(instance_id)
+	var needs_target := _play_needs_target(instance_id, action_type)
 	# X-cost cards (Aimed Shot, "1+X"; Lightning Storm's divided pool): pick X
 	# first (same dialog as Boris's pay-X hero power), then confirm_x_value
 	# re-enters the targeting flow with the X riding on the submission.
 	# Ancestral Spirit / Call the Spirit / Cannibalize / Cold Snap: the target(s)
 	# are cards in a graveyard — the browser opens instead of board targeting.
 	# Instant-speed as well as sorcery-speed (Cold Snap is an Instant Ability).
+	# Blood Fury announces X and nothing else — the dialog is the whole flow,
+	# and confirm_x_value submits straight from it.
 	var uses_gy := _ability_uses_graveyard_browser(instance_id)
-	if _card_cost_x(instance_id) and (needs_target or uses_gy):
+	if _card_cost_x(instance_id):
 		_targeting_source = instance_id
 		x_select_requested.emit(instance_id, _max_affordable_x(instance_id))
 		return true
@@ -583,7 +634,25 @@ func start_hero_graveyard_selection(hero_id: String) -> void:
 # Open the browser for an ally/equipment activated power whose effect targets a
 # graveyard card (Ophelia Barrows: "Remove target ally card in any graveyard
 # from the game"). Candidates come from the card's graveyard_to_rfg segment.
-func start_ally_graveyard_selection(card_id: String) -> void:
+# How many times in a row this power could be used right now: what the resources
+# buy, capped by how many candidates there are to spend them on.
+func ally_power_max_uses(card_id: String, candidate_count: int) -> int:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card and db else null
+	if not def:
+		return 0
+	var ap := StackResolver._ally_activated_power(def)
+	var cost: int = max(StackResolver.power_resource_cost(ap, 0), 0)
+	var affordable := candidate_count
+	if cost > 0:
+		affordable = int(state.get_available_resources(local_player) / cost)
+	return max(min(affordable, candidate_count), 0)
+
+
+# `count` > 0 opens the browser for exactly that many cards (Ophelia Barrows,
+# after the count dialog). 0 means "ask first if this power is worth asking
+# about", then re-enter with the answer.
+func start_ally_graveyard_selection(card_id: String, count: int = 0) -> void:
 	var card := state.get_card(card_id)
 	if not card or not db:
 		return
@@ -595,9 +664,19 @@ func start_ally_graveyard_selection(card_id: String) -> void:
 			state, local_player, req, db)
 	if candidates.size() < int(req.get("min_count", 1)):
 		return
+	if count <= 0 and StackResolver.power_repeats_by_count(def):
+		# Ophelia Barrows: the power is used several times in a row, one card and
+		# one resource each — so ask HOW MANY once, then let the browser take
+		# exactly that many. Only worth asking when more than one use is possible.
+		var max_uses := ally_power_max_uses(card_id, candidates.size())
+		if max_uses > 1:
+			_gy_count_ally_id = card_id
+			x_select_requested.emit(card_id, max_uses)
+			return
+	var pick_min: int = count if count > 0 else int(req.get("min_count", 1))
+	var pick_max: int = count if count > 0 else int(req.get("max_count", 1))
 	_gy_select_ally_id = card_id
-	graveyard_select_requested.emit(card_id, candidates,
-			int(req.get("min_count", 1)), int(req.get("max_count", 1)))
+	graveyard_select_requested.emit(card_id, candidates, pick_min, pick_max)
 
 
 # A hand Ability whose target(s) live in a graveyard rather than on the board:
@@ -736,15 +815,22 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 	if _gy_select_ally_id != "":
 		var ally_id := _gy_select_ally_id
 		_gy_select_ally_id = ""
-		var ap_target: String = selected_ids[0] if not selected_ids.is_empty() else ""
-		var ap_action := PendingAction.make("use_ally_power", local_player,
-				{"card_id": ally_id, "target_id": ap_target})
-		var ap_events := StackResolver.submit_action(state, ap_action, db)
-		if ap_events.is_empty():
-			refresh_highlights()
-			return
-		EventBus.emit_events(ap_events)
-		_pass_own_proposal(ap_action)
+		# One announcement per chosen card, each paying its own cost — the count
+		# is a UI convenience, so the engine still sees N ordinary uses of the
+		# power (Ophelia Barrows). A single-pick power is just the N = 1 case.
+		for ap_target: String in selected_ids:
+			var ap_action := PendingAction.make("use_ally_power", local_player,
+					{"card_id": ally_id, "target_id": ap_target})
+			if not StackResolver.can_submit(state, ap_action, db):
+				break
+			var ap_events := StackResolver.submit_action(state, ap_action, db)
+			if ap_events.is_empty():
+				break
+			EventBus.emit_events(ap_events)
+		# Deliberately NO auto-pass: an ally power is instant-speed and its user
+		# keeps priority, exactly as they do when the target is picked on the
+		# board. Passing here made a repeatable power (Ophelia Barrows) usable
+		# once per window and handed the opponent the window for free.
 		refresh_highlights()
 		return
 
@@ -997,10 +1083,13 @@ func start_death_target_targeting(card_id: String) -> void:
 	start_targeting(card_id, "choose_death_target", "", 0)
 
 
-# Convenience wrapper for Hidden Enemies' "target ally has ferocity this turn"
-# reward pick. Mandatory — Esc is absorbed while this targeting is active.
-func start_quest_ferocity_targeting(quest_id: String) -> void:
-	start_targeting(quest_id, "choose_quest_ferocity", "", 0)
+# Convenience wrapper for a quest reward that grants a this-turn effect to a
+# target ally — Hidden Enemies' ferocity, The Perfect Stout's attack lock. The
+# pool is identical for both, so which grant it is never reaches the router;
+# the scene words the prompt from the event's `kind`.
+# Mandatory — Esc is absorbed while this targeting is active.
+func start_quest_ally_grant_targeting(quest_id: String) -> void:
+	start_targeting(quest_id, "choose_quest_ally_grant", "", 0)
 
 
 # Convenience wrapper for Dragonkin Menace's "ready a hero or ally in your party"
@@ -1089,7 +1178,7 @@ func targeting_action_type() -> String:
 # offering a cancel that doesn't exist.
 func targeting_is_mandatory() -> bool:
 	match _targeting_action_type:
-		"choose_trigger_target", "choose_death_target", "choose_quest_ferocity":
+		"choose_trigger_target", "choose_death_target", "choose_quest_ally_grant":
 			return true
 		"choose_enter_play_target":
 			# Optional enter-play triggers (Ghank, Karkas, Sister Rot, Bhenn) can
@@ -1238,7 +1327,7 @@ func _handle_targeting_click(instance_id: String) -> void:
 		"choose_enter_play_target":  _handle_enter_play_targeting_click(instance_id)
 		"choose_trigger_target":       _handle_trigger_targeting_click(instance_id)
 		"choose_death_target":       _handle_death_target_targeting_click(instance_id)
-		"choose_quest_ferocity":     _handle_quest_ferocity_targeting_click(instance_id)
+		"choose_quest_ally_grant":     _handle_quest_ally_grant_targeting_click(instance_id)
 		"choose_quest_ready":        _handle_quest_ready_targeting_click(instance_id)
 		"choose_weapon_ready":       _handle_weapon_ready_targeting_click(instance_id)
 		"choose_attack_exhaust":     _handle_attack_exhaust_targeting_click(instance_id)
@@ -1304,10 +1393,10 @@ func _handle_death_target_targeting_click(instance_id: String) -> void:
 		death_target_resolved.emit()
 
 
-func _handle_quest_ferocity_targeting_click(instance_id: String) -> void:
+func _handle_quest_ally_grant_targeting_click(instance_id: String) -> void:
 	# Hidden Enemies reward pick. Mandatory, direct-call resolution (no chain).
-	if instance_id in StackResolver.get_quest_ferocity_targets(state, db):
-		var events := StackResolver.choose_quest_ferocity_target(state, instance_id, db)
+	if instance_id in StackResolver.get_quest_ally_grant_targets(state, db):
+		var events := StackResolver.choose_quest_ally_grant_target(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
 		quest_flow_resolved.emit()
@@ -1743,6 +1832,65 @@ func retract_last_action() -> void:
 # Guarded: the playtest's synchronous drain may have already passed/resolved the
 # proposal during EventBus.emit_events (turbo mode) — in that case the chain top
 # is no longer our action and passing again would burn a fresh priority window.
+# Soul Link's pending count pick: the power and the ally chosen for it, held
+# between the board click and the count dialog's answer. Nothing has been
+# submitted while these are set, so cancelling costs nothing.
+# Ophelia Barrows: the power whose count the X dialog is currently asking for,
+# held between the dialog opening and its answer (see confirm_x_value).
+var _gy_count_ally_id: String = ""
+var _repeat_source: String = ""
+var _repeat_target: String = ""
+
+
+# The ally is picked first, so the count dialog can show a real ceiling. Returns
+# how many uses that ally could pay for before the damage destroys it.
+func repeat_count_max(target_id: String) -> int:
+	if not state or not db or target_id == "":
+		return 0
+	return max(state.get_current_hp(target_id, db), 0)
+
+
+# Submit `n` separate activations of the count power at the chosen ally. Each is
+# its own announcement paying its own cost (the engine has no "repeat" concept),
+# and the proposer keeps priority throughout, so the player can still respond to
+# what they just built — or pass, which is what "OK and Pass" does in the scene.
+func confirm_repeat_count(n: int, then_pass: bool = false) -> void:
+	var source := _repeat_source
+	var target := _repeat_target
+	var actor := local_player
+	_repeat_source = ""
+	_repeat_target = ""
+	if source == "" or target == "" or n <= 0:
+		refresh_highlights()
+		return
+	for _i in n:
+		var action := PendingAction.make("use_ally_power", actor,
+			{"card_id": source, "target_id": target})
+		if not StackResolver.can_submit(state, action, db):
+			break
+		var events := StackResolver.submit_action(state, action, db)
+		if events.is_empty():
+			break
+		EventBus.emit_events(events)
+	# "OK and Pass": hand the window back. The pass belongs to the player who
+	# used the power, so it is made for ACTOR explicitly rather than through
+	# pass_priority_action() — emitting the submissions above may have re-pointed
+	# this router at the other seat (the hotseat ambush stop fires inside the
+	# emit), and that version would then have passed for the wrong player, or
+	# silently done nothing.
+	if then_pass and state and state.priority_player == actor:
+		EventBus.emit_events(StackResolver.pass_priority(state, db))
+	refresh_highlights()
+
+
+func cancel_repeat_count() -> void:
+	# Targeting was already exited when the dialog opened, so there is nothing to
+	# cancel but the pending pick — and nothing was submitted, so this is free.
+	_repeat_source = ""
+	_repeat_target = ""
+	refresh_highlights()
+
+
 func _pass_own_proposal(action: PendingAction) -> void:
 	if not state or state.priority_player != local_player:
 		return
@@ -1878,8 +2026,8 @@ func get_playable_card_ids() -> Array:
 				return StackResolver.get_turn_start_trigger_targets(state, db)
 			"choose_death_target":
 				return StackResolver.get_active_death_target_targets(state, db)
-			"choose_quest_ferocity":
-				return StackResolver.get_quest_ferocity_targets(state, db)
+			"choose_quest_ally_grant":
+				return StackResolver.get_quest_ally_grant_targets(state, db)
 			"choose_quest_ready":
 				return StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player)
 			"choose_weapon_ready":
@@ -1955,7 +2103,9 @@ func get_playable_card_ids() -> Array:
 		for card in state.cards_in_zone(local_player + zone_suffix):
 			if card.controller != local_player:
 				continue
-			var def: CardDef = db.get_def(card.card_def_id) if db else null
+			# Through the effective def (700.3) so a Polymorphed ally's power
+			# doesn't light up — the engine would refuse it anyway.
+			var def: CardDef = state.effective_def(card.instance_id, db) if db else null
 			if not def:
 				continue
 			# Hero power (hero in the hero row).
@@ -1989,16 +2139,31 @@ func get_playable_card_ids() -> Array:
 						and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 						and state.priority_player == local_player \
 						and (not StackResolver.requires_turn_player(def) \
-							or state.turn_player == local_player):
+							or state.turn_player == local_player) \
+						and StackResolver._can_pay_extra_power_cost(
+							state, local_player, ap_extra_cost, db):
 					result.append(card.instance_id)
 			else:
 				# graveyard_ally powers (Ophelia Barrows) pick their target in the
 				# browser afterward, ability_or_equipment (Kavai) in targeting mode —
 				# the skip-target probe still verifies a candidate exists, so no
 				# false green with nothing to target.
+				# The target kinds picked AFTER the power is chosen (a browser or
+				# targeting mode) are probed with _skip_target_check — the probe
+				# still runs every other gate, so there is no false green.
+				# `friendly_ally` / `chosen_friendly_ally` / `pet` belong here too:
+				# without them the probe was built with NO target at all and
+				# can_submit rejected it, so Soul Link, Katsin and Bestial Wrath
+				# never lit up at all. For Soul Link the "at least one ally"
+				# requirement is its put_damage_ally COST, which the probe checks
+				# (_can_pay_extra_power_cost) — so it greens with any ally in the
+				# party, whatever its health, and darks with none.
 				var ap_action := PendingAction.make("use_ally_power", local_player,
 					{"card_id": card.instance_id,
-						"_skip_target_check": (ap_data.get("targets", "") as String) in ["graveyard_ally", "ability_or_equipment", "ability", "equipment", "exhausted_ally"]})
+						"_skip_target_check": (ap_data.get("targets", "") as String) in [
+							"graveyard_ally", "ability_or_equipment", "ability",
+							"equipment", "exhausted_ally",
+							"friendly_ally", "chosen_friendly_ally", "pet"]})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
 	return result
@@ -2123,7 +2288,9 @@ func get_context_actions(instance_id: String) -> Array:
 
 	if card.controller != local_player:
 		return []
-	var def: CardDef = db.get_def(card.card_def_id)
+	# Effective def (700.3): a card whose text box has been blanked offers no
+	# "Activate Power" entry, matching what the engine will accept.
+	var def: CardDef = state.effective_def(card.instance_id, db)
 	if not def:
 		return []
 
@@ -2183,7 +2350,7 @@ func get_context_actions(instance_id: String) -> Array:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
 					var ap_kind: String = ap_data.get("targets", "") as String
-					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment", "exhausted_ally"]
+					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "chosen_friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment", "exhausted_ally"]
 					var ap_needs_gy_target: bool = ap_kind == "graveyard_ally"
 					var ap_enabled: bool
 					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability", "equipment", "exhausted_ally"]:
@@ -2413,6 +2580,22 @@ func request_graveyard_peek(gy_player: String) -> void:
 	for c in state.cards_in_zone(gy_player + "_graveyard"):
 		ids.append(c.instance_id)
 	graveyard_peek_requested.emit(gy_player, ids)
+
+
+# Alt+hover peek over the attachments of one host — the same browser as the
+# graveyard peek, opened when a host carries MORE THAN ONE attachment (they all
+# render at the same spot behind it, so only the top one is otherwise visible).
+# Closed by close_graveyard_peek() like any other peek.
+func request_attachment_peek(host_id: String, card_ids: Array) -> void:
+	if not state:
+		return
+	var host_name := ""
+	var host := state.get_card(host_id)
+	if host and db:
+		var host_def: CardDef = db.get_def(host.card_def_id)
+		if host_def:
+			host_name = host_def.name
+	attachment_peek_requested.emit(host_name, card_ids)
 
 
 func close_graveyard_peek() -> void:
@@ -2945,7 +3128,7 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand", "target_cant_attack"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand", "target_cant_attack", "prevent_next_damage_target"]:
 			return true
 	return false
 
@@ -2993,7 +3176,7 @@ func _card_dmg_type(card_id: String) -> String:
 		var key := entry.strip_edges().split(":")[0].strip_edges()
 		match key:
 			"destroy_target", "destroy_exhausted_ally": return "destroy"
-			"deal_damage_to_target", "deal_damage_and_heal", "attach_deal_damage":
+			"deal_damage_to_target", "deal_damage_and_heal", "attach_deal_damage", 					"deal_damage_weapon_atk":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 2: return parts[2].to_lower()
 			"chain_lightning":
@@ -3043,6 +3226,12 @@ func _card_dmg_amount(card_id: String) -> int:
 			"deal_damage_to_target", "attach_deal_damage", "deal_damage_and_heal":
 				if parts.size() > 1:
 					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
+			"deal_damage_weapon_atk":
+				# Mortal Strike: the amount is a live board read (flat part plus
+				# the best Melee weapon's ATK), so the cursor asks the resolver
+				# rather than the printed number — the two can't disagree.
+				return _preview_dmg(StackResolver.weapon_atk_damage_amount(
+					state, def, local_player, db), _card_dmg_type(card_id), true)
 			"chain_lightning":
 				if parts.size() > 1:
 					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
@@ -3192,14 +3381,20 @@ func _get_ally_power_targets(ally_id: String) -> Array:
 		return result
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
+			# X rides along for a cost_x power (Staff of Dominance): it is
+			# derived from the target, so a candidate has to be validated with
+			# the X its own click would announce — otherwise can_submit rejects
+			# every one of them and the picker comes up empty.
 			var act := PendingAction.make("use_ally_power", local_player,
-				{"card_id": ally_id, "target_id": card.instance_id})
+				{"card_id": ally_id, "target_id": card.instance_id,
+					"x_value": _ally_power_x_for(ally_id, card.instance_id)})
 			if StackResolver.can_submit(state, act, db):
 				result.append(card.instance_id)
 		var ps := state.players.get(pid) as PlayerState
 		if ps and ps.hero_instance_id != "":
 			var act := PendingAction.make("use_ally_power", local_player,
-				{"card_id": ally_id, "target_id": ps.hero_instance_id})
+				{"card_id": ally_id, "target_id": ps.hero_instance_id,
+					"x_value": _ally_power_x_for(ally_id, ps.hero_instance_id)})
 			if StackResolver.can_submit(state, act, db):
 				result.append(ps.hero_instance_id)
 	return result
@@ -3250,6 +3445,43 @@ func _is_ally_sacrifice_destroy_power(ally_id: String) -> bool:
 		StackResolver._ally_activated_power(def))
 
 
+# Phase-2 cursor for a two-phase sacrifice power (Gertha/Besh'iah destroy
+# something else; Mezzik/Ritual Sacrifice instead deal damage). Phase 1 is
+# always the "sacrifice" cursor (picking the body to eat); this is what the
+# EFFECT actually does with it, so a damage power gets its real damage icon
+# and amount instead of inheriting phase 1's skull.
+# Returns [dmg_type: String, amount: int].
+func _ally_sacrifice_power_effect_cursor(ally_id: String, sacrifice_id: String) -> Array:
+	var ally := state.get_card(ally_id) if state else null
+	var def := db.get_def(ally.card_def_id) as CardDef if ally and db else null
+	var ap := StackResolver._ally_activated_power(def) if def else {}
+	if ap.is_empty():
+		return ["destroy", 0]
+	var effect := ap.get("effect", "") as String
+	if effect == "deal_damage_to_target":
+		var dmg_type := (ap.get("dmg_type", "") as String).to_lower()
+		if dmg_type == "":
+			dmg_type = "melee"
+		var amount: int
+		if str(ap.get("amount_raw", "")) == "sac_atk":
+			# Mezzik Darkspark: X is the sacrificed ally's live ATK.
+			amount = state.get_atk(sacrifice_id, db) if sacrifice_id != "" else 0
+		else:
+			# Ritual Sacrifice's `hero_deals_damage` rider makes the packet
+			# hero-sourced, so it runs through Chromatic Cloak / Shadowform /
+			# World in Flames like any other hero ability damage — preview it
+			# the same way _card_dmg_amount does for hand cards.
+			var from_ability := StackResolver._has_effect_flag(def, "hero_deals_damage") \
+				and def.card_type == "Ability"
+			amount = _preview_dmg(int(ap.get("amount", 0)), dmg_type, from_ability)
+		return [dmg_type, amount]
+	if effect in ["heal_target", "heal_x_from_target"]:
+		return ["heal", 0]
+	# destroy_ally / destroy_ability / destroy_ability_or_equipment / … —
+	# Gertha, Besh'iah, and the fallback for anything future.
+	return ["destroy", 0]
+
+
 func _is_ally_damage_and_heal_power(ally_id: String) -> bool:
 	if not db or not state:
 		return false
@@ -3289,6 +3521,14 @@ func _any_valid_ally_heal_target(ally_id: String, dmg_target: String) -> String:
 # Called by the UI (playtest.gd) after the player confirms the X value in the dialog.
 # Transitions from X-select state into ally targeting mode.
 func confirm_x_value(x_value: int) -> void:
+	# Ophelia Barrows: X is how many times to use the power, and the browser now
+	# opens for exactly that many cards. Checked before the targeting guard —
+	# this flow never entered targeting mode.
+	if _gy_count_ally_id != "":
+		var gy_ally := _gy_count_ally_id
+		_gy_count_ally_id = ""
+		start_ally_graveyard_selection(gy_ally, x_value)
+		return
 	if _targeting_source == "":
 		return
 	_targeting_x_value = x_value
@@ -3302,6 +3542,22 @@ func confirm_x_value(x_value: int) -> void:
 		# board targeting flow.
 		if _ability_uses_graveyard_browser(_targeting_source):
 			start_ability_graveyard_selection(_targeting_source, x_value)
+			return
+		# Blood Fury: X is the number of counters the card enters play with, and
+		# nothing is targeted — there is no targeting flow to re-enter, so the
+		# play submits here with the X riding on it.
+		var x_type := _action_type_for(_targeting_source)
+		if not _play_needs_target(_targeting_source, x_type):
+			var x_card := _targeting_source
+			_targeting_source = ""
+			var x_params := _params_for(x_card, x_type)
+			x_params["x_value"] = x_value
+			var x_action := PendingAction.make(x_type, local_player, x_params)
+			var x_events := StackResolver.submit_action(state, x_action, db)
+			if not x_events.is_empty():
+				EventBus.emit_events(x_events)
+				_pass_own_proposal(x_action)
+			refresh_highlights()
 			return
 		var x_dmg_type := _card_dmg_type(_targeting_source)
 		# Lightning Storm divides X over several packets, so the cursor counts
@@ -3443,11 +3699,14 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 			# the source herself included). Esc cancels; a non-candidate no-ops.
 			if instance_id in sd_legal:
 				_targeting_first_target = instance_id
-				targeting_started.emit(_targeting_source, "destroy", 0)
+				var sd_cursor := _ally_sacrifice_power_effect_cursor(
+					_targeting_source, _targeting_first_target)
+				targeting_started.emit(_targeting_source, sd_cursor[0], sd_cursor[1])
 				refresh_highlights()
 			return
-		# Phase 2: instance_id is what the EFFECT destroys — an ally either party
-		# for Gertha, an in-play ability for Besh'iah.
+		# Phase 2: instance_id is what the EFFECT does with the sacrifice — an
+		# ally either party for Gertha, an in-play ability for Besh'iah, a
+		# damage target for Mezzik/Ritual Sacrifice.
 		if instance_id == _targeting_first_target:
 			# Clicked the sacrifice again — step back to the sacrifice pick.
 			_targeting_first_target = ""
@@ -3471,6 +3730,25 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 		return
 	var legal := _get_ally_power_targets(_targeting_source)
 	if instance_id not in legal:
+		return
+	# Soul Link: the ally is chosen, but HOW MANY points to move onto it is the
+	# real decision — ask once instead of making the player click the power N
+	# times. Nothing is submitted here; the dialog's answer calls
+	# confirm_repeat_count (or cancel_repeat_count, which costs nothing).
+	var rc_card := state.get_card(_targeting_source)
+	var rc_def := db.get_def(rc_card.card_def_id) as CardDef if rc_card else null
+	if rc_def and StackResolver.power_repeats_by_count(rc_def):
+		_repeat_source = _targeting_source
+		_repeat_target = instance_id
+		# The pick is DONE — leave targeting mode now rather than at submission,
+		# or the cursor, the highlights and the board's click handling all stay
+		# live underneath the count dialog (and a stray right-click to clear the
+		# cursor would cancel a flow the dialog is still driving).
+		_targeting_source = ""
+		targeting_cancelled.emit()
+		refresh_highlights()
+		repeat_count_requested.emit(_repeat_source, _repeat_target,
+			repeat_count_max(_repeat_target))
 		return
 	var action := PendingAction.make("use_ally_power", local_player,
 		{"card_id": _targeting_source, "target_id": instance_id,

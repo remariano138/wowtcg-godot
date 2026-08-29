@@ -1,0 +1,180 @@
+{
+  "deck_id": "alliance_paladin_graccus",
+  "display_name": "Alliance Paladin Graccus",
+  "hero_card_def_id": "azeroth_4",
+  "card_entries": [
+    {
+      "card_def_id": "azeroth_351",
+      "count": 2,
+      "_card_name": "A Donation of Wool"
+    },
+    {
+      "card_def_id": "azeroth_340",
+      "count": 1,
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_348",
+      "count": 2,
+      "_card_name": "Big Game Hunter"
+    },
+    {
+      "card_def_id": "dark_portal_293",
+      "count": 4,
+      "_card_name": "The Perfect Stout"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 4,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_358",
+      "count": 1,
+      "_card_name": "Sunken Treasure"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "azeroth_328",
+      "count": 2,
+      "_card_name": "Iceblade Hacker"
+    },
+    {
+      "card_def_id": "azeroth_290",
+      "count": 1,
+      "_card_name": "Golem Skull Helm"
+    },
+    {
+      "card_def_id": "azeroth_285",
+      "count": 2,
+      "_card_name": "Draconian Deflector"
+    },
+    {
+      "card_def_id": "azeroth_301",
+      "count": 1,
+      "_card_name": "Truesilver Breastplate"
+    },
+    {
+      "card_def_id": "azeroth_191",
+      "count": 1,
+      "_card_name": "King Magni Bronzebeard"
+    },
+    {
+      "card_def_id": "azeroth_70",
+      "count": 1,
+      "_card_name": "Holy Shield"
+    },
+    {
+      "card_def_id": "dark_portal_190",
+      "count": 1,
+      "_card_name": "Seraph the Exalted"
+    },
+    {
+      "card_def_id": "azeroth_66",
+      "count": 1,
+      "_card_name": "Devotion Aura"
+    },
+    {
+      "card_def_id": "azeroth_174",
+      "count": 1,
+      "_card_name": "Adept Breton"
+    },
+    {
+      "card_def_id": "dark_portal_128",
+      "count": 1,
+      "_card_name": "Diplomacy"
+    },
+    {
+      "card_def_id": "azeroth_205",
+      "count": 2,
+      "_card_name": "Medoc Spiritwarden"
+    },
+    {
+      "card_def_id": "azeroth_220",
+      "count": 1,
+      "_card_name": "Treesong"
+    },
+    {
+      "card_def_id": "dark_portal_170",
+      "count": 4,
+      "_card_name": "Jeleane Nightbreeze"
+    },
+    {
+      "card_def_id": "dark_portal_160",
+      "count": 3,
+      "_card_name": "\"Chipper\" Ironbane"
+    },
+    {
+      "card_def_id": "azeroth_183",
+      "count": 2,
+      "_card_name": "Freya Lightsworn"
+    },
+    {
+      "card_def_id": "dark_portal_141",
+      "count": 2,
+      "_card_name": "First to Fall"
+    },
+    {
+      "card_def_id": "azeroth_68",
+      "count": 2,
+      "_card_name": "Hammer of Justice"
+    },
+    {
+      "card_def_id": "dark_portal_196",
+      "count": 1,
+      "_card_name": "Warden Ravella"
+    },
+    {
+      "card_def_id": "azeroth_192",
+      "count": 4,
+      "_card_name": "Kor Cindervein"
+    },
+    {
+      "card_def_id": "azeroth_69",
+      "count": 2,
+      "_card_name": "Holy Light"
+    },
+    {
+      "card_def_id": "azeroth_72",
+      "count": 2,
+      "_card_name": "Sacred Duty"
+    },
+    {
+      "card_def_id": "azeroth_171",
+      "count": 2,
+      "_card_name": "Vanquish"
+    },
+    {
+      "card_def_id": "azeroth_209",
+      "count": 2,
+      "_card_name": "Moira Darkheart"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
+    },
+    {
+      "card_def_id": "dark_portal_187",
+      "count": 1,
+      "_card_name": "Raul \"Fingers\" Maldren"
+    },
+    {
+      "card_def_id": "azeroth_175",
+      "count": 1,
+      "_card_name": "Anika Berlyn"
+    }
+  ],
+  "recommended_ai_id": "ai_generic",
+  "strategy": "Human protector ; soak the hits, ward the swinger, hold the line",
+  "source": "ideas",
+  "metadata": {
+    "author": "playtest",
+    "origin": "hand-built Human Paladin deck, seeded from the Warrax list"
+  },
+  "_hero_name": "Graccus"
+}

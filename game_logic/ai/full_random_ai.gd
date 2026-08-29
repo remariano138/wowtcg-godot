@@ -46,6 +46,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var thangal := thangal_ready_action(state, db, player_id)
 	if thangal != null:
 		return thangal
+	var warrax := warrax_protector_action(state, db, player_id)
+	if warrax != null:
+		return warrax
 	# Escape Artist (BaseAI) — deterministic too.
 	var escape := escape_artist_action(state, db, player_id)
 	if escape != null:
@@ -53,6 +56,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var counter := counterspell_action(state, db, player_id)
 	if counter != null:
 		return counter
+	# Brain Freeze — nullify a draw link the opponent has already paid for.
+	var freeze_draws := brain_freeze_action(state, db, player_id)
+	if freeze_draws != null:
+		return freeze_draws
 	# Hero disable flip (BaseAI, e.g. Litori Frostburn) — deterministic too.
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
@@ -68,10 +75,26 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var wrath := bestial_wrath_action(state, db, player_id)
 	if wrath != null:
 		return wrath
+	# Mortal Strike (BaseAI) — lethal on their hero, or a hard counter to a heal on it.
+	var mortal := mortal_strike_action(state, db, player_id)
+	if mortal != null:
+		return mortal
 	# Katsin Bloodoath (BaseAI) — shield an ally that would die in this combat.
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
+	# Soul Link (BaseAI) — move incoming hero damage onto the party.
+	var soul_link := soul_link_action(state, db, player_id)
+	if soul_link != null:
+		return soul_link
+	# Graccus — the game's one flip, spent on damage already on its way.
+	# Holy Shield — ward our hero against one attacker, and reflect it back.
+	var holy := holy_shield_action(state, db, player_id)
+	if holy != null:
+		return holy
+	var graccus := graccus_shield_action(state, db, player_id)
+	if graccus != null:
+		return graccus
 	# Withdraw save-bounce (BaseAI) — deterministic, never left to the dice.
 	var save := save_bounce_action(state, db, player_id)
 	if save != null:

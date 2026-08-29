@@ -4,11 +4,6 @@
   "hero_card_def_id": "azeroth_5",
   "card_entries": [
     {
-      "card_def_id": "azeroth_347",
-      "count": 1,
-      "_card_name": "Battle of Darrowshire"
-    },
-    {
       "card_def_id": "azeroth_340",
       "count": 4,
       "_card_name": "The Defias Brotherhood"
@@ -25,7 +20,7 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 3,
+      "count": 4,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
@@ -44,9 +39,9 @@
       "_card_name": "In Dreams"
     },
     {
-      "card_def_id": "azeroth_332",
+      "card_def_id": "azeroth_282",
       "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_298",
@@ -64,13 +59,18 @@
       "_card_name": "Counterspell"
     },
     {
+      "card_def_id": "azeroth_55",
+      "count": 2,
+      "_card_name": "Frost Nova"
+    },
+    {
       "card_def_id": "dark_portal_190",
       "count": 1,
       "_card_name": "Seraph the Exalted"
     },
     {
       "card_def_id": "azeroth_174",
-      "count": 2,
+      "count": 1,
       "_card_name": "Adept Breton"
     },
     {
@@ -104,11 +104,6 @@
       "_card_name": "Donna Calister"
     },
     {
-      "card_def_id": "azeroth_173",
-      "count": 1,
-      "_card_name": "Acolyte Demia"
-    },
-    {
       "card_def_id": "azeroth_176",
       "count": 2,
       "_card_name": "Apprentice Teep"
@@ -130,7 +125,7 @@
     },
     {
       "card_def_id": "azeroth_197",
-      "count": 3,
+      "count": 2,
       "_card_name": "Latro Abiectus"
     },
     {
@@ -167,6 +162,11 @@
       "card_def_id": "azeroth_175",
       "count": 2,
       "_card_name": "Anika Berlyn"
+    },
+    {
+      "card_def_id": "dark_portal_187",
+      "count": 1,
+      "_card_name": "Raul \"Fingers\" Maldren"
     }
   ],
   "recommended_ai_id": "ai_generic",

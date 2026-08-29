@@ -209,11 +209,29 @@ static func control_discard_choice_opened(player_id: String, source_card_id: Str
 # player's own screen can show it; the RESOLVED event deliberately does not —
 # it is a "look at", so the card stays private and the shared game log may only
 # say where it went (same rule as It's a Secret to Everybody's private pick).
-static func track_look_opened(player_id: String, card_id: String) -> GameEvent:
-	return make("track_look_opened", {"player": player_id, "card": card_id})
+# `dest` is where the "move it" answer sends the card — "bottom" (Track
+# Humanoids) or "graveyard" (Gustaf Trueshot). It rides on both events so the
+# popup can label its buttons and the log can say where it went.
+static func track_look_opened(player_id: String, card_id: String,
+		dest: String = "bottom") -> GameEvent:
+	return make("track_look_opened", {"player": player_id, "card": card_id, "dest": dest})
 
-static func track_look_resolved(player_id: String, to_bottom: bool) -> GameEvent:
-	return make("track_look_resolved", {"player": player_id, "to_bottom": to_bottom})
+static func track_look_resolved(player_id: String, moved: bool,
+		dest: String = "bottom") -> GameEvent:
+	return make("track_look_resolved", {"player": player_id, "to_bottom": moved,
+		"moved": moved, "dest": dest})
+
+# Stoneform: "Destroy any number of abilities attached to your hero." A choice
+# (not a target), so candidate_ids are the caster's own hero's current
+# attachments — board-public, unlike Track Humanoids' private look.
+static func stoneform_destroy_required(player_id: String, source_card_id: String,
+		candidate_ids: Array[String]) -> GameEvent:
+	return make("stoneform_destroy_required", {
+		"player": player_id, "source": source_card_id, "candidates": candidate_ids,
+	})
+
+static func stoneform_destroy_resolved(player_id: String, destroyed_ids: Array[String]) -> GameEvent:
+	return make("stoneform_destroy_resolved", {"player": player_id, "destroyed": destroyed_ids})
 
 static func control_changed(card_id: String, old_controller: String, new_controller: String) -> GameEvent:
 	return make("control_changed", {"card": card_id, "old": old_controller, "new": new_controller})
@@ -291,6 +309,12 @@ static func cant_attack_applied(target_id: String, source_id: String) -> GameEve
 # "Can't protect this turn" restriction placed on a hero or ally (Frost Shock).
 static func cant_protect_applied(target_id: String, source_id: String) -> GameEvent:
 	return make("cant_protect_applied", {"target_id": target_id, "source_id": source_id})
+
+# "Can't be healed this turn" placed on a hero or ally (Mortal Strike). Every
+# heal in the game goes through GameLogic.heal, which checks it — the heal does
+# not happen at all rather than being reduced.
+static func cant_be_healed_applied(target_id: String, source_id: String) -> GameEvent:
+	return make("cant_be_healed_applied", {"target_id": target_id, "source_id": source_id})
 
 # "Must attack this turn if able" placed on a character (rule 600.2 — Lynda
 # Steele, Mocking Blow). Its controller can't pass priority at sorcery speed
@@ -403,6 +427,28 @@ static func feral_rage_resolved(player_id: String) -> GameEvent:
 static func feral_rage_declined(player_id: String) -> GameEvent:
 	return make("feral_rage_declined", {"player": player_id})
 
+# ── Upkeep (Rain of Fire, azeroth_129) ────────────────────────────────────────
+# "At the start of your turn, pay (COST) or destroy [this]." The point opens only
+# when the controller can actually afford it; declining (or being unable to pay)
+# destroys the card, which is reported by the ordinary card_destroyed event that
+# accompanies upkeep_declined.
+# `kind` is what the upkeep is paid in: "resources" (Rain of Fire) or "discard"
+# (Last Stand), where `cost` is a card count. It rides on the event so the popup
+# can word itself without re-reading the source card.
+static func upkeep_choice_opened(player_id: String, card_id: String,
+		cost: int, kind: String = "resources") -> GameEvent:
+	return make("upkeep_choice_opened", {
+		"player": player_id, "card_id": card_id, "cost": cost, "kind": kind,
+	})
+
+static func upkeep_paid(player_id: String, card_id: String, cost: int) -> GameEvent:
+	return make("upkeep_paid", {
+		"player": player_id, "card_id": card_id, "cost": cost,
+	})
+
+static func upkeep_declined(player_id: String, card_id: String) -> GameEvent:
+	return make("upkeep_declined", {"player": player_id, "card_id": card_id})
+
 # Chops / Voss Treebender: attack-exhaust point opened (attacker's controller MAY
 # exhaust target hero or ally), and resolved (target_id == "" = declined).
 static func attack_exhaust_opened(player_id: String, source_id: String) -> GameEvent:
@@ -429,6 +475,12 @@ static func ranged_weapon_bonus_gained(player_id: String, amount: int) -> GameEv
 # gate — see PlayerState.rapid_fire_ready_cost).
 static func rapid_fire_gained(player_id: String, cost: int) -> GameEvent:
 	return make("rapid_fire_gained", {"player": player_id, "cost": cost})
+
+# Brain Freeze: "Players can't draw cards this turn." Board-wide, so the grant
+# names its caster only for the log. `draw_blocked` is emitted by
+# GameLogic.draw_one each time a draw is swallowed by the lock.
+static func draws_locked(player_id: String) -> GameEvent:
+	return make("draws_locked", {"player": player_id})
 
 # Nature's Swiftness: the "your next card costs (N) less this turn" grant, and
 # the moment it is spent (on the chain entry of the card that used it).
@@ -569,11 +621,14 @@ static func quest_choice_opened(player_id: String, quest_id: String,
 		"modes": modes, "can_both": can_both,
 	})
 
-# Hidden Enemies: the completer must pick the ally that gains ferocity this turn.
-static func quest_ferocity_target_required(quest_id: String,
-		player_id: String) -> GameEvent:
-	return make("quest_ferocity_target_required", {
-		"quest_id": quest_id, "player": player_id,
+# The completer must pick the ally that receives this reward's this-turn grant.
+# `kind` says which grant, so the UI can word the prompt and the AI can pick a
+# side: "ferocity" (Hidden Enemies — you want it on your OWN ally) or
+# "cannot_attack" (The Perfect Stout — you want it on an OPPOSING one).
+static func quest_ally_grant_target_required(quest_id: String,
+		player_id: String, kind: String = "ferocity") -> GameEvent:
+	return make("quest_ally_grant_target_required", {
+		"quest_id": quest_id, "player": player_id, "kind": kind,
 	})
 
 # Dragonkin Menace: the completer must choose a hero or ally in their own party
@@ -645,3 +700,16 @@ static func hand_returned_to_deck(player_id: String, count: int) -> GameEvent:
 	return make("hand_returned_to_deck", {
 		"player": player_id, "count": count,
 	})
+
+
+# Helwen: the optional-ready choice point opened during its controller's ready
+# step ("You may choose not to ready Helwen"). Direct call, never the chain.
+static func ready_choice_opened(player: String, card_id: String) -> GameEvent:
+	return make("ready_choice_opened", {"player": player, "card": card_id})
+
+
+static func ready_choice_resolved(player: String, card_id: String,
+		readied: bool) -> GameEvent:
+	return make("ready_choice_resolved",
+		{"player": player, "card": card_id, "readied": readied})
+

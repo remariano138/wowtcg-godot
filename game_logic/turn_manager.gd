@@ -105,6 +105,11 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# The ally-damage watchers' cursor indexes into that log, so it resets with it.
 	state.damage_watch_index = 0
 	state.ally_destroy_watch_index = 0
+	state.destroy_discard_marks.clear()   # Shadow Bolt: "…destroyed THIS TURN"
+	# Brain Freeze's "players can't draw cards THIS TURN" likewise. Cleared
+	# before the draw step below, so a lock set on the previous turn never
+	# swallows this turn's 501.2a draw.
+	state.draws_locked_this_turn = false
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false
@@ -144,6 +149,16 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		card.counters.erase("gouge_skip_ready")
 		if blocked:
 			continue
+		# Helwen: "You may choose not to ready Helwen during your ready step."
+		# Leave it exhausted and queue the choice — the DEFAULT is staying
+		# exhausted, so nothing is lost if the step is interrupted, and the
+		# borrowed-control link she may be holding survives until the controller
+		# actually says "ready". Only an exhausted card poses the question:
+		# readying a ready one is a no-op nobody needs to be asked about.
+		if card.is_exhausted and _may_stay_exhausted(state, card, db):
+			if card.instance_id not in state.pending_ready_choice_ids:
+				state.pending_ready_choice_ids.append(card.instance_id)
+			continue
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
 	for card in state.cards_in_zone(state.turn_player + "_resource_row"):
 		events.append_array(GameLogic.ready_card(state, card.instance_id))
@@ -166,6 +181,14 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# ordered queue; nothing fires yet.
 	_collect_turn_start_triggers(state, db)
 
+	# Helwen's optional-ready choices, opened one at a time. can_submit and
+	# pass_priority are hard-blocked while one is pending, so the window below
+	# opens but the game waits here until the controller answers.
+	if not state.pending_ready_choice_ids.is_empty():
+		state.pending_ready_choice_player = state.turn_player
+		events.append(GameEvent.ready_choice_opened(
+			state.turn_player, state.pending_ready_choice_ids[0]))
+
 	events.append(GameEvent.make("phase_changed", {
 		"phase": "ready", "turn_player": state.turn_player,
 		"turn_number": state.turn_number,
@@ -178,6 +201,14 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	# StackResolver.advance_turn_start_triggers.
 	events.append_array(StackResolver.advance_turn_start_triggers(state, db))
 	return events
+
+
+# Helwen: "You may choose not to ready [this] during your ready step."
+static func _may_stay_exhausted(state: GameState, card: CardInstance, db) -> bool:
+	if not db:
+		return false
+	var def := state.effective_def(card.instance_id, db)
+	return def != null and StackResolver._has_effect_flag(def, "may_stay_exhausted")
 
 
 static func _enter_draw(state: GameState, _db) -> Array[GameEvent]:
@@ -292,7 +323,7 @@ static func _ready_blocked(state: GameState, card: CardInstance, db) -> bool:
 			if pid == card.controller:
 				continue
 			for aura_card in state.cards_in_play(pid):
-				var aura_def := db.get_def(aura_card.card_def_id) as CardDef
+				var aura_def := state.effective_def(aura_card.instance_id, db)
 				if not aura_def:
 					continue
 				for aura_seg in aura_def.effects.split("|"):
@@ -334,6 +365,8 @@ const YOUR_TURN_TRIGGERS := [
 	"rfg_self_next_turn",               # Tooga
 	"turn_start_discard_or_give_control",  # Infernal
 	"turn_start_look_top_card",         # Track Humanoids
+	"turn_start_pay_or_destroy",        # Rain of Fire (upkeep, paid in resources)
+	"turn_start_discard_or_destroy",    # Last Stand (upkeep, paid in cards)
 ]
 
 
@@ -354,7 +387,7 @@ static func _collect_turn_start_triggers(state: GameState, db) -> void:
 	for pid in ordered_pids:
 		var is_turn_player: bool = (pid == state.turn_player)
 		for card in state.cards_in_play(pid):
-			var def := db.get_def(card.card_def_id) as CardDef
+			var def := state.effective_def(card.instance_id, db)
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
@@ -422,7 +455,7 @@ static func _party_has_damage(state: GameState, pid: String) -> bool:
 static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db) -> Array[GameEvent]:
 	if not db:
 		return []
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := state.effective_def(card.instance_id, db)
 	if not def or def.effects == "":
 		return []
 	var events: Array[GameEvent] = []
@@ -455,6 +488,56 @@ static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db)
 					packets.append({"source": card.instance_id,
 						"target": opp_hero.instance_id, "amount": amount})
 				events.append_array(StackResolver.defer_packets(state, db, packets))
+			"end_of_turn_hero_damage_opposing":
+				# Rain of Fire: "At the end of your turn, YOUR HERO deals AMOUNT
+				# DMG_TYPE damage to each opposing hero and ally."
+				#
+				# Infernal's arm above with the source changed, and the source is
+				# the whole difference between the two keys. Here the packets come
+				# from the controller's HERO, so they are tagged `from_ability`
+				# (this is an in-play Ability dealing the damage — the same call as
+				# Fireball's ongoing turn-start burn), which means Chromatic Cloak's
+				# +1 applies; and they carry the printed dmg_type, so a fire version
+				# also doubles under World in Flames. Infernal's packets are dealt
+				# by the ALLY and get neither.
+				#
+				# The board is read HERE, at the end phase, so an ally that arrived
+				# this turn is hit and one that left is not. Rule 703.3 needs no
+				# code: the sweep only visits cards_in_play, so a Rain of Fire
+				# already destroyed this turn — by its own unpaid upkeep, among
+				# other things — never burns.
+				var hero_amount := int(parts[1]) if parts.size() > 1 else 1
+				var hero_type := parts[2].strip_edges() if parts.size() > 2 else ""
+				var own_hero := state.get_hero(card.controller)
+				if not own_hero:
+					continue
+				var foe := ""
+				for pid in state.players:
+					if pid != card.controller:
+						foe = pid
+						break
+				if foe == "":
+					continue
+				# Packets go through defer_packets, so the opposing hero's
+				# controller gets the armor prevention point (717.2c) in a fixed
+				# order — allies first, then their hero.
+				var hero_packets: Array = []
+				for target in state.cards_in_zone(foe + "_ally_row").duplicate():
+					hero_packets.append({
+						"source": own_hero.instance_id,
+						"target": target.instance_id,
+						"amount": hero_amount, "dmg_type": hero_type,
+						"from_ability": true,
+					})
+				var foe_hero := state.get_hero(foe)
+				if foe_hero:
+					hero_packets.append({
+						"source": own_hero.instance_id,
+						"target": foe_hero.instance_id,
+						"amount": hero_amount, "dmg_type": hero_type,
+						"from_ability": true,
+					})
+				events.append_array(StackResolver.defer_packets(state, db, hero_packets))
 			"end_of_turn_destroy_if_no_damage_dealt":
 				# Outrider Zarg: "At the end of your turn, if [this] dealt no damage
 				# this turn, destroy him." Venomstrike's victim list inverted: the
@@ -491,7 +574,7 @@ static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, d
 		none_dealt: bool) -> Array[GameEvent]:
 	if not db:
 		return []
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := state.effective_def(card.instance_id, db)
 	if not def or def.effects == "":
 		return []
 	var events: Array[GameEvent] = []
@@ -520,6 +603,34 @@ static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, d
 					"amount": amount,
 					"dmg_type": dmg_type,
 				}]))
+			"end_of_turn_create_token":
+				# King Magni Bronzebeard: "At the end of each turn, put an
+				# Alliance Dwarf Warrior ally token with 1 ATK and 1 health into
+				# play." Mya's on_enter token creation moved onto the each-turn
+				# end sweep — "each turn", so it lives HERE and not in the
+				# turn-player-scoped _apply_end_of_turn_effects: it must tick on
+				# the OPPONENT's turn too, which is what makes it two bodies a
+				# round rather than one.
+				#
+				# The token enters the SOURCE's controller's party ("into play",
+				# with no other player named), through _put_token_into_play →
+				# _bring_ally_into_play like any other entry — so summoning
+				# sickness, the uniqueness queue and the opposing-ally-enters
+				# watchers (Stone Guard Rashun) all apply. It arrives during the
+				# END phase, so it is summoning-sick either way and can attack on
+				# its controller's next turn.
+				#
+				# Rule 703.3 needs no code: this sweep only visits cards_in_play,
+				# so a Magni destroyed earlier in the turn makes nothing.
+				# Mandatory, free, no target and no choice, so it resolves inline
+				# rather than on the chain, like every other end-of-turn trigger
+				# (see data/rules_deviations.md).
+				var token_def: String = parts[1].strip_edges() if parts.size() > 1 else ""
+				var token_count: int = int(parts[2]) if parts.size() > 2 else 1
+				if token_def == "" or token_count <= 0:
+					continue
+				events.append_array(StackResolver.put_token_into_play(
+					state, card.controller, token_def, token_count, db))
 			"attached_heal_turn_end":
 				# Primal Mending: "Ongoing: At the end of each turn, your hero
 				# heals N damage from attached ally." Fireball's

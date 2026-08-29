@@ -47,6 +47,12 @@ var attachments: Array[String] = []    # instance_ids of cards attached to this 
 #   stolen_ids     — on the thief: instance_ids of every card it currently holds.
 # When the link breaks (the thief leaves play, or stops being in the same party
 # because its own controller changed) control reverts to the card's OWNER.
+# Which condition keeps a borrowed-control link alive (see
+# GameLogic._check_borrowed_control). Carried on the STOLEN card so the
+# primitive can evaluate it without a database:
+#   "in_party"         — Nyn'jah: the thief is in play and shares its controller
+#   "source_exhausted" — Helwen: …and the thief is still EXHAUSTED
+var stolen_condition: String = "in_party"
 var stolen_by: String = ""
 var stolen_ids: Array[String] = []
 
@@ -75,6 +81,21 @@ var active_buffs: Array[Buff] = []
 # read and mutate; they don't directly modify stats.
 var counters: Dictionary = {}          # { "wind": 3, "charge": 1 } etc.
 
+# Keys in `counters` that are NOT counters. This dictionary doubles as the
+# scratchpad for per-card turn-scoped bookkeeping (see
+# game_logic/turn_state_flags.md) — one-shot marks and once-per-turn gates that
+# happen to be integers. They are invisible state, not something printed on the
+# card, so anything that presents counters to the player (the orange counter
+# badge in playtest's _refresh_atk_badges) must skip them, or a card that has
+# merely attacked or been ready-locked sprouts a phantom "1".
+# Add a new bookkeeping key here at the same time you add it to `counters`.
+const BOOKKEEPING_COUNTERS := [
+	"attacked_this_turn",        # ready-on-attack once-per-turn gate (Windseer Tarus / Windfury Totem)
+	"windfury_struck_this_turn", # ready-on-strike once-per-turn gate (Windfury Weapon)
+	"gouge_skip_ready",          # one-shot skip-next-ready mark (Gouge / Iceblade Hacker)
+]
+
+
 # ── Play-time choices ──────────────────────────────────────────────────────────
 var chosen_x: int = 0                 # X value chosen when this card was played or power used
 
@@ -102,6 +123,18 @@ func sum_stat(stat: String) -> int:
 		if b.stat == stat:
 			total += b.amount
 	return total
+
+
+# The counters actually printed on this card by effects — `counters` minus the
+# bookkeeping keys above. The ONE read for anything shown to the player.
+func real_counter_total() -> int:
+	var total := 0
+	for key in counters:
+		if key in BOOKKEEPING_COUNTERS:
+			continue
+		total += int(counters[key])
+	return total
+
 
 func has_restriction(stat: String) -> bool:
 	return sum_stat(stat) > 0
@@ -135,6 +168,7 @@ func to_dict() -> Dictionary:
 		"attached_to":      attached_to,
 		"attachments":      attachments.duplicate(),
 		"stolen_by":        stolen_by,
+		"stolen_condition": stolen_condition,
 		"stolen_ids":       stolen_ids.duplicate(),
 		"is_exhausted":     is_exhausted,
 		"face_down":        face_down,
@@ -160,6 +194,7 @@ static func from_dict(d: Dictionary) -> CardInstance:
 	inst.attached_to     = d.get("attached_to", "")
 	inst.attachments.assign(d.get("attachments", []))
 	inst.stolen_by       = d.get("stolen_by", "")
+	inst.stolen_condition = d.get("stolen_condition", "in_party")
 	inst.stolen_ids.assign(d.get("stolen_ids", []))
 	inst.is_exhausted    = d.get("is_exhausted", false)
 	inst.face_down       = d.get("face_down", false)

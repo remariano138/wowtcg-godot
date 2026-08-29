@@ -29,6 +29,11 @@
       "_card_name": "Poison Water"
     },
     {
+      "card_def_id": "azeroth_284",
+      "count": 2,
+      "_card_name": "Devilsaur Leggings"
+    },
+    {
       "card_def_id": "azeroth_26",
       "count": 1,
       "_card_name": "Natural Defenses"
@@ -119,16 +124,6 @@
       "_card_name": "Skewer"
     },
     {
-      "card_def_id": "azeroth_168",
-      "count": 2,
-      "_card_name": "Shattering Blow"
-    },
-    {
-      "card_def_id": "azeroth_171",
-      "count": 2,
-      "_card_name": "Vanquish"
-    },
-    {
       "card_def_id": "dark_portal_210",
       "count": 2,
       "_card_name": "Ghank"
@@ -150,7 +145,7 @@
     },
     {
       "card_def_id": "azeroth_275",
-      "count": 1,
+      "count": 3,
       "_card_name": "Zygore Bladebreaker"
     }
   ],

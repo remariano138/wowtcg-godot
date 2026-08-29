@@ -25,9 +25,15 @@ func _ready() -> void:
 	_test_form_state_flags()
 	_test_cold_snap_pool()
 	_test_rain_of_fire_recipe()
+	_test_polymorph_recipe()
 	_test_ritual_sacrifice_recipe()
 	_test_unpreventable_holy_recipes()
 	_test_resurrection_recipe()
+	_test_graccus_recipe()
+	_test_hammer_of_justice_recipe()
+	_test_holy_light_recipe()
+	_test_healing_wave_recipe()
+	_test_dismantle_recipe()
 	_test_soul_link_count_power()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
@@ -270,6 +276,137 @@ func _test_cold_snap_pool() -> void:
 # MINUS the trailing damage mode — copy that card's segment wholesale and the
 # ally silently comes back at 1 health instead of full, with nothing to fail on.
 # So pin the absence of the 7th field as hard as the rest.
+
+# Graccus (azeroth_4) — the flip is the whole card, and a typo in the recipe key
+# or in the count would leave a hero whose power silently does nothing (or
+# shields the wrong amount) with nothing to fail on. Pinned against the REAL
+# database, including the cost, since the power's own cost is also the AI's
+# value floor for spending the game's only flip on an ally.
+
+# Hammer of Justice (azeroth_68) is PURE CSV — the whole card is
+# `exhaust_target:hero_or_ally|gouge_cant_ready|draw:1`, so a typo in any one of
+# the three segments would silently leave a 2-cost do-nothing with nothing to
+# fail on. The type matters as much as the effects: at sorcery speed the card
+# could never be flashed in on a combat proposal, which is the point of it.
+func _test_hammer_of_justice_recipe() -> void:
+	var db := _make_db()
+	var hoj := db.get_def("azeroth_68") as CardDef
+	_check(hoj != null, "azeroth_68 (Hammer of Justice) resolves in the database")
+	if hoj == null:
+		return
+	_check(hoj.card_type == "Ability" and hoj.is_instant,
+		"Hammer of Justice is an INSTANT Ability")
+	_check(hoj.cost == 2, "Hammer of Justice costs 2")
+	_check(not hoj.tags.ends_with(" Talent"),
+		"...tagged plain Protection, NOT a Talent — no 100.2c spec restriction")
+	var exhaust_kind := ""
+	var lock := false
+	var draw := 0
+	for seg in hoj.effects.split("|"):
+		var parts: PackedStringArray = seg.strip_edges().split(":")
+		match parts[0].strip_edges():
+			"exhaust_target":
+				exhaust_kind = parts[1].strip_edges() if parts.size() > 1 else ""
+			"gouge_cant_ready":
+				lock = true
+			"draw":
+				draw = int(parts[1]) if parts.size() > 1 else 0
+	_check(exhaust_kind == "hero_or_ally", "...exhausts a target hero OR ally")
+	_check(lock, "...and locks its controller's next ready step")
+	_check(draw == 1, "...and draws a card")
+
+
+
+# Holy Light (azeroth_69) is PURE CSV — `heal_target:5|draw:1` — so a typo in
+# either segment leaves a 3-cost do-nothing with nothing to fail on. The type is
+# pinned too, in the opposite direction from Hammer of Justice: this one really
+# IS a plain (sorcery-speed) Ability, and quietly "fixing" it to Instant would
+# turn a main-phase repair into a combat trick the card is not.
+func _test_holy_light_recipe() -> void:
+	var db := _make_db()
+	var hl := db.get_def("azeroth_69") as CardDef
+	_check(hl != null, "azeroth_69 (Holy Light) resolves in the database")
+	if hl == null:
+		return
+	_check(hl.card_type == "Ability" and not hl.is_instant,
+		"Holy Light is a plain (sorcery-speed) Ability")
+	_check(hl.cost == 3, "Holy Light costs 3")
+	_check(not hl.tags.ends_with(" Talent"),
+		"...tagged plain Holy, NOT a Talent — no 100.2c spec restriction")
+	_check(StackResolver._heal_target_amount(hl) == 5,
+		"...heals 5 from a target hero or ally")
+	var draw := 0
+	for seg in hl.effects.split("|"):
+		var parts: PackedStringArray = seg.strip_edges().split(":")
+		if parts[0].strip_edges() == "draw":
+			draw = int(parts[1]) if parts.size() > 1 else 0
+	_check(draw == 1, "...and draws a card")
+
+
+# Healing Wave is PURE CSV — Healing Touch's heal at 8 instead of 10 — so a typo
+# in the segment would leave a silent 3-cost do-nothing with nothing to fail on.
+# The sorcery speed is pinned in the same direction as Holy Light's: quietly
+# "fixing" it to Instant would turn a main-phase repair into a combat trick the
+# card is not.
+func _test_healing_wave_recipe() -> void:
+	var db := _make_db()
+	var hw := db.get_def("azeroth_112") as CardDef
+	_check(hw != null, "azeroth_112 (Healing Wave) resolves in the database")
+	if hw == null:
+		return
+	_check(hw.card_type == "Ability" and not hw.is_instant,
+		"Healing Wave is a plain (sorcery-speed) Ability")
+	_check(hw.cost == 3, "Healing Wave costs 3")
+	_check(not hw.tags.ends_with(" Talent"),
+		"...tagged plain Restoration, NOT a Talent — no 100.2c spec restriction")
+	_check(StackResolver._heal_target_amount(hw) == 8,
+		"...heals 8 from a target hero or ally")
+
+
+# Dismantle is PURE CSV — Shattering Blow's printed effect at half the cost with
+# a class restriction instead — so a typo in the segment would leave a silent
+# 2-cost do-nothing with nothing to fail on. The pool breadth is pinned too: the
+# kind is `equipment` (rule 304 — armor, weapons and Items alike), NOT the
+# narrowed `armor` of Sunder Armor, and the sorcery speed is what separates it
+# from that card in a deck.
+func _test_dismantle_recipe() -> void:
+	var db := _make_db()
+	var dis := db.get_def("azeroth_96") as CardDef
+	_check(dis != null, "azeroth_96 (Dismantle) resolves in the database")
+	if dis == null:
+		return
+	_check(dis.card_type == "Ability" and not dis.is_instant,
+		"Dismantle is a plain (sorcery-speed) Ability")
+	_check(dis.cost == 2, "Dismantle costs 2")
+	_check(not dis.tags.ends_with(" Talent"),
+		"...tagged plain Combat, NOT a Talent — no 100.2c spec restriction")
+	_check(StackResolver.destroy_target_kind(dis) == "equipment",
+		"...destroys target EQUIPMENT (304: armor, weapons and Items), not just armor")
+	# Same printed effect as Shattering Blow — if one recipe drifts, say so.
+	var blow := db.get_def("azeroth_168") as CardDef
+	_check(blow != null and StackResolver.destroy_target_kind(blow) == "equipment",
+		"...sharing Shattering Blow's pool exactly")
+
+
+func _test_graccus_recipe() -> void:
+	var db := _make_db()
+	var hero := db.get_def("azeroth_4") as CardDef
+	_check(hero != null, "azeroth_4 (Graccus) resolves in the database")
+	if hero == null:
+		return
+	_check(hero.card_type == "Hero", "Graccus is a Hero card")
+	_check(hero.printed_health == 29, "Graccus has 29 health")
+	_check(hero.cost == 3, "…and his flip costs (3)")
+	_check(not StackResolver.requires_turn_player(hero),
+		"…with no 'use only on your turn' clause — it stays instant-speed (701.3)")
+	var shield := -1
+	for seg in hero.effects.split("|"):
+		var parts: PackedStringArray = seg.strip_edges().split(":")
+		if parts[0].strip_edges() == "prevent_next_damage_target" and parts.size() > 1:
+			shield = int(parts[1])
+	_check(shield == 3, "…and prevents the next 3 damage to its target")
+
+
 func _test_resurrection_recipe() -> void:
 	var db := _make_db()
 	var rez := db.get_def("azeroth_86") as CardDef
@@ -450,3 +587,33 @@ func _test_make_ai_for_deck() -> void:
 	_check(fallback is GenericAI, "unknown deck falls back to the generic profile (GenericAI)")
 	var warlock_ai := DeckManager.make_ai_for_deck("horde_warlock_radak_doombringer")
 	_check(warlock_ai is GenericAI, "base-category deck still uses its recommended_ai_id (GenericAI)")
+
+
+func _test_polymorph_recipe() -> void:
+	# Polymorph is pure CSV on top of a general mechanism, so a typo in any one
+	# of its four ongoing segments would silently leave a 2-cost attachment that
+	# does part of its job, with nothing to fail on.
+	var db := _make_db()
+	var poly := db.get_def("azeroth_58") as CardDef
+	_check(poly != null, "azeroth_58 (Polymorph) resolves in the database")
+	if poly == null:
+		return
+	_check(poly.card_type == "Ability" and not poly.is_instant,
+		"Polymorph is a plain (sorcery-speed) Ability")
+	_check(poly.cost == 2, "Polymorph costs 2")
+	var segments: Array = []
+	for entry in poly.effects.split("|"):
+		segments.append(entry.strip_edges().split(":")[0].strip_edges())
+	_check("ongoing" in segments, "…is ongoing (the errata clarifies this)")
+	_check("attach" in segments and StackResolver.attach_parts(poly).size() > 1
+		and StackResolver.attach_parts(poly)[1] == "ally",
+		"…attaches to target ALLY, so a hero is never a legal target")
+	_check("attached_cannot_attack" in segments, "…the host can't attack")
+	_check("attached_cannot_protect" in segments, "…the host can't protect")
+	_check("attached_loses_powers" in segments, "…the host has a blank text box (700.3)")
+	_check(StackResolver._effect_flag_arg(poly, "attached_ally_type") == "Sheep",
+		"…and gains the Sheep tag (202.3 — additive)")
+	# No `attached_buff` and no `attach_heal`: the AI's _attach_actions reads it
+	# as a DEBUFF and aims it at the opponent, which is the whole targeting policy.
+	_check(not ("attached_buff" in segments) and not ("attach_heal" in segments),
+		"…and carries no friendly grant, so the AI aims it at the opponent")

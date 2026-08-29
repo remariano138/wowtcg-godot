@@ -75,6 +75,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
 	"azeroth_17":  "combat_instant_exhaust",     # Bash — exhaust target hero or ally (+ bear form ongoing)
 	"dark_portal_137": "combat_instant_exhaust", # War Stomp — exhaust ALL opposing heroes and allies (no target)
+	"azeroth_68":  "combat_instant_exhaust",     # Hammer of Justice — Gouge's exhaust + ready-lock plus a cantrip (ready-lock not modeled for AI)
 	"azeroth_99":  "combat_instant_exhaust",     # Gouge — exhaust target hero or ally (+ can't-ready-next-step rider, not modeled for AI)
 	"dark_portal_199": "combat_instant_exhaust_on_enter", # Bhenn Checks-the-Sky — Instant Ally, on enter: you may exhaust target ally
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
@@ -90,7 +91,9 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_155": "combat_instant_ally_atk",  # Skewer — a chosen friendly ally deals its ATK to target ally
 	"dark_portal_129": "combat_instant_escape",   # Escape Artist — modal: interrupt an ability targeting our hero, or remove attackers (see escape_artist_action)
 	"azeroth_51":  "combat_instant_counterspell", # Counterspell — interrupt ANY ability card on the chain (see counterspell_action)
+	"azeroth_70":  "combat_instant_holy_shield", # Holy Shield — counted, source-scoped hero shield that reflects (see holy_shield_action)
 	"azeroth_145": "combat_instant_mortal_strike", # Mortal Strike — damage + "can't be healed this turn" (see mortal_strike_action)
+	"azeroth_49":  "combat_instant_brain_freeze", # Brain Freeze — "players can't draw cards this turn" (see brain_freeze_action)
 }
 
 
@@ -107,6 +110,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var counter := counterspell_action(state, db, player_id)
 	if counter != null:
 		return counter
+	# Brain Freeze — nullify a draw link the opponent has already paid for.
+	var freeze_draws := brain_freeze_action(state, db, player_id)
+	if freeze_draws != null:
+		return freeze_draws
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
@@ -138,6 +145,14 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var soul_link := soul_link_action(state, db, player_id)
 	if soul_link != null:
 		return soul_link
+	# Graccus — the game's one flip, spent on damage already on its way.
+	# Holy Shield — ward our hero against one attacker, and reflect it back.
+	var holy := holy_shield_action(state, db, player_id)
+	if holy != null:
+		return holy
+	var graccus := graccus_shield_action(state, db, player_id)
+	if graccus != null:
+		return graccus
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -897,6 +912,100 @@ func _chain_heals_hero(state: GameState, db, healer_id: String, hero_id: String)
 	return false
 
 
+# ── Brain Freeze (azeroth_49 / combat_instant_brain_freeze) ───────────────────
+# "Players can't draw cards this turn." Held, and NEVER blind-played — which is
+# the whole policy question, so it is worth stating why.
+#
+# The obvious line is to cast it on the opponent's turn before their draw step,
+# denying one card. That is a bad trade: a 3-cost card and 3 resources for a
+# single draw. The card is instead a COUNTER — priority is LIFO, so a Brain
+# Freeze announced on top of a draw link resolves FIRST and the link beneath it
+# then resolves into nothing, with its controller having already paid for it
+# (412.2). Cancelling a completed quest's reward, a Mana Agate cracked for two
+# cards, or an Ilandre refill is several cards' worth of denial for one, and the
+# resources are gone either way.
+#
+# So the trigger is exactly: an OPPOSING link on the chain that draws.
+#   • Our own draw links are never a reason to fire — the lock is SYMMETRIC and
+#     would swallow our own draw too.
+#   • And we hold the card entirely while a draw link of OURS is on the chain,
+#     for the same reason: locking there would be pure self-harm.
+# The rest of the turn's collateral (their next draw effect, and ours) is
+# accepted: on the opponent's turn our own draws are rarely queued anyway.
+#
+# Nothing is announced (no target, no choice), so there is no pool to rank and
+# no fizzle to guard against — one call to can_submit is the whole check.
+func brain_freeze_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.pending_enter_play_effect.is_empty():
+		return null
+	var opp := _other_player_id(state, player_id)
+	if opp == player_id:
+		return null
+	# Locking while our own draw sits on the chain would deny us, not them.
+	if _chain_draws_cards(state, db, player_id):
+		return null
+	if not _chain_draws_cards(state, db, opp):
+		return null
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_brain_freeze":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id, {
+			"card_id": card.instance_id,
+		})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
+# Does a link on the chain make `drawer_id` draw cards? Same shape as
+# _chain_heals_hero: the chain is just state.pending_actions and each link names
+# the card that made it, so the def's effect segments answer "does this draw".
+#
+# Per rule 415.9f only an event that says the card is DRAWN is a draw, so a
+# graveyard fetch (Call the Spirit), a reveal-pick (Eagle Eye) and a "look at"
+# (Track Humanoids) are deliberately NOT counted — Brain Freeze does nothing
+# about them, and firing at one would waste the card.
+#
+# A QUEST is counted on its printed reward alone: its `qmode:` choice is made at
+# RESOLUTION (709.2b), so at announcement there is nothing to read — and a quest
+# whose reward might be a draw is exactly the link this card wants to answer,
+# since completing it has already cost resources.
+func _chain_draws_cards(state: GameState, db, drawer_id: String) -> bool:
+	if not db:
+		return false
+	for pending in state.pending_actions:
+		var pa := pending as PendingAction
+		if not pa or pa.source_player != drawer_id:
+			continue
+		var src_id: String = str(pa.params.get("card_id", ""))
+		if src_id == "":
+			src_id = str(pa.params.get("hero_id", ""))
+		var src := state.get_card(src_id)
+		var src_def := db.get_def(src.card_def_id) as CardDef if src else null
+		if not src_def or src_def.effects == "":
+			continue
+		# A modal link only does what its ANNOUNCED mode says (707.1c).
+		if StackResolver.is_modal_def(src_def):
+			if StackResolver.selected_mode(src_def, pa).begins_with("draw"):
+				return true
+			continue
+		for entry in src_def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			var head := parts[0].strip_edges()
+			# Field 0 for a plain effect segment, field 1 for a quest reward
+			# mode, field 2 for an activated power — the same positional
+			# convention _chain_heals_hero reads.
+			var key := head
+			if head in ["qmode", "mode"] and parts.size() > 1:
+				key = parts[1].strip_edges()
+			elif head == "activated_power" and parts.size() > 2:
+				key = parts[2].strip_edges()
+			if key in ["draw", "hand_to_deck_draw"]:
+				return true
+	return false
+
 # ── Counterspell (azeroth_51 / combat_instant_counterspell) ───────────────────
 # "Interrupt target ability card." Escape Artist's interrupt half with the
 # "targeting your hero" clause gone, so the pool is EVERY ability card on the
@@ -1507,15 +1616,25 @@ func soul_link_action(state: GameState, db, player_id: String) -> PendingAction:
 	return null
 
 
-# How much damage is on its way to player_id's hero right now: the combat it is
-# in (as defender, or as an attacker facing retaliation) plus any opposing link
-# on the chain aimed at it. Unpreventable sources contribute nothing — a shield
-# is not consumed by them (rule 717), so buying one would be pure waste.
+# How much damage is on its way to player_id's hero right now. A thin wrapper
+# over _forecast_damage_to, kept because "the hero" is by far the common case
+# (Soul Link names it outright).
 func _forecast_hero_damage(state: GameState, db, player_id: String) -> int:
 	var ps := state.players.get(player_id) as PlayerState
 	if not ps or ps.hero_instance_id == "":
 		return 0
-	var hero_id := ps.hero_instance_id
+	return _forecast_damage_to(state, db, player_id, ps.hero_instance_id)
+
+
+# How much damage is on its way to one of player_id's characters right now: the
+# combat it is in (as defender, or as an attacker facing retaliation) plus any
+# opposing link on the chain aimed at it. Unpreventable sources contribute
+# nothing — a shield is not consumed by them (rule 717), so buying one would be
+# pure waste. Works for a hero or an ally; Graccus needs both.
+func _forecast_damage_to(state: GameState, db, player_id: String,
+		hero_id: String) -> int:
+	if hero_id == "" or not state.is_in_play(hero_id):
+		return 0
 	var total := 0
 
 	# (1) Combat — an open window, or a proposal of theirs still on the chain.
@@ -1572,6 +1691,256 @@ func _forecast_hero_damage(state: GameState, db, player_id: String) -> int:
 					"deal_damage_and_heal", "deal_damage_weapon_atk"] 					and parts.size() > 1:
 				total += int(p.params.get("x_value", 0)) if parts[1] == "X" 					else int(parts[1])
 	return total
+
+
+# ── Holy Shield (azeroth_70) ─────────────────────────────────────────────────
+# "Prevent the next 5 damage that would be dealt to your hero BY target hero or
+# ally this turn. When damage is prevented this way, your hero deals that amount
+# of holy damage to that character."
+#
+# Read the target carefully: it is the character WARDED AGAINST, not the one
+# shielded — the shield always sits on our own hero. So this can never save an
+# ally, and the whole question is which incoming damage source is worth 2
+# resources and a card.
+#
+# Two independent bars, either of which fires it:
+#   (1) it prevents at least HOLY_SHIELD_MIN_PREVENT of the incoming damage —
+#       "full value" on a 5-point shield; and
+#   (2) the REFLECT kills the character it wards against. That is the half a
+#       plain shield doesn't have: prevention and removal in one card, worth
+#       taking even for a small block.
+#
+# Held (never blind-played) and fired from the combat windows or in response to
+# a damage link on the chain — priority is LIFO, so a shield announced in
+# response is standing when the damage lands.
+const HOLY_SHIELD_MIN_PREVENT := 3
+
+
+func holy_shield_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return null
+	var hero_id := ps.hero_instance_id
+	var hero := state.get_card(hero_id)
+	if not hero or not state.is_in_play(hero_id):
+		return null
+
+	var threats := _hero_damage_sources(state, db, player_id)
+	if threats.is_empty():
+		return null
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var shield := 0
+		for entry in def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			if parts[0].strip_edges() == "prevent_hero_damage_from_target" \
+					and parts.size() > 1:
+				shield = int(parts[1])
+		if shield <= 0:
+			continue
+
+		# Already-banked shield against the same source is netted out — a second
+		# copy on a threat the first one fully covers buys nothing.
+		var best := ""
+		var best_kills := false
+		var best_prevented := 0
+		for src: String in threats:
+			var incoming: int = int(threats[src]) - GameLogic.granted_shield(hero, src)
+			if incoming <= 0:
+				continue
+			var prevented: int = min(shield, incoming)
+			var kills: bool = prevented >= state.get_current_hp(src, db)
+			if not kills and prevented < HOLY_SHIELD_MIN_PREVENT:
+				continue
+			# A kill outranks a bigger block: it removes the card, not one swing.
+			if best == "" or (kills and not best_kills) \
+					or (kills == best_kills and prevented > best_prevented):
+				best = src
+				best_kills = kills
+				best_prevented = prevented
+		if best == "":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id, "target_id": best})
+		if StackResolver.can_submit(state, act, db):
+			return act
+		return null
+	return null
+
+
+# Which CHARACTERS are about to deal damage to player_id's hero, and how much
+# each. The per-source split _forecast_damage_to deliberately doesn't keep —
+# Soul Link only needs the total, while Holy Shield wards against exactly one
+# character and must know which. Unpreventable sources are dropped: a shield is
+# not consumed by them (717), so warding against one buys nothing.
+func _hero_damage_sources(state: GameState, db, player_id: String) -> Dictionary:
+	var out := {}
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return out
+	var hero_id := ps.hero_instance_id
+
+	# (1) Combat — an open window, or a proposal of theirs still on the chain.
+	var attacker_id := ""
+	var defender_id := ""
+	if state.combat_attack_window or state.combat_defend_window:
+		attacker_id = state.combat_attacker
+		defender_id = state.combat_defender
+	else:
+		for pending in state.pending_actions:
+			var p := pending as PendingAction
+			if p and p.action_type == "propose_combat" and p.source_player != player_id:
+				attacker_id = p.params.get("attacker_id", "")
+				defender_id = p.params.get("defender_id", "")
+				break
+	if state.is_in_play(attacker_id) and state.is_in_play(defender_id):
+		if defender_id == hero_id:
+			if not GameLogic.is_damage_unpreventable(state, db, attacker_id, true):
+				var a: int = max(forecast_atk(state, db, attacker_id, true), 0)
+				if a > 0:
+					out[attacker_id] = int(out.get(attacker_id, 0)) + a
+		elif attacker_id == hero_id \
+				and not StackResolver._has_keyword(
+					state.get_card(hero_id), "long_range", db, state):
+			# Our own hero swinging: the defender's retaliation comes back at it,
+			# and warding against the defender turns that into a reflect.
+			if not GameLogic.is_damage_unpreventable(state, db, defender_id, true):
+				var d: int = max(state.get_atk(defender_id, db), 0)
+				if d > 0:
+					out[defender_id] = int(out.get(defender_id, 0)) + d
+
+	# (2) An opposing damage link on the chain aimed at our hero. The character
+	# that will DEAL it is what we ward against — the opponent's hero for an
+	# ability ("YOUR HERO deals..."), the ally itself for an ally power.
+	for pending in state.pending_actions:
+		var p2 := pending as PendingAction
+		if not p2 or p2.source_player == player_id:
+			continue
+		var src: String = p2.params.get("card_id", p2.params.get("hero_id", ""))
+		var src_card := state.get_card(src)
+		var src_def := db.get_def(src_card.card_def_id) as CardDef if src_card else null
+		if not src_def:
+			continue
+		var aimed := false
+		for slot in ["target_id", "target_id_2", "target_id_3"]:
+			if p2.params.get(slot, "") == hero_id:
+				aimed = true
+		if not aimed:
+			continue
+		if GameLogic.is_damage_unpreventable(state, db, src, false):
+			continue
+		if StackResolver._has_effect_flag(src_def, "damage_unpreventable"):
+			continue
+		var amount := 0
+		for seg in src_def.effects.split("|"):
+			var sp := seg.split(":")
+			if sp[0] in ["deal_damage_to_target", "multi_shot",
+					"deal_damage_and_heal", "deal_damage_weapon_atk"] and sp.size() > 1:
+				amount += int(p2.params.get("x_value", 0)) if sp[1] == "X" \
+					else int(sp[1])
+		if amount <= 0:
+			continue
+		# An ally POWER is dealt by the ally; an ability is dealt by their hero.
+		var dealer := src
+		if p2.action_type != "use_ally_power":
+			var opp_ps := state.players.get(_other_player_id(state, player_id)) as PlayerState
+			dealer = opp_ps.hero_instance_id if opp_ps else ""
+		if dealer == "" or not state.is_in_play(dealer):
+			continue
+		out[dealer] = int(out.get(dealer, 0)) + amount
+	return out
+
+
+# ── Graccus (azeroth_4) — the one-shot counted shield ────────────────────────
+# "(3), Flip Graccus -> Prevent the next 3 damage that would be dealt to target
+# hero or ally this turn."
+#
+# Soul Link's counted shield pointed at a TARGET, but with the opposite economy:
+# Soul Link is free and repeatable, so it is bought a point at a time, while the
+# hero flip is once per GAME. So this is held (never blind-flipped on our own
+# turn — see the gate in _get_hero_power_actions) and fired only on damage
+# already on its way, at whichever of two things it can actually save.
+#
+# (a) THE HERO — the character whose loss ends the game, so the bar is low: any
+#     incoming damage that is lethal, or that would drop us to the free-block
+#     floor. A 1-damage poke at a full-health hero is not worth the game's only
+#     flip.
+#
+# (b) AN ALLY — and here the point is deliberately NOT to be frugal. The shield
+#     is worth spending to save a body worth more than the power costs, even
+#     when only 1 of the 3 points is used: the value is the ally, not the
+#     damage. The two real conditions are that the ally would otherwise DIE and
+#     that the shield actually SAVES it (3 points against a 6-damage swing at a
+#     2-health ally buys nothing), plus a printed-cost floor of the power's own
+#     cost, the _destroy_is_worth_it convention.
+#
+# Works from the attack window, the defend window, or in response to a link
+# still on the chain — the grant lasts the turn, so any of those is early enough
+# to cover the conclusion, and priority is LIFO so a shield announced in
+# response resolves before the damage.
+func graccus_shield_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.has_used_hero_power or ps.hero_instance_id == "":
+		return null
+	var hero_id := ps.hero_instance_id
+	var hero := state.get_card(hero_id)
+	if not hero or not state.is_in_play(hero_id):
+		return null
+	var hero_def := db.get_def(hero.card_def_id) as CardDef
+	if not hero_def:
+		return null
+	var shield := 0
+	for entry in hero_def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "prevent_next_damage_target":
+			shield = int(parts[1]) if parts.size() > 1 else 1
+	if shield <= 0:
+		return null
+
+	var target := ""
+
+	# (a) The hero itself — lethal, or a hit that takes us to the floor.
+	var need := _forecast_damage_to(state, db, player_id, hero_id)
+	need -= GameLogic.granted_shield(hero)
+	if need > 0:
+		var hero_hp := state.get_current_hp(hero_id, db)
+		if need >= hero_hp or hero_hp - need <= FREE_BLOCK_HERO_FLOOR:
+			target = hero_id
+
+	# (b) Otherwise the most expensive ally of ours the shield would actually
+	#     save. No frugality about unused points — the body is the payoff.
+	if target == "":
+		var best_cost: int = max(hero_def.cost, 0)
+		for ally in state.cards_in_zone(player_id + "_ally_row"):
+			var aid: String = ally.instance_id
+			var incoming := _forecast_damage_to(state, db, player_id, aid)
+			if incoming <= 0:
+				continue
+			var hp := state.get_current_hp(aid, db) + GameLogic.granted_shield(ally)
+			if incoming < hp:
+				continue          # survives on its own — nothing to save
+			if incoming - shield >= hp:
+				continue          # the shield is not enough — it dies anyway
+			var ally_def := db.get_def(ally.card_def_id) as CardDef
+			if not ally_def or ally_def.cost <= best_cost:
+				continue          # not worth the game's only flip
+			best_cost = ally_def.cost
+			target = aid
+	if target == "":
+		return null
+
+	var act := PendingAction.make("activate_power", player_id,
+		{"hero_id": hero_id, "target_id": target})
+	if StackResolver.can_submit(state, act, db):
+		return act
+	return null
 
 
 # ── Helwen (azeroth_126) — the optional ready ────────────────────────────────
@@ -2118,6 +2487,33 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if dp_act:
 					result.append(dp_act)
 				continue
+			# Life Tap: the draw is not free — it is bought with our own hero's
+			# health (405.3, so no armor or shield can soften it), and the cost
+			# is paid at ANNOUNCEMENT, so a countered link leaves us paying for
+			# nothing. Two gates, and the health one is the important half: the
+			# cost may be exactly fatal, so an ungated AI would eventually tap
+			# itself to death for cards it never gets to play. Require the hero
+			# to be comfortably clear of the payment afterwards, and — as for
+			# every draw effect — hand room for both cards (503.2a), minus one
+			# because playing the spell itself frees a slot.
+			if def and StackResolver.play_cost_puts_damage_on_hero(def):
+				var lt_ps := state.players.get(player_id) as PlayerState
+				var lt_hero: String = lt_ps.hero_instance_id if lt_ps else ""
+				if lt_hero == "":
+					continue
+				var lt_cost := StackResolver.play_cost_hero_damage_amount(def)
+				if state.get_current_hp(lt_hero, db) - lt_cost <= FREE_BLOCK_HERO_FLOOR:
+					continue
+				var lt_draw := _draw_segment_amount(def)
+				if lt_draw > 0:
+					var lt_max_hand := state.get_max_hand_size(player_id, db)
+					if state.cards_in_zone(player_id + "_hand").size() - 1 > lt_max_hand - lt_draw:
+						continue
+				var lt_action := PendingAction.make(action_type, player_id,
+						{"card_id": card.instance_id})
+				if StackResolver.can_submit(state, lt_action, db):
+					result.append(lt_action)
+				continue
 			# Pure-draw spell (Innervate): don't draw past max hand size — the
 			# excess would just be discarded at wrap-up (503.2a). Same gate as
 			# the `draw` activated power in _get_ally_power_actions, minus one
@@ -2259,6 +2655,21 @@ static func _pure_draw_amount(def: CardDef) -> int:
 		if parts[0].strip_edges() != "draw":
 			return 0
 		total += int(parts[1]) if parts.size() > 1 else 1
+	return total
+
+
+# Cards drawn by a spell's `draw:N` segments, whatever ELSE it does. Unlike
+# _pure_draw_amount this doesn't bail on a second segment — Life Tap's other
+# segment is a COST, not a second payoff, so its hand-room gate is the same
+# question a pure-draw spell asks.
+static func _draw_segment_amount(def: CardDef) -> int:
+	if not def:
+		return 0
+	var total := 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() == "draw":
+			total += int(parts[1]) if parts.size() > 1 else 1
 	return total
 
 
@@ -4279,6 +4690,11 @@ func _get_hero_power_actions(state: GameState, db, player_id: String) -> Array[P
 		# blind-played on our own turn. See hero_disable_action().
 		if _hero_power_is(state, db, hero_id, "target_cant_attack"):
 			return result
+		# prevent_next_damage_target (Graccus): held for defense — the flip is
+		# once per GAME, so it is never spent on a board with nothing incoming.
+		# See graccus_shield_action().
+		if _hero_power_is(state, db, hero_id, "prevent_next_damage_target"):
+			return result
 		# deal_x_damage_to_ally: pick best target and optimal X.
 		if _hero_power_is(state, db, hero_id, "deal_x_damage_to_ally"):
 			result.append_array(_x_damage_ally_actions(state, db, player_id, hero_id))
@@ -5016,7 +5432,16 @@ static func find_safe_lethals(state: GameState, db, attackers: Array[String],
 # doesn't model either.
 static func combat_kills(state: GameState, db, source: String, target: String,
 		source_is_attacker: bool = true) -> bool:
-	var atk := forecast_atk(state, db, source, source_is_attacker)
+	# Devotion Aura: "If a hero or ally in your party would be dealt damage,
+	# prevent 1 of that damage." A blanket reduction on the TARGET's whole party,
+	# so every packet in this combat is trimmed before it lands — a 2-ATK attacker
+	# no longer kills a 1-health ally. Asked here, the one shared "does this combat
+	# remove that card?" predicate behind find_safe_lethals and combat_trade_value,
+	# so offence and defence both count it for free (the same spot Brother Rhone
+	# and Plagueborn Meatwall were taught). Read live off the board, and floored at
+	# 0 so a fully-trimmed swing kills nothing.
+	var reduced: int = max(GameLogic.party_damage_reduction(state, db, target), 0)
+	var atk: int = max(forecast_atk(state, db, source, source_is_attacker) - reduced, 0)
 	if atk >= state.get_current_hp(target, db):
 		return true
 	# Plagueborn Meatwall: "When he DEFENDS against an ally, remove all damage
@@ -5028,8 +5453,10 @@ static func combat_kills(state: GameState, db, source: String, target: String,
 	if not source_is_attacker and StackResolver._is_ally(state, target):
 		var wall := state.get_card(source)
 		var wall_def := db.get_def(wall.card_def_id) as CardDef if wall else null
+		# The reflect is damage dealt to the ATTACKER, so its own party's
+		# Devotion Aura trims it exactly like any other packet.
 		if wall_def and StackResolver._has_effect_flag_prefix(
-				wall_def, "on_defend_vs_ally_reflect_damage") 				and wall.damage_taken >= state.get_current_hp(target, db):
+				wall_def, "on_defend_vs_ally_reflect_damage") 				and wall.damage_taken - reduced >= state.get_current_hp(target, db):
 			return true
 	if atk <= 0:
 		return false   # no damage dealt → no "deals combat damage" trigger
@@ -5221,7 +5648,7 @@ func _hero_power_needs_target(state: GameState, db, hero_id: String) -> bool:
 		return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "target_cant_attack"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "target_cant_attack", "prevent_next_damage_target"]:
 			return true
 	return false
 

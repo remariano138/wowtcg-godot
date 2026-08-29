@@ -1364,3 +1364,85 @@ one call in the `on_defend_vs_ally_reflect_damage` arm of
 **Enforcement site:** `StackResolver._resolve_combat_trigger`, the
 `on_defend_vs_ally_reflect_damage` arm.
 
+## Brain Freeze — a blocked draw does not deck you
+
+**Card:** Brain Freeze (`azeroth_49`), 3, Instant Ability — Frost, Mage:
+"Players can't draw cards this turn."
+
+**The question:** rule 410.6b decks "all players who have been required to draw a
+card from an empty deck". Under Brain Freeze a player whose deck is empty is
+still *required* to draw — by the draw step, or by a draw effect — and simply
+can't. Does the requirement alone deck him?
+
+**Engine:** no. The prohibition is applied at the top of `GameLogic.draw_one`,
+ahead of the empty-deck branch, so the draw event never happens at all and
+nothing is recorded. A locked player is never decked, whatever the state of his
+deck.
+
+**Consequence:** Brain Freeze can never win the game on its own. It cannot be
+pointed at an opponent who has just run out of cards to convert a draw step into
+a loss, which the opposite reading would make it — a 3-cost instant alternate
+win condition, on a card whose printed text is plainly about denying card
+advantage for a turn.
+
+**Why:** 410.6b describes an event ("required to draw ... from an empty deck")
+rather than a standing obligation, and the rulebook's one worked example of a
+draw that doesn't happen — Forbidden Knowledge (716.1d) — explicitly does NOT
+deck its controller. That is a replacement rather than a prohibition, so it is
+not authority, but it is the closest thing the CR offers and it points this way.
+
+**Note this is a lock on DRAWING alone** (rule 415.9f: an event that puts a card
+into a hand from a deck is a draw only if it says the card is *drawn*). A
+graveyard fetch (Call the Spirit), a reveal-and-pick (Eagle Eye) and a "look at"
+(Track Humanoids) are unaffected. That is the rules reading, not a deviation, and
+it is what the AI's `_chain_draws_cards` scan encodes.
+
+**Enforcement site:** `GameLogic.draw_one` in
+`game_logic/actions/primitives.gd`.
+
+## Polymorph — the printed text vs the errata
+
+**Card:** Polymorph (`azeroth_58`), 2, Ability — Arcane, Mage. Printed:
+"Attach to target ally. Ongoing: Attached ally can't attack or protect, loses
+all powers, and is a Sheep."
+
+**What is implemented is the ERRATA**, which the official FAQ and the CR both
+carry, and which differs from the printed card in two places:
+
+- **"is a Sheep" is ADDITIVE.** Per 202.3 ("a modifier that adds a tag to a card
+  doesn't remove any tags or that card's type unless specified") and the FAQ
+  ("It gains the Sheep tag in addition to any others it has"), a Polymorphed
+  Bloodclaw is a Sheep *and* still an ally, a Raptor and a Pet (1). The engine
+  appends the tag and removes nothing.
+- **Card TYPE is untouched.** The FAQ is explicit: "Polymorph doesn't change or
+  remove the attached ally's card type. That ally can still be exhausted to
+  complete The Love Potion." So the host stays a legal "target ally", still
+  counts toward party size, and can still pay an exhaust cost.
+
+The CR (701.4a, 202.3) quotes a further variant, "loses **and can't have**
+powers". That is NOT implemented: the FAQ text the card actually shipped with
+says a blanked character "can later gain powers", so a keyword granted
+afterwards (Sneak's elusive, Into the Fray's ferocity, an aura) does land on a
+Polymorphed ally. Only what is PRINTED on the card is silenced.
+
+**Enforcement site:** `GameState.effective_def` in
+`game_logic/state/game_state.gd`.
+
+
+## Polymorph — "Unique" survives a blank text box
+
+**The question:** rule 700.1 makes keywords powers, and the engine's CSV
+`keywords` column holds both true keyword powers (protector, ferocity, elusive,
+stealth, ranged, untargetable) and the type-line **tags** of 202.2 — `Unique`,
+and `Unlimited` if one is ever printed. Blanking the column wholesale would make
+a Polymorphed Lady Jaina non-Unique, so a second copy could be played beside
+her.
+
+**Engine:** `GameState.TYPE_LINE_TAGS` lists the entries of that column that are
+tags rather than powers, and they are kept when the text box is blanked. Rule
+202.2 puts them on the RIGHT side of the type line, which is not the text box, so
+this is the rules-correct split — it is recorded here only because the CSV
+conflates the two and a reader of `effective_def` would not otherwise expect any
+keyword to survive.
+
+**Enforcement site:** `GameState.effective_def`.

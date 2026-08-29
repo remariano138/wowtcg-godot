@@ -241,6 +241,9 @@ func _ready() -> void:
 		_test_sever_the_cord_sacrifice_cost,
 		_test_sever_the_cord_paid_at_announcement,
 		_test_ai_sever_the_cord,
+		_test_life_tap_pays_health_for_cards,
+		_test_life_tap_cost_scope_and_lethality,
+		_test_ai_life_tap,
 		_test_dark_pact_sacrifice_pet_draw,
 		_test_dark_pact_gates_and_fizzle,
 		_test_ai_dark_pact,
@@ -254,12 +257,24 @@ func _ready() -> void:
 		_test_counterspell_pool_and_fizzle,
 		_test_escape_artist_keeps_hero_rider,
 		_test_ai_counterspell,
+		_test_brain_freeze_locks_draws,
+		_test_brain_freeze_scope_and_decking,
+		_test_ai_brain_freeze,
+		_test_polymorph_blanks_the_ally,
+		_test_polymorph_scope,
+		_test_polymorph_on_a_totem,
+		_test_ai_polymorph,
 		_test_winters_grasp_taxes_opposing_allies,
 		_test_winters_grasp_affordability_scope_and_stacking,
 		_test_winters_grasp_releases_must_attack,
 		_test_ai_winters_grasp_tax,
 		_test_ai_cannibalize,
 		_test_gouge_exhaust_and_ready_lock,
+		_test_hammer_of_justice,
+		_test_holy_light,
+		_test_sacred_duty,
+		_test_devotion_aura,
+		_test_devotion_aura_slot_and_ai,
 		_test_charge_exhausts_and_draws,
 		_test_berserking,
 		_test_blood_fury,
@@ -552,6 +567,12 @@ func _ready() -> void:
 		_test_ophelia_repeat_count_flow,
 		_test_soul_link_scope_and_expiry,
 		_test_ai_soul_link,
+		_test_graccus_shields_target,
+		_test_graccus_scope_and_fizzle,
+		_test_ai_graccus,
+		_test_holy_shield_wards_and_reflects,
+		_test_holy_shield_scope_and_fizzle,
+		_test_ai_holy_shield,
 		_test_katsin_shields_combat_both_ways,
 		_test_katsin_scope_and_expiry,
 		_test_ai_katsin_saves_dying_ally,
@@ -13664,6 +13685,509 @@ func _test_gouge_exhaust_and_ready_lock() -> void:
 		"gg-e: lock consumed — no longer blocked after that ready step")
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hammer of Justice (azeroth_68, 2, Instant Ability — Protection, Paladin):
+# "Exhaust target hero or ally. It can't ready during its controller's next
+# ready step. Draw a card." Gouge's exhaust + ready-lock with a cantrip stapled
+# on, and PURE CSV — all three segments already share the _resolve_play_instant
+# dispatch loop, and gouge_cant_ready is read generically off the def.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_hammer_of_justice() -> void:
+	_buf.append("\n-- Hammer of Justice: exhaust + ready-lock + draw --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("target_def", 3, 4, [], 3)
+	db.ally("ghost_def", 1, 3, ["untargetable"], 3)
+	db.instant("azeroth_68", 2,
+		"exhaust_target:hero_or_ally|gouge_cant_ready|draw:1")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 2)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "hoj", "azeroth_68", "p1")
+	_add_card_to_deck(state, "top", "target_def", "p1")
+	var tgt := _add_ally(state, "tgt", "target_def", "p2")
+	tgt.just_summoned = false
+	var ghost := _add_ally(state, "ghost", "ghost_def", "p2")
+	ghost.just_summoned = false
+
+	# hj-a: "target hero or ally" — a hero is legal, an Untargetable ally is not.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "hoj", "target_id": "p2_hero"}), db),
+		"hj-a: an enemy hero is a legal target")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "hoj", "target_id": "ghost"}), db),
+		"hj-a2: Untargetable is not (706)")
+
+	# hj-b: all three clauses resolve — exhaust, ready-lock, and the draw.
+	StackResolver.submit_action(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "hoj", "target_id": "tgt"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.get_card("tgt").is_exhausted, "hj-b: the target is exhausted")
+	ok(TurnManager.is_ready_blocked(state, state.get_card("tgt"), db),
+		"hj-b2: and ready-locked")
+	eq(state.get_card("top").zone_id, "p1_hand",
+		"hj-b3: and the cantrip drew a card")
+
+	# hj-c: the lock costs them the ready step, then clears.
+	state.turn_player = "p1"
+	state.phase       = "end"
+	_advance_phase(state, db)   # -> p2's ready step
+	eq(state.turn_player, "p2", "hj-c0: turn passed to p2")
+	ok(state.get_card("tgt").is_exhausted,
+		"hj-c: NOT readied during its controller's ready step")
+	ok(not TurnManager.is_ready_blocked(state, state.get_card("tgt"), db),
+		"hj-c2: lock consumed after that step")
+
+	# hj-d: instant speed is the card — flashed in on a combat proposal, the
+	#       exhaust fizzles it at the 601.3 legality recheck and the attacker
+	#       never exhausts for the attack.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 2)
+	_add_card_to_hand(st2, "hoj", "azeroth_68", "p1")
+	_add_card_to_deck(st2, "top", "target_def", "p1")
+	var swinger := _add_ally(st2, "swinger", "target_def", "p2")
+	swinger.just_summoned = false
+	st2.turn_player = "p2"
+	st2.priority_player = "p2"
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "swinger", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(st2, db)   # p2 done proposing -> p1 has priority
+	StackResolver.submit_action(st2, PendingAction.make("play_instant", "p1",
+		{"card_id": "hoj", "target_id": "swinger"}), db)
+	for i in range(6):
+		StackResolver.pass_priority(st2, db)
+	ok(st2.get_card("swinger").is_exhausted, "hj-d: the attacker is exhausted")
+	eq(st2.get_card("p1_hero").damage_taken, 0,
+		"hj-d2: the proposal fizzled at the 601.3 recheck — no damage")
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Holy Light (azeroth_69, 3, Ability — Holy, Paladin): "Your hero heals 5 damage
+# from target hero or ally. Draw a card." Healing Touch's heal with a cantrip
+# stapled on, and PURE CSV — both segments already share the
+# _resolve_play_instant dispatch loop. A plain Ability, so unlike Holy Shield
+# and Hammer of Justice it is SORCERY speed and can never be flashed into a
+# combat window.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_holy_light() -> void:
+	_buf.append("\n-- Holy Light: heal 5 from a target + draw --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("mine_def", 2, 6, [], 3)
+	db.ally("ghost_def", 1, 3, ["untargetable"], 3)
+	db.ability("azeroth_69", 3, "heal_target:5|draw:1", "Holy")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 9)
+	state.players["p1"].resource_placed_this_turn = true
+	state.get_card("p1_hero").damage_taken = 8
+	var mine := _add_ally(state, "mine", "mine_def", "p1")
+	mine.just_summoned = false
+	mine.damage_taken = 2
+	var ghost := _add_ally(state, "ghost", "ghost_def", "p2")
+	ghost.just_summoned = false
+	_add_card_to_hand(state, "hl", "azeroth_69", "p1")
+	_add_card_to_hand(state, "hl2", "azeroth_69", "p1")
+	_add_card_to_hand(state, "hl3", "azeroth_69", "p1")
+	_add_card_to_deck(state, "top", "mine_def", "p1")
+	_add_card_to_deck(state, "top2", "mine_def", "p1")
+	_add_card_to_deck(state, "top3", "mine_def", "p1")
+
+	# hl-a: rule 706 — an Untargetable character is not a legal target.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl", "target_id": "ghost"}), db),
+		"hl-a: Untargetable is not a legal target (706)")
+	# ...and either party's characters are legal ("target hero or ally").
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl", "target_id": "p2_hero"}), db),
+		"hl-a2: the OPPOSING hero is a legal target — no 'friendly' clause")
+
+	# hl-b: both clauses resolve — 5 healed off our hero, and a card drawn.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl", "target_id": "p1_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("p1_hero").damage_taken, 3, "hl-b: 5 damage healed (8 -> 3)")
+	eq(state.get_card("top").zone_id, "p1_hand", "hl-b2: and the cantrip drew")
+
+	# hl-c: capped by the damage actually present — 5 is a ceiling, not a payout,
+	#       and an ally is an equally legal target.
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl2", "target_id": "mine"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("mine").damage_taken, 0, "hl-c: only the 2 present was healed")
+
+	# hl-d: an UNDAMAGED target is a legal no-op, not an illegal announce — and
+	#       the draw still happens.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl3", "target_id": "mine"}), db),
+		"hl-d: an undamaged target is still legal")
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl3", "target_id": "mine"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("mine").damage_taken, 0, "hl-d2: still 0 — the heal no-ops")
+	eq(state.get_card("top3").zone_id, "p1_hand", "hl-d3: the draw happened anyway")
+
+	# hl-e: SORCERY speed — a plain Ability can't be played with a link on the
+	#       chain, so it can never answer a combat proposal.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 9)
+	_add_card_to_hand(st2, "hl", "azeroth_69", "p1")
+	_add_card_to_deck(st2, "top", "mine_def", "p1")
+	st2.get_card("p1_hero").damage_taken = 8
+	var swinger := _add_ally(st2, "swinger", "mine_def", "p2")
+	swinger.just_summoned = false
+	st2.turn_player = "p2"
+	st2.priority_player = "p2"
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "swinger", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(st2, db)
+	ok(not StackResolver.can_submit(st2, PendingAction.make("play_ability", "p1",
+		{"card_id": "hl", "target_id": "p1_hero"}), db),
+		"hl-e: sorcery speed — not playable in response to a combat proposal")
+
+	# hl-f: AI — friendly-only, and the most-damaged character wins. The heal
+	#       heuristic is deliberately narrower than the printed pool: the card can
+	#       legally repair the opponent's board and the AI never will.
+	var ai := BaseAI.new()
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 9)
+	st3.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(st3, "hl", "azeroth_69", "p1")
+	_add_card_to_deck(st3, "top", "mine_def", "p1")
+	var hurt := _add_ally(st3, "hurt", "mine_def", "p1")
+	hurt.just_summoned = false
+	hurt.damage_taken = 5
+	var theirs := _add_ally(st3, "theirs", "mine_def", "p2")
+	theirs.just_summoned = false
+	theirs.damage_taken = 5
+	var found := ""
+	for act in ai.get_reasonable_actions(st3, db, "p1"):
+		if (act as PendingAction).params.get("card_id", "") == "hl":
+			found = (act as PendingAction).params.get("target_id", "")
+	eq(found, "hurt", "hl-f: aimed at OUR most-damaged character, never theirs")
+
+	# hl-g: held entirely while nothing of ours is damaged (the pure-heal
+	#       heuristic — the cantrip is deliberately not modelled).
+	hurt.damage_taken = 0
+	for act in ai.get_reasonable_actions(st3, db, "p1"):
+		ok((act as PendingAction).params.get("card_id", "") != "hl",
+			"hl-g: held with nothing of ours damaged")
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sacred Duty (azeroth_72, 3, Ability — Protection, Paladin): "Ongoing: Your
+# hero has protector. When your hero protects, it heals 1 damage from itself."
+# Half of it is Stalwart Protector's `hero_keyword:protector` (pure CSV); the
+# other half is Truesilver Breastplate's defend trigger narrowed by one word —
+# "protects" (602.2) is strictly narrower than "defends" (602.3), so a hero
+# ATTACKED DIRECTLY heals nothing. The two halves feed each other: the card
+# grants protector AND pays you for using it.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const SACRED_DUTY_FX := "ongoing|hero_keyword:protector|on_hero_protect_heal:1"
+
+
+func _sacred_duty_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bruiser_def", 5, 5, [], 4)
+	db.ally("chump_def", 1, 1, [], 1)
+	db.ability("azeroth_72", 3, SACRED_DUTY_FX, "Protection")
+	return db
+
+
+func _put_sacred_duty(state: GameState, inst_id: String, ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, "azeroth_72", ctrl, ctrl + "_hero_row")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_hero_row"].card_ids.append(inst_id)
+	return card
+
+
+func _test_sacred_duty() -> void:
+	_buf.append("\n-- Sacred Duty: hero protector + heal 1 when it PROTECTS --")
+	var db := _sacred_duty_db()
+
+	# sd-a: the ongoing half — the hero is a legal protector while it is in play.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.players["p1"].resource_placed_this_turn = true
+	_put_sacred_duty(st, "sd", "p2")
+	_add_ally(st, "bruiser", "bruiser_def", "p1")
+	var chump := _add_ally(st, "chump", "chump_def", "p2")
+	chump.just_summoned = false
+	st.get_card("p2_hero").damage_taken = 6
+
+	ok("p2_hero" in StackResolver.get_legal_protectors(st, "bruiser", "chump", db),
+		"sd-a: the hero has protector (hero_keyword grant)")
+
+	# sd-b: it PROTECTS -> the trigger goes on the chain (respondable, not inline)
+	#       and heals INSIDE the defend window, before the conclusion.
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "chump"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st, db)
+	ok(st.in_protect_point, "sd-b: protect point opened for p2")
+	StackResolver.choose_protector(st, "p2_hero", db)
+	eq(st.combat_defender, "p2_hero", "sd-b2: the hero stepped in")
+	eq(st.pending_actions.size(), 1,
+		"sd-b3: the trigger is on the chain, not resolved inline")
+	eq(st.get_card("p2_hero").damage_taken, 6, "sd-b4: not healed yet — respondable")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("p2_hero").damage_taken, 5,
+		"sd-b5: healed 1 inside the defend window, before the conclusion")
+
+	# sd-c: THE distinction from Truesilver Breastplate — a hero ATTACKED
+	#       DIRECTLY is defending but is NOT protecting, so it heals nothing.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	st2.players["p1"].resource_placed_this_turn = true
+	_put_sacred_duty(st2, "sd", "p2")
+	_add_ally(st2, "bruiser", "bruiser_def", "p1")
+	st2.get_card("p2_hero").damage_taken = 6
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "p2_hero"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st2, db)
+	ok(st2.pending_actions.is_empty(),
+		"sd-c: attacked directly triggers NOTHING (defends != protects)")
+	eq(st2.get_card("p2_hero").damage_taken, 6, "sd-c2: no heal")
+
+	# sd-d: an ALLY protecting is not "your hero" — no heal either.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	st3.players["p1"].resource_placed_this_turn = true
+	_put_sacred_duty(st3, "sd", "p2")
+	_add_ally(st3, "bruiser", "bruiser_def", "p1")
+	var wall := _add_ally(st3, "wall", "bruiser_def", "p2")
+	wall.just_summoned = false
+	wall.granted_keywords.append("protector")
+	var chump3 := _add_ally(st3, "chump", "chump_def", "p2")
+	chump3.just_summoned = false
+	st3.get_card("p2_hero").damage_taken = 6
+	StackResolver.submit_action(st3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "chump"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st3, db)
+	ok(st3.in_protect_point, "sd-d0: protect point opened")
+	StackResolver.choose_protector(st3, "wall", db)
+	ok(st3.pending_actions.is_empty(),
+		"sd-d: an ALLY protecting is not \"your hero\" — nothing triggers")
+	eq(st3.get_card("p2_hero").damage_taken, 6, "sd-d2: no heal")
+
+	# sd-e: "YOUR hero" is controller-scoped — OUR Sacred Duty never fires off
+	#       the OPPONENT's hero protecting.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	st4.players["p1"].resource_placed_this_turn = true
+	_put_sacred_duty(st4, "sd", "p1")            # p1 owns it...
+	_add_ally(st4, "bruiser", "bruiser_def", "p1")
+	var chump4 := _add_ally(st4, "chump", "chump_def", "p2")
+	chump4.just_summoned = false
+	st4.get_card("p2_hero").damage_taken = 6
+	st4.get_card("p2_hero").granted_keywords.append("protector")
+	StackResolver.submit_action(st4, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "chump"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st4, db)
+	StackResolver.choose_protector(st4, "p2_hero", db)   # ...p2's hero protects
+	ok(st4.pending_actions.is_empty(),
+		"sd-e: the opponent's hero protecting is not \"your hero\"")
+	eq(st4.get_card("p2_hero").damage_taken, 6, "sd-e2: no heal")
+
+	# sd-f: 707.3 — destroying Sacred Duty in the response window does NOT stop
+	#       the heal, and an UNDAMAGED hero is a legal no-op (the link is still
+	#       queued, it simply heals nothing).
+	var st5 := _base_state(db, "p1_hero", "p2_hero")
+	st5.players["p1"].resource_placed_this_turn = true
+	_put_sacred_duty(st5, "sd", "p2")
+	_add_ally(st5, "bruiser", "bruiser_def", "p1")
+	var chump5 := _add_ally(st5, "chump", "chump_def", "p2")
+	chump5.just_summoned = false
+	st5.get_card("p2_hero").damage_taken = 6
+	StackResolver.submit_action(st5, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "chump"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st5, db)
+	StackResolver.choose_protector(st5, "p2_hero", db)
+	eq(st5.pending_actions.size(), 1, "sd-f: trigger on the chain")
+	GameLogic.move_card(st5, "sd", "p2_graveyard")   # answered in response
+	StackResolver.pass_priority(st5, db)
+	StackResolver.pass_priority(st5, db)
+	eq(st5.get_card("p2_hero").damage_taken, 5,
+		"sd-f2: 707.3 — the source is not re-checked, the heal still happens")
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Devotion Aura (azeroth_66, 5, Ability — Protection, Aura (1), Paladin): "Ongoing:
+# If a hero or ally in your party would be dealt damage, prevent 1 of that
+# damage." The engine's first blanket party-wide damage REDUCTION — armor is
+# hero-only (717.2c) and Brother Rhone's shield is one card and combat-only —
+# and the first card on the new `aura` slot tag, which is independent of Form
+# and Aspect.
+# ══════════════════════════════════════════════════════════════════════════════
+
+const DEVOTION_AURA_FX := "ongoing|aura:1|party_damage_reduction:1"
+
+
+func _devotion_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 2, 4, [], 3)
+	db.ally("chump_def", 1, 1, [], 1)
+	db.ability("azeroth_66", 5, DEVOTION_AURA_FX, "Protection")
+	db.instant("bear_def", 1, "ongoing|form:1|form_state:bear")
+	db.ability("hawk_def", 3, "ongoing|aspect:1|hero_damage_bonus_by_type:ranged:1")
+	return db
+
+
+func _put_hero_row(state: GameState, inst_id: String, def_id: String,
+		ctrl: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, ctrl + "_hero_row")
+	state.cards[inst_id] = card
+	state.zones[ctrl + "_hero_row"].card_ids.append(inst_id)
+	return card
+
+
+func _devotion_landed(events: Array) -> int:
+	var dealt := 0
+	for e in events:
+		if (e as GameEvent).event_type == "damage_dealt":
+			dealt += int((e as GameEvent).payload.get("amount", 0))
+	return dealt
+
+
+func _test_devotion_aura() -> void:
+	_buf.append("\n-- Devotion Aura: -1 to every packet aimed at your party --")
+	var db := _devotion_db()
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_put_hero_row(st, "aura", "azeroth_66", "p1")
+	var mine := _add_ally(st, "mine", "grunt_def", "p1")
+	mine.just_summoned = false
+	var theirs := _add_ally(st, "theirs", "grunt_def", "p2")
+	theirs.just_summoned = false
+
+	# da-a: our HERO is trimmed by 1.
+	eq(_devotion_landed(GameLogic.deal_damage(st, "theirs", "p1_hero", 3, db)), 2,
+		"da-a: 3 lands as 2 on our hero")
+	# da-b: and so is an ALLY in our party — armor never protected allies.
+	eq(_devotion_landed(GameLogic.deal_damage(st, "theirs", "mine", 3, db)), 2,
+		"da-b: 3 lands as 2 on our ally too")
+	# da-c: the OPPONENT's party is untouched ("in YOUR party").
+	eq(_devotion_landed(GameLogic.deal_damage(st, "mine", "theirs", 3, db)), 3,
+		"da-c: the opponent's ally takes it in full")
+	eq(_devotion_landed(GameLogic.deal_damage(st, "mine", "p2_hero", 3, db)), 3,
+		"da-c2: and so does their hero")
+
+	# da-d: a 1-damage packet is fully prevented and CEASES TO EXIST (717.2b) —
+	#       no damage_dealt event at all, so every damage watcher goes blind to
+	#       chip damage (Skorn, Cold Blood, Berserking, Thysta's "no damage").
+	var before := st.turn_events.size()
+	eq(_devotion_landed(GameLogic.deal_damage(st, "theirs", "p1_hero", 1, db)), 0,
+		"da-d: a 1-damage packet is fully prevented")
+	eq(st.turn_events.size(), before,
+		"da-d2: and records NO turn-log entry — the packet ceased to exist")
+
+	# da-e: it never depletes — the same aura trims the next packet, and the one
+	#       after that.
+	eq(_devotion_landed(GameLogic.deal_damage(st, "theirs", "p1_hero", 3, db)), 2,
+		"da-e: still trimming after several packets")
+
+	# da-f: rule 717 — unpreventable damage bypasses it entirely.
+	eq(_devotion_landed(GameLogic.deal_damage(st, "theirs", "p1_hero", 3, db,
+		{"unpreventable": true})), 3,
+		"da-f: unpreventable damage lands in full")
+
+	# da-g: it lifts the instant the aura leaves play (read live, never cached).
+	GameLogic.move_card(st, "aura", "p1_graveyard")
+	eq(_devotion_landed(GameLogic.deal_damage(st, "theirs", "p1_hero", 3, db)), 3,
+		"da-g: the reduction is gone with the source")
+
+	# da-h: applied BEFORE a counted shield, so the depleting resource absorbs
+	#       only the remainder and lasts longer.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_put_hero_row(st2, "aura", "azeroth_66", "p1")
+	var hitter := _add_ally(st2, "hitter", "grunt_def", "p2")
+	hitter.just_summoned = false
+	st2.get_card("p1_hero").active_buffs.append(Buff.make(
+		"shield", "x", "prevent_damage_amount", 5, "turns", 1))
+	eq(_devotion_landed(GameLogic.deal_damage(st2, "hitter", "p1_hero", 3, db)), 0,
+		"da-h: the whole packet is absorbed")
+	eq(GameLogic.granted_shield(st2.get_card("p1_hero")), 3,
+		"da-h2: the aura ate 1, so only 2 came off the counted shield")
+
+
+func _test_devotion_aura_slot_and_ai() -> void:
+	_buf.append("\n-- Devotion Aura: the Aura (1) slot, and the AI trade math --")
+	var db := _devotion_db()
+
+	# da-i: Aura (1) — a second one triggers the shared slot sacrifice choice.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_put_hero_row(st, "aura1", "azeroth_66", "p1")
+	_put_hero_row(st, "aura2", "azeroth_66", "p1")
+	StackResolver._check_form_uniqueness(st, "aura2", db)
+	eq(st.pending_form_sacrifice_player, "p1",
+		"da-i: a second Aura opens the slot sacrifice choice (414.3b)")
+	eq(st.pending_form_sacrifice_ids.size(), 2,
+		"da-i2: both Auras offered")
+
+	# da-j: the slot is INDEPENDENT of Form and Aspect — one of each is legal.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_put_hero_row(st2, "aura", "azeroth_66", "p1")
+	_put_hero_row(st2, "bear", "bear_def", "p1")
+	_put_hero_row(st2, "hawk", "hawk_def", "p1")
+	StackResolver._check_form_uniqueness(st2, "aura", db)
+	eq(st2.pending_form_sacrifice_player, "",
+		"da-j: one Aura + one Form + one Aspect is legal — separate slots")
+	StackResolver._check_form_uniqueness(st2, "bear", db)
+	eq(st2.pending_form_sacrifice_player, "",
+		"da-j2: and the Form check ignores the Aura")
+
+	# da-k: the AI counts the reduction — a 1-ATK attacker no longer kills a
+	#       1-health ally of ours, so the trade flips to pure suicide.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	var ours3 := _add_ally(st3, "ours", "chump_def", "p1")     # 1 ATK / 1 hp
+	ours3.just_summoned = false
+	var theirs3 := _add_ally(st3, "theirs", "chump_def", "p2")  # 1 ATK / 1 hp
+	theirs3.just_summoned = false
+	ok(BaseAI.combat_kills(st3, db, "theirs", "ours", true),
+		"da-k0: without the aura, their 1-ATK ally kills our 1-health ally")
+	_put_hero_row(st3, "aura", "azeroth_66", "p1")
+	ok(not BaseAI.combat_kills(st3, db, "theirs", "ours", true),
+		"da-k: with it, the trimmed swing no longer kills")
+	eq(BaseAI.combat_trade_value(st3, db, "theirs", "ours", true), "suicide",
+		"da-k2: swinging into the aura is now pure suicide (routes through combat_kills)")
+
+	# da-k3: it trims 1, it does not wall — a bigger swing still gets through.
+	var big := _add_ally(st3, "big", "grunt_def", "p2")        # 2 ATK
+	big.just_summoned = false
+	ok(BaseAI.combat_kills(st3, db, "big", "ours", true),
+		"da-k3: 2 ATK minus 1 still kills a 1-health ally")
+
+	# da-l: it is the TARGET's party that matters, not the source's — our own
+	#       aura does not shrink what our ally deals to theirs.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_put_hero_row(st4, "aura", "azeroth_66", "p1")
+	var ours := _add_ally(st4, "ours", "grunt_def", "p1")     # 2 ATK
+	ours.just_summoned = false
+	var frail := _add_ally(st4, "frail", "chump_def", "p2")   # 1 hp, THEIR party
+	frail.just_summoned = false
+	ok(BaseAI.combat_kills(st4, db, "ours", "frail", true),
+		"da-l: our aura does not protect THEIR ally — the kill still counts")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Shock and Soothe (dark_portal_100, 4, Instant Ability — Elemental): "Your hero
 # deals 3 nature damage to target hero or ally and heals 3 damage from ANOTHER
@@ -19838,6 +20362,226 @@ func _test_primal_mending_attach_heal() -> void:
 	eq(pm_targets.size(), 1, "pm-k: AI generates exactly one attach")
 	eq(str(pm_targets[0] if not pm_targets.is_empty() else ""), "hurt",
 		"pm-l: AI attaches to its OWN most-damaged ally, never the enemy's")
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Polymorph (azeroth_58): "Attach to target ally. Ongoing: Attached ally can't
+# attack or protect, loses all powers, and is a Sheep."
+#
+# Rule 700.1 makes KEYWORDS powers too, and 700.3 says a card that loses its
+# powers "effectively has a blank text box" — so this is the one card that has
+# to be honoured at every power-reading site, via GameState.effective_def.
+# The errata adds three things the tests pin: printed card TYPE is unchanged,
+# the Sheep tag is ADDITIVE (202.3), and a blanked card "can later gain powers".
+# ══════════════════════════════════════════════════════════════════════════════
+
+const POLY_FX := "ongoing|attach:ally|attached_cannot_attack|attached_cannot_protect|attached_loses_powers|attached_ally_type:Sheep"
+
+func _polymorph_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_58", 2, POLY_FX, "Arcane")
+	# A victim carrying one power of every kind: a keyword, an activated power,
+	# a continuous self-modifier and a death trigger.
+	db.ally("beast_def", 2, 4, ["protector", "ferocity"], 4,
+		"atk_per_damage_self:1|activated_power:0:draw:1|on_destroyed:destroy_target:ally")
+	db.ally("plain_def", 3, 3, [], 3)
+	db.ally("magni_def", 1, 1, [], 4, "friendly_race_keyword:Dwarf:protector")
+	db.ally("jaina_def", 7, 4, ["unique"], 7, "opposing_allies_cant_attack")
+	db.instant("vanquish_def", 3, "destroy_target:ability")
+	db.instant("sneak_def", 1, "grant_keyword_target:ally:elusive")
+	# A Totem — an ally ONLY because of a power (305.3a).
+	db.ability("totem_def", 1, "ongoing|totem:fire|ongoing_damage_each_turn:1:fire")
+	return db
+
+
+func _cast_polymorph(state: GameState, db, caster: String, poly_id: String,
+		target_id: String) -> void:
+	var cast := PendingAction.make("play_ability", caster,
+		{"card_id": poly_id, "target_id": target_id})
+	StackResolver.submit_action(state, cast, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+
+func _test_polymorph_blanks_the_ally() -> void:
+	_buf.append("\n-- Polymorph: blank text box, can't attack or protect (700.1/700.3) --")
+	var db := _polymorph_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	var beast := _add_ally(st, "beast", "beast_def", "p2")
+	beast.just_summoned = false
+	beast.damage_taken = 2                      # feeds atk_per_damage_self
+	_add_ally(st, "attacker", "plain_def", "p1").just_summoned = false
+	_add_card_to_hand(st, "poly", "azeroth_58", "p1")
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	st.phase           = "action"
+
+	# Before: every power is live.
+	eq(st.get_atk("beast", db), 4, "pm-a: 2 printed + 2 from its own self-modifier")
+	ok(StackResolver._has_keyword(beast, "protector", db, st), "pm-a2: protector")
+	ok("beast" in StackResolver.get_legal_protectors(st, "attacker", "p2_hero", db),
+		"pm-a3: it is a legal protector")
+
+	_cast_polymorph(st, db, "p1", "poly", "beast")
+	eq(st.get_card("poly").zone_id, "attached", "pm-b: Polymorph is attached")
+	ok(st.has_lost_powers("beast", db), "pm-b2: the host has lost its powers")
+
+	# 700.3 — a blank text box. Printed stats stay (card face, not text box);
+	# the card's OWN self-modifier is a power and is gone.
+	eq(st.get_atk("beast", db), 2, "pm-c: ATK drops to the printed line")
+	eq(st.get_max_hp("beast", db), 4, "pm-c2: printed health is untouched")
+	eq(beast.damage_taken, 2, "pm-c3: damage already on it stays")
+	# 700.1 — keywords are powers.
+	ok(not StackResolver._has_keyword(beast, "protector", db, st), "pm-d: protector lost")
+	ok(not StackResolver._has_keyword(beast, "ferocity", db, st), "pm-d2: ferocity lost")
+	# Activated power gone.
+	var pw := PendingAction.make("use_ally_power", "p2", {"card_id": "beast"})
+	ok(not StackResolver.can_submit(st, pw, db), "pm-e: its activated power is gone")
+
+	# The card's own two printed restrictions.
+	ok(not ("beast" in StackResolver.get_legal_protectors(st, "attacker", "p2_hero", db)),
+		"pm-f: can't protect")
+	st.turn_player = "p2"
+	st.priority_player = "p2"
+	ok(not ("beast" in StackResolver.get_legal_attackers(st, "p2", db)),
+		"pm-f2: can't attack")
+	ok(not StackResolver.can_submit(st, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "beast", "defender_id": "p1_hero"}), db),
+		"pm-f3: and can't be proposed")
+
+	# Destroy the Polymorph: 700.3's blank text box ends and everything returns.
+	StackResolver._destroy_card_trigger(st, "poly", "", db)
+	eq(st.get_atk("beast", db), 4, "pm-g: self-modifier is back")
+	ok(StackResolver._has_keyword(beast, "protector", db, st), "pm-g2: protector is back")
+	ok("beast" in StackResolver.get_legal_attackers(st, "p2", db),
+		"pm-g3: it can attack again")
+
+
+func _test_polymorph_scope() -> void:
+	_buf.append("\n-- Polymorph: card type kept, Sheep added, grants still land --")
+	var db := _polymorph_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 8)
+	_add_resources(st, "p2", 8)
+	var beast := _add_ally(st, "beast", "beast_def", "p2")
+	beast.just_summoned = false
+	_add_card_to_hand(st, "poly", "azeroth_58", "p1")
+	_add_card_to_hand(st, "sneak", "sneak_def", "p2")
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	st.phase           = "action"
+	_cast_polymorph(st, db, "p1", "poly", "beast")
+
+	# The errata: "Polymorph doesn't change or remove the attached ally's card
+	# type." So it is still an ally — a legal "target ally", still in the party,
+	# and still exhaustable to pay a cost (The Love Potion).
+	ok(StackResolver._is_ally(st, "beast"), "pm-h: still an ally")
+	ok("beast" in StackResolver.get_death_target_targets(st, db),
+		"pm-h2: still a legal 'target ally'")
+
+	# 202.3 — the Sheep tag is ADDED, nothing is removed.
+	var eff := st.effective_def("beast", db)
+	ok("Sheep" in eff.card_subtype or "Sheep" in eff.tags, "pm-i: it is a Sheep")
+	eq(eff.card_type, "Ally", "pm-i2: card type unchanged")
+	eq(eff.printed_atk, 2, "pm-i3: printed ATK unchanged")
+	eq(eff.effects, "", "pm-i4: blank text box")
+
+	# The errata again: a blanked card "can later gain powers", so a grant from
+	# somewhere else still lands on it.
+	st.turn_player     = "p2"
+	st.priority_player = "p2"
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p2",
+		{"card_id": "sneak", "target_id": "beast"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(StackResolver._has_keyword(beast, "elusive", db, st),
+		"pm-j: a later keyword grant still sticks")
+
+	# A power is silenced as an AURA SOURCE too, not just on the card itself.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 6)
+	var jaina := _add_ally(st2, "jaina", "jaina_def", "p2")
+	jaina.just_summoned = false
+	var mine := _add_ally(st2, "mine", "plain_def", "p1")
+	mine.just_summoned = false
+	_add_card_to_hand(st2, "poly2", "azeroth_58", "p1")
+	st2.turn_player     = "p1"
+	st2.priority_player = "p1"
+	st2.phase           = "action"
+	ok(not ("mine" in StackResolver.get_legal_attackers(st2, "p1", db)),
+		"pm-k: Jaina's aura locks our allies")
+	_cast_polymorph(st2, db, "p1", "poly2", "jaina")
+	ok("mine" in StackResolver.get_legal_attackers(st2, "p1", db),
+		"pm-k2: a blanked Jaina grants nothing")
+	# "Unique" is a type-line TAG (202.2), not a power, so it survives.
+	ok("unique" in st2.effective_def("jaina", db).keywords,
+		"pm-k3: the Unique tag survives a blank text box")
+
+	# A death trigger is a power: the condition is evaluated while the card is
+	# in play, where its text box is blank, so a blanked Boneshanks kills nothing.
+	var evs := StackResolver._destroy_card_trigger(st2, "jaina", "", db)
+	var opened := false
+	for e in evs:
+		if e.event_type == "death_target_required":
+			opened = true
+	ok(not opened, "pm-l: a blanked ally's death trigger doesn't fire")
+
+
+func _test_polymorph_on_a_totem() -> void:
+	_buf.append("\n-- Polymorph on a Totem: destroyed by the game at PPP (410.6c) --")
+	var db := _polymorph_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	# A totem is an ally ONLY because of a power (305.3a).
+	var totem := CardInstance.create("totem", "totem_def", "p2", "p2_ally_row")
+	st.cards["totem"] = totem
+	st.zones["p2_ally_row"].card_ids.append("totem")
+	_add_card_to_hand(st, "poly", "azeroth_58", "p1")
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	st.phase           = "action"
+
+	var cast := PendingAction.make("play_ability", "p1",
+		{"card_id": "poly", "target_id": "totem"})
+	ok(StackResolver.can_submit(st, cast, db), "pm-m: a totem is a legal ally target")
+	StackResolver.submit_action(st, cast, db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	# Blanking it stops it being an ally, so Polymorph's attach description no
+	# longer matches and the game destroys it before the next player gets
+	# priority — exactly as the errata says.
+	eq(st.get_card("poly").zone_id, "p1_graveyard",
+		"pm-n: the Polymorph is destroyed by the game")
+	ok(not st.has_lost_powers("totem", db), "pm-n2: the totem has its powers back")
+	ok(st.is_in_play("totem"), "pm-n3: the totem itself is untouched")
+
+
+func _test_ai_polymorph() -> void:
+	_buf.append("\n-- Polymorph: AI aims it at the opponent's best ally --")
+	var db := _polymorph_db()
+	var ai := BaseAI.new()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	_add_ally(st, "big", "jaina_def", "p2").just_summoned = false
+	_add_ally(st, "small", "plain_def", "p2").just_summoned = false
+	_add_ally(st, "ours", "beast_def", "p1").just_summoned = false
+	_add_card_to_hand(st, "poly", "azeroth_58", "p1")
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	st.phase           = "action"
+
+	# It is a debuff attachment, so the existing _attach_actions branch aims it
+	# at the OPPONENT's highest-ATK ally — never at one of ours.
+	var found := ""
+	for act in ai.get_reasonable_actions(st, db, "p1"):
+		if String(act.params.get("card_id", "")) == "poly":
+			found = String(act.params.get("target_id", ""))
+	eq(found, "big", "pm-o: aimed at the opponent's biggest ally")
 
 
 func _test_mark_of_the_wild_attach_buff() -> void:
@@ -29792,6 +30536,211 @@ const COUNTERSPELL_FX := "interrupt_ability"
 const ESCAPE_FX := "mode:interrupt_ability:targets_your_hero|mode:remove_attackers:hero_defending"
 
 
+
+# ── Brain Freeze (azeroth_49) ─────────────────────────────────────────────────
+# "Players can't draw cards this turn." Board-wide, symmetric, enforced at the
+# one draw primitive.
+func _brain_freeze_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("azeroth_49", 3, "no_draws_this_turn", "Frost")
+	db.ability("cantrip_def", 1, "draw:1")            # a plain draw spell
+	db.ability("bigdraw_def", 4, "draw:2")            # a dearer draw spell
+	db.ability("fetch_def", 2, "graveyard_to_hand:Ally:1:1:own")  # NOT a draw
+	db.ally("wolf_def", 2, 2, [], 2)
+	return db
+
+
+func _test_brain_freeze_locks_draws() -> void:
+	_buf.append("\n-- Brain Freeze: players can't draw cards this turn --")
+	var db := _brain_freeze_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	_add_resources(st, "p2", 6)
+	_add_card_to_hand(st, "bf", "azeroth_49", "p1")
+	_add_card_to_hand(st, "cantrip", "cantrip_def", "p2")
+	for i in range(6):
+		_add_card_to_deck(st, "p1d%d" % i, "wolf_def", "p1")
+		_add_card_to_deck(st, "p2d%d" % i, "wolf_def", "p2")
+
+	st.turn_player     = "p2"
+	st.priority_player = "p2"
+	st.phase           = "action"
+
+	# p2 pays for a draw spell. Instant speed lets p1 answer it on top, and
+	# priority is LIFO — so Brain Freeze resolves FIRST and the draw beneath it
+	# resolves into nothing, with p2's resources already spent (412.2).
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p2",
+		{"card_id": "cantrip"}), db)
+	StackResolver.pass_priority(st, db)          # p2 hands priority to p1
+
+	# Nothing is announced, so the card lights up with no legal target anywhere
+	# on the board — it can never fizzle for want of one.
+	ok(StackResolver.can_play_instant_no_target_check(st, "bf", "p1", db),
+		"bf-a: playable with nothing announced")
+	var p2_hand_before: int = st.zones["p2_hand"].card_ids.size()
+	var p2_deck_before: int = st.zones["p2_deck"].card_ids.size()
+
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "bf"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)          # Brain Freeze resolves
+	ok(st.draws_locked_this_turn, "bf-b: the lock is up")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)          # the cantrip resolves
+
+	eq(st.zones["p2_deck"].card_ids.size(), p2_deck_before,
+		"bf-c: the paid-for draw drew nothing")
+	eq(st.zones["p2_hand"].card_ids.size(), p2_hand_before,
+		"bf-c2: p2's hand is unchanged")
+	eq(st.get_available_resources("p2"), 5, "bf-c3: p2's resource stays spent")
+	ok("cantrip" in st.zones["p2_graveyard"].card_ids,
+		"bf-c4: the cantrip still resolved (it was not interrupted)")
+
+	# "This turn": the lock is cleared at the next turn start, BEFORE the draw
+	# step, so 501.2a draws normally again.
+	var deck_before: int = st.zones["p1_deck"].card_ids.size()
+	st.turn_player = "p1"
+	_ready_step(st, db)
+	ok(not st.draws_locked_this_turn, "bf-d: the lock expires with the turn")
+	_advance_phase(st, db)                       # ready -> draw step
+	ok(st.zones["p1_deck"].card_ids.size() < deck_before,
+		"bf-d2: the next draw step draws again")
+
+
+func _test_brain_freeze_scope_and_decking() -> void:
+	_buf.append("\n-- Brain Freeze: symmetry, 415.9f scope, and the decked rule --")
+	var db := _brain_freeze_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 8)
+	_add_resources(st, "p2", 8)
+	_add_card_to_hand(st, "bf", "azeroth_49", "p1")
+	_add_card_to_hand(st, "mine", "cantrip_def", "p1")
+	_add_card_to_hand(st, "fetch", "fetch_def", "p1")
+	# p1's own deck has cards; p2's is EMPTY.
+	for i in range(4):
+		_add_card_to_deck(st, "p1d%d" % i, "wolf_def", "p1")
+	var corpse := CardInstance.create("corpse", "wolf_def", "p1", "p1_graveyard")
+	st.cards["corpse"] = corpse
+	st.zones["p1_graveyard"].card_ids.append("corpse")
+
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	st.phase           = "action"
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "bf"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(st.draws_locked_this_turn, "bf-e: lock up")
+
+	# SYMMETRIC: "players", plural, with no controller clause — the caster is
+	# locked too.
+	var p1_deck: int = st.zones["p1_deck"].card_ids.size()
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "mine"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.zones["p1_deck"].card_ids.size(), p1_deck,
+		"bf-f: the CASTER can't draw either")
+
+	# 415.9f: only an event that says the card is DRAWN is a draw. A graveyard
+	# fetch puts a card into a hand and is untouched.
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "fetch", "target_id": "corpse"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok("corpse" in st.zones["p1_hand"].card_ids,
+		"bf-g: a graveyard fetch is not a draw and still works")
+
+	# A prohibition means the draw event never happens, so a locked player with
+	# an EMPTY deck is NOT decked (410.6b) — Brain Freeze can never win on its
+	# own. See data/rules_deviations.md.
+	eq(st.zones["p2_deck"].card_ids.size(), 0, "bf-h: p2's deck is empty")
+	var evs := GameLogic.draw_one(st, "p2")
+	ok(not ("p2" in st.decked_players), "bf-h2: a blocked draw does not deck")
+	var saw_over := false
+	for e in evs:
+		if e.event_type in ["game_over", "player_decked", "deck_empty"]:
+			saw_over = true
+	ok(not saw_over, "bf-h3: no decking events at all")
+
+
+func _test_ai_brain_freeze() -> void:
+	_buf.append("\n-- Brain Freeze: AI counters a paid-for draw link --")
+	var db := _brain_freeze_db()
+	var ai := BaseAI.new()
+
+	# Held: it is never blind-played, so an empty chain buys nothing.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	_add_resources(st, "p2", 6)
+	_add_card_to_hand(st, "bf", "azeroth_49", "p1")
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	st.phase           = "action"
+	eq(ai.brain_freeze_action(st, db, "p1"), null,
+		"bf-i: held with an empty chain")
+	for act in ai.get_reasonable_actions(st, db, "p1"):
+		ok(String(act.params.get("card_id", "")) != "bf",
+			"bf-i2: never enumerated as a normal play")
+
+	# An OPPOSING draw link on the chain: fire.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 6)
+	_add_resources(st2, "p2", 6)
+	_add_card_to_hand(st2, "bf", "azeroth_49", "p1")
+	_add_card_to_hand(st2, "big", "bigdraw_def", "p2")
+	st2.turn_player     = "p2"
+	st2.priority_player = "p2"
+	st2.phase           = "action"
+	StackResolver.submit_action(st2, PendingAction.make("play_ability", "p2",
+		{"card_id": "big"}), db)
+	StackResolver.pass_priority(st2, db)
+	var act2 := ai.brain_freeze_action(st2, db, "p1")
+	ok(act2 != null, "bf-j: fires on an opposing draw link")
+	if act2 != null:
+		eq(String(act2.params.get("card_id", "")), "bf", "bf-j2: it plays Brain Freeze")
+
+	# A non-draw link is not a reason (415.9f) — a graveyard fetch is untouched
+	# by the lock, so firing at one would waste the card.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 6)
+	_add_resources(st3, "p2", 6)
+	_add_card_to_hand(st3, "bf", "azeroth_49", "p1")
+	_add_card_to_hand(st3, "f", "fetch_def", "p2")
+	var c2 := CardInstance.create("c2", "wolf_def", "p2", "p2_graveyard")
+	st3.cards["c2"] = c2
+	st3.zones["p2_graveyard"].card_ids.append("c2")
+	st3.turn_player     = "p2"
+	st3.priority_player = "p2"
+	st3.phase           = "action"
+	StackResolver.submit_action(st3, PendingAction.make("play_ability", "p2",
+		{"card_id": "f", "target_id": "c2"}), db)
+	StackResolver.pass_priority(st3, db)
+	eq(ai.brain_freeze_action(st3, db, "p1"), null,
+		"bf-k: a graveyard fetch is not a draw link")
+
+	# Our OWN draw on the chain: the lock is symmetric, so firing would deny us.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 8)
+	_add_resources(st4, "p2", 8)
+	_add_card_to_hand(st4, "bf", "azeroth_49", "p1")
+	_add_card_to_hand(st4, "mine", "cantrip_def", "p1")
+	_add_card_to_hand(st4, "theirs", "cantrip_def", "p2")
+	st4.turn_player     = "p2"
+	st4.priority_player = "p2"
+	st4.phase           = "action"
+	StackResolver.submit_action(st4, PendingAction.make("play_ability", "p2",
+		{"card_id": "theirs"}), db)
+	StackResolver.pass_priority(st4, db)
+	StackResolver.submit_action(st4, PendingAction.make("play_ability", "p1",
+		{"card_id": "mine"}), db)
+	StackResolver.pass_priority(st4, db)
+	eq(ai.brain_freeze_action(st4, db, "p1"), null,
+		"bf-l: held while a draw of OURS is on the chain")
+
+
 func _counterspell_db() -> MockDB:
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
@@ -30782,6 +31731,455 @@ func _soul_link_landed(events: Array) -> int:
 		if (e as GameEvent).event_type == "damage_dealt":
 			dealt += int((e as GameEvent).payload.get("amount", 0))
 	return dealt
+
+
+
+
+# ── Holy Shield (azeroth_70) ─────────────────────────────────────────────────
+# "Prevent the next 5 damage that would be dealt to your hero by target hero or
+# ally this turn. When damage is prevented this way, your hero deals that amount
+# of holy damage to that character."
+const HOLY_SHIELD_FX := "prevent_hero_damage_from_target:5:holy"
+
+
+func _holy_shield_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# The real def id: BaseAI.COMBAT_INSTANT_TAGS is keyed on it, so the card is
+	# only recognised as HELD when the mock uses it too.
+	db.instant("azeroth_70", 2, HOLY_SHIELD_FX, "Protection Talent")
+	db.ally("brute_def", 5, 5, [], 5)
+	db.ally("grunt_def", 2, 4, [], 3)
+	db.ally("ghost_def", 1, 3, ["untargetable"], 3)
+	db.instant("bolt_def", 2, "deal_damage_to_target:3:fire")
+	return db
+
+
+func _cast_holy_shield(state: GameState, db, ctrl: String, card_id: String,
+		target_id: String) -> void:
+	StackResolver.submit_action(state, PendingAction.make("play_instant", ctrl,
+		{"card_id": card_id, "target_id": target_id}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+
+func _holy_landed(events: Array) -> int:
+	var dealt := 0
+	for e in events:
+		if (e as GameEvent).event_type == "damage_dealt":
+			dealt += int((e as GameEvent).payload.get("amount", 0))
+	return dealt
+
+
+func _test_holy_shield_wards_and_reflects() -> void:
+	_buf.append("\n-- Holy Shield: ward one source, reflect what it prevents --")
+	var db := _holy_shield_db()
+
+	# hs-a: the shield goes on OUR HERO — the target is the character warded
+	# AGAINST, not the one shielded.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 5)
+	_add_card_to_hand(st, "shield", "azeroth_70", "p1")
+	var brute := _add_ally(st, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+	_cast_holy_shield(st, db, "p1", "shield", "brute")
+	eq(GameLogic.granted_shield(st.get_card("p1_hero"), "brute"), 5,
+		"hs-a: 5 points banked against that character")
+	eq(GameLogic.granted_shield(st.get_card("p1_hero")), 0,
+		"hs-a2: and NOT as an unscoped shield")
+
+	# hs-b: damage from the warded character is prevented AND reflected back.
+	var ev := StackResolver.defer_packets(st, db, [{
+		"source": "brute", "target": "p1_hero", "amount": 3, "dmg_type": "melee"}])
+	eq(st.get_card("p1_hero").damage_taken, 0, "hs-b: the hero takes nothing")
+	eq(st.get_card("brute").damage_taken, 3,
+		"hs-b2: and 3 holy comes straight back at the warded character")
+	eq(GameLogic.granted_shield(st.get_card("p1_hero"), "brute"), 2,
+		"hs-b3: 3 of the 5 points spent")
+
+	# hs-c: the scope is real — a DIFFERENT source is not covered at all.
+	var grunt := _add_ally(st, "grunt", "grunt_def", "p2")
+	grunt.just_summoned = false
+	StackResolver.defer_packets(st, db, [{
+		"source": "grunt", "target": "p1_hero", "amount": 2, "dmg_type": "melee"}])
+	eq(st.get_card("p1_hero").damage_taken, 2,
+		"hs-c: damage from another character lands in full")
+	eq(st.get_card("grunt").damage_taken, 0, "hs-c2: and reflects nothing")
+	eq(GameLogic.granted_shield(st.get_card("p1_hero"), "brute"), 2,
+		"hs-c3: the scoped shield is untouched by it")
+
+	# hs-d: it shields the HERO only — our own ally is never covered.
+	var mine := _add_ally(st, "mine", "grunt_def", "p1")
+	mine.just_summoned = false
+	StackResolver.defer_packets(st, db, [{
+		"source": "brute", "target": "mine", "amount": 2, "dmg_type": "melee"}])
+	eq(st.get_card("mine").damage_taken, 2,
+		"hs-d: an ally of ours takes it in full — the card can't save an ally")
+
+
+func _test_holy_shield_scope_and_fizzle() -> void:
+	_buf.append("\n-- Holy Shield: 706, expiry, unpreventable, combat, overkill --")
+	var db := _holy_shield_db()
+
+	# hs-e: rule 706 — an Untargetable character can't be warded against.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 5)
+	_add_card_to_hand(st, "shield", "azeroth_70", "p1")
+	var ghost := _add_ally(st, "ghost", "ghost_def", "p2")
+	ghost.just_summoned = false
+	ok(not StackResolver.can_submit(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "shield", "target_id": "ghost"}), db),
+		"hs-e: Untargetable is not a legal target (706)")
+	ok(StackResolver.can_submit(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "shield", "target_id": "p2_hero"}), db),
+		"hs-e2: an opposing HERO is a legal thing to ward against")
+	ok(StackResolver.can_submit(st, PendingAction.make("play_instant", "p1",
+		{"card_id": "shield", "target_id": "p1_hero"}), db),
+		"hs-e3: so is our own — 'target hero or ally', no 'opposing' clause")
+
+	# hs-f: re-checked at RESOLUTION (706 / 4217) — a warded-against character
+	#       that left play in the response window fizzles it, card still spent.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 5)
+	_add_card_to_hand(st2, "shield", "azeroth_70", "p1")
+	var gone := _add_ally(st2, "gone", "brute_def", "p2")
+	gone.just_summoned = false
+	StackResolver.submit_action(st2, PendingAction.make("play_instant", "p1",
+		{"card_id": "shield", "target_id": "gone"}), db)
+	GameLogic.move_card(st2, "gone", "p2_graveyard")
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	eq(GameLogic.granted_shield(st2.get_card("p1_hero"), "gone"), 0,
+		"hs-f: the shield fizzled with its target")
+	eq(st2.get_available_resources("p1"), 3, "hs-f2: and the card is still spent")
+
+	# hs-g: rule 717 — unpreventable damage bypasses the shield, consumes NONE
+	#       of it, and therefore reflects nothing.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 5)
+	_add_card_to_hand(st3, "shield", "azeroth_70", "p1")
+	var bully := _add_ally(st3, "bully", "brute_def", "p2")
+	bully.just_summoned = false
+	_cast_holy_shield(st3, db, "p1", "shield", "bully")
+	eq(_holy_landed(GameLogic.deal_damage(st3, "bully", "p1_hero", 2, db,
+		{"unpreventable": true})), 2, "hs-g: unpreventable damage lands in full")
+	eq(GameLogic.granted_shield(st3.get_card("p1_hero"), "bully"), 5,
+		"hs-g2: the shield is intact")
+	eq(st3.get_card("bully").damage_taken, 0, "hs-g3: and nothing reflected")
+
+	# hs-h: "this turn" — the grant is a turns:1 Buff, swept at end of turn.
+	st3.get_card("p1_hero").decrement_turn_buffs()
+	eq(GameLogic.granted_shield(st3.get_card("p1_hero"), "bully"), 0,
+		"hs-h: the shield expires at end of turn")
+
+	# hs-i: COMBAT damage is covered, and the reflect can kill the attacker
+	#       outright — 5 prevented is 5 holy back.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 5)
+	_add_card_to_hand(st4, "shield", "azeroth_70", "p1")
+	var swinger := _add_ally(st4, "swinger", "brute_def", "p2")   # 5/5
+	swinger.just_summoned = false
+	_cast_holy_shield(st4, db, "p1", "shield", "swinger")
+	st4.turn_player = "p2"
+	st4.priority_player = "p2"
+	StackResolver.submit_action(st4, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "swinger", "defender_id": "p1_hero"}), db)
+	for i in range(8):
+		StackResolver.pass_priority(st4, db)
+	eq(st4.get_card("p1_hero").damage_taken, 0,
+		"hs-i: the whole 5-damage swing is prevented")
+	ok(not st4.is_in_play("swinger"),
+		"hs-i2: and the 5 holy reflected back kills the attacker")
+
+
+func _test_ai_holy_shield() -> void:
+	_buf.append("\n-- Holy Shield AI: held, then the block or the reflect kill --")
+	var db := _holy_shield_db()
+	var ai := BaseAI.new()
+
+	# hs-j: HELD — never blind-played with nothing incoming.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 5)
+	_add_card_to_hand(st, "shield", "azeroth_70", "p1")
+	for act in ai.get_reasonable_actions(st, db, "p1"):
+		ok((act as PendingAction).params.get("card_id", "") != "shield",
+			"hs-j: not blind-played with no damage on its way")
+	ok(ai.holy_shield_action(st, db, "p1") == null, "hs-j2: and the hook holds it")
+
+	# hs-k: fired against a real swing, warding against the ATTACKER.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 5)
+	_add_card_to_hand(st2, "shield", "azeroth_70", "p1")
+	var big := _add_ally(st2, "brute", "brute_def", "p2")   # 5 ATK
+	big.just_summoned = false
+	st2.turn_player = "p2"
+	st2.priority_player = "p1"
+	st2.combat_attack_window = true
+	st2.combat_attacker = "brute"
+	st2.combat_defender = "p1_hero"
+	var act2 := ai.holy_shield_action(st2, db, "p1")
+	ok(act2 != null, "hs-k: fired against a 5-damage swing at our hero")
+	if act2 != null:
+		eq(act2.params.get("target_id", ""), "brute",
+			"hs-k2: warded against the attacker, not aimed at our own hero")
+
+	# hs-l: NOT fired for a chip hit that neither clears the block bar nor kills.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 5)
+	_add_card_to_hand(st3, "shield", "azeroth_70", "p1")
+	var poker := _add_ally(st3, "poker", "brute_def", "p2")
+	poker.just_summoned = false
+	poker.active_buffs.append(Buff.make("shrink", "t", "atk", -3, "turns", 1))
+	st3.turn_player = "p2"
+	st3.priority_player = "p1"
+	st3.combat_attack_window = true
+	st3.combat_attacker = "poker"
+	st3.combat_defender = "p1_hero"
+	eq(state_atk_probe(st3, db, "poker"), 2, "hs-l0: the attacker swings for 2")
+	ok(ai.holy_shield_action(st3, db, "p1") == null,
+		"hs-l: 2 prevented, nothing killed — held")
+
+	# hs-m: the same 2-damage swing IS answered when the reflect kills it.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st4, "p1", 5)
+	_add_card_to_hand(st4, "shield", "azeroth_70", "p1")
+	var frail := _add_ally(st4, "frail", "grunt_def", "p2")   # 2 ATK / 4 hp
+	frail.just_summoned = false
+	frail.damage_taken = 3                                    # 1 health left
+	st4.turn_player = "p2"
+	st4.priority_player = "p1"
+	st4.combat_attack_window = true
+	st4.combat_attacker = "frail"
+	st4.combat_defender = "p1_hero"
+	var act4 := ai.holy_shield_action(st4, db, "p1")
+	ok(act4 != null, "hs-m: a small swing is answered when the reflect kills")
+	if act4 != null:
+		eq(act4.params.get("target_id", ""), "frail", "hs-m2: warded against it")
+
+
+func state_atk_probe(state: GameState, db, cid: String) -> int:
+	return state.get_atk(cid, db)
+
+
+# ── Graccus (azeroth_4) ───────────────────────────────────────────────
+# "(3), Flip Graccus -> Prevent the next 3 damage that would be dealt to target
+# hero or ally this turn."
+const GRACCUS_FX := "prevent_next_damage_target:3"
+
+
+func _graccus_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("graccus", 29, 3, GRACCUS_FX)
+	db.hero("p2_hero", 30)
+	db.ally("grunt_def", 2, 4, [], 3)
+	db.ally("brute_def", 5, 5, [], 5)
+	db.ally("ghost_def", 1, 3, ["untargetable"], 3)
+	db.instant("bolt_def", 2, "deal_damage_to_target:3:fire")
+	return db
+
+
+func _flip_graccus(state: GameState, db, target_id: String) -> void:
+	StackResolver.submit_action(state, PendingAction.make("activate_power", "p1",
+		{"hero_id": "graccus", "target_id": target_id}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+
+func _graccus_landed(events: Array) -> int:
+	var dealt := 0
+	for e in events:
+		if (e as GameEvent).event_type == "damage_dealt":
+			dealt += int((e as GameEvent).payload.get("amount", 0))
+	return dealt
+
+
+func _test_graccus_shields_target() -> void:
+	_buf.append("\n-- Graccus: prevent the next 3 damage to target hero or ally --")
+	var db := _graccus_db()
+
+	# gr-a: the shield lands on our own HERO and is spent point by point — the
+	# counted grant is Soul Link's, only reached by a TARGET this time.
+	var st := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st, "p1", 5)
+	_flip_graccus(st, db, "graccus")
+	eq(GameLogic.granted_shield(st.get_card("graccus")), 3,
+		"gr-a: 3 points of shield banked on the target")
+	eq(st.players["p1"].has_used_hero_power, true, "gr-a2: the flip is spent")
+	eq(st.get_available_resources("p1"), 2, "gr-a3: 3 resources paid")
+	eq(_graccus_landed(GameLogic.deal_damage(st, "p2_hero", "graccus", 5, db)), 2,
+		"gr-a4: 3 of the 5 damage prevented")
+	eq(st.get_card("graccus").damage_taken, 2, "gr-a5: only 2 reached the hero")
+	eq(GameLogic.granted_shield(st.get_card("graccus")), 0,
+		"gr-a6: the shield is used up")
+
+	# gr-b: an ALLY is an equally legal target — and either party's, since the
+	# card says simply "target hero or ally".
+	var st2 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st2, "p1", 5)
+	var brute := _add_ally(st2, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+	_flip_graccus(st2, db, "brute")
+	eq(GameLogic.granted_shield(st2.get_card("brute")), 3,
+		"gr-b: an OPPOSING ally may be shielded (no 'friendly' clause)")
+	eq(_graccus_landed(GameLogic.deal_damage(st2, "graccus", "brute", 2, db)), 0,
+		"gr-b2: a 2-damage hit is fully absorbed")
+	eq(GameLogic.granted_shield(st2.get_card("brute")), 1,
+		"gr-b3: partial spend — 1 point still banked")
+
+	# gr-c: "this turn" — duration turns:1, so the end-of-turn sweep clears it.
+	#       Correct even when flipped on the opponent's turn.
+	st2.get_card("brute").decrement_turn_buffs()
+	eq(GameLogic.granted_shield(st2.get_card("brute")), 0,
+		"gr-c: the shield expires at end of turn")
+
+
+func _test_graccus_scope_and_fizzle() -> void:
+	_buf.append("\n-- Graccus: pool, 706, resolution re-check, unpreventable --")
+	var db := _graccus_db()
+
+	# gr-d: affordability — 3 resources or the flip is not legal at all.
+	var st := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st, "p1", 2)
+	ok(not StackResolver.can_submit(st, PendingAction.make("activate_power", "p1",
+		{"hero_id": "graccus", "target_id": "graccus"}), db),
+		"gr-d: unaffordable at 2 resources")
+
+	# gr-e: "target hero or ally" — an in-play ABILITY is never legal, and rule
+	#       706 excludes an Untargetable ally.
+	var st2 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st2, "p1", 5)
+	var ghost := _add_ally(st2, "ghost", "ghost_def", "p1")
+	ghost.just_summoned = false
+	ok(not StackResolver.can_submit(st2, PendingAction.make("activate_power", "p1",
+		{"hero_id": "graccus", "target_id": "ghost"}), db),
+		"gr-e: Untargetable is not a legal target (706)")
+	var ongoing := CardInstance.create("aura", "bolt_def", "p1", "p1_hero_row")
+	st2.cards["aura"] = ongoing
+	st2.zones["p1_hero_row"].card_ids.append("aura")
+	ok(not StackResolver.can_submit(st2, PendingAction.make("activate_power", "p1",
+		{"hero_id": "graccus", "target_id": "aura"}), db),
+		"gr-e2: an in-play ability is not a hero or ally")
+
+	# gr-f: re-checked at RESOLUTION (706 / 4217) — a target that left play in
+	#       the response window fizzles the shield, and the flip is still spent.
+	var st3 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st3, "p1", 5)
+	var grunt := _add_ally(st3, "grunt", "grunt_def", "p1")
+	grunt.just_summoned = false
+	StackResolver.submit_action(st3, PendingAction.make("activate_power", "p1",
+		{"hero_id": "graccus", "target_id": "grunt"}), db)
+	GameLogic.move_card(st3, "grunt", "p1_graveyard")
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	eq(st3.players["p1"].has_used_hero_power, true,
+		"gr-f: the flip is spent even though the shield fizzled")
+	eq(st3.get_available_resources("p1"), 2, "gr-f2: and the cost stays paid")
+
+	# gr-g: once per GAME — the flip never comes back.
+	var st4 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st4, "p1", 8)
+	_flip_graccus(st4, db, "graccus")
+	ok(not StackResolver.can_submit(st4, PendingAction.make("activate_power", "p1",
+		{"hero_id": "graccus", "target_id": "graccus"}), db),
+		"gr-g: the hero power is once per game")
+
+	# gr-h: rule 717 — unpreventable damage short-circuits before every shield
+	#       and consumes NONE of it.
+	var st5 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st5, "p1", 5)
+	_flip_graccus(st5, db, "graccus")
+	eq(_graccus_landed(GameLogic.deal_damage(st5, "p2_hero", "graccus", 2, db,
+		{"unpreventable": true})), 2,
+		"gr-h: unpreventable damage lands in full")
+	eq(GameLogic.granted_shield(st5.get_card("graccus")), 3,
+		"gr-h2: and the shield is intact")
+
+
+func _test_ai_graccus() -> void:
+	_buf.append("\n-- Graccus AI: held, then spent on the hero or on a real body --")
+	var db := _graccus_db()
+	var ai := BaseAI.new()
+
+	# gr-i: HELD — never blind-flipped with nothing incoming, even with the
+	#       resources to spare.
+	var st := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st, "p1", 5)
+	for act in ai.get_reasonable_actions(st, db, "p1"):
+		ok((act as PendingAction).action_type != "activate_power",
+			"gr-i: the flip is not offered with no damage on its way")
+	ok(ai.graccus_shield_action(st, db, "p1") == null,
+		"gr-i2: and the hook holds it")
+
+	# gr-j: fired to save the HERO from a lethal swing.
+	var st2 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st2, "p1", 5)
+	st2.get_card("graccus").damage_taken = 27
+	var big := _add_ally(st2, "brute", "brute_def", "p2")
+	big.just_summoned = false
+	st2.turn_player = "p2"
+	st2.priority_player = "p1"
+	st2.combat_attack_window = true
+	st2.combat_attacker = "brute"
+	st2.combat_defender = "graccus"
+	var hero_act := ai.graccus_shield_action(st2, db, "p1")
+	ok(hero_act != null, "gr-j: fired against lethal on our hero")
+	if hero_act != null:
+		eq(hero_act.params.get("target_id", ""), "graccus",
+			"gr-j2: aimed at our own hero")
+
+	# gr-k: fired to save an ALLY worth more than the power costs, even though
+	#       only 1 of the 3 points is used — the body is the payoff, not the
+	#       damage.
+	var st3 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st3, "p1", 5)
+	var ours := _add_ally(st3, "brute", "brute_def", "p1")   # 5/5, cost 5
+	ours.just_summoned = false
+	ours.damage_taken = 4                                    # 1 health left
+	var theirs := _add_ally(st3, "biter", "grunt_def", "p2")  # 2 ATK
+	theirs.just_summoned = false
+	st3.turn_player = "p2"
+	st3.priority_player = "p1"
+	st3.combat_attack_window = true
+	st3.combat_attacker = "biter"
+	st3.combat_defender = "brute"
+	var ally_act := ai.graccus_shield_action(st3, db, "p1")
+	ok(ally_act != null, "gr-k: fired to save a cost-5 ally")
+	if ally_act != null:
+		eq(ally_act.params.get("target_id", ""), "brute",
+			"gr-k2: aimed at the ally, not the hero")
+
+	# gr-l: NOT fired for a cheap body — the flip is the game's only one.
+	var st4 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st4, "p1", 5)
+	var cheap := _add_ally(st4, "grunt", "grunt_def", "p1")   # cost 3 == power cost
+	cheap.just_summoned = false
+	cheap.damage_taken = 3
+	var hitter := _add_ally(st4, "biter", "grunt_def", "p2")
+	hitter.just_summoned = false
+	st4.turn_player = "p2"
+	st4.priority_player = "p1"
+	st4.combat_attack_window = true
+	st4.combat_attacker = "biter"
+	st4.combat_defender = "grunt"
+	ok(ai.graccus_shield_action(st4, db, "p1") == null,
+		"gr-l: a cost-3 ally does not clear the floor")
+
+	# gr-m: NOT fired when the shield cannot actually save the ally.
+	var st5 := _base_state(db, "graccus", "p2_hero")
+	_add_resources(st5, "p1", 5)
+	var doomed := _add_ally(st5, "brute", "brute_def", "p1")     # 5 health, cost 5
+	doomed.just_summoned = false
+	doomed.damage_taken = 4                                      # 1 health left
+	var smasher := _add_ally(st5, "smasher", "brute_def", "p2")  # 5 ATK
+	smasher.just_summoned = false
+	st5.turn_player = "p2"
+	st5.priority_player = "p1"
+	st5.combat_attack_window = true
+	st5.combat_attacker = "smasher"
+	st5.combat_defender = "brute"
+	ok(ai.graccus_shield_action(st5, db, "p1") == null,
+		"gr-m: 3 points don't save 1 health from a 5-damage swing")
 
 
 func _test_soul_link_deflects_hero_damage() -> void:
@@ -32805,3 +34203,135 @@ func _test_ritual_sacrifice_response_and_fizzle() -> void:
 	ok(StackResolver.can_submit(st4, PendingAction.make("use_ally_power", "p1",
 		{"card_id": "ritual", "sacrifice_id": "food", "target_id": "p1_hero"}), db),
 		"rsf-d: our own hero is a legal target")
+
+
+# ── Life Tap (azeroth_128) ─────────────────────────────────────────────────────
+# "As an additional cost to play Life Tap, put 2 damage on your hero. Draw two
+# cards." Sever the Cord's announcement-time additional cost paid in HEALTH.
+func _life_tap_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("filler_def", 1, 1, [], 1)
+	db.instant("azeroth_128", 2, "draw:2|play_cost_put_damage_hero:2")
+	db.instant("counter_def", 1, "interrupt_ability")
+	db.equipment("plate_def", 2, "equipment:head:3")
+	return db
+
+
+func _test_life_tap_pays_health_for_cards() -> void:
+	_buf.append("
+-- Life Tap: 2 damage on your own hero, draw two --")
+	var db := _life_tap_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "tap", "azeroth_128", "p1")
+	_stock_deck(state, "p1", "filler_def", 5)
+
+	# lt-a: nothing is announced — the card names YOUR hero, so there is no pick
+	# and the play is legal as it stands.
+	var act := PendingAction.make("play_instant", "p1", {"card_id": "tap"})
+	ok(StackResolver.can_submit(state, act, db), "lt-a: legal with no pick to announce")
+	StackResolver.submit_action(state, act, db)
+
+	# lt-b: the cost is paid on chain entry (412.2) — the damage is already on
+	# our hero while the spell still sits on the chain, undrawn.
+	ok(state.get_card("p1_hero").damage_taken == 2,
+		"lt-b: 2 damage on our hero at announcement")
+	ok(state.zones["p1_hand"].card_ids.size() == 0,
+		"lt-b2: nothing drawn yet (spell unresolved)")
+
+	# lt-c: health can be healed but a payment can't be un-made.
+	ok(not StackResolver.can_retract(state, "p1"),
+		"lt-c: announcement is non-retractable")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(state.zones["p1_hand"].card_ids.size() == 2, "lt-d: drew two cards")
+	ok("tap" in state.zones["p1_graveyard"].card_ids,
+		"lt-d2: the spell resolved to its owner's graveyard")
+
+
+func _test_life_tap_cost_scope_and_lethality() -> void:
+	_buf.append("
+-- Life Tap: 405.3 put damage, and it can kill you --")
+	var db := _life_tap_db()
+
+	# lt-e: 405.3 — PUT damage is unpreventable, so ready DEF 3 armor neither
+	# opens a prevention point nor softens the payment.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 5)
+	s1.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s1, "tap", "azeroth_128", "p1")
+	_stock_deck(s1, "p1", "filler_def", 5)
+	var helm := CardInstance.create("helm", "plate_def", "p1", "p1_hero_row")
+	s1.cards["helm"] = helm
+	s1.zones["p1_hero_row"].card_ids.append("helm")
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "tap"}), db)
+	ok(s1.pending_prevention_player == "",
+		"lt-e: no armor prevention point opens for put damage")
+	ok(s1.get_card("p1_hero").damage_taken == 2,
+		"lt-e2: armor did not reduce the cost")
+	ok(not helm.is_exhausted, "lt-e3: the armor is untouched (nothing to spend it on)")
+
+	# lt-f: put damage is watcher-silent — it records no `damage_dealt` turn-log
+	# entry, so Thysta's "if no damage was dealt this turn" still reads as none.
+	ok(not s1.has_turn_event("damage_dealt"),
+		"lt-f: the payment is not damage DEALT (405.3)")
+
+	# lt-g: the cost may be exactly fatal — tapping at 2 health loses the game.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 5)
+	s2.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(s2, "tap2", "azeroth_128", "p1")
+	_stock_deck(s2, "p1", "filler_def", 5)
+	s2.get_card("p1_hero").damage_taken = 28   # 30 max -> 2 left
+	var ev := StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "tap2"}), db)
+	var over := false
+	for e in ev:
+		if e.event_type == "game_over" and e.payload.get("loser", "") == "p1":
+			over = true
+	ok(over, "lt-g: an exactly-fatal payment ends the game (118.4/704)")
+
+
+func _test_ai_life_tap() -> void:
+	_buf.append("
+-- Life Tap: the AI won't tap itself to death --")
+	var db := _life_tap_db()
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	state.players["p1"].resource_placed_this_turn = true
+	_add_card_to_hand(state, "tap", "azeroth_128", "p1")
+	_stock_deck(state, "p1", "filler_def", 5)
+
+	# lta-a: healthy hero, room in hand -> the AI buys the cards.
+	var found := false
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "tap":
+			found = true
+	ok(found, "lta-a: played with a healthy hero")
+
+	# lta-b: the health gate is the important half — a hero near the floor holds
+	# the card rather than paying for cards it may not live to play.
+	state.get_card("p1_hero").damage_taken = 22   # 8 left, under the floor
+	found = false
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "tap":
+			found = true
+	ok(not found, "lta-b: held while the hero is low")
+
+	# lta-c: and it won't draw past max hand size (503.2a).
+	state.get_card("p1_hero").damage_taken = 0
+	for i in range(state.get_max_hand_size("p1", db)):
+		_add_card_to_hand(state, "junk_%d" % i, "filler_def", "p1")
+	found = false
+	for a in ai.get_reasonable_actions(state, db, "p1"):
+		if a.params.get("card_id", "") == "tap":
+			found = true
+	ok(not found, "lta-c: held on a full hand")
+

@@ -434,11 +434,53 @@ static func prevent(state: GameState, db, source_id: String, target_id: String,
 	# player from exhausting armor they didn't need (the prevention point also
 	# nets it out — see StackResolver._prevention_offer). Skipped entirely for
 	# unpreventable damage, which returned above without consuming anything.
-	var shielded := consume_granted_shield(target, amount)
+	# (a3b) Devotion Aura: "If a hero or ally in your party would be dealt damage,
+	# prevent 1 of that damage." The engine's first blanket party-wide damage
+	# REDUCTION — armor (717.2c) is hero-only and Rhone's shield is one card and
+	# combat-only, while this trims every packet aimed at the controller's hero or
+	# any of its allies, from any source, and never depletes.
+	#
+	# Applied BEFORE the counted shields and the armor pool below: it is free and
+	# unlimited, so spending it first means the depleting resources absorb only the
+	# remainder, which is never worse for its controller (the same auto-choice made
+	# for Holy Shield's scoped-before-unscoped order). StackResolver's
+	# _prevention_offer nets it out too, so a packet the aura fully covers never
+	# opens an armor point.
+	#
+	# A packet reduced to 0 CEASES TO EXIST (717.2b) — deal_damage returns before
+	# recording anything — so no damage_dealt event and no turn-log entry, and
+	# every damage watcher in the game (Skorn, Cold Blood, Berserking's counters,
+	# whelp bounce, discard_per_damage, Thysta's "if no damage was dealt this
+	# turn") correctly sees nothing. Unpreventable damage returned long ago and is
+	# untouched by this.
+	var reduction := party_damage_reduction(state, db, target_id)
+	if reduction > 0:
+		var trimmed: int = min(reduction, amount)
+		amount -= trimmed
+		events.append(GameEvent.damage_prevented(
+			target_id, trimmed, 0, target.controller))
+		if amount <= 0:
+			return {"amount": 0, "events": events}
+
+	#
+	# Holy Shield adds a SOURCE SCOPE and a REFLECT to the same mechanism: its
+	# grant covers damage from one named character only, and every point it
+	# prevents comes straight back at that character as holy damage. The reflect
+	# is NOT dealt here — dealing damage from inside the prevention pipeline is
+	# re-entrant — it is queued on GameState.pending_shield_reflects and drained
+	# by StackResolver at the two points damage has finished landing
+	# (_apply_packet_group and _do_combat_conclusion), the same two Skorn and
+	# Cold Blood sweep at. Unpreventable damage returned long before this, so it
+	# consumes no shield and reflects nothing (717).
+	var consumed := consume_granted_shield(target, amount, source_id)
+	var shielded := int(consumed.get("spent", 0))
 	if shielded > 0:
 		amount -= shielded
+		for r in consumed.get("reflects", []) as Array:
+			state.pending_shield_reflects.append(r)
 		events.append(GameEvent.damage_prevented(
-			target_id, shielded, granted_shield(target), target.controller))
+			target_id, shielded, granted_shield(target, source_id),
+			target.controller))
 		if amount <= 0:
 			return {"amount": 0, "events": events}
 
@@ -474,35 +516,92 @@ static func _has_prevent_all_shield(target: CardInstance) -> bool:
 # Soul Link's counted shield: the total "prevent the next N damage" still
 # banked on a character (summed across copies/uses). Read live off active_buffs,
 # so it expires with the normal end-of-turn sweep with no bookkeeping of its own.
-static func granted_shield(target: CardInstance) -> int:
+#
+# `source_id` is Holy Shield's addition: that card's shield covers damage from
+# ONE named character only ("...that would be dealt to your hero BY target hero
+# or ally"), so it rides a SCOPED stat — `prevent_damage_amount_from:<id>:<type>`
+# — and is counted only when the packet's source matches. The id is carried IN
+# the stat name because Buff.amount is an int and what this has to carry is an
+# instance id; Mocking Blow's `can_attack_only:<id>` is the same trick.
+# Callers with no source in hand pass "" and see the unscoped shields alone,
+# which is what keeps a scoped grant from being netted out of an armor
+# prevention offer for a packet it could never cover.
+static func granted_shield(target: CardInstance, source_id: String = "") -> int:
 	if target == null:
 		return 0
 	var total := 0
 	for buff in target.active_buffs:
-		if (buff as Buff).stat == "prevent_damage_amount":
-			total += (buff as Buff).amount
+		var b := buff as Buff
+		if b.stat == "prevent_damage_amount":
+			total += b.amount
+		elif source_id != "" and _shield_scope_matches(b, source_id):
+			total += b.amount
 	return total
 
 
-# Spend up to `amount` of that banked shield, oldest grant first, and report how
-# much was actually spent. Exhausted grants are dropped so nothing stale is left
-# for the buff sweep to carry.
-static func consume_granted_shield(target: CardInstance, amount: int) -> int:
+# Does this buff's scoped stat name a shield against `source_id`?
+# Stat form: prevent_damage_amount_from:<source instance id>:<reflect dmg type>
+static func _shield_scope_matches(b: Buff, source_id: String) -> bool:
+	if not b.stat.begins_with("prevent_damage_amount_from:"):
+		return false
+	return b.stat.split(":")[1] == source_id
+
+
+# The reflect damage type carried by a scoped shield buff ("" when none).
+static func _shield_reflect_type(b: Buff) -> String:
+	var parts := b.stat.split(":")
+	return parts[2] if parts.size() > 2 else ""
+
+
+# Spend up to `amount` of that banked shield and report both how much was
+# actually spent and what the spend REFLECTS (Holy Shield: "When damage is
+# prevented this way, your hero deals that amount of holy damage to that
+# character"). Exhausted grants are dropped so nothing stale is left for the
+# buff sweep to carry.
+#
+# SCOPED grants are spent FIRST. Both kinds prevent identically, so spending the
+# reflecting one first is never worse for its controller — and a scoped grant is
+# the perishable one, being useless against every other source. Rule-wise the
+# affected player would choose; auto-choosing the strictly-better order is the
+# same call made for Augustus' auto-chosen rfg_allies.
+static func consume_granted_shield(target: CardInstance, amount: int,
+		source_id: String = "") -> Dictionary:
+	var out := {"spent": 0, "reflects": []}
 	if target == null or amount <= 0:
-		return 0
+		return out
 	var spent := 0
+	var reflects: Array = []
 	var survivors: Array[Buff] = []
+
+	# Pass 1 — scoped grants matching this packet's source.
+	if source_id != "":
+		for buff in target.active_buffs:
+			var b := buff as Buff
+			if spent < amount and _shield_scope_matches(b, source_id):
+				var take: int = min(b.amount, amount - spent)
+				spent += take
+				b.amount -= take
+				var rtype := _shield_reflect_type(b)
+				if take > 0 and rtype != "":
+					reflects.append({
+						"target": source_id, "amount": take, "dmg_type": rtype,
+						"controller": target.controller,
+					})
+
+	# Pass 2 — unscoped grants (Soul Link), plus every survivor.
 	for buff in target.active_buffs:
-		var b := buff as Buff
-		if b.stat == "prevent_damage_amount" and spent < amount:
-			var take: int = min(b.amount, amount - spent)
-			spent += take
-			b.amount -= take
-			if b.amount <= 0:
-				continue
-		survivors.append(b)
+		var b2 := buff as Buff
+		if b2.stat == "prevent_damage_amount" and spent < amount:
+			var take2: int = min(b2.amount, amount - spent)
+			spent += take2
+			b2.amount -= take2
+		if b2.amount <= 0:
+			continue
+		survivors.append(b2)
 	target.active_buffs = survivors
-	return spent
+	out["spent"] = spent
+	out["reflects"] = reflects
+	return out
 
 
 # A "prevent all COMBAT damage dealt to and by this character" grant sitting on
@@ -531,6 +630,51 @@ static func blocks_all_combat_damage(state: GameState, db, source_id: String,
 	return _has_effect_flag(state, db, target_id,
 			"prevent_combat_damage_from_attacking_allies") \
 		and _is_ally_card(state, source_id)
+
+
+# Devotion Aura: how much every damage packet aimed at `target_id` is trimmed by
+# "If a hero or ally in your party would be dealt damage, prevent N of that
+# damage" auras its controller has in play.
+#
+# Read LIVE off that controller's hero_row, so the reduction covers characters
+# that arrive after the aura and lifts the instant it leaves play. "In your
+# party" is the controller's HERO plus its ally_row (the heal_party convention),
+# so an in-play ability, an attachment and equipment are never trimmed — and it
+# is controller-scoped, so the opponent's party is untouched.
+#
+# Copies are summed. Aura (1) makes that impossible for one player today, but
+# summing is what stays correct if a future effect ever raises the capacity,
+# where taking the max would silently under-count.
+#
+# Public because the AI reads it too: BaseAI.combat_kills asks it so every trade
+# and protector decision counts the reduction, the same way it asks
+# blocks_all_combat_damage for Brother Rhone.
+static func party_damage_reduction(state: GameState, db, target_id: String) -> int:
+	if not db or target_id == "":
+		return 0
+	var target := state.get_card(target_id)
+	if not target:
+		return 0
+	# "A hero or ally in your party" — the controller's own hero, or a card in
+	# its ally_row (totems included, 305.3a).
+	var ps := state.players.get(target.controller) as PlayerState
+	if not ps:
+		return 0
+	var zone := state.zones.get(target.zone_id) as Zone
+	var is_party_member := (ps.hero_instance_id == target_id) \
+		or (zone != null and zone.zone_type == "ally_row")
+	if not is_party_member:
+		return 0
+	var total := 0
+	for card in state.cards_in_zone(target.controller + "_hero_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		for seg in def.effects.split("|"):
+			var parts := seg.strip_edges().split(":")
+			if parts[0].strip_edges() == "party_damage_reduction" and parts.size() > 1:
+				total += int(parts[1])
+	return total
 
 
 # "Damage dealt by your hero can't be prevented" (Lionheart Helm) and its
@@ -579,7 +723,10 @@ static func _has_effect_flag(state: GameState, db, card_id: String,
 	var card := state.get_card(card_id)
 	if not card:
 		return false
-	var def: CardDef = db.get_def(card.card_def_id)
+	# Through the effective def (700.3): the flags asked about here are the
+	# card's own POWERS (Brother Rhone's shield), so a card that has lost its
+	# powers no longer has them.
+	var def: CardDef = state.effective_def(card_id, db)
 	if not def or def.effects == "":
 		return false
 	return flag in def.effects.split("|")
@@ -783,7 +930,17 @@ static func destroy_card(state: GameState, card_id: String,
 # 102.1a makes him lose the game immediately. Emptying the deck is NOT itself a
 # loss — only the next required draw is. Effects that merely LOOK at the deck
 # (reveal_pick) are not draws and must not call this.
+#
+# Brain Freeze ("Players can't draw cards this turn") is enforced HERE, ahead of
+# everything else, for the same reason: one lock at the one primitive covers the
+# draw step, every draw effect, and every future one. A prohibition means the
+# draw event never happens — so a locked player with an EMPTY deck was never
+# "required to draw a card from an empty deck" and does NOT become decked.
+# Brain Freeze can therefore never win the game on its own; see
+# data/rules_deviations.md "Brain Freeze".
 static func draw_one(state: GameState, player_id: String) -> Array[GameEvent]:
+	if state.draws_locked_this_turn:
+		return [GameEvent.make("draw_blocked", {"player": player_id})]
 	var deck := state.zones.get(player_id + "_deck") as Zone
 	if not deck or deck.card_ids.is_empty():
 		var events: Array[GameEvent] = [

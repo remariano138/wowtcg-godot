@@ -106,6 +106,10 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	state.damage_watch_index = 0
 	state.ally_destroy_watch_index = 0
 	state.destroy_discard_marks.clear()   # Shadow Bolt: "…destroyed THIS TURN"
+	# Brain Freeze's "players can't draw cards THIS TURN" likewise. Cleared
+	# before the draw step below, so a lock set on the previous turn never
+	# swallows this turn's 501.2a draw.
+	state.draws_locked_this_turn = false
 	var ps := state.players.get(state.turn_player) as PlayerState
 	if ps:
 		ps.resource_placed_this_turn = false
@@ -151,7 +155,7 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 		# borrowed-control link she may be holding survives until the controller
 		# actually says "ready". Only an exhausted card poses the question:
 		# readying a ready one is a no-op nobody needs to be asked about.
-		if card.is_exhausted and _may_stay_exhausted(card, db):
+		if card.is_exhausted and _may_stay_exhausted(state, card, db):
 			if card.instance_id not in state.pending_ready_choice_ids:
 				state.pending_ready_choice_ids.append(card.instance_id)
 			continue
@@ -200,10 +204,10 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 
 
 # Helwen: "You may choose not to ready [this] during your ready step."
-static func _may_stay_exhausted(card: CardInstance, db) -> bool:
+static func _may_stay_exhausted(state: GameState, card: CardInstance, db) -> bool:
 	if not db:
 		return false
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := state.effective_def(card.instance_id, db)
 	return def != null and StackResolver._has_effect_flag(def, "may_stay_exhausted")
 
 
@@ -319,7 +323,7 @@ static func _ready_blocked(state: GameState, card: CardInstance, db) -> bool:
 			if pid == card.controller:
 				continue
 			for aura_card in state.cards_in_play(pid):
-				var aura_def := db.get_def(aura_card.card_def_id) as CardDef
+				var aura_def := state.effective_def(aura_card.instance_id, db)
 				if not aura_def:
 					continue
 				for aura_seg in aura_def.effects.split("|"):
@@ -383,7 +387,7 @@ static func _collect_turn_start_triggers(state: GameState, db) -> void:
 	for pid in ordered_pids:
 		var is_turn_player: bool = (pid == state.turn_player)
 		for card in state.cards_in_play(pid):
-			var def := db.get_def(card.card_def_id) as CardDef
+			var def := state.effective_def(card.instance_id, db)
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
@@ -451,7 +455,7 @@ static func _party_has_damage(state: GameState, pid: String) -> bool:
 static func _apply_end_of_turn_effects(state: GameState, card: CardInstance, db) -> Array[GameEvent]:
 	if not db:
 		return []
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := state.effective_def(card.instance_id, db)
 	if not def or def.effects == "":
 		return []
 	var events: Array[GameEvent] = []
@@ -570,7 +574,7 @@ static func _apply_each_turn_end_effects(state: GameState, card: CardInstance, d
 		none_dealt: bool) -> Array[GameEvent]:
 	if not db:
 		return []
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := state.effective_def(card.instance_id, db)
 	if not def or def.effects == "":
 		return []
 	var events: Array[GameEvent] = []

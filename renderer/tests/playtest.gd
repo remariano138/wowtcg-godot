@@ -4088,10 +4088,11 @@ func _refresh_atk_badges() -> void:
 				# corner (these cards have no printed ATK of their own). The
 				# total across counter kinds is shown, so a new counter card
 				# needs no change here; no card in the pool carries two kinds.
-				var counter_total := 0
-				for counter_n in card.counters.values():
-					counter_total += int(counter_n)
-				cn.update_counter(counter_total)
+				# real_counter_total() skips the turn-scoped bookkeeping keys
+				# that share the same dictionary (CardInstance.BOOKKEEPING_COUNTERS)
+				# — otherwise an ally that had merely attacked or been ready-locked
+				# by Iceblade Hacker would show a phantom "1".
+				cn.update_counter(card.real_counter_total())
 				# Counted damage-prevention shield (Soul Link), top-right corner
 				# — read live off the card's buffs, so it grows as the power is
 				# used, shrinks as damage eats it, and disappears when the
@@ -5864,6 +5865,16 @@ func _confirm_x_value(text: String) -> void:
 # Confirm submits via InputRouter.confirm_graveyard_selection.
 
 const GY_CARD_SIZE := Vector2(150, 210)
+# Selected-card outline in the graveyard/reveal browser (Poison Water, Finkle
+# Einhorn, Cannibalize, Stoneform…). The Button's own "pressed" look is a dark
+# stylebox, which is invisible against a card's own black border — and the card
+# art covers it anyway, since expand_icon fills the button. So selection is drawn
+# as a blue frame ON TOP of the art instead. Same blue as the board's ally-exhaust
+# picker (ALLY_EXHAUST_SELECTED_COLOR), so "blue = I picked this" reads the same
+# in both flows.
+const GY_SELECTED_COLOR := Color(0.35, 0.6, 1.0)
+const GY_SELECTED_BORDER := 5
+
 
 func _build_graveyard_dialog() -> void:
 	_gy_dimmer = ColorRect.new()
@@ -6112,14 +6123,28 @@ func _make_gy_card_button(instance_id: String) -> Button:
 		btn.modulate = Color(1.0, 0.45, 0.45)
 		return btn
 	if not _gy_view_only:
+		# Blue selection frame, drawn over the card art (children render after the
+		# Button's icon). Ignores the mouse so the click still reaches the button.
+		var sel_frame := Panel.new()
+		sel_frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+		sel_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		sel_frame.visible = false
+		var sel_style := StyleBoxFlat.new()
+		sel_style.bg_color = Color(0, 0, 0, 0)
+		sel_style.border_color = GY_SELECTED_COLOR
+		sel_style.set_border_width_all(GY_SELECTED_BORDER)
+		sel_frame.add_theme_stylebox_override("panel", sel_style)
+		btn.add_child(sel_frame)
 		btn.toggled.connect(func(pressed: bool) -> void:
 			if pressed:
 				if _gy_selected.size() >= _gy_max:
 					btn.set_pressed_no_signal(false)   # over the limit — refuse the pick
+					sel_frame.visible = false
 					return
 				_gy_selected.append(instance_id)
 			else:
 				_gy_selected.erase(instance_id)
+			sel_frame.visible = btn.button_pressed
 			_update_gy_confirm())
 	return btn
 
@@ -8254,6 +8279,18 @@ func _do_turbo_pass() -> void:
 	if not (_turbo_mode or _wrap_up_active) or not _state or not _router or _handoff_pending:
 		return
 	if _state.priority_player != _local_player or _type_of(_local_player) != "human":
+		return
+	# Same exclusion _maybe_turbo_pass makes before it call_deferred()s us here:
+	# combat windows and a non-empty chain belong to _drain_passes alone. That
+	# check ran a frame ago, and a combat window can have OPENED since (the
+	# attack-exhaust point, the strike point and the ready-on-attack point all
+	# hold a window up and open it from their own direct-call resolution, which
+	# lands between the defer and this call). Without re-checking we would pass a
+	# window _drain_passes had just held for the human — and since _drain_passes
+	# marks the window "seen" as it holds, the _human_has_new_info test below
+	# reads back "nothing new" and passes it silently.
+	if _state.combat_attack_window or _state.combat_defend_window \
+			or not _state.pending_actions.is_empty():
 		return
 	if StackResolver.must_attack_blocks_pass(_state, _local_player, _db):
 		_wrap_up_active = false

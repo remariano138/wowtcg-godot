@@ -79,6 +79,25 @@ static func submit_action(state: GameState, action: PendingAction,
 						events.append_array(
 							_destroy_card_trigger(state, pet_sac_id, card_id, db))
 					action.params["_cost_paid_irreversibly"] = true
+				# Life Tap: "As an additional cost to play Life Tap, put 2 damage
+				# on your hero." Sever the Cord's announcement-time (412.2) cost
+				# paid in HEALTH instead of a body — nothing is announced (the
+				# card names your hero), so there is no pick to validate here.
+				# Rule 405.3: PUT damage, so GameLogic.put_damage is the right
+				# primitive — unpreventable, watcher-silent, capped at exactly
+				# fatal. Exactly fatal is legal and ends the game, and a hero's
+				# death is state-based rather than a destruction, so the check is
+				# run here (check_destroyed deliberately refuses to move a hero).
+				# Non-retractable: healing is not un-paying.
+				if sac_def and play_cost_puts_damage_on_hero(sac_def):
+					var lt_ps := state.players.get(action.source_player) as PlayerState
+					var lt_hero: String = lt_ps.hero_instance_id if lt_ps else ""
+					if lt_hero != "":
+						events.append_array(GameLogic.put_damage(state, lt_hero,
+							play_cost_hero_damage_amount(sac_def), db))
+						events.append_array(
+							_hero_state_based_death(state, action.source_player, db))
+					action.params["_cost_paid_irreversibly"] = true
 				# Stat tracking: a card was played from hand (excludes resources,
 				# which are a separate branch below). See StatTracker.
 				events.append(GameEvent.card_played(action.source_player, card_id))
@@ -309,11 +328,86 @@ static func pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
 	events.append_array(drain_uniqueness_checks(state, db))
 	events.append_array(drain_state_based_deaths(state, db))
+	events.append_array(drain_attachment_host_checks(state, db))
 	events.append_array(_pass_priority(state, db))
 	events.append_array(drain_uniqueness_checks(state, db))
 	events.append_array(drain_state_based_deaths(state, db))
+	events.append_array(drain_attachment_host_checks(state, db))
 	return events
 
+
+# Rule 410.6c: during PPP, each attachment checks whether it is still attached
+# to a host matching its ATTACH DESCRIPTION (400.6). If not, the game destroys
+# it. This is separate from 400.5, which is about a host LEAVING play — here the
+# host is still in play but has stopped matching.
+#
+# The case that made this necessary is the one the errata calls out by name:
+# "You can Polymorph a Totem, but the Polymorph is destroyed by the game during
+# PPP before the next player gets priority." A Totem is an ally only BECAUSE OF
+# A POWER (305.3a — "totems are ability allies"), so blanking its text box
+# (700.3) stops it being an ally, Polymorph's "attach to target ally" no longer
+# matches, and the Polymorph goes to its owner's graveyard. Net effect: a wasted
+# card and one round of the totem being unable to attack, after which it gets
+# its powers back. Nothing else in the pool can currently stop matching its
+# description this way, so this sweep is a no-op on every other board.
+#
+# Drained at the priority gate beside the uniqueness queue and the state-based
+# deaths, so nobody can act in between.
+static func drain_attachment_host_checks(state: GameState, db = null) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not db:
+		return events
+	for att in state.cards_in_zone("attached").duplicate():
+		if att.attached_to == "":
+			continue
+		if _attach_host_matches(state, att, db):
+			continue
+		events.append_array(_destroy_card_trigger(
+			state, att.instance_id, att.attached_to, db))
+	return events
+
+
+# Does this attachment's host still match its attach description (400.6)?
+# Unknown or unrestricted descriptions answer TRUE — this sweep exists to catch
+# a host that has genuinely stopped qualifying, never to second-guess a target
+# that was legal when it was announced.
+static func _attach_host_matches(state: GameState, att: CardInstance, db) -> bool:
+	var host := state.get_card(att.attached_to)
+	if not host or not state.is_in_play(att.attached_to):
+		return true   # 400.5 handles a host that left play; not this sweep's job.
+	var att_def := db.get_def(att.card_def_id) as CardDef
+	if not att_def:
+		return true
+	var parts := attach_parts(att_def)
+	var kind: String = parts[1].strip_edges() if parts.size() > 1 else ""
+	match kind:
+		"ally", "opposing_hero_or_ally", "hero_or_ally":
+			# A hero always qualifies where heroes are allowed.
+			if _is_hero(state, host.instance_id):
+				return kind != "ally"
+			return _is_ally_by_powers(state, host.instance_id, db)
+		_:
+			return true
+
+
+# "Is this card an ally?", asked the way 410.6c has to ask it — through the
+# card's CURRENT powers rather than its zone.
+#
+# An ally_row card whose printed card type is Ally is an ally whatever happens
+# to its text box: the Polymorph errata is explicit that "Polymorph doesn't
+# change or remove the attached ally's card type". A TOTEM is different — its
+# printed type is Ability and it is an ally only by the power that says so
+# (305.3a) — so a blanked one stops being one.
+static func _is_ally_by_powers(state: GameState, card_id: String, db) -> bool:
+	if not _is_ally(state, card_id):
+		return false
+	var card := state.get_card(card_id)
+	var printed := db.get_def(card.card_def_id) as CardDef if card else null
+	if not printed:
+		return false
+	if printed.card_type == "Ally":
+		return true
+	return is_totem_def(state.effective_def(card_id, db))
 
 # Rule 118.4 / 704: an in-play ally at 0 or fewer health is destroyed by the
 # game, whatever put it there. Damage and destroy effects already run their own
@@ -1355,6 +1449,9 @@ static func _instant_needs_target(def: CardDef) -> bool:
 				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
 				"grant_keyword_target", "divided_damage", "buff_atk_target",
 				"ally_atk_damage", "heal_target", "deal_damage_weapon_atk",
+				# Holy Shield: the target is the character WARDED AGAINST, not the
+				# one shielded (that is always the caster's own hero).
+				"prevent_hero_damage_from_target",
 				# Counterspell: a top-level interrupt announces a chain LINK.
 				# Validated by its own pool, not by _is_legal_target — see the
 				# interrupt branch in _can_play_instant.
@@ -1640,7 +1737,7 @@ static func _instant_targets_hero_or_ally_only(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["deal_damage_to_target", "heal_target",
-				"deal_damage_weapon_atk"]:
+				"deal_damage_weapon_atk", "prevent_hero_damage_from_target"]:
 			return true
 		if parts[0] in ["exhaust_target", "attach", "grant_keyword_target"] \
 				and parts.size() > 1 and parts[1] == "hero_or_ally":
@@ -1860,6 +1957,41 @@ static func _play_cost_sacrifice_ok(state: GameState, def: CardDef,
 	if action.params.get("_skip_target_check", false):
 		return not cands.is_empty()
 	return action.params.get("sacrifice_id", "") in cands
+
+
+# ── Put-damage-on-your-hero play cost (Life Tap) ───────────────────
+#
+# "As an additional cost to play Life Tap, put 2 damage on your hero."
+# Sever the Cord's announcement-time (412.2) additional cost with the currency
+# changed from a destroyed ally to the caster's own HEALTH — so unlike every
+# sacrifice cost there is nothing to pick and nothing to announce: the card
+# names YOUR HERO, a hero is always in play, and the cost is therefore always
+# payable. No submission gate, no candidate pool, and the highlight probe never
+# darks the card.
+#
+# Rule 405.3 is the whole cost: *put*, not dealt, so it is unpreventable (armor,
+# Devotion Aura's reduction and every counted shield do nothing about it), feeds
+# no damage watcher (Skorn, Cold Blood, Berserking's counters, Thysta's "if no
+# damage was dealt this turn" — which then FIRES), and it can be exactly fatal:
+# playing this at or below the cost is a state-based loss (118.4/704), which is
+# why the payment site runs the hero death check itself.
+#
+# Paid at ANNOUNCEMENT, so interrupting the link (711) or otherwise answering it
+# leaves the damage paid for nothing — and because health can be healed but a
+# payment can't be un-made, the announcement is marked non-retractable.
+static func play_cost_puts_damage_on_hero(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "play_cost_put_damage_hero")
+
+
+# How much. 0 when the def carries no such segment.
+static func play_cost_hero_damage_amount(def: CardDef) -> int:
+	if not def:
+		return 0
+	for segment in def.effects.split("|"):
+		var parts := segment.strip_edges().split(":")
+		if parts[0] == "play_cost_put_damage_hero":
+			return int(parts[1]) if parts.size() > 1 else 0
+	return 0
 
 
 # ── Sacrifice-a-Pet play cost (Dark Pact) ──────────────────────────────────────
@@ -2688,7 +2820,7 @@ static func fire_opposing_ally_enter_watchers(state: GameState, card_id: String,
 		if other_pid == card.controller:
 			continue
 		for watcher in state.cards_in_play(other_pid):
-			var wdef := db.get_def(watcher.card_def_id) as CardDef
+			var wdef := state.effective_def(watcher.instance_id, db)
 			if not wdef or wdef.effects == "":
 				continue
 			for seg in wdef.effects.split("|"):
@@ -3052,7 +3184,10 @@ static func is_ongoing_def(def: CardDef) -> bool:
 # Druid forms, Aspect (N) on the Hunter aspects. Each tag is its OWN slot — a
 # player may control one Form and one Aspect at the same time — so every check
 # below is keyed on the tag, never on "is it a slot card at all".
-const SLOT_TAGS := ["form", "aspect"]
+# Rule 414.3b tag-count uniqueness: each entry is an INDEPENDENT slot, so a
+# player may control one Form AND one Aspect AND one Aura at once — the check
+# counts only in-play cards sharing the ENTERING card's tag.
+const SLOT_TAGS := ["form", "aspect", "aura"]
 
 
 # The entering card's slot tag ("form"/"aspect") and capacity, or {} when the
@@ -3632,6 +3767,51 @@ static func _resolve_play_instant(state: GameState,
 								state, target_id, rth_card.owner + "_hand"))
 							events.append(GameEvent.card_returned_to_hand(
 								target_id, card_id))
+					"prevent_hero_damage_from_target":
+						# Holy Shield: "Prevent the next 5 damage that would be
+						# dealt to your hero BY target hero or ally this turn. When
+						# damage is prevented this way, your hero deals that amount
+						# of holy damage to that character."
+						#
+						# Soul Link's COUNTED shield with a source SCOPE and a
+						# reflect. Note what the target is: NOT the character being
+						# shielded (that is always the caster's own hero, named by
+						# the card, so that half can never fizzle) but the character
+						# being warded AGAINST. The grant therefore rides the HERO
+						# as a scoped `prevent_damage_amount_from:<id>:<type>` Buff
+						# (duration turns:1 — the end-of-turn sweep gives "this
+						# turn" for free, correct when cast on the opponent's turn,
+						# which is the only turn it usually matters), spent point by
+						# point in GameLogic.prevent branch (a4) and netted out of
+						# the armor prevention offer for a matching packet only.
+						#
+						# Rule 706 / glossary 4217: re-checked here — a warded-
+						# against character that left play or became Untargetable
+						# fizzles the whole thing, and the card is still spent.
+						# Either party's characters are legal ("target hero or
+						# ally"), so a human may ward against their own.
+						#
+						# It shields the HERO only — an ally this player controls is
+						# never covered, which is the card's real limit and why it
+						# belongs in a deck whose hero PROTECTS (602.2) and so eats
+						# the attacks on purpose. Unpreventable damage (Lionheart
+						# Helm, Chastise) bypasses it, consumes none of it, and
+						# therefore reflects nothing (717).
+						var hs_amount := int(parts[1]) if parts.size() > 1 else 0
+						var hs_type := parts[2].to_lower().strip_edges() if parts.size() > 2 else ""
+						if hs_amount > 0 and _is_legal_target(state, target_id, db) \
+								and _is_hero_or_ally(state, target_id, db):
+							var hs_hero := state.get_hero(action.source_player)
+							if hs_hero:
+								hs_hero.active_buffs.append(Buff.make(
+									"holy_shield", card_id,
+									"prevent_damage_amount_from:%s:%s" % [target_id, hs_type],
+									hs_amount, "turns", 1))
+								events.append(GameEvent.make("damage_shield_granted", {
+									"target": hs_hero.instance_id, "source": card_id,
+									"kind": "counted", "amount": hs_amount,
+									"from": target_id,
+								}))
 					"heal_target":
 						# "Your hero heals N damage from target hero or ally."
 						# Reached BOTH as a top-level segment (Healing Touch,
@@ -4003,6 +4183,35 @@ static func _resolve_play_instant(state: GameState,
 								cb_ps.cold_blood_from_index = state.turn_events.size()
 							events.append(GameEvent.make("cold_blood_gained",
 								{"player_id": action.source_player, "source_id": card_id}))
+					"no_draws_this_turn":
+						# Brain Freeze: "Players can't draw cards this turn."
+						# Board-wide and SYMMETRIC — the printed text says
+						# "players", plural, with no controller clause, so the
+						# lock covers its own caster too. Nothing is announced
+						# (no target, no choice), so 706 Untargetable is
+						# irrelevant and it can never fizzle.
+						#
+						# The lock lives on GameState and is enforced at the ONE
+						# draw primitive (GameLogic.draw_one), so it covers the
+						# draw step, every draw effect shipped, and every future
+						# one by construction. Per rule 415.9f it is a lock on
+						# DRAWING alone: an event that puts a card into a hand
+						# from a deck is a draw only if it says "drawn", so a
+						# graveyard fetch (Call the Spirit), a reveal-pick
+						# (Eagle Eye) and a "look at" (Track Humanoids) all
+						# still work.
+						#
+						# A prohibition means the draw event never happens, so a
+						# locked player with an empty deck is NOT decked — see
+						# GameLogic.draw_one and data/rules_deviations.md.
+						#
+						# "This turn" is free: the flag is cleared at every turn
+						# start with the turn event log. Instant speed is the
+						# card — it is flashed in on top of a draw link already
+						# on the chain, which resolves into nothing while its
+						# controller has already paid for it.
+						state.draws_locked_this_turn = true
+						events.append(GameEvent.draws_locked(action.source_player))
 					"draw":
 						# "Draw a card." (Arcane Shot) — unconditional, no target needed.
 						# Dark Pact's `draw:x_from_sacrifice`: X is the printed cost of
@@ -4419,7 +4628,7 @@ static func _strike_cost_aura(state: GameState, player_id: String, db) -> int:
 		var is_self: bool = (pid == player_id)
 		for zone_suffix in ["_ally_row", "_hero_row"]:
 			for card in state.cards_in_zone(pid + zone_suffix):
-				var cdef := db.get_def(card.card_def_id) as CardDef
+				var cdef := state.effective_def(card.instance_id, db)
 				if not cdef:
 					continue
 				for segment in cdef.effects.split("|"):
@@ -4816,7 +5025,16 @@ static func _prevention_offer(state: GameState, db, target_id: String,
 	# Soul Link's counted shield is free, automatic and spent BEFORE the armor
 	# pool (GameLogic.prevent), so the point is offered only for what the shield
 	# does not already cover — and not at all when it covers the whole packet.
-	amount -= GameLogic.granted_shield(card)
+	# Holy Shield's grant is scoped to one source, so `source_id` is passed:
+	# a shield warding against somebody else must NOT suppress an armor point for
+	# a packet it could never cover.
+	# Devotion Aura trims every packet aimed at the party and never depletes, so
+	# it is netted out first — an armor point must never open for damage the aura
+	# already covers.
+	amount -= GameLogic.party_damage_reduction(state, db, target_id)
+	if amount <= 0:
+		return {}
+	amount -= GameLogic.granted_shield(card, source_id)
 	if amount <= 0:
 		return {}
 	if get_ready_def_armor(state, card.controller, db).is_empty():
@@ -5100,6 +5318,9 @@ static func _apply_packet_group(state: GameState, db,
 	events.append_array(_fire_recombobulation(state, db))
 	events.append_array(_fire_circle_of_life(state, db))
 	events.append_array(_fire_shadow_bolt(state, db))
+	# Holy Shield: every point its scoped shield prevented in this group comes
+	# back at the character it was warding against.
+	events.append_array(_drain_shield_reflects(state, db))
 	# Skorn: any ally this group damaged reflects that amount onto its own
 	# party's hero. Last, so the destroy bookkeeping above is settled first — the
 	# reflect reads the log's snapshot, not the board, so a dead ally still pays.
@@ -5280,7 +5501,9 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		return false
 	if not db:
 		return false
-	var def := db.get_def(card.card_def_id) as CardDef
+	# The SOURCE's own power, so read off the effective def (700.3): a card that
+	# has lost its powers has no activated power to use.
+	var def := state.effective_def(card.instance_id, db)
 	if not def:
 		return false
 	var ap := _ally_activated_power(def)
@@ -5560,7 +5783,7 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 	if not card:
 		return [GameEvent.make("action_fizzled",
 			{"action_type": "use_ally_power", "reason": "card_not_found"})]
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := state.effective_def(card.instance_id, db)
 	if not def:
 		return []
 	var ap := _ally_activated_power(def)
@@ -6180,13 +6403,18 @@ static func _can_propose_combat(state: GameState, action: PendingAction,
 		if _allies_attack_locked(state, attacker.controller, db):
 			return false
 	# Rule 305.3a: Totems can't be proposed as attackers.
-	if db and is_totem_def(db.get_def(attacker.card_def_id) as CardDef):
+	if db and is_totem_def(state.effective_def(attacker.instance_id, db)):
 		return false
 	# "can't attack" allies (e.g. Guardian Steelhorn) can never propose combat.
 	if _has_keyword(attacker, "cant_attack", db, state):
 		return false
 	# "Can't attack this turn" restriction buff (e.g. Litori Frostburn).
 	if attacker.has_restriction("cannot_attack"):
+		return false
+	# "Ongoing: Attached ally can't attack or protect." (Polymorph) — a live read
+	# of the card's attachments rather than a buff, so it lifts the instant the
+	# attachment leaves play.
+	if db and state.has_attachment_flag(attacker_id, "attached_cannot_attack", db):
 		return false
 	# Defender must be controlled by the opponent.
 	if defender.controller == action.source_player:
@@ -6225,7 +6453,8 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 				and (state.get_atk(hero.instance_id, db, true) > 0
 					or not get_strikeable_weapons(state, player_id, hero.instance_id, db).is_empty()) \
 				and not _has_keyword(hero, "cant_attack", db, state) \
-				and not hero.has_restriction("cannot_attack"):
+				and not hero.has_restriction("cannot_attack") 				and not state.has_attachment_flag(
+					hero.instance_id, "attached_cannot_attack", db):
 			result.append(hero.instance_id)
 	# "Opposing allies can't attack." (Lady Jaina) locks ALL of this player's
 	# allies — evaluated once here, applied in the ally loop below.
@@ -6237,7 +6466,7 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 		if card.is_exhausted:
 			continue
 		# Rule 305.3a: Totems can't be proposed as attackers.
-		if db and is_totem_def(db.get_def(card.card_def_id) as CardDef):
+		if db and is_totem_def(state.effective_def(card.instance_id, db)):
 			continue
 		if card.just_summoned and not _has_keyword(card, "ferocity", db, state):
 			continue
@@ -6245,6 +6474,10 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 		if _has_keyword(card, "cant_attack", db, state):
 			continue
 		if card.has_restriction("cannot_attack"):
+			continue
+		# Polymorph — see _can_propose_combat.
+		if db and state.has_attachment_flag(
+				card.instance_id, "attached_cannot_attack", db):
 			continue
 		# Rule 600.3 (Winter's Grasp): an ally whose controller can't pay the
 		# attack tax for any legal defender can't be proposed at all — offering
@@ -6296,7 +6529,7 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 	if db:
 		for id in result:
 			var c := state.get_card(id)
-			if c and _has_effect_flag(db.get_def(c.card_def_id) as CardDef, "sarmoth_taunt") \
+			if c and _has_effect_flag(state.effective_def(c.instance_id, db), "sarmoth_taunt") \
 					and id not in specified:
 				specified.append(id)
 	if not specified.is_empty():
@@ -6343,13 +6576,17 @@ static func get_legal_protectors(state: GameState, attacker_id: String,
 			# "Can't protect this turn" restriction buff (Frost Shock).
 			if card.has_restriction("cannot_protect"):
 				continue
+			# "Ongoing: Attached ally can't attack or protect." (Polymorph).
+			if db and state.has_attachment_flag(
+					card.instance_id, "attached_cannot_protect", db):
+				continue
 			if _has_keyword(card, "protector", db, state):
 				result.append(card.instance_id)
 				continue
 			# Old Bones-style restricted grant: "can protect your hero" — only
 			# usable when the hero is the proposed defender, not for allies.
 			if defender_is_hero and db:
-				var cdef := db.get_def(card.card_def_id) as CardDef
+				var cdef := state.effective_def(card.instance_id, db)
 				if cdef and _has_effect_flag(cdef, "protect_hero_only"):
 					result.append(card.instance_id)
 	return result
@@ -6365,7 +6602,7 @@ static func _allies_attack_locked(state: GameState, player_id: String, db) -> bo
 	var opp := _other_player(state, player_id)
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(opp + zone_suffix):
-			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "opposing_allies_cant_attack"):
+			if _has_effect_flag(state.effective_def(card.instance_id, db), "opposing_allies_cant_attack"):
 				return true
 	return false
 
@@ -6408,7 +6645,7 @@ static func attack_tax(state: GameState, attacker_id: String,
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(taxer + zone_suffix):
 			var n := int(_effect_flag_arg(
-					db.get_def(card.card_def_id) as CardDef, "opposing_allies_attack_tax"))
+					state.effective_def(card.instance_id, db), "opposing_allies_attack_tax"))
 			total += max(n, 0)
 	return total
 
@@ -6428,7 +6665,7 @@ static func _owes_unpayable_attack_tax(state: GameState, attacker_id: String,
 	var taxed := false
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(opp + zone_suffix):
-			if _effect_flag_arg(db.get_def(card.card_def_id) as CardDef,
+			if _effect_flag_arg(state.effective_def(card.instance_id, db),
 					"opposing_allies_attack_tax") != "":
 				taxed = true
 				break
@@ -6443,7 +6680,7 @@ static func _protect_locked(state: GameState, player_id: String, db) -> bool:
 	var opp := _other_player(state, player_id)
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(opp + zone_suffix):
-			if _has_effect_flag(db.get_def(card.card_def_id) as CardDef, "opposing_cant_protect"):
+			if _has_effect_flag(state.effective_def(card.instance_id, db), "opposing_cant_protect"):
 				return true
 	return false
 
@@ -6747,9 +6984,17 @@ static func _has_keyword(card: CardInstance, keyword: String, db,
 	if state != null and _is_hero(state, card.instance_id) \
 			and state.hero_form_keyword(card.controller, keyword, db):
 		return true
-	if db:
-		var def := db.get_def(card.card_def_id) as CardDef
+	# The card's OWN printed keywords. Rule 700.1 makes a keyword a power, so
+	# this is the one branch Polymorph silences — read off the effective def
+	# (700.3). Every grant above is deliberately left alone: the errata is
+	# explicit that a blanked card "can later gain powers".
+	if db and state != null:
+		var def := state.effective_def(card.instance_id, db)
 		if def and keyword in def.keywords:
+			return true
+	elif db:
+		var pdef := db.get_def(card.card_def_id) as CardDef
+		if pdef and keyword in pdef.keywords:
 			return true
 	return false
 
@@ -6765,7 +7010,7 @@ static func _ally_keyword_aura(state: GameState, keyword: String, db) -> bool:
 	for pid in state.players:
 		for zone_suffix in ["_hero_row", "_ally_row"]:
 			for card in state.cards_in_zone(pid + zone_suffix):
-				var def := db.get_def(card.card_def_id) as CardDef
+				var def := state.effective_def(card.instance_id, db)
 				if not def or def.effects == "":
 					continue
 				for entry in def.effects.split("|"):
@@ -6787,7 +7032,7 @@ static func _pet_keyword_aura(state: GameState, player_id: String,
 		return false
 	for zone_suffix in ["_hero_row", "_ally_row"]:
 		for card in state.cards_in_zone(player_id + zone_suffix):
-			var def := db.get_def(card.card_def_id) as CardDef
+			var def := state.effective_def(card.instance_id, db)
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
@@ -6828,12 +7073,12 @@ static func _race_keyword_aura(state: GameState, player_id: String,
 		or recipient.zone_id == player_id + "_ally_row"
 	if not in_party:
 		return false
-	var r_def := db.get_def(recipient.card_def_id) as CardDef
+	var r_def := state.effective_def(recipient.instance_id, db)
 	if not r_def:
 		return false
 	for zone_suffix in ["_hero_row", "_ally_row"]:
 		for card in state.cards_in_zone(player_id + zone_suffix):
-			var def := db.get_def(card.card_def_id) as CardDef
+			var def := state.effective_def(card.instance_id, db)
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
@@ -6859,7 +7104,7 @@ static func _hero_keyword_aura(state: GameState, player_id: String,
 		return false
 	for zone_suffix in ["_hero_row", "_ally_row"]:
 		for card in state.cards_in_zone(player_id + zone_suffix):
-			var def := db.get_def(card.card_def_id) as CardDef
+			var def := state.effective_def(card.instance_id, db)
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
@@ -7014,7 +7259,7 @@ static func _open_ready_on_attack_point(state: GameState, attacker_id: String,
 	var atk := state.get_card(attacker_id)
 	if not atk:
 		return []
-	var def := db.get_def(atk.card_def_id) as CardDef
+	var def := state.effective_def(atk.instance_id, db)
 	var cost := -1
 	if def and def.effects != "":
 		for seg in def.effects.split("|"):
@@ -7055,7 +7300,7 @@ static func _party_ready_on_attack_cost(state: GameState, controller: String,
 		return -1
 	var best := -1
 	for card in state.cards_in_play(controller):
-		var d := db.get_def(card.card_def_id) as CardDef
+		var d := state.effective_def(card.instance_id, db)
 		if not d or d.effects == "":
 			continue
 		for seg in d.effects.split("|"):
@@ -7115,7 +7360,7 @@ static func _open_attack_exhaust_point(state: GameState, attacker_id: String,
 	var atk := state.get_card(attacker_id)
 	if not atk:
 		return []
-	var def := db.get_def(atk.card_def_id) as CardDef
+	var def := state.effective_def(atk.instance_id, db)
 	if not def or def.effects == "":
 		return []
 	var kind := ""
@@ -7414,6 +7659,11 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		atk_events, def_events, db))
 
+	# Holy Shield: combat damage its scoped shield prevented comes back at the
+	# attacker. Both packets have landed by now, so the reflect is settled after
+	# the trade rather than in the middle of it.
+	events.append_array(_drain_shield_reflects(state, db))
+
 	# Skorn: "When an ally is dealt damage, [she] deals that amount of shadow
 	# damage to target hero in that ally's party." Off the turn event log, so a
 	# trade reflects BOTH allies' damage — attacker and defender packets have
@@ -7503,7 +7753,7 @@ static func _card_has_flag(state: GameState, card_id: String, flag: String,
 	var card := state.get_card(card_id)
 	if not card:
 		return false
-	return _has_effect_flag(db.get_def(card.card_def_id) as CardDef, flag)
+	return _has_effect_flag(state.effective_def(card_id, db), flag)
 
 
 # hero_combat_dmg_locks_ally_ready equipment flag (Iceblade Hacker). See the
@@ -7654,6 +7904,47 @@ static func _fire_cold_blood(state: GameState, db) -> Array[GameEvent]:
 # The cursor is advanced past everything scanned BEFORE any damage is dealt, so
 # each damage event fires each in-play Skorn exactly once and her own reflected
 # packet — which targets a hero, not an ally — can never re-enter the sweep.
+# Holy Shield: "When damage is prevented this way, your hero deals that amount
+# of holy damage to that character." GameLogic.prevent queues the reflects
+# rather than dealing them — it runs INSIDE the prevention pipeline of a packet
+# that has not landed yet, and dealing damage from there is re-entrant — so this
+# drains the queue at the two points damage has finished landing
+# (_apply_packet_group and _do_combat_conclusion), the same two Skorn and Cold
+# Blood sweep at.
+#
+# The reflect is dealt by the shielded player's HERO, as printed, and tagged
+# `from_ability` (Chromatic Cloak's "deal damage with an ability" — the effect
+# is Holy Shield's), carrying the shield's own damage type so a typed bonus
+# (Shadowform's shape) can see it. It goes through defer_packets like any other
+# damage, so armor prevention opens normally on the character being reflected
+# at — and a reflect that is itself prevented by a second shield simply queues
+# again, which terminates because shields deplete.
+#
+# A character that has left play since the prevention gets nothing (408.2b);
+# the queue is drained regardless so nothing stale survives into a later group.
+static func _drain_shield_reflects(state: GameState, db) -> Array[GameEvent]:
+	if state.pending_shield_reflects.is_empty():
+		return []
+	var queued: Array = state.pending_shield_reflects.duplicate()
+	state.pending_shield_reflects.clear()
+	var packets: Array = []
+	for r in queued:
+		var victim: String = str(r.get("target", ""))
+		var amount := int(r.get("amount", 0))
+		if amount <= 0 or not state.is_in_play(victim):
+			continue
+		var hero := state.get_hero(str(r.get("controller", "")))
+		if not hero or not state.is_in_play(hero.instance_id):
+			continue
+		packets.append({
+			"source": hero.instance_id, "target": victim, "amount": amount,
+			"dmg_type": str(r.get("dmg_type", "")), "from_ability": true,
+		})
+	if packets.is_empty():
+		return []
+	return defer_packets(state, db, packets)
+
+
 static func _fire_skorn(state: GameState, db) -> Array[GameEvent]:
 	if db == null:
 		return []
@@ -7678,7 +7969,7 @@ static func _fire_skorn(state: GameState, db) -> Array[GameEvent]:
 		# one that has left play doesn't fire at all.
 		for pid in state.players:
 			for card in state.cards_in_play(pid):
-				var def := db.get_def(card.card_def_id) as CardDef
+				var def := state.effective_def(card.instance_id, db)
 				if not def or def.effects == "":
 					continue
 				for segment in def.effects.split("|"):
@@ -7821,7 +8112,7 @@ static func _fire_circle_of_life(state: GameState, db) -> Array[GameEvent]:
 	var watchers := 0
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_hero_row"):
-			var w_def := db.get_def(card.card_def_id) as CardDef
+			var w_def := state.effective_def(card.instance_id, db)
 			if w_def and _has_effect_flag(w_def, "recursion_on_ally_death_same_name"):
 				watchers += 1
 	if watchers == 0:
@@ -8023,7 +8314,7 @@ static func _fire_combat_damage_to_hero_triggers(state: GameState,
 	var attacker := state.get_card(attacker_id)
 	if not attacker:
 		return events
-	var def := db.get_def(attacker.card_def_id) as CardDef
+	var def := state.effective_def(attacker.instance_id, db)
 	if not def or def.effects == "":
 		return events
 	for segment in def.effects.split("|"):
@@ -10083,6 +10374,12 @@ static func _can_activate_power(state: GameState, action: PendingAction,
 				return false
 			if heal_target_id == target_id:
 				return false
+	# prevent_next_damage_target (Graccus): "target hero or ally" — an in-play
+	# ability, an attachment and equipment are never legal. A hero is always in
+	# play, so the no-target highlight probe never darks the power.
+	if _power_effect_is(def, "prevent_next_damage_target"):
+		if target_id != "" and not _is_hero_or_ally(state, target_id, db):
+			return false
 	# destroy_exhausted_ally: target must be an exhausted ally (not a hero).
 	if _power_effect_is(def, "destroy_exhausted_ally"):
 		if target_id == "":
@@ -10310,6 +10607,35 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 					ca_card.active_buffs.append(Buff.make(
 						"cant_attack_this_turn", hero_id, "cannot_attack", 1, "turns", 1))
 					events.append(GameEvent.cant_attack_applied(target_id, hero_id))
+			"prevent_next_damage_target":
+				# Graccus: "(3), Flip Graccus -> Prevent the next 3 damage that
+				# would be dealt to target hero or ally this turn." Soul Link's
+				# COUNTED shield (a `prevent_damage_amount` Buff spent point by
+				# point in GameLogic.prevent, before the armor pool) with the
+				# recipient turned into a real TARGET: Soul Link names your own
+				# hero and so can never fizzle, while this one announces a
+				# character and is re-checked at resolution (706 / 4217 — a
+				# target that left play or became Untargetable fizzles the
+				# shield, and the flip is still spent).
+				# Duration `turns`:1, so the end-of-turn sweep gives "this turn"
+				# for free and it times correctly when flipped on the OPPONENT's
+				# turn, which is the only turn it usually matters; leaving play
+				# clears it. Either party's characters are legal ("target hero or
+				# ally"), so a human may shield the opponent's board. The shield
+				# is bypassed WITHOUT being consumed by unpreventable damage
+				# (717 short-circuits before every shield), and a destroy effect
+				# ignores it — it prevents damage only.
+				if _is_legal_target(state, target_id, db) \
+						and _is_hero_or_ally(state, target_id, db):
+					var pn_amount := int(parts[1]) if parts.size() > 1 else 1
+					var pn_card := state.get_card(target_id)
+					pn_card.active_buffs.append(Buff.make(
+						"prevent_next_damage", hero_id,
+						"prevent_damage_amount", pn_amount, "turns", 1))
+					events.append(GameEvent.make("damage_shield_granted", {
+						"target": target_id, "source": hero_id,
+						"kind": "counted", "amount": pn_amount,
+					}))
 			"heal_x_from_target":
 				# X resources are already paid at submission. Heal X from target.
 				var x_value: int = action.params.get("x_value", 0)
@@ -11166,7 +11492,7 @@ static func collect_play_triggers(state: GameState, played_def: CardDef,
 	if not db or not played_def:
 		return
 	for card in state.cards_in_play(controller):
-		var def := db.get_def(card.card_def_id) as CardDef
+		var def := state.effective_def(card.instance_id, db)
 		if not def or def.effects == "":
 			continue
 		for seg in def.effects.split("|"):
@@ -11370,6 +11696,12 @@ const COMBAT_TRIGGERS := {
 	# an equipment in the hero row watching its controller's HERO, not the card
 	# in the defending role, so it is scope "board" rather than "self".
 	"on_hero_defend_heal":                          {"moment": "defend", "scope": "board"},
+	# Sacred Duty: "When your hero protects, it heals 1 damage from itself."
+	# Truesilver Breastplate's watcher narrowed by one word — "protects" is
+	# strictly narrower than "defends" (602.2 vs 602.3), so a hero that was
+	# ATTACKED DIRECTLY does not qualify. Same moment: the protect point settles
+	# the defender and _open_defend_window collects the queue immediately after.
+	"on_hero_protect_heal":                         {"moment": "defend", "scope": "board"},
 }
 
 
@@ -11406,6 +11738,17 @@ static func _combat_trigger_watches(state: GameState, watcher: CardInstance,
 		"on_hero_defend_heal":
 			var d_ps := state.players.get(watcher.controller) as PlayerState
 			return d_ps != null and d_ps.hero_instance_id == state.combat_defender
+		# Sacred Duty: "When YOUR HERO PROTECTS" — strictly narrower than
+		# Truesilver's "defends". A hero becomes the defender by two routes (602.2
+		# stepping in as protector, or having been proposed as the defender at
+		# 601.2), and only the FIRST is protecting. `combat_protector` is set in
+		# choose_protector exactly when a protector steps in and cleared at every
+		# conclusion (the cancelled path included), so reading it is the whole
+		# condition — a hero attacked directly heals nothing.
+		"on_hero_protect_heal":
+			var p_ps := state.players.get(watcher.controller) as PlayerState
+			return p_ps != null and p_ps.hero_instance_id != "" \
+				and p_ps.hero_instance_id == state.combat_protector
 	return true
 
 
@@ -11428,7 +11771,7 @@ static func _collect_combat_triggers(state: GameState, db, moment: String) -> vo
 			ordered_pids.append(pid)
 	for pid in ordered_pids:
 		for card in state.cards_in_play(pid):
-			var def := db.get_def(card.card_def_id) as CardDef
+			var def := state.effective_def(card.instance_id, db)
 			if not def or def.effects == "":
 				continue
 			for entry in def.effects.split("|"):
@@ -11678,6 +12021,21 @@ static func _resolve_combat_trigger(state: GameState, action: PendingAction,
 					and state.is_in_play(ts_ps.hero_instance_id):
 				events.append_array(GameLogic.heal(
 					state, ts_ps.hero_instance_id, ts_amount, db, source_id))
+		# Sacred Duty: identical heal, only the trigger CONDITION differs (see
+		# _combat_trigger_watches). Same timing consequence as Truesilver's: the
+		# link resolves INSIDE the defend window, before the conclusion, so the
+		# heal is capped by damage the hero was already carrying and never by the
+		# hit it is about to take from the attack it just stepped in front of.
+		# Per 707.3 the source is not re-checked — destroying Sacred Duty in the
+		# response window does not stop the heal — which is why the hero is re-read
+		# from PlayerState rather than off the source card.
+		"on_hero_protect_heal":
+			var sd_amount := int(args[0]) if args.size() > 0 else 1
+			var sd_ps := state.players.get(controller) as PlayerState
+			if sd_amount > 0 and sd_ps and sd_ps.hero_instance_id != "" \
+					and state.is_in_play(sd_ps.hero_instance_id):
+				events.append_array(GameLogic.heal(
+					state, sd_ps.hero_instance_id, sd_amount, db, source_id))
 
 	return events
 
@@ -11720,8 +12078,15 @@ static func pending_enter_play_controller(state: GameState) -> String:
 # Fire any "on_destroyed" effects declared in the card's effects string.
 # Called AFTER the card has already moved to the graveyard (rule 703.3c).
 # Format: on_destroyed:deal_damage_aoe:AMOUNT:DMG_TYPE:opposing
-static func _fire_on_destroyed(state: GameState, card_id: String, db) -> Array[GameEvent]:
-	if not db:
+# `lost_powers` must be sampled by the CALLER, before the destroy: a host
+# leaving play takes its attachments with it (400.5), so by the time this runs
+# the Polymorph that blanked the card is already gone and `has_lost_powers`
+# would answer about a card that no longer exists. The trigger condition is
+# evaluated while the card is still in play, where its text box is blank
+# (700.3), so a polymorphed Boneshanks destroys nothing.
+static func _fire_on_destroyed(state: GameState, card_id: String, db,
+		lost_powers: bool = false) -> Array[GameEvent]:
+	if not db or lost_powers:
 		return []
 	var card := state.get_card(card_id)
 	if not card:
@@ -11911,10 +12276,11 @@ static func _check_destroyed_trigger(state: GameState, card_id: String,
 		source_id: String, db) -> Array[GameEvent]:
 	var card := state.get_card(card_id)
 	var controller := card.controller if card else ""
+	var blanked := state.has_lost_powers(card_id, db)
 	var events := GameLogic.check_destroyed(state, card_id, source_id, db)
 	for e in events:
 		if e.event_type == "card_destroyed" and e.payload.get("card", "") == card_id:
-			events.append_array(_fire_on_destroyed(state, card_id, db))
+			events.append_array(_fire_on_destroyed(state, card_id, db, blanked))
 			if controller != "":
 				events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 			break
@@ -11954,9 +12320,10 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 			var winner := "p2" if loser == "p1" else "p1"
 			return [GameEvent.game_over(winner, loser)]
 	var controller := card.controller if card else ""
+	var blanked2 := state.has_lost_powers(card_id, db)
 	var events := GameLogic.destroy_card(state, card_id, source_id)
 	if not events.is_empty():
-		events.append_array(_fire_on_destroyed(state, card_id, db))
+		events.append_array(_fire_on_destroyed(state, card_id, db, blanked2))
 		if controller != "":
 			events.append_array(_check_aura_loss_deaths(state, controller, card_id, db))
 	events.append_array(_fire_recombobulation(state, db))

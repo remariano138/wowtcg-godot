@@ -476,6 +476,12 @@ static func ranged_weapon_bonus_gained(player_id: String, amount: int) -> GameEv
 static func rapid_fire_gained(player_id: String, cost: int) -> GameEvent:
 	return make("rapid_fire_gained", {"player": player_id, "cost": cost})
 
+# Brain Freeze: "Players can't draw cards this turn." Board-wide, so the grant
+# names its caster only for the log. `draw_blocked` is emitted by
+# GameLogic.draw_one each time a draw is swallowed by the lock.
+static func draws_locked(player_id: String) -> GameEvent:
+	return make("draws_locked", {"player": player_id})
+
 # Nature's Swiftness: the "your next card costs (N) less this turn" grant, and
 # the moment it is spent (on the chain entry of the card that used it).
 static func next_card_discount_gained(player_id: String, amount: int) -> GameEvent:

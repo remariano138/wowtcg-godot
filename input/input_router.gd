@@ -2103,7 +2103,9 @@ func get_playable_card_ids() -> Array:
 		for card in state.cards_in_zone(local_player + zone_suffix):
 			if card.controller != local_player:
 				continue
-			var def: CardDef = db.get_def(card.card_def_id) if db else null
+			# Through the effective def (700.3) so a Polymorphed ally's power
+			# doesn't light up — the engine would refuse it anyway.
+			var def: CardDef = state.effective_def(card.instance_id, db) if db else null
 			if not def:
 				continue
 			# Hero power (hero in the hero row).
@@ -2286,7 +2288,9 @@ func get_context_actions(instance_id: String) -> Array:
 
 	if card.controller != local_player:
 		return []
-	var def: CardDef = db.get_def(card.card_def_id)
+	# Effective def (700.3): a card whose text box has been blanked offers no
+	# "Activate Power" entry, matching what the engine will accept.
+	var def: CardDef = state.effective_def(card.instance_id, db)
 	if not def:
 		return []
 
@@ -3124,7 +3128,7 @@ func _hero_power_needs_target(hero_id: String) -> bool:
 	if not def: return false
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
-		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand", "target_cant_attack"]:
+		if key in ["deal_damage_to_target", "destroy_exhausted_ally", "deal_damage_and_heal", "deal_x_damage_to_ally", "deal_7_minus_hand_to_hero", "heal_x_from_target", "radak_pet_sacrifice", "graveyard_to_hand", "target_cant_attack", "prevent_next_damage_target"]:
 			return true
 	return false
 

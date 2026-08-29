@@ -90,6 +90,15 @@ var ally_destroy_watch_index: int = 0
 # See game_logic/turn_state_flags.md.
 var destroy_discard_marks: Array[String] = []
 
+# Brain Freeze: "Players can't draw cards this turn." Board-wide rather than
+# per player — the card says "players", plural, with no controller clause, so it
+# locks BOTH players including its own caster. Enforced at the ONE draw
+# primitive (GameLogic.draw_one), so every draw site in the game respects it by
+# construction, and per rule 415.9f it is a lock on DRAWING alone: a graveyard
+# fetch, a reveal-pick and a "look at" all still put cards into a hand.
+# Cleared at every turn start with the turn event log — "this turn".
+var draws_locked_this_turn: bool = false
+
 # Helwen: "You may choose NOT to ready Helwen during your ready step." The ready
 # step's automatic actions don't use the chain (501.1a), so this is a direct-call
 # choice point (StackResolver.choose_stay_exhausted) drained one card at a time.
@@ -268,6 +277,16 @@ var pending_prevention_resume: String = ""   # what to resume: "combat" or "pack
 # recursive_destroy: bool} and lands (pool-reduced) once its prevention offers
 # are decided. This makes new damage effects preventable by construction.
 var pending_prevention_deferred: Array = []
+
+# Holy Shield: damage its scoped shield PREVENTED, waiting to be reflected back
+# at the character it was warding against ("your hero deals that amount of holy
+# damage to that character"). Filled by GameLogic.prevent, which cannot deal the
+# damage itself — that would be re-entrant, inside the prevention pipeline of
+# the packet still landing — and drained by StackResolver._drain_shield_reflects
+# at the two points damage has finished landing (_apply_packet_group and
+# _do_combat_conclusion), the same two Skorn and Cold Blood sweep at.
+# Entries: {target, amount, dmg_type, controller}.
+var pending_shield_reflects: Array = []
 
 # ── Pending interactive choices (cleared once resolved) ────────────────────────
 var pending_discard_player: String = ""  # player who must discard; "" = none pending
@@ -574,6 +593,177 @@ func get_attachments(host_instance_id: String) -> Array[CardInstance]:
 	return result
 
 
+# ── Lost powers / added ally types (rule 700.3, 202.3 — Polymorph) ────────────
+# "Attached ally can't attack or protect, loses all powers, and is a Sheep."
+#
+# THE one place "what powers does this in-play card actually have?" is answered.
+# Rule 700.3: a card that loses its powers "effectively has a blank text box",
+# so instead of a per-power exemption at fifty read sites, `effective_def`
+# returns a BLANKED CardDef and every power-reading site asks for the def
+# through it. A site that reads a def straight out of the database is reading
+# the PRINTED card, which for an in-play card is now the wrong question.
+#
+# What is blanked, and what is not:
+#   • `effects` and printed `keywords` go — 700.1 makes keywords powers too, so
+#     a polymorphed Protector stops protecting and a polymorphed Ferocity ally
+#     is summoning-sick again.
+#   • Printed ATK and health STAY: they are on the card face, not in the text
+#     box. A card's own power that MODIFIES them (Warcaller Zin'bawa, Kailis
+#     Truearc) is a power and is lost, so the body drops to its printed line.
+#   • `card_type` STAYS — the errata is explicit ("Polymorph doesn't change or
+#     remove the attached ally's card type"), so a polymorphed ally is still an
+#     ally: still a legal target for "target ally", still counts for party size,
+#     and can still be exhausted to pay a cost (The Love Potion).
+#   • Grants from ELSEWHERE stay, because the errata is equally explicit that a
+#     blanked card "can later gain powers" — so buff-granted keywords and the
+#     keyword/stat auras read live in `_has_keyword` and `_aura_atk_mods` are
+#     untouched. Only what is printed on this card is silenced.
+#
+# The Sheep tag is ADDITIVE (202.3, and the errata: "in addition to any others
+# it has"), so it is appended to both tag columns rather than replacing them —
+# the two columns being the two CSV conventions for a race (a real ally carries
+# it in `tags`, a token in `card_subtype`), which is what `_race_keyword_aura`
+# already reads.
+#
+# One consequence the errata calls out: a TOTEM is an ally only because of a
+# power (305.3a), so blanking it stops it being one, its Polymorph's attach
+# description no longer matches, and the game destroys the Polymorph at the next
+# PPP (410.6c). See StackResolver.drain_attachment_host_checks.
+const LOST_POWERS_FLAG := "attached_loses_powers"
+const ADD_TYPE_SEGMENT := "attached_ally_type"
+# Entries of the CSV `keywords` column that are type-line TAGS (202.2) rather
+# than keyword powers, and so survive a blank text box.
+const TYPE_LINE_TAGS := ["unique", "unlimited"]
+
+# Blanked-def cache, keyed by "<def_id>#<added tags>". Blanking allocates a
+# CardDef, and these are read on every stat query, so the result is memoized.
+# Defs are immutable, so a cached blank can never go stale.
+var _effective_defs: Dictionary = {}
+
+
+# True when one of this card's attachments carries `flag` as a bare segment —
+# the general read behind every "Ongoing: attached ally <does/can't> …" clause
+# (Entangling Roots' `attached_cannot_ready`, Polymorph's three). Live, so the
+# restriction lifts the instant the attachment leaves play.
+func has_attachment_flag(instance_id: String, flag: String, db) -> bool:
+	var inst := get_card(instance_id)
+	if not inst or not db:
+		return false
+	for att_id in inst.attachments:
+		var att := get_card(att_id)
+		if not att or att.zone_id != "attached":
+			continue
+		var att_def: CardDef = db.get_def(att.card_def_id)
+		if att_def and _def_has_segment(att_def, flag):
+			return true
+	return false
+
+
+# True while an in-play card is under a "loses all powers" attachment.
+func has_lost_powers(instance_id: String, db) -> bool:
+	return has_attachment_flag(instance_id, LOST_POWERS_FLAG, db)
+
+
+# Ally types this card's attachments ADD to it ("and is a Sheep"), in attach
+# order. Additive per 202.3 — nothing is ever removed.
+func added_ally_types(instance_id: String, db) -> Array[String]:
+	var added: Array[String] = []
+	var inst := get_card(instance_id)
+	if not inst or not db:
+		return added
+	for att_id in inst.attachments:
+		var att := get_card(att_id)
+		if not att or att.zone_id != "attached":
+			continue
+		var att_def: CardDef = db.get_def(att.card_def_id)
+		if not att_def:
+			continue
+		for seg in att_def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0] == ADD_TYPE_SEGMENT and p.size() > 1:
+				var t := p[1].strip_edges()
+				if t != "" and not (t in added):
+					added.append(t)
+	return added
+
+
+# THE def accessor for an in-play card. Returns the printed def unchanged in the
+# overwhelmingly common case (no modifier is touching this card's text box), so
+# routing a read site through it costs one dictionary lookup and nothing else.
+#
+# Power-reading sites for cards IN PLAY should use this instead of
+# `db.get_def(inst.card_def_id)`. Sites that ask about a card in a HAND, DECK or
+# GRAVEYARD must NOT — 700.2 puts powers in play, and a Polymorph can't reach
+# those zones anyway.
+func effective_def(instance_id: String, db) -> CardDef:
+	var inst := get_card(instance_id)
+	if not inst or not db:
+		return null
+	var printed: CardDef = db.get_def(inst.card_def_id)
+	if not printed:
+		return null
+	var blank := has_lost_powers(instance_id, db)
+	var added := added_ally_types(instance_id, db)
+	if not blank and added.is_empty():
+		return printed
+
+	var key: String = "%s#%s#%s" % [inst.card_def_id, "1" if blank else "0",
+		"+".join(added)]
+	if _effective_defs.has(key):
+		return _effective_defs[key] as CardDef
+	var d: CardDef = _clone_def(printed)
+	if blank:
+		# 700.3 — a blank text box. Stats, cost, type and name are untouched.
+		# TYPE-LINE TAGS are kept: the `keywords` column mixes true keyword
+		# POWERS (protector, ferocity, elusive …) with the right-side tags of
+		# 202.2, and a tag is not a power — a polymorphed Lady Jaina is still
+		# Unique, so a second copy still violates 414.3a.
+		d.effects  = ""
+		var kept: Array[String] = []
+		for kw in d.keywords:
+			if kw in TYPE_LINE_TAGS:
+				kept.append(kw)
+		d.keywords = kept
+	for t in added:
+		d.tags = t if d.tags == "" else d.tags + " " + t
+		d.card_subtype = t if d.card_subtype == "" else d.card_subtype + " " + t
+	_effective_defs[key] = d
+	return d
+
+
+func _def_has_segment(def: CardDef, head: String) -> bool:
+	if def.effects == "":
+		return false
+	for seg in def.effects.split("|"):
+		if seg.strip_edges().split(":")[0] == head:
+			return true
+	return false
+
+
+func _clone_def(src: CardDef) -> CardDef:
+	var d := CardDef.new()
+	d.card_def_id   = src.card_def_id
+	d.card_name     = src.card_name
+	d.cost          = src.cost
+	d.cost_x        = src.cost_x
+	d.cost_base     = src.cost_base
+	d.printed_atk   = src.printed_atk
+	d.printed_health = src.printed_health
+	d.card_type     = src.card_type
+	d.is_instant    = src.is_instant
+	d.alignment     = src.alignment
+	d.tags          = src.tags
+	d.dmg_type      = src.dmg_type
+	d.power_text    = src.power_text
+	d.card_class    = src.card_class
+	d.card_subtype  = src.card_subtype
+	d.rarity        = src.rarity
+	d.keywords      = src.keywords.duplicate()
+	d.effects       = src.effects
+	d.image_path    = src.image_path
+	d.is_token      = src.is_token
+	return d
+
 # ── Derived stat helpers ───────────────────────────────────────────────────────
 # These require a CardDatabase reference to look up printed (base) stats.
 # Passing db as a parameter keeps GameState free of Godot node dependencies
@@ -600,9 +790,15 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 	# (1b) Attachments on this card (rule 400): Ongoing "Attached ally has
 	# +A ATK" (Mark of the Wild). Live read — never cached.
 	atk += _attachment_stat_mods(inst, db, 1)
-	# (2) This card's own printed continuous self-modifiers.
+	# (2) This card's own printed continuous self-modifiers. Read off the
+	# EFFECTIVE def (700.3): a self-modifier is a power, so a card that has lost
+	# its powers drops to its printed ATK — which stays, being on the card face
+	# rather than in the text box. See effective_def.
+	var eff: CardDef = effective_def(instance_id, db)
+	if not eff:
+		eff = def
 	var is_weapon := false
-	for segment in def.effects.split("|"):
+	for segment in eff.effects.split("|"):
 		var parts := segment.split(":")
 		if parts[0] == "atk_per_ally":
 			var per_ally := int(parts[1]) if parts.size() > 1 else 1
@@ -726,7 +922,7 @@ func _pending_berserk_atk(player_id: String, db) -> int:
 		var count := int(card.counters.get("berserk", 0))
 		if count <= 0:
 			continue
-		var def: CardDef = db.get_def(card.card_def_id)
+		var def: CardDef = effective_def(card.instance_id, db)
 		if not def or def.effects == "":
 			continue
 		for seg in def.effects.split("|"):
@@ -815,7 +1011,7 @@ func hero_form_states(player_id: String, db) -> Array:
 	if not db:
 		return names
 	for card in cards_in_zone(player_id + "_hero_row"):
-		for n in def_form_states(db.get_def(card.card_def_id)):
+		for n in def_form_states(effective_def(card.instance_id, db)):
 			if not (n in names):
 				names.append(n)
 	return names
@@ -851,11 +1047,11 @@ func hero_form_atk_while_attacking(player_id: String, db) -> int:
 
 func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 	var bonus := 0
-	var def: CardDef = db.get_def(inst.card_def_id)
+	var def: CardDef = effective_def(inst.instance_id, db)
 	var inst_zone := zones.get(inst.zone_id) as Zone
 	var inst_is_ally := inst_zone != null and inst_zone.zone_type == "ally_row"
 	for source in cards_in_zone(inst.controller + "_ally_row"):
-		var src_def: CardDef = db.get_def(source.card_def_id)
+		var src_def: CardDef = effective_def(source.instance_id, db)
 		if not src_def:
 			continue
 		for seg in src_def.effects.split("|"):
@@ -869,7 +1065,7 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 					if is_attacking and inst_is_ally:
 						bonus += int(p[1]) if p.size() > 1 else 1
 	for source in cards_in_zone(inst.controller + "_hero_row"):
-		var src_def2: CardDef = db.get_def(source.card_def_id)
+		var src_def2: CardDef = effective_def(source.instance_id, db)
 		if not src_def2:
 			continue
 		for seg in src_def2.effects.split("|"):
@@ -986,7 +1182,7 @@ func _marked_target_atk_aura(inst: CardInstance, inst_is_ally: bool, db) -> int:
 	for source in cards_in_zone("attached"):
 		if source.controller != inst.controller or source.attached_to != combat_defender:
 			continue
-		var src_def: CardDef = db.get_def(source.card_def_id)
+		var src_def: CardDef = effective_def(source.instance_id, db)
 		if not src_def or src_def.effects == "":
 			continue
 		for seg in src_def.effects.split("|"):
@@ -1019,7 +1215,7 @@ func _opposing_atk_aura(inst: CardInstance, inst_is_ally: bool, db) -> int:
 			continue
 		for zone_suffix in ["_hero_row", "_ally_row"]:
 			for source in cards_in_zone(pid + zone_suffix):
-				var src_def: CardDef = db.get_def(source.card_def_id)
+				var src_def: CardDef = effective_def(source.instance_id, db)
 				if not src_def or src_def.effects == "":
 					continue
 				for seg in src_def.effects.split("|"):
@@ -1050,7 +1246,10 @@ func get_max_hp(instance_id: String, db) -> int:
 	# both stats switch on and off together. A shrinking party can therefore put
 	# an already-damaged card at or below 0 HP; that state-based death is swept
 	# at the priority gate (StackResolver.drain_state_based_deaths).
-	for segment in def.effects.split("|"):
+	# Off the EFFECTIVE def (700.3), like get_atk's: the grant is a power, so a
+	# blanked card keeps only its printed health.
+	var hp_eff: CardDef = effective_def(instance_id, db)
+	for segment in (hp_eff.effects if hp_eff else def.effects).split("|"):
 		var parts := segment.split(":")
 		if parts[0] == "buff_while_party_size":
 			hp += _party_size_buff(inst, parts, 3)
@@ -1134,7 +1333,7 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 		# source being destroyed) and by drain_state_based_deaths at the priority
 		# gate (every other way it could leave play).
 		for source in cards_in_zone(inst.controller + "_hero_row"):
-			var hero_src: CardDef = db.get_def(source.card_def_id)
+			var hero_src: CardDef = effective_def(source.instance_id, db)
 			if not hero_src or hero_src.effects == "":
 				continue
 			for seg in hero_src.effects.split("|"):
@@ -1145,7 +1344,7 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 	for source in cards_in_zone(inst.controller + "_ally_row"):
 		if source.instance_id == inst.instance_id:
 			continue
-		var src_def: CardDef = db.get_def(source.card_def_id)
+		var src_def: CardDef = effective_def(source.instance_id, db)
 		if not src_def:
 			continue
 		for seg in src_def.effects.split("|"):
@@ -1162,7 +1361,7 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 					if inst.zone_id == inst.controller + "_ally_row":
 						bonus += int(p[1]) if p.size() > 1 else 1
 	for source in cards_in_zone(inst.controller + "_hero_row"):
-		var src_def2: CardDef = db.get_def(source.card_def_id)
+		var src_def2: CardDef = effective_def(source.instance_id, db)
 		if not src_def2:
 			continue
 		for seg in src_def2.effects.split("|"):
@@ -1235,7 +1434,7 @@ func _ally_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 	var delta := 0
 	var floor_cost := 0
 	for c in cards_in_zone(inst.controller + "_hero_row"):
-		var a_def: CardDef = db.get_def(c.card_def_id)
+		var a_def: CardDef = effective_def(c.instance_id, db)
 		if not a_def:
 			continue
 		for seg in a_def.effects.split("|"):
@@ -1270,7 +1469,7 @@ func _ability_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 	var delta := 0
 	var floor_cost := 0
 	for c in cards_in_zone(inst.controller + "_hero_row"):
-		var a_def: CardDef = db.get_def(c.card_def_id)
+		var a_def: CardDef = effective_def(c.instance_id, db)
 		if not a_def:
 			continue
 		for seg in a_def.effects.split("|"):
@@ -1341,6 +1540,7 @@ func to_dict() -> Dictionary:
 		"damage_watch_index": damage_watch_index,
 		"ally_destroy_watch_index": ally_destroy_watch_index,
 		"destroy_discard_marks": destroy_discard_marks,
+		"draws_locked_this_turn": draws_locked_this_turn,
 		"pending_actions":   _serialize_pending_actions(),
 		"consecutive_passes": consecutive_passes,
 	}
@@ -1363,6 +1563,7 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.ally_destroy_watch_index = d.get("ally_destroy_watch_index", 0)
 	for mark in d.get("destroy_discard_marks", []):
 		gs.destroy_discard_marks.append(str(mark))
+	gs.draws_locked_this_turn = d.get("draws_locked_this_turn", false)
 	gs.consecutive_passes = d.get("consecutive_passes", 0)
 	for a in d.get("pending_actions", []):
 		gs.pending_actions.append(PendingAction.from_dict(a))

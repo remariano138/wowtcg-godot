@@ -137,5 +137,16 @@ turn. Not log candidates — they're state, not history.
 | `next_card_cost_mod` | `PlayerState` | Nature's Swiftness — one-shot: consumed at the chain entry of the next card played (restored by `retract_last`), cleared at turn start if unused |
 | `damage_prevention` | `PlayerState` | Armor pool (safety clear — scoped to its combat) |
 | `destroy_discard_marks` | `GameState` | Shadow Bolt: characters whose destruction THIS TURN makes their controller discard. Consumed as each fires (a character dies once), so no cursor; swept off the `ally_destroyed` entries by `StackResolver._fire_shadow_bolt` |
+| `draws_locked_this_turn` | `GameState` | Brain Freeze: "players can't draw cards this turn." Board-wide, not per player — the card says "players", plural, so it locks its own caster too. Enforced at the ONE draw primitive (`GameLogic.draw_one`), so every draw site respects it by construction; per 415.9f it is a lock on DRAWING alone, so a graveyard fetch or a reveal-pick still works |
 | `pending_ready_choice_ids` / `_player` | `GameState` | Helwen: cards left EXHAUSTED by the ready step whose controller still owes an answer ("you may choose not to ready"). Direct call (`StackResolver.choose_stay_exhausted`), drained one at a time; blocks `can_submit` / `pass_priority` while set |
 | `gouge_skip_ready` (counter) | `CardInstance` | Gouge, Iceblade Hacker — consumed at the ready step rather than cleared |
+
+**The three `(counter)` rows above live in `CardInstance.counters`, the same
+dictionary real game counters use (Berserking's `berserk`, Blood Fury's `fury`).
+They are bookkeeping, not counters** — invisible state rather than something
+printed on the card — so every one of them is listed in
+`CardInstance.BOOKKEEPING_COUNTERS`, and anything that shows counters to the
+player reads `CardInstance.real_counter_total()` instead of summing the
+dictionary. Without that an ally that had merely attacked, struck, or been
+ready-locked by Iceblade Hacker sprouted a phantom orange "1" badge. **Add a new
+bookkeeping key to that constant as you add it here.**

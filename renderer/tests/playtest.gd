@@ -273,6 +273,7 @@ var _gy_view_only:     bool = false     # true = examine mode (no selection, no 
 var _gy_peek_active:   bool = false     # true = alt+hover peek (non-modal, no dimmer/buttons)
 var _gy_reveal_mode:   bool = false     # true = reveal-and-pick quest (choose_reveal_pick, no cancel)
 var _gy_quest_shuffle_mode: bool = false  # true = Poison Water's graveyard→deck pick (multi-select; Cancel/Esc = the empty pick, not a decline)
+var _gy_vestia_mode:    bool = false   # true = Vestia Abiectus return-an-ability pick (single-select; Cancel/Esc = decline — "you may")
 var _gy_stoneform_mode: bool = false   # true = Stoneform's own-hero-attachment destroy pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_circle_mode:   bool = false    # true = Circle of Life deck search (choose_circle_of_life; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
@@ -1369,6 +1370,7 @@ func _mandatory_choice_open() -> bool:
 			_state.pending_ready_choice_player,
 			_state.pending_weapon_ready_player,
 			_state.pending_whelp_bounce_player,
+			_state.pending_vestia_return_player,
 			_state.pending_track_look_player,
 			_state.pending_upkeep_player]:
 		if pid != "":
@@ -1725,6 +1727,19 @@ func _combat_step_key() -> String:
 	if _state.combat_defend_window:
 		return "defend"
 	if _state.combat_attack_window:
+		return "attack"
+	# Several points HOLD a window up rather than being a step of their own: the
+	# strike points (602.1/602.3), the ready-on-attack point, and the attack-exhaust
+	# trigger (Chops / Voss / Gartok). They resolve just before the window they
+	# precede opens, so report that window rather than falling through to the
+	# conclusion catch-all below — see _open_combat_window in stack_resolver.gd.
+	if _state.pending_strike_player != "":
+		return "defend" if _state.pending_strike_side == "defend" else "attack"
+	if _state.pending_strike_ready_player != "":
+		return "defend" if _state.pending_strike_ready_side == "defend" else "attack"
+	if _state.pending_ready_player != "":
+		return "attack"
+	if _state.pending_attack_exhaust_player != "":
 		return "attack"
 	# Attacker committed, no window open and the protection point passed: damage is
 	# being dealt / the step is wrapping up.
@@ -2957,6 +2972,7 @@ func _inline_choice_decider() -> String:
 			_state.pending_ready_player,
 			_state.pending_strike_ready_player,
 			_state.pending_whelp_bounce_player,
+			_state.pending_vestia_return_player,
 			_state.pending_ready_choice_player,
 			_state.pending_feral_rage_player,
 			_state.pending_upkeep_player,
@@ -3697,13 +3713,23 @@ func _log_event(event: GameEvent) -> void:
 				% [_log_player(event.payload.get("player", "")),
 				   _log_card(event.payload.get("ally_id", ""))])
 		"track_look_resolved":
-			# A "look at" is private — the log is shared, so it may only say
-			# WHERE the card went, never which card it was.
+			# A "look at" is private — the log is shared, so it may only say WHERE
+			# the card went, never which card it was. The ONE exception is Gift of
+			# the Elven Magi's take, whose printed text is "you may REVEAL it and put
+			# it into your hand" — the engine names the card in `revealed` exactly
+			# when that happened, so keying off it cannot leak a private look.
 			var tr_p: String = _log_player(event.payload.get("player", ""))
-			if bool(event.payload.get("to_bottom", false)):
-				_log_entry("[color=#af8]%s puts the top card of their deck on the bottom[/color]" % tr_p)
-			else:
+			var tr_dest: String = String(event.payload.get("dest", "bottom"))
+			var tr_shown: String = String(event.payload.get("revealed", ""))
+			if not bool(event.payload.get("to_bottom", false)):
 				_log_entry("[color=#af8]%s keeps the top card of their deck on top[/color]" % tr_p)
+			elif tr_dest == "hand":
+				_log_entry("[color=#af8]%s reveals %s and puts it into their hand[/color]"
+					% [tr_p, _log_card(tr_shown) if tr_shown != "" else "the top card of their deck"])
+			elif tr_dest == "graveyard":
+				_log_entry("[color=#af8]%s puts the top card of their deck into their graveyard[/color]" % tr_p)
+			else:
+				_log_entry("[color=#af8]%s puts the top card of their deck on the bottom[/color]" % tr_p)
 		"form_return_resolved":
 			if event.payload.get("paid", false):
 				_log_entry("[color=#9cf]%s pays to return %s to hand[/color]"
@@ -4031,6 +4057,10 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_quest_shuffle(event.payload)
 		"stoneform_destroy_required":
 			_handle_stoneform_destroy(event.payload)
+		"vestia_return_opened":
+			_handle_vestia_return(event.payload)
+		"vestia_return_resolved":
+			_refresh_ui()
 		"quest_facedown_required":
 			_handle_quest_facedown(event.payload)
 		"ferocity_granted":
@@ -5431,6 +5461,48 @@ func _resolve_stoneform_choice(picks: Array) -> void:
 	_schedule_next_turn()
 
 
+# Vestia Abiectus (dark_portal_194): she dealt combat damage, so her controller
+# MAY put an ability he controls into its owner's hand. Board-public — every
+# candidate is an in-play ability (ongoing, totem or attachment), which both
+# players can already see — so this routes "public" like Stoneform's destroy
+# rather than hiding anything.
+func _handle_vestia_return(payload: Dictionary) -> void:
+	var player: String  = payload.get("player", "")
+	var card_ids: Array = payload.get("candidate_ids", [])
+	if _route_choice(player, "public") == "ai":
+		var pick := ""
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			pick = (ai_obj as BaseAI).choose_vestia_return(_state, _db, player)
+		var events := StackResolver.choose_vestia_return(_state, pick, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Vestia Abiectus — return an ability you control to its owner's hand",
+			0, 1)
+	_gy_vestia_mode = true
+	_gy_confirm_btn.text = "Return to hand (C)"
+	_gy_cancel_btn.text  = "Decline (Esc)"
+	_set_status("Vestia connected — return an ability you control to hand, or decline")
+	_refresh_ui()
+
+
+# Shared exit for the Vestia browser: "" declines ("you may").
+func _resolve_vestia_choice(pick: String) -> void:
+	_gy_vestia_mode = false
+	_close_gy_dialog()
+	var events := StackResolver.choose_vestia_return(_state, pick, _db)
+	_exit_choice_peek_mode()
+	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 # Kolkar: the TARGET player turns one of their face-up quests face down.
 func _handle_quest_facedown(payload: Dictionary) -> void:
 	var player: String  = payload.get("player", "")
@@ -6163,6 +6235,9 @@ func _on_gy_confirm_pressed() -> void:
 	if _gy_stoneform_mode:
 		_resolve_stoneform_choice(_gy_selected.duplicate())
 		return
+	if _gy_vestia_mode:
+		_resolve_vestia_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
+		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
 		return
@@ -6256,6 +6331,9 @@ func _on_gy_cancel_pressed() -> void:
 		# is the empty pick, which still resolves it (destroying nothing).
 		_resolve_stoneform_choice([])
 		return
+	if _gy_vestia_mode:
+		_resolve_vestia_choice("")   # "you may" — Esc/Cancel declines the return
+		return
 	if _gy_recomb_mode:
 		_resolve_recomb_choice("")   # "you may" — Esc/Cancel declines the fetch
 		return
@@ -6330,6 +6408,7 @@ func _close_gy_dialog() -> void:
 	_gy_jocasta_source = ""
 	_gy_quest_shuffle_mode = false
 	_gy_stoneform_mode = false
+	_gy_vestia_mode = false
 	_gy_selectable.clear()
 	_gy_filter_active = false
 	_gy_dialog.visible = false
@@ -7570,25 +7649,37 @@ func _show_track_look_inline(payload: Dictionary) -> void:
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
 	# Same binary choice on the same private card in both flavours — only the
 	# destination differs (Track Humanoids buries, Gustaf Trueshot mills).
-	var to_graveyard: bool = String(payload.get("dest", "bottom")) == "graveyard"
+	var dest: String = String(payload.get("dest", "bottom"))
 	var header_text: String
 	var move_label: String
-	if to_graveyard:
-		header_text = "%sGustaf Trueshot — top card is %s. Keep it or bin it?" % [prefix, card_name]
-		move_label = "Graveyard"
-	else:
-		header_text = "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
-		move_label = "Bottom"
+	match dest:
+		"graveyard":
+			header_text = "%sGustaf Trueshot — top card is %s. Keep it or bin it?" % [prefix, card_name]
+			move_label = "Graveyard"
+		"hand":
+			header_text = "%sGift of the Elven Magi — top card is %s." % [prefix, card_name]
+			move_label = "Reveal & take"
+		_:
+			header_text = "%sTrack Humanoids — top card is %s. Top or bottom?" % [prefix, card_name]
+			move_label = "Bottom"
 	var buttons: Array = [
 		{
 			"text": "Top (keep it)",
 			"callback": func() -> void: _resolve_track_look(false),
 		},
-		{
+	]
+	# Gift of the Elven Magi only lets you TAKE an ability card. The choice still
+	# opens on a non-ability top card (the reveal-pick convention) so the look is
+	# not wasted — there is simply nothing to take, and the single button is an
+	# acknowledgement. track_look_take_allowed is the engine's own gate, so the
+	# button cannot be offered for a card choose_track_placement would refuse.
+	if StackResolver.track_look_take_allowed(_state, _db):
+		buttons.append({
 			"text": move_label,
 			"callback": func() -> void: _resolve_track_look(true),
-		},
-	]
+		})
+	elif dest == "hand":
+		header_text += " Not an ability card — nothing to take."
 	_track_look_nodes.append(_build_choice_popup(
 			header_text, Color(0.6, 0.8, 0.45), buttons, true, [], card_tex))
 
@@ -7842,6 +7933,8 @@ func _schedule_next_turn() -> void:
 		return  # wait for the attack-exhaust choice (Chops / Voss) before advancing
 	if _state.pending_whelp_bounce_player != "":
 		return  # wait for the Green Whelp Armor bounce choice before advancing
+	if _state.pending_vestia_return_player != "" or _gy_vestia_mode:
+		return  # wait for Vestia Abiectus' return-an-ability choice before advancing
 	if _state.pending_ready_choice_player != "" or _in_ready_choice_mode:
 		return  # wait for Helwen's optional-ready choice before advancing
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
@@ -7939,6 +8032,7 @@ func _drain_passes() -> void:
 				or StackResolver._quest_choice_pending(_state) \
 				or _in_quest_choice_mode \
 				or _state.pending_whelp_bounce_player != "" \
+				or _state.pending_vestia_return_player != "" or _gy_vestia_mode \
 				or _state.pending_ready_choice_player != "" \
 				or _state.pending_upkeep_player != "" or _in_upkeep_mode \
 				or _state.pending_track_look_player != "" or _in_track_look_mode \

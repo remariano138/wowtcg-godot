@@ -372,6 +372,10 @@ func _ready() -> void:
 		_test_baranka_defends_vs_ally_trades,
 		_test_baranka_only_vs_ally_and_via_protect,
 		_test_baranka_if_you_do_gate,
+		_test_maxum_ironbrew,
+		_test_maxum_ironbrew_scope,
+		_test_vestia_abiectus,
+		_test_vestia_abiectus_scope,
 		_test_truesilver_breastplate,
 		_test_truesilver_breastplate_protect_and_scope,
 		_test_windseer_ready_on_attack,
@@ -526,6 +530,8 @@ func _ready() -> void:
 		_test_marked_for_death_attach_and_aura,
 		_test_marked_for_death_fizzle_and_ai,
 		_test_track_humanoids_look_top_card,
+		_test_gift_of_the_elven_magi,
+		_test_gift_of_the_elven_magi_gate,
 		_test_gustaf_trueshot,
 		_test_gustaf_trueshot_ai_gate,
 		_test_track_humanoids_scope_and_empty_deck,
@@ -536,6 +542,8 @@ func _ready() -> void:
 		_test_rain_of_fire_upkeep,
 		_test_rain_of_fire_end_of_turn_burn,
 		_test_rain_of_fire_scope_and_ai,
+		_test_fire_nova_totem_blows_up,
+		_test_fire_nova_totem_answered_in_window,
 		_test_fear_bounces_opposing_ally,
 		_test_fear_scope_speed_and_tokens,
 		_test_fear_fizzle_and_ai,
@@ -18676,6 +18684,271 @@ func _test_baranka_only_vs_ally_and_via_protect() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 const TRUESILVER_FX := "equipment:chest:2|on_hero_defend_heal:1"
 
+func _test_maxum_ironbrew() -> void:
+	_buf.append("
+-- Maxum Ironbrew: heals 2 from himself when he defends --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("maxum_def", 2, 4, [], 4, "on_defend_heal_self:2")
+	db.ally("bruiser_def", 3, 5, [], 4)
+
+	# p2 controls a DAMAGED Maxum and is attacked by p1's ally.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.players["p1"].resource_placed_this_turn = true
+	var mx := _add_ally(st, "maxum", "maxum_def", "p2")
+	_add_ally(st, "bruiser", "bruiser_def", "p1")
+	mx.damage_taken = 3
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "maxum"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # attack window closes -> defend window
+
+	# mx-a: 602.3 -- the trigger fires as he becomes a defender, but the EFFECT is
+	# a chain link (708.1), so it is respondable and has not resolved yet.
+	ok(st.combat_defend_window, "mx-a: the defend window is open")
+	eq(st.pending_actions.size(), 1,
+		"mx-a2: the defend trigger is on the chain, not resolved inline")
+	eq(mx.damage_taken, 3, "mx-a3: and has not healed yet -- it is respondable")
+
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	# mx-b: THE ANSWER TO THE TIMING QUESTION. 602.3 says the combat concludes
+	# only "as a defend window closes", and 603.1 is where combat damage is dealt,
+	# so the heal lands strictly BEFORE any damage from this combat.
+	eq(mx.damage_taken, 1, "mx-b: healed 2 INSIDE the defend window")
+	ok(st.combat_defend_window,
+		"mx-b2: ...with the window still open, i.e. BEFORE the conclusion (603.1)")
+	eq(st.get_card("bruiser").damage_taken, 0,
+		"mx-b3: no combat damage has been dealt in either direction yet")
+
+	# mx-c: now let the combat conclude. 3 ATK lands on a 4-health Maxum who is
+	# already at 1 damage -> 4 total, exactly lethal. The heal did NOT soak the
+	# incoming hit, which is the whole consequence of the timing.
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("maxum").zone_id, "p2_graveyard",
+		"mx-c: the heal is capped by damage ALREADY carried, so he still dies")
+
+
+func _test_maxum_ironbrew_scope() -> void:
+	_buf.append("
+-- Maxum Ironbrew: defends only, protecting counts, 707.3 --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("maxum_def", 2, 4, [], 4, "on_defend_heal_self:2")
+	db.ally("prot_def", 2, 4, ["protector"], 4, "on_defend_heal_self:2")
+	db.ally("bruiser_def", 3, 5, [], 4)
+
+	# mx-d: an undamaged Maxum heals nothing -- a legal no-op, not an error.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.players["p1"].resource_placed_this_turn = true
+	var mx := _add_ally(st, "maxum", "maxum_def", "p2")
+	_add_ally(st, "bruiser", "bruiser_def", "p1")
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "maxum"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(st, db)
+	eq(mx.damage_taken, 0, "mx-d: an undamaged Maxum heals nothing (no-op)")
+
+	# mx-e: ATTACKING never triggers it -- the card says "defends".
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	st2.players["p1"].resource_placed_this_turn = false
+	var mx2 := _add_ally(st2, "maxum", "maxum_def", "p1")
+	mx2.damage_taken = 3
+	_add_ally(st2, "wall", "bruiser_def", "p2")
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "maxum", "defender_id": "wall"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st2, db)
+	ok(st2.pending_actions.is_empty(), "mx-e: attacking queues no trigger")
+	eq(mx2.damage_taken, 3, "mx-e2: and he heals nothing while attacking")
+
+	# mx-f: PROTECTING counts. Per 602.2 the protector becomes the proposed
+	# defender, and 602.3 then makes it a defender -- so "defends" covers it.
+	# (Contrast Sacred Duty, which says "protects" and covers only this case.)
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	st3.players["p1"].resource_placed_this_turn = true
+	var pr := _add_ally(st3, "prot", "prot_def", "p2")
+	pr.damage_taken = 3
+	pr.just_summoned = false
+	_add_ally(st3, "bruiser", "bruiser_def", "p1")
+	StackResolver.submit_action(st3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	ok(st3.in_protect_point, "mx-f0: the protect point opened")
+	StackResolver.choose_protector(st3, "prot", db)
+	eq(st3.pending_actions.size(), 1,
+		"mx-f1: protecting queued the defend trigger onto the chain")
+	StackResolver.pass_priority(st3, db)
+	StackResolver.pass_priority(st3, db)
+	# Asserted INSIDE the window on purpose: he dies at the conclusion below, and
+	# leaving play would reset his damage to 0 (400.6a) and hide the heal.
+	eq(pr.damage_taken, 1, "mx-f: stepping in as PROTECTOR heals him too")
+	ok(st3.combat_defend_window, "mx-f2: ...still before the conclusion")
+
+	# mx-g: 709.2c -- killed in the response window, there is nothing left to
+	# heal and the link resolves into nothing. (Contrast Truesilver, whose source
+	# may die freely because the HERO is the recipient, not the source.)
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	st4.players["p1"].resource_placed_this_turn = true
+	var mx4 := _add_ally(st4, "maxum", "maxum_def", "p2")
+	mx4.damage_taken = 3
+	_add_ally(st4, "bruiser", "bruiser_def", "p1")
+	StackResolver.submit_action(st4, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "bruiser", "defender_id": "maxum"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(st4, db)
+	eq(st4.pending_actions.size(), 1, "mx-g0: the trigger is on the chain")
+	GameLogic.destroy_card(st4, "maxum")
+	StackResolver.pass_priority(st4, db)
+	StackResolver.pass_priority(st4, db)
+	eq(st4.get_card("maxum").zone_id, "p2_graveyard",
+		"mx-g: source killed in the response window -- the link resolves into nothing")
+
+func _test_vestia_abiectus() -> void:
+	_buf.append("\n-- Vestia Abiectus: return an ability you control on combat damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("vestia_def", 2, 3, [], 3, "on_combat_damage_return_own_ability")
+	db.ally("wolf_def", 1, 5, [], 2)
+	db.ability("roots_def", 2, "ongoing|attach:ally:exhaust_it|attached_cannot_ready")
+	db.ability("circle_def", 8, "ongoing|recursion_on_ally_death_same_name")
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.players["p1"].resource_placed_this_turn = true
+	var vestia := _add_ally(st, "vestia", "vestia_def", "p1")
+	vestia.just_summoned = false
+	_add_ally(st, "wolf", "wolf_def", "p2")
+	# An ongoing ability p1 controls, sitting in his hero row.
+	var circle := CardInstance.create("circle", "circle_def", "p1", "p1_hero_row")
+	st.cards["circle"] = circle
+	st.zones["p1_hero_row"].card_ids.append("circle")
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "vestia", "defender_id": "wolf"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(st, db)
+
+	# va-a: she connected, so the OPTIONAL point is open for her controller.
+	eq(st.pending_vestia_return_player, "p1", "va-a: the point opened for her controller")
+	eq(st.pending_vestia_return_source, "vestia", "va-a2: source recorded")
+	ok(st.pending_vestia_return_ids.has("circle"),
+		"va-a3: the ongoing ability he controls is a candidate")
+	ok(not StackResolver.can_submit(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "vestia", "defender_id": "wolf"}), db),
+		"va-a4: can_submit is blocked while pending")
+	eq(StackResolver.pass_priority(st, db).size(), 0, "va-a5: pass_priority is blocked too")
+
+	# va-b: declining is always legal ("you may") and moves nothing.
+	StackResolver.choose_vestia_return(st, "", db)
+	eq(st.pending_vestia_return_player, "", "va-b: decline resolved the point")
+	eq(st.get_card("circle").zone_id, "p1_hero_row", "va-b2: nothing moved")
+
+
+func _test_vestia_abiectus_scope() -> void:
+	_buf.append("\n-- Vestia Abiectus: pool, attachments, ownership, no-damage --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("vestia_def", 2, 3, [], 3, "on_combat_damage_return_own_ability")
+	db.ally("wolf_def", 1, 5, [], 2)
+	db.ally("wall_def", 0, 9, [], 2)
+	db.ability("roots_def", 2, "ongoing|attach:ally:exhaust_it|attached_cannot_ready")
+
+	# va-c: an ATTACHMENT p1 controls, hosted on p2's ally, IS in the pool --
+	# the recycling loop. And p2's own ongoing ability is NOT ("you control").
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.players["p1"].resource_placed_this_turn = true
+	var vestia := _add_ally(st, "vestia", "vestia_def", "p1")
+	vestia.just_summoned = false
+	_add_ally(st, "wolf", "wolf_def", "p2")
+	var roots := CardInstance.create("roots", "roots_def", "p1", "attached")
+	roots.attached_to = "wolf"
+	st.cards["roots"] = roots
+	st.zones["attached"].card_ids.append("roots")
+	st.get_card("wolf").attachments.append("roots")
+	var theirs := CardInstance.create("theirs", "roots_def", "p2", "p2_hero_row")
+	st.cards["theirs"] = theirs
+	st.zones["p2_hero_row"].card_ids.append("theirs")
+
+	var pool := StackResolver.get_vestia_return_candidates(st, db, "p1")
+	ok(pool.has("roots"),
+		"va-c: our attachment on THEIR ally is in the pool (the recycle loop)")
+	ok(not pool.has("theirs"), "va-c2: an ability THEY control is not")
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "vestia", "defender_id": "wolf"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(st, db)
+	eq(st.pending_vestia_return_player, "p1", "va-c3: point opened")
+	StackResolver.choose_vestia_return(st, "roots", db)
+	eq(st.get_card("roots").zone_id, "p1_hand",
+		"va-c4: returned to its OWNER's hand, ready to be replayed")
+
+	# va-d: no combat damage dealt -> no point at all. A 0-ATK Vestia connects
+	# for nothing, so the trigger never fires.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	st2.players["p1"].resource_placed_this_turn = true
+	var v2 := _add_ally(st2, "vestia", "vestia_def", "p1")
+	v2.just_summoned = false
+	v2.active_buffs.append(Buff.make("va_shrink", "test", "atk", -2, "turns", 1))
+	_add_ally(st2, "wall", "wall_def", "p2")
+	var c2 := CardInstance.create("circle2", "roots_def", "p1", "p1_hero_row")
+	st2.cards["circle2"] = c2
+	st2.zones["p1_hero_row"].card_ids.append("circle2")
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "vestia", "defender_id": "wall"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(st2, db)
+	eq(st2.pending_vestia_return_player, "",
+		"va-d: no damage dealt -> no choice point opens")
+
+	# va-e: controlling NO ability opens no point either, even on a clean hit.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	st3.players["p1"].resource_placed_this_turn = true
+	var v3 := _add_ally(st3, "vestia", "vestia_def", "p1")
+	v3.just_summoned = false
+	_add_ally(st3, "wolf", "wolf_def", "p2")
+	StackResolver.submit_action(st3, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "vestia", "defender_id": "wolf"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(st3, db)
+	eq(st3.pending_vestia_return_player, "",
+		"va-e: no ability controlled -> no choice point opens")
+
+	# va-f: she fires while DEFENDING too (no role clause) -- her retaliation
+	# onto an attacking ally counts as dealing combat damage.
+	var st4 := _base_state(db, "p1_hero", "p2_hero")
+	st4.players["p2"].resource_placed_this_turn = true
+	st4.turn_player = "p2"
+	st4.priority_player = "p2"
+	var v4 := _add_ally(st4, "vestia", "vestia_def", "p1")
+	v4.just_summoned = false
+	var atk := _add_ally(st4, "biter", "wolf_def", "p2")
+	atk.just_summoned = false
+	var c4 := CardInstance.create("circle4", "roots_def", "p1", "p1_hero_row")
+	st4.cards["circle4"] = c4
+	st4.zones["p1_hero_row"].card_ids.append("circle4")
+	StackResolver.submit_action(st4, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "biter", "defender_id": "vestia"}), db)
+	for _i in range(6):
+		StackResolver.pass_priority(st4, db)
+	eq(st4.pending_vestia_return_player, "p1",
+		"va-f: retaliating while defending fires it too (no role clause)")
+	ok(BaseAI.new().choose_vestia_return(st4, db, "p1") == "",
+		"va-f2: the AI always declines (deliberately unmodelled)")
+	StackResolver.choose_vestia_return(st4, "", db)
+
+
 func _test_truesilver_breastplate() -> void:
 	_buf.append("\n-- Truesilver Breastplate: heal 1 when your hero defends --")
 	var db := MockDB.new()
@@ -29127,6 +29400,149 @@ func _test_track_humanoids_look_top_card() -> void:
 const GUSTAF_FX := "requires_hero_race:Dwarf" \
 		+ "|activated_power:1:look_top_card_to_graveyard:0:::no_activate"
 
+const GIFT_FX := "equipment:melee_weapon:0|strike_cost:4|power_weapon" 		+ "|activated_power:2:look_top_card_to_hand:0:::exhaust_hero"
+
+
+func _test_gift_of_the_elven_magi() -> void:
+	_buf.append("
+-- Gift of the Elven Magi: look at the top card, take an ability --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("gift_def", 1, GIFT_FX)
+	var gd := db._defs["gift_def"] as CardDef
+	gd.printed_atk = 1
+	gd.dmg_type    = "Melee"
+	db.ability("spell_def", 3, "draw:1")
+	db.ally("wolf_def", 2, 3, [], 2)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 6)
+	var gift := CardInstance.create("gift", "gift_def", "p1", "p1_hero_row")
+	st.cards["gift"] = gift
+	st.zones["p1_hero_row"].card_ids.append("gift")
+	# Top of deck is an ABILITY, then an ALLY -- the two sides of the gate.
+	for pair in [["deck_0", "spell_def"], ["deck_1", "wolf_def"], ["deck_2", "wolf_def"]]:
+		var dc := CardInstance.create(pair[0], pair[1], "p1", "p1_deck")
+		st.cards[pair[0]] = dc
+		st.zones["p1_deck"].card_ids.append(pair[0])
+
+	var p1 := st.players["p1"] as PlayerState
+	var hero := st.get_card(p1.hero_instance_id)
+
+	# gm-a: the printed cost carries the [Activate] tap symbol AND "Exhaust your
+	# hero", so BOTH must be ready. Prove the hero half really gates it.
+	hero.is_exhausted = true
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "gift"}), db),
+		"gm-a: unusable while our hero is exhausted (exhaust_hero cost)")
+	hero.is_exhausted = false
+
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gift"}), db)
+	# 412.2: exhaust-style costs are paid at ANNOUNCEMENT, not at resolution.
+	ok(gift.is_exhausted, "gm-a2: the weapon exhausts at announcement")
+	ok(hero.is_exhausted, "gm-a3: and so does our hero")
+	eq(st.get_available_resources("p1"), 4, "gm-a4: 2 resources paid at announcement")
+
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.pending_track_look_player, "p1", "gm-b: the look opened for the controller")
+	eq(st.pending_track_look_card_id, "deck_0", "gm-b2: it is the top card")
+	eq(st.pending_track_look_dest, "hand", "gm-b3: this flavour takes it to hand")
+	ok(StackResolver.track_look_take_allowed(st, db),
+		"gm-b4: an ability card MAY be taken")
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gift"}), db), "gm-b5: can_submit is blocked while pending")
+	eq(StackResolver.pass_priority(st, db).size(), 0, "gm-b6: pass_priority is blocked too")
+
+	# gm-c: take it. "Reveal it and put it into your hand" -- so the resolved event
+	# NAMES the card, unlike every private look.
+	var took := StackResolver.choose_track_placement(st, true, db)
+	eq(st.pending_track_look_player, "", "gm-c: choice resolved")
+	eq(st.get_card("deck_0").zone_id, "p1_hand", "gm-c2: the ability reached our hand")
+	eq(st.zones["p1_deck"].card_ids.size(), 2, "gm-c3: deck is one card shorter")
+	eq(st.zones["p1_deck"].card_ids[0], "deck_1", "gm-c4: next card is now on top")
+	ok(st.decked_players.is_empty(), "gm-c5: taking a card is not a draw, so no decking")
+	var revealed := ""
+	for e in took:
+		if e.event_type == "track_look_resolved":
+			revealed = String(e.payload.get("revealed", ""))
+	eq(revealed, "deck_0", "gm-c6: taking it REVEALS it -- the event names the card")
+
+
+func _test_gift_of_the_elven_magi_gate() -> void:
+	_buf.append("
+-- Gift of the Elven Magi: only ability cards, empty deck, AI --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("gift_def", 1, GIFT_FX)
+	db.ability("spell_def", 3, "draw:1")
+	db.instant("flash_def", 2, "draw:1")
+	db.ally("wolf_def", 2, 3, [], 2)
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 8)
+	var gift := CardInstance.create("gift", "gift_def", "p1", "p1_hero_row")
+	st.cards["gift"] = gift
+	st.zones["p1_hero_row"].card_ids.append("gift")
+	# Top of deck is an ALLY this time.
+	for pair in [["deck_0", "wolf_def"], ["deck_1", "flash_def"]]:
+		var dc := CardInstance.create(pair[0], pair[1], "p1", "p1_deck")
+		st.cards[pair[0]] = dc
+		st.zones["p1_deck"].card_ids.append(pair[0])
+
+	var p1 := st.players["p1"] as PlayerState
+	var hero := st.get_card(p1.hero_instance_id)
+
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gift"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	# gg-a: the choice STILL opens on a non-ability top card (the reveal-pick
+	# convention) so the look is not wasted -- there is simply nothing to take.
+	eq(st.pending_track_look_player, "p1", "gg-a: the look opens even for an ally card")
+	ok(not StackResolver.track_look_take_allowed(st, db),
+		"gg-a2: but an ALLY card may not be taken")
+	ok(not BaseAI.new().choose_track_placement(st, db, "p1"),
+		"gg-a3: the AI declines what it is not allowed to take")
+
+	# gg-b: a direct caller must not be able to launder it into the hand anyway.
+	StackResolver.choose_track_placement(st, true, db)
+	eq(st.get_card("deck_0").zone_id, "p1_deck", "gg-b: the ally stayed in the deck")
+	eq(st.zones["p1_deck"].card_ids[0], "deck_0", "gg-b2: and stayed on TOP (a keep is a no-op)")
+	eq(st.cards_in_zone("p1_hand").size(), 0, "gg-b3: nothing reached the hand")
+
+	# gg-c: an INSTANT Ability qualifies -- its type parses to Ability.
+	GameLogic.move_card(st, "deck_0", "p1_graveyard")
+	hero.is_exhausted = false
+	gift.is_exhausted = false
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gift"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.pending_track_look_card_id, "deck_1", "gg-c: looking at the instant ability")
+	ok(StackResolver.track_look_take_allowed(st, db),
+		"gg-c2: an Instant Ability is an ability card")
+	ok(BaseAI.new().choose_track_placement(st, db, "p1"),
+		"gg-c3: the AI takes free cards")
+	StackResolver.choose_track_placement(st, true, db)
+	eq(st.get_card("deck_1").zone_id, "p1_hand", "gg-c4: it reached our hand")
+
+	# gg-d: an EMPTY deck opens no choice at all -- looking is not a draw (410.6b),
+	# so the power can never deck its controller.
+	eq(st.zones["p1_deck"].card_ids.size(), 0, "gg-d0: deck is empty")
+	hero.is_exhausted = false
+	gift.is_exhausted = false
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "gift"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.pending_track_look_player, "", "gg-d: no choice opens on an empty deck")
+	ok(st.decked_players.is_empty(), "gg-d2: and looking never decks the player")
+
+
 func _test_gustaf_trueshot() -> void:
 	_buf.append("\n-- Gustaf Trueshot: look at the top card, keep it or mill it --")
 	var db := MockDB.new()
@@ -33717,6 +34133,128 @@ func _test_rain_of_fire_scope_and_ai() -> void:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Fire Nova Totem (dark_portal_93, 1, Ability — Elemental, Fire Totem (1), 0/1):
+#   "Totem. Ongoing: At the start of your turn, destroy Fire Nova Totem. If you
+#    do, it deals 3 fire damage to each opposing hero and ally."
+#   ongoing|totem:fire|turn_start_destroy_self_damage_opposing:3:fire
+# A one-shot FUSE rather than a repeating ping — the totem spends itself. Like
+# every start-of-turn trigger it goes on the chain, so the destroy happens at
+# RESOLUTION and the opponent gets one window to answer it; 709.2f then gates
+# the burn on that destroy having actually been performed.
+# ══════════════════════════════════════════════════════════════════════════════
+const FIRE_NOVA_FX := "ongoing|totem:fire|turn_start_destroy_self_damage_opposing:3:fire"
+
+func _fire_nova_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("nova_def", 1, FIRE_NOVA_FX, 1)
+	db.ally("grunt_def", 2, 5, [], 2)
+	db.ally("weak_def", 1, 2, [], 1)     # dies to the 3 damage
+	return db
+
+
+func _test_fire_nova_totem_blows_up() -> void:
+	_buf.append("\n-- Fire Nova Totem: destroys itself, then 3 fire to each opposing hero and ally --")
+	var db := _fire_nova_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "nova", "nova_def", "p1")
+	var foe   := _add_ally(state, "foe", "grunt_def", "p2")
+	var frail := _add_ally(state, "frail", "weak_def", "p2")
+	var mine  := _add_ally(state, "mine", "grunt_def", "p1")
+
+	# "At the start of YOUR turn" — the opponent's ready step must not fire it.
+	state.turn_player = "p2"
+	_ready_step(state, db)
+	eq(state.get_card("nova").zone_id, "p1_ally_row",
+		"fnt-a: does not fire on the opponent's turn")
+	eq(foe.damage_taken, 0, "fnt-b: ...and nothing was burned")
+
+	# Our own ready step: it goes off.
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	eq(state.get_card("nova").zone_id, "p1_graveyard", "fnt-c: it destroyed itself")
+	eq(foe.damage_taken, 3, "fnt-d: each opposing ally took 3")
+	eq(state.get_card("p2_hero").damage_taken, 3, "fnt-e: the opposing hero took 3 too")
+	eq(state.get_card("frail").zone_id, "p2_graveyard", "fnt-f: a 2-health ally dies to it")
+	eq(mine.damage_taken, 0, "fnt-g: our own allies are untouched")
+	eq(state.get_card("p1_hero").damage_taken, 0, "fnt-h: and so is our own hero")
+
+	# The TOTEM is the source, not our hero — that is what keeps Chromatic Cloak
+	# and World in Flames off these packets (both want a hero source).
+	var by_totem := false
+	for entry in state.turn_events_of("damage_dealt"):
+		if String(entry.get("source_id", "")) == "nova":
+			by_totem = true
+			break
+	ok(by_totem, "fnt-i: the packets were dealt by the TOTEM")
+
+	# A fuse, not an engine: it is gone, so nothing fires next turn.
+	state.turn_events.clear()
+	state.turn_player = "p1"
+	_ready_step(state, db)
+	eq(foe.damage_taken, 3, "fnt-j: one-shot — it does not fire again")
+
+
+func _test_fire_nova_totem_answered_in_window() -> void:
+	_buf.append("\n-- Fire Nova Totem: killed in the response window, it burns nothing (709.2c/f) --")
+	var db := _fire_nova_db()
+
+	# The trigger is a respondable chain link: nothing has happened while it sits
+	# there, and destroying the source in that window denies the whole card.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.phase = "ready"
+	_add_ally(state, "nova", "nova_def", "p1")
+	var foe := _add_ally(state, "foe", "grunt_def", "p2")
+	state.pending_turn_start_triggers = [{
+		"card_id": "nova", "controller": "p1",
+		"key": "turn_start_destroy_self_damage_opposing", "args": ["3", "fire"]}]
+	StackResolver.advance_turn_start_triggers(state, db)
+	eq(state.pending_actions.size(), 1, "fntw-a: the trigger is a chain link")
+	eq(state.pending_actions[0].action_type, "resolve_turn_start_trigger",
+		"fntw-b: ...a resolve_turn_start_trigger")
+	eq(state.get_card("nova").zone_id, "p1_ally_row",
+		"fntw-c: still alive — the destroy belongs to RESOLUTION, not the announce")
+	eq(foe.damage_taken, 0, "fntw-d: and nothing has burned yet")
+
+	# p2 answers by killing the totem while the link waits.
+	GameLogic.move_card(state, "nova", "p1_graveyard")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.pending_actions.size(), 0, "fntw-e: the link resolved")
+	eq(foe.damage_taken, 0, "fntw-f: no destroy to perform, so no burn (709.2c)")
+
+	# 709.2f is about the DESTROY, not about being gone: a source removed from the
+	# game rather than destroyed satisfies nothing either (the Dramla rule).
+	var exiled := _base_state(db, "p1_hero", "p2_hero")
+	exiled.phase = "ready"
+	_add_ally(exiled, "nova", "nova_def", "p1")
+	var foe2 := _add_ally(exiled, "foe", "grunt_def", "p2")
+	exiled.pending_turn_start_triggers = [{
+		"card_id": "nova", "controller": "p1",
+		"key": "turn_start_destroy_self_damage_opposing", "args": ["3", "fire"]}]
+	StackResolver.advance_turn_start_triggers(exiled, db)
+	GameLogic.move_card(exiled, "nova", "p1_rfg")
+	StackResolver.pass_priority(exiled, db)
+	StackResolver.pass_priority(exiled, db)
+	eq(foe2.damage_taken, 0, "fntw-g: exiled in the window burns nothing either")
+
+	# The board is read at RESOLUTION: an ally that arrived in the window is hit.
+	var late := _base_state(db, "p1_hero", "p2_hero")
+	late.phase = "ready"
+	_add_ally(late, "nova", "nova_def", "p1")
+	late.pending_turn_start_triggers = [{
+		"card_id": "nova", "controller": "p1",
+		"key": "turn_start_destroy_self_damage_opposing", "args": ["3", "fire"]}]
+	StackResolver.advance_turn_start_triggers(late, db)
+	var latecomer := _add_ally(late, "late", "grunt_def", "p2")
+	StackResolver.pass_priority(late, db)
+	StackResolver.pass_priority(late, db)
+	eq(latecomer.damage_taken, 3, "fntw-h: an ally that arrived in the window is burned")
+	eq(late.get_card("nova").zone_id, "p1_graveyard", "fntw-i: and the totem is spent")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO — Frost Nova: "Your hero deals 1 frost damage to each opposing hero
 # and ally. A character dealt damage this way can't attack this turn."
 # Flamestrike's AoE (`deal_damage_aoe_opponent`) plus an optional 4th-field
@@ -34334,4 +34872,3 @@ func _test_ai_life_tap() -> void:
 		if a.params.get("card_id", "") == "tap":
 			found = true
 	ok(not found, "lta-c: held on a full hand")
-

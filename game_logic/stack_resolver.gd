@@ -512,6 +512,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_whelp_bounce() before priority can move.
 	if state.pending_whelp_bounce_player != "":
 		return []
+	# Vestia Abiectus: the optional return must be answered via
+	# choose_vestia_return() before priority can move (a conclusion point, not a link).
+	if state.pending_vestia_return_player != "":
+		return []
 	# Helwen's optional ready must be answered via choose_stay_exhausted()
 	# before priority can move (501.1a — a ready-step choice, not a link).
 	if state.pending_ready_choice_player != "":
@@ -752,6 +756,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Green Whelp Armor bounce point blocks everything until resolved via
 	# choose_whelp_bounce().
 	if state.pending_whelp_bounce_player != "":
+		return false
+
+	# Vestia Abiectus' optional return blocks everything until answered via
+	# choose_vestia_return().
+	if state.pending_vestia_return_player != "":
 		return false
 
 	# Helwen's optional ready blocks everything until answered via
@@ -6013,6 +6022,29 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 				state.pending_track_look_dest    = "graveyard"
 				events.append(GameEvent.track_look_opened(
 					action.source_player, gt_deck.card_ids[0], "graveyard"))
+		"look_top_card_to_hand":
+			# Gift of the Elven Magi: "Look at the top card of your deck. If it's
+			# an ability card, you may reveal it and put it into your hand."
+			# Gustaf Trueshot's look with a third destination, so it shares the
+			# whole choice point (see choose_track_placement) — the only
+			# card-specific part is the ABILITY GATE, and that lives in
+			# track_look_take_allowed so the open, the AI and the re-check inside
+			# choose_track_placement can never disagree about what is takeable.
+			#
+			# The choice opens even when the top card is NOT an ability (the
+			# reveal-pick convention — Overseer Oilfist): the LOOK is most of what
+			# was paid for, so the player still sees the card and acknowledges with
+			# a decline. LOOKING IS NOT A DRAW (410.6b): nothing calls draw_one, so
+			# an empty deck opens no choice at all and this can never deck its
+			# controller. WHICH card is looked at is read at RESOLUTION (709.2b),
+			# so a draw or a mill in the response window changes what is seen.
+			var gm_deck := state.zones.get(action.source_player + "_deck") as Zone
+			if gm_deck and not gm_deck.card_ids.is_empty():
+				state.pending_track_look_player  = action.source_player
+				state.pending_track_look_card_id = gm_deck.card_ids[0]
+				state.pending_track_look_dest    = "hand"
+				events.append(GameEvent.track_look_opened(
+					action.source_player, gm_deck.card_ids[0], "hand"))
 		"rfg_graveyard_ally":
 			# Ophelia Barrows: "Remove target ally card in any graveyard from the
 			# game. If you do, [she] heals 1 damage from herself." Re-check the
@@ -7659,6 +7691,14 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 		state, attacker_id, defender_id, attacker_was_ally, defender_was_ally,
 		atk_events, def_events, db))
 
+	# Vestia Abiectus (rule 703 triggered ally power): "When Vestia Abiectus deals
+	# combat damage, you may put an ability you control into its owner's hand."
+	# Zy'lah's shape with BOTH of Brigg's restrictions gone (no victim clause, so a
+	# hero counts; no role clause, so retaliating counts) and the effect OPTIONAL,
+	# which is why it opens a direct-call point instead of resolving inline.
+	events.append_array(_fire_combat_dmg_return_own_ability(
+		state, attacker_id, defender_id, atk_events, def_events, db))
+
 	# Holy Shield: combat damage its scoped shield prevented comes back at the
 	# attacker. Both packets have landed by now, so the reflect is settled after
 	# the trade rather than in the middle of it.
@@ -8386,6 +8426,109 @@ static func choose_whelp_bounce(state: GameState, pay: bool,
 		var owner := ally.owner if ally else ""
 		events.append_array(GameLogic.move_card(state, ally_id, owner + "_hand"))
 		events.append(GameEvent.whelp_bounce_resolved(player_id, ally_id))
+	return events
+
+
+# ── Vestia Abiectus (dark_portal_194) ─────────────────────────────────────────
+# "When Vestia Abiectus deals combat damage, you may put an ability you control
+# into its owner's hand."
+#
+# A combat CONCLUSION trigger (rule 703), like Brigg / Zy'lah / Wraith Scythe —
+# not a 602.1/602.3 chain trigger. Its breadth is Wraith Scythe's: the text says
+# "deals combat damage" with NO victim clause (a hero counts as much as an ally)
+# and NO role clause (she qualifies attacking, and retaliating while defending or
+# protecting), so both packets are scanned.
+#
+# "An ability you control" is a CHOICE, not a target — nothing is announced, so
+# 706 Untargetable is irrelevant. The card is OPTIONAL ("you may"), so it opens a
+# direct-call point rather than resolving inline like the mandatory conclusion
+# triggers around it (see data/rules_deviations.md "Vestia Abiectus").
+
+# Every in-play Ability card `player_id` CONTROLS. get_destroy_kind_candidates's
+# "ability" pool already sweeps both hero rows, both ally rows (totems are
+# ability allies, 305.3a) and the shared "attached" zone; the only narrowing here
+# is the controller.
+#
+# An ATTACHMENT you control counts even when its host is an OPPOSING ally —
+# _resolve_attach sets the attachment's controller to the caster, and the host is
+# irrelevant to who controls it. That is the whole recycling loop (Entangling
+# Roots goes down on their ally, then comes home to be replayed).
+static func get_vestia_return_candidates(state: GameState, db,
+		player_id: String) -> Array:
+	var result: Array = []
+	for cid in get_destroy_kind_candidates(state, db, "ability"):
+		var card := state.get_card(cid)
+		if card and card.controller == player_id:
+			result.append(cid)
+	return result
+
+
+# Opens the point if Vestia dealt combat damage this conclusion and her
+# controller actually controls an ability. Returns the opened event (or []).
+# Only ONE point is opened per conclusion: the engine's combat model has a single
+# attacker and a single defender, so at most one of the two can be a Vestia.
+static func _fire_combat_dmg_return_own_ability(state: GameState,
+		attacker_id: String, defender_id: String,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	if db == null:
+		return []
+	# Already answering another mandatory choice — don't stack a second one.
+	if state.pending_vestia_return_player != "":
+		return []
+	var source_id := ""
+	# Source attacking → damage it dealt to the defender (hero or ally).
+	var atk_fires: bool = _card_has_flag(state, attacker_id, "on_combat_damage_return_own_ability", db)
+	var def_fires: bool = _card_has_flag(state, defender_id, "on_combat_damage_return_own_ability", db)
+	if atk_fires and _combat_dmg_landed(atk_events, defender_id) > 0:
+		source_id = attacker_id
+	# Source defending (attacked directly or protecting) → its retaliation.
+	elif def_fires and _combat_dmg_landed(def_events, attacker_id) > 0:
+		source_id = defender_id
+	if source_id == "":
+		return []
+	# Per 707.3 the source is not re-checked — she may have died to the other
+	# packet and the effect still happens — so the CONTROLLER is snapshotted off
+	# the card rather than re-read from a board position she may no longer hold.
+	var src := state.get_card(source_id)
+	if src == null:
+		return []
+	var controller: String = src.controller
+	var pool := get_vestia_return_candidates(state, db, controller)
+	if pool.is_empty():
+		return []   # nothing to choose — no point opens at all
+	state.pending_vestia_return_player = controller
+	state.pending_vestia_return_source = source_id
+	state.pending_vestia_return_ids    = pool
+	return [GameEvent.vestia_return_opened(controller, source_id, pool)]
+
+
+# Entry point for the Vestia Abiectus return decision (NOT chain-based — called
+# directly by the scene, like choose_whelp_bounce). `card_id` "" declines, which
+# is always legal ("you MAY").
+#
+# The pick is re-checked against a LIVE pool rather than against the queued ids:
+# nothing can resolve while this point is open (it hard-blocks priority), but the
+# guard keeps a direct caller from returning something it doesn't control.
+# The card goes to its OWNER's hand, not the controller's — a stolen ability
+# goes home (415.9d's convention).
+static func choose_vestia_return(state: GameState, card_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_vestia_return_player == "":
+		return []
+	var player_id := state.pending_vestia_return_player
+	state.pending_vestia_return_player = ""
+	state.pending_vestia_return_source = ""
+	state.pending_vestia_return_ids    = []
+
+	var events: Array[GameEvent] = []
+	if card_id == "":
+		return events   # declined
+	if not get_vestia_return_candidates(state, db, player_id).has(card_id):
+		return events
+	var card := state.get_card(card_id)
+	var owner: String = card.owner if card else player_id
+	events.append_array(GameLogic.move_card(state, card_id, owner + "_hand"))
+	events.append(GameEvent.vestia_return_resolved(player_id, card_id))
 	return events
 
 
@@ -11315,6 +11458,68 @@ static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 					events.append(GameEvent.upkeep_choice_opened(
 						controller, source_id, discard_n, "discard"))
 
+		# Fire Nova Totem: "At the start of your turn, destroy Fire Nova Totem. If
+		# you do, it deals AMOUNT DMG_TYPE damage to each opposing hero and ally."
+		#
+		# A one-shot FUSE, not a repeating ping: the totem spends itself to fire.
+		# Like every start-of-turn trigger it goes on the chain as a
+		# resolve_turn_start_trigger link, so the destroy happens HERE, at
+		# resolution — which gives the opponent exactly one window, every turn, to
+		# answer it before it goes off.
+		#
+		# 709.2f gates the burn on the destroy having actually been PERFORMED —
+		# Grunt Baranka's rule, and it does real work in both directions: a source
+		# already gone from the response window destroys nothing and therefore
+		# deals nothing (709.2c), and so does one whose destruction was REPLACED by
+		# a removal from the game. Bouncing or exiling it is as good an answer as
+		# killing it.
+		#
+		# The damage is dealt by the TOTEM ("IT deals"), not by the controller's
+		# hero — so it is NOT tagged from_ability (Chromatic Cloak wants a hero
+		# source) and World in Flames' fire doubling does not see it either.
+		# Infernal's end-of-turn burn is the same reading; Rain of Fire's is the
+		# hero-sourced one. Packets carry the printed dmg_type and go through
+		# defer_packets, so armor prevention opens normally in a fixed order
+		# (opposing allies first, then their hero).
+		#
+		# The board is read at RESOLUTION, so an ally that arrived in the response
+		# window is hit and one that left is not.
+		"turn_start_destroy_self_damage_opposing":
+			if not source or not state.is_in_play(source_id):
+				return events   # 709.2c — no destroy to perform, so no burn either
+			var nova_amt := int(args[0]) if args.size() > 0 else 0
+			var nova_type: String = String(args[1]).to_lower() if args.size() > 1 else ""
+			var nova_destroy := _destroy_card_trigger(state, source_id, source_id, db)
+			events.append_array(nova_destroy)
+			var nova_destroyed := false
+			for ev in nova_destroy:
+				if ev.event_type == "card_destroyed" \
+						and String(ev.payload.get("card", "")) == source_id:
+					nova_destroyed = true
+					break
+			if not nova_destroyed or nova_amt <= 0:
+				return events
+			var nova_foe := ""
+			for pid in state.players:
+				if pid != controller:
+					nova_foe = pid
+					break
+			if nova_foe == "":
+				return events
+			var nova_packets: Array = []
+			for nova_target in state.cards_in_zone(nova_foe + "_ally_row").duplicate():
+				nova_packets.append({
+					"source": source_id, "target": nova_target.instance_id,
+					"amount": nova_amt, "dmg_type": nova_type,
+				})
+			var nova_hero := state.get_hero(nova_foe)
+			if nova_hero:
+				nova_packets.append({
+					"source": source_id, "target": nova_hero.instance_id,
+					"amount": nova_amt, "dmg_type": nova_type,
+				})
+			events.append_array(defer_packets(state, db, nova_packets))
+
 		"turn_start_look_top_card":
 			var t_deck := state.zones.get(controller + "_deck") as Zone
 			if t_deck and not t_deck.card_ids.is_empty():
@@ -11329,20 +11534,50 @@ static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 	return events
 
 
+# Is the currently looked-at card allowed to be TAKEN? The one gate behind the
+# open, the AI's decision and choose_track_placement's re-check, so the three
+# can never disagree about what "you may" is being offered for.
+#
+# Only the `hand` flavour (Gift of the Elven Magi) restricts it: "If it's an
+# ABILITY card, you may reveal it and put it into your hand." The match is on
+# the parsed CardDef.card_type, so an Instant Ability qualifies (it parses to
+# `Ability`) while an Instant ALLY never does. The other two destinations are
+# unconditional — Track Humanoids and Gustaf Trueshot may bury or bin anything.
+static func track_look_take_allowed(state: GameState, db) -> bool:
+	if state.pending_track_look_player == "":
+		return false
+	if state.pending_track_look_dest != "hand":
+		return true
+	if db == null:
+		return false
+	# pending_track_look_card_id is an INSTANCE id (the card is still in the
+	# deck), so it has to be resolved to its def before the type is read.
+	var inst := state.get_card(state.pending_track_look_card_id)
+	if inst == null:
+		return false
+	var def = db.get_def(inst.card_def_id)
+	return def != null and def.card_type == "Ability"
+
+
 # Entry point: the controller has decided where the looked-at card goes.
 # `move_it` true sends it to the pending DESTINATION — the bottom of their deck
-# (Track Humanoids) or their graveyard (Gustaf Trueshot); false leaves it
-# exactly where it is (on top — the card never left the deck, so "keep" is a
-# no-op). Called directly by the scene, NOT via submit_action — like
-# choose_whelp_bounce.
+# (Track Humanoids), their graveyard (Gustaf Trueshot) or their hand (Gift of
+# the Elven Magi); false leaves it exactly where it is (on top — the card never
+# left the deck, so "keep" is a no-op). Called directly by the scene, NOT via
+# submit_action — like choose_whelp_bounce.
 #
 # The resolved event deliberately does NOT name the card: this is a "look at",
 # so the card is private information and the shared game log must not leak it
 # (the same reasoning as It's a Secret to Everybody's `private` reveal-pick).
-# Where it WENT is public in both flavours — a card arriving in a graveyard is
-# open information anyway — so only the identity is withheld.
+# Where it WENT is public in the bottom/graveyard flavours — a card arriving in
+# a graveyard is open information anyway — so only the identity is withheld.
+#
+# The `hand` flavour is the exception, and it is the printed text that makes it
+# one: "you may REVEAL it and put it into your hand". Taking the card reveals
+# it, so THAT is public and the event names it; declining leaves it private and
+# names nothing. `revealed` on the event is what the log reads.
 static func choose_track_placement(state: GameState, move_it: bool,
-		_db = null) -> Array[GameEvent]:
+		db = null) -> Array[GameEvent]:
 	if state.pending_track_look_player == "":
 		return []
 	var player_id := state.pending_track_look_player
@@ -11358,8 +11593,21 @@ static func choose_track_placement(state: GameState, move_it: bool,
 	var deck := state.zones.get(player_id + "_deck") as Zone
 	var still_on_top: bool = deck != null and not deck.card_ids.is_empty() \
 			and deck.card_ids[0] == card_id
-	if move_it and still_on_top:
-		if dest == "graveyard":
+	# Re-check the take gate as well (Gift of the Elven Magi's "if it's an
+	# ability card"): the scene only offers the button when it is legal, but a
+	# direct caller must not be able to launder a non-ability card into a hand.
+	var take_ok := true
+	if move_it and dest == "hand":
+		var taken := state.get_card(card_id)
+		var taken_def = db.get_def(taken.card_def_id) if (db != null and taken != null) else null
+		take_ok = taken_def != null and taken_def.card_type == "Ability"
+	if move_it and still_on_top and take_ok:
+		if dest == "hand":
+			# Gift of the Elven Magi. Putting a card into a hand from the DECK is
+			# not a DRAW (415.9f) — nothing says the card is drawn — so Brain
+			# Freeze's lock never stops it and it can never deck its controller.
+			events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
+		elif dest == "graveyard":
 			# Gustaf Trueshot. Putting a card into a graveyard from the DECK is
 			# not a discard and not a destruction — nothing was in play and
 			# nothing was in hand — so no on_destroyed trigger and no
@@ -11371,7 +11619,12 @@ static func choose_track_placement(state: GameState, move_it: bool,
 			# move_card appends, so re-adding it to the same zone puts it at the
 			# bottom (the Blueleaf Tubers / reveal-pick convention).
 			events.append_array(GameLogic.move_card(state, card_id, player_id + "_deck"))
-	events.append(GameEvent.track_look_resolved(player_id, move_it, dest))
+	# "You may REVEAL it and put it into your hand" — taking it is a reveal, so
+	# the identity becomes public; every other outcome stays a private look.
+	var took: bool = move_it and still_on_top and take_ok
+	events.append(GameEvent.track_look_resolved(
+			player_id, move_it and take_ok, dest,
+			card_id if (took and dest == "hand") else ""))
 	return events
 
 
@@ -11702,6 +11955,14 @@ const COMBAT_TRIGGERS := {
 	# ATTACKED DIRECTLY does not qualify. Same moment: the protect point settles
 	# the defender and _open_defend_window collects the queue immediately after.
 	"on_hero_protect_heal":                         {"moment": "defend", "scope": "board"},
+	# Maxum Ironbrew: "When Maxum Ironbrew defends, he heals 2 damage from
+	# himself." Truesilver Breastplate's heal with the recipient changed from the
+	# controller's hero to the SOURCE ITSELF, which is what makes it scope "self"
+	# - the card in the defending role IS the card carrying the power. There is no
+	# condition beyond that scope ("when he defends", full stop), so unlike Grunt
+	# Baranka and Plagueborn Meatwall an attacking HERO triggers it too, and it is
+	# deliberately absent from _combat_trigger_watches.
+	"on_defend_heal_self":                          {"moment": "defend", "scope": "self"},
 }
 
 
@@ -12036,6 +12297,27 @@ static func _resolve_combat_trigger(state: GameState, action: PendingAction,
 					and state.is_in_play(sd_ps.hero_instance_id):
 				events.append_array(GameLogic.heal(
 					state, sd_ps.hero_instance_id, sd_amount, db, source_id))
+		# Maxum Ironbrew: "When Maxum Ironbrew defends, he heals 2 damage from
+		# himself." Truesilver's heal aimed at the SOURCE instead of at the hero, so
+		# the two differ only in who is healed - and that is what makes 707.3 bite
+		# the other way here. Truesilver re-reads the hero from PlayerState precisely
+		# BECAUSE its source may be gone; this card's source IS the recipient, so a
+		# Maxum killed in the response window has nothing left to heal and the link
+		# resolves into nothing (709.2c - as much as possible happens).
+		#
+		# The timing is the card's real limit, and it is inherited whole: the link
+		# resolves INSIDE the defend window, and per 602.3 the combat concludes only
+		# as that window CLOSES, so the heal lands strictly BEFORE combat damage
+		# (603.1). It is therefore capped by damage he was ALREADY carrying and can
+		# never soak the hit he is about to take - an undamaged Maxum heals nothing.
+		# An undamaged recipient is a legal no-op (GameLogic.heal emits nothing) and
+		# a "can't be healed" lock (Mortal Strike) empties it, heal being the one
+		# choke point every heal in the game goes through.
+		"on_defend_heal_self":
+			var mx_amount := int(args[0]) if args.size() > 0 else 1
+			if mx_amount > 0 and state.is_in_play(source_id):
+				events.append_array(GameLogic.heal(
+					state, source_id, mx_amount, db, source_id))
 
 	return events
 

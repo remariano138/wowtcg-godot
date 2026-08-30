@@ -29,6 +29,7 @@ func _ready() -> void:
 	_test_ritual_sacrifice_recipe()
 	_test_unpreventable_holy_recipes()
 	_test_resurrection_recipe()
+	_test_gift_of_the_elven_magi_recipe()
 	_test_graccus_recipe()
 	_test_hammer_of_justice_recipe()
 	_test_holy_light_recipe()
@@ -386,6 +387,41 @@ func _test_dismantle_recipe() -> void:
 	var blow := db.get_def("azeroth_168") as CardDef
 	_check(blow != null and StackResolver.destroy_target_kind(blow) == "equipment",
 		"...sharing Shattering Blow's pool exactly")
+
+
+func _test_gift_of_the_elven_magi_recipe() -> void:
+	var db := _make_db()
+	var gift := db.get_def("azeroth_322") as CardDef
+	_check(gift != null, "azeroth_322 (Gift of the Elven Magi) resolves in the database")
+	if gift == null:
+		return
+	var segs := Array(gift.effects.split("|"))
+	_check(gift.card_type == "Equipment", "Gift of the Elven Magi is Equipment (304)")
+	_check(gift.cost == 1, "…costing 1")
+	_check(gift.printed_atk == 1, "…with 1 printed ATK")
+	_check(segs.has("strike_cost:4"), "…and a strike cost of 4, so it IS a weapon (303)")
+	# 1 ATK / strike 4 is the worst weapon in the pool: the AI must never strike
+	# with it, which is the whole job of the power_weapon flag.
+	_check(segs.has("power_weapon"),
+		"…flagged power_weapon so the AI uses the power and never the strike")
+	# The power is the card, and every field below fails SILENTLY if mistyped —
+	# which is why it is pinned against the real CSV rather than against a MockDB.
+	var ap := StackResolver._ally_activated_power(gift)
+	_check(not ap.is_empty(), "…and it carries an activated power")
+	if ap.is_empty():
+		return
+	_check(ap.get("effect", "") == "look_top_card_to_hand",
+		"…whose effect is look_top_card_to_hand")
+	_check(int(ap.get("resource_cost", -1)) == 2, "…costing (2)")
+	_check(StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "exhaust_hero"),
+		"…plus the 'Exhaust your hero' extra cost")
+	# Whether the power costs a hero exhaust and whether its printed cost carries
+	# the [Activate] tap symbol are INDEPENDENT axes; this card prints both, so
+	# no_activate must be absent or the weapon would stop exhausting itself.
+	_check(not StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "no_activate"),
+		"…and KEEPS its [Activate] tap symbol, so it is once per ready")
+	_check(ap.get("targets", "") == "",
+		"…announcing no target — which card is looked at is a resolution read (709.2b)")
 
 
 func _test_graccus_recipe() -> void:

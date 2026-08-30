@@ -216,10 +216,14 @@ static func track_look_opened(player_id: String, card_id: String,
 		dest: String = "bottom") -> GameEvent:
 	return make("track_look_opened", {"player": player_id, "card": card_id, "dest": dest})
 
+# `revealed` is the card id ONLY when the printed text made taking it a reveal
+# (Gift of the Elven Magi's "you may reveal it and put it into your hand"), and
+# is "" for every private look — the shared game log keys off it, so a look that
+# was never revealed cannot leak. See choose_track_placement.
 static func track_look_resolved(player_id: String, moved: bool,
-		dest: String = "bottom") -> GameEvent:
+		dest: String = "bottom", revealed: String = "") -> GameEvent:
 	return make("track_look_resolved", {"player": player_id, "to_bottom": moved,
-		"moved": moved, "dest": dest})
+		"moved": moved, "dest": dest, "revealed": revealed})
 
 # Stoneform: "Destroy any number of abilities attached to your hero." A choice
 # (not a target), so candidate_ids are the caster's own hero's current
@@ -416,6 +420,20 @@ static func whelp_bounce_opened(player_id: String, ally_id: String, cost: int) -
 
 static func whelp_bounce_resolved(player_id: String, ally_id: String) -> GameEvent:
 	return make("whelp_bounce_resolved", {"player": player_id, "ally_id": ally_id})
+
+# Vestia Abiectus: "you may put an ability you control into its owner's hand."
+# `candidate_ids` is the pool the controller may choose from; an empty pick
+# declines. See StackResolver.choose_vestia_return.
+static func vestia_return_opened(player_id: String, source_id: String,
+		candidate_ids: Array) -> GameEvent:
+	return make("vestia_return_opened", {
+		"player":        player_id,
+		"source_id":     source_id,
+		"candidate_ids": candidate_ids,
+	})
+
+static func vestia_return_resolved(player_id: String, card_id: String) -> GameEvent:
+	return make("vestia_return_resolved", {"player": player_id, "card_id": card_id})
 
 # ── Feral Rage (azeroth_21) ───────────────────────────────────────────────────
 static func feral_rage_opened(player_id: String, cost: int) -> GameEvent:

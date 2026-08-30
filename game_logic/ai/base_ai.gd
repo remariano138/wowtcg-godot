@@ -3783,9 +3783,20 @@ func choose_quest_facedown(state: GameState, db, _player_id: String) -> String:
 # kind that payoff can actually fetch back. Anything else is a real card we would
 # be throwing away for nothing, so it stays on top.
 #
-# Overridable — a future AI with a curve/board model should replace both branches
-# outright rather than tune them.
-func choose_track_placement(state: GameState, db, _player_id: String) -> bool:
+# Gift of the Elven Magi (dest "hand"): free upside — the card is an extra card
+# for no cost beyond what the power already charged — so TAKE it whenever the
+# rules allow, i.e. whenever it is an ability card. The only reason to decline is
+# a full hand, where it would be discarded at wrap-up (503.2a) for nothing.
+#
+# Overridable — a future AI with a curve/board model should replace all three
+# branches outright rather than tune them.
+func choose_track_placement(state: GameState, db, player_id: String) -> bool:
+	if state.pending_track_look_dest == "hand":
+		if not StackResolver.track_look_take_allowed(state, db):
+			return false
+		var gm_hand := state.zones.get(player_id + "_hand") as Zone
+		return gm_hand == null \
+				or gm_hand.card_ids.size() < state.get_max_hand_size(player_id, db)
 	if state.pending_track_look_dest == "graveyard":
 		var def := _card_def(state, db, state.pending_track_look_card_id)
 		return def != null and def.is_ally_card()
@@ -3849,6 +3860,23 @@ func choose_whelp_bounce(state: GameState, db, _player_id: String) -> bool:
 	# Bounce allies whose cost is at least the 2 we spend (net tempo neutral or
 	# better; the opponent must also re-pay the full cost to redeploy it).
 	return def.cost >= 2
+
+
+# Vestia Abiectus: "you may put an ability you control into its owner's hand."
+# Return "" to decline, or the instance id of one of the candidates.
+#
+# ALWAYS DECLINES, deliberately. The effect is extremely situational — bouncing
+# your own in-play ability is right only when you specifically want to REPLAY it
+# (Entangling Roots moving to a better host, an attachment about to die with its
+# host) and catastrophic otherwise (an 8-cost Circle of Life would have to be
+# re-paid in full). Distinguishing those needs a model of what the ability is
+# still doing and what you intend next turn, which this AI does not have, so a
+# plausible-looking heuristic would mostly throw away its own board.
+#
+# Overridable — an AI that gains that model should replace this outright rather
+# than bolt conditions onto it.
+func choose_vestia_return(_state: GameState, _db, _player_id: String) -> String:
+	return ""
 
 
 # Feral Rage: our hero was dealt combat damage in bear form, so we may pay (1)
@@ -4049,6 +4077,21 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 				continue
 			if state.cards_in_zone(player_id + "_deck").size() \
 					<= GRAVEYARD_RECYCLE_DECK_FLOOR:
+				continue
+		# Gift of the Elven Magi: the untargeted else-branch below would fire this
+		# every turn regardless, so gate it on the two cases where it is a PROVABLE
+		# waste - Nightbloom and Seraph's "don't tap for a choice we would only
+		# decline" reasoning. An empty deck means there is nothing to look at, and
+		# a full hand means choose_track_placement would refuse the card anyway
+		# (503.2a). Whether the top card is an ABILITY is deliberately NOT checked:
+		# that is private information the AI must not read before paying to look.
+		# The hero-exhaust tempo cost is likewise not modelled - the same call left
+		# unmade for Rod of the Ogre Magi and The Hammer of Grace.
+		if ap.get("effect", "") == "look_top_card_to_hand":
+			if state.cards_in_zone(player_id + "_deck").is_empty():
+				continue
+			var gm_hand := state.zones.get(player_id + "_hand") as Zone
+			if gm_hand and gm_hand.card_ids.size() >= state.get_max_hand_size(player_id, db):
 				continue
 		# Ramstein's Lightning Bolts: the AoE is SYMMETRIC (it hits our own hero
 		# and allies too) and destroying the item is the cost, so firing it on a

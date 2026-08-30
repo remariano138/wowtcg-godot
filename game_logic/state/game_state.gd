@@ -191,6 +191,15 @@ var pending_strike_ready_side: String = ""
 var pending_whelp_bounce_player: String = ""
 var pending_whelp_bounce_ally_id: String = ""
 var pending_whelp_bounce_cost: int = 0
+
+# Vestia Abiectus: "When Vestia Abiectus deals combat damage, you may put an
+# ability you control into its owner's hand." Opened at combat conclusion and
+# answered by StackResolver.choose_vestia_return (a direct call, NOT the chain -
+# see data/rules_deviations.md). `_ids` is the pool as it stood when the point
+# opened; the choice is re-checked against a live pool when it is answered.
+var pending_vestia_return_player: String = ""
+var pending_vestia_return_source: String = ""
+var pending_vestia_return_ids: Array = []
 # Feral Rage (azeroth_21): "Ongoing: When your hero is dealt combat damage while
 # in bear form, you may pay (1). If you do, draw a card." Opened at combat
 # conclusion like the whelp bounce and resolved via

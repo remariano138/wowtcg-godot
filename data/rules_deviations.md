@@ -483,6 +483,41 @@ drop this deviation. Enforcement site: `_resolve_use_ally_power`
 
 ---
 
+## Vestia Abiectus — the optional return is a direct-call point, not a chain link
+
+**Card:** Vestia Abiectus (`dark_portal_194`) — "When Vestia Abiectus deals
+combat damage, you may put an ability you control into its owner's hand",
+recipe flag `on_combat_damage_return_own_ability`.
+
+**Deviation:** by the rules this is a triggered effect (703/708.1) created at
+the combat conclusion, so it should be added to the chain and be respondable.
+The engine instead opens a direct-call choice point
+(`pending_vestia_return_*`, `StackResolver.choose_vestia_return`) at the end of
+`_do_combat_conclusion`, alongside Green Whelp Armor's bounce and Feral Rage's
+pay offer, which hard-blocks `can_submit` / `pass_priority` until answered.
+
+**Why:** every other conclusion-point trigger (Green Whelp Armor, Feral Rage)
+already works this way, and the chain framework that exists is for the
+start-of-turn, combat-STEP (602.1/602.3) and play moments — the conclusion is
+not one of them (603.1 says "no player gets priority during combat
+conclusion"). Nothing observable is lost here: the effect is free, has no
+target (the ability is CHOSEN, so 706 never applies), and moves only a card its
+own controller already controls, so an opponent given a window could not
+usefully answer it. Enforcement site: `_fire_combat_dmg_return_own_ability` /
+`choose_vestia_return` in `game_logic/stack_resolver.gd`.
+
+**Also not modelled: the AI always declines.** `BaseAI.choose_vestia_return`
+returns "" unconditionally. Returning your own in-play ability is right only
+when you specifically intend to REPLAY it (moving Entangling Roots to a better
+host, saving an attachment whose host is about to die) and is catastrophic
+otherwise — an 8-cost Circle of Life would have to be re-paid in full.
+Separating those needs a model of what the ability is still doing and what the
+player intends next turn, which this AI does not have, so a plausible-looking
+heuristic would mostly throw away its own board. Declining is always legal
+("you may"), so the AI is simply never worse off than not having her power.
+
+---
+
 ## Attack-exhaust triggers — resolved immediately, not on the chain
 
 **Cards:** Chops (`dark_portal_32`), Voss Treebender (`azeroth_266`) — "When

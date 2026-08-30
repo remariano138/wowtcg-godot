@@ -239,6 +239,7 @@ const _LINE_COLOR_DEFAULT := Color(1.0, 0.85, 0.2, 0.85)   # golden
 const _LINE_COLOR_VALID   := Color(0.2, 1.0, 0.3, 0.9)     # green — matches card highlight
 
 func _process(_delta: float) -> void:
+	_sync_float_label_rotation()   # a handoff can flip the view mid-flight
 	if not _targeting_active:
 		return
 	var mouse := _world_mouse()
@@ -1835,25 +1836,7 @@ func _refresh_deck_label(zone_id: String) -> void:
 # ── Damage popup ───────────────────────────────────────────────────────────────
 
 func _show_heal_number(card_id: String, amount: int) -> void:
-	var origin := _number_origin(card_id)
-	if origin == Vector2.ZERO:
-		return
-	var label := Label.new()
-	label.text    = "+%d" % amount
-	label.z_index = 20
-	label.add_theme_font_size_override("font_size", 32)
-	label.add_theme_color_override("font_color", Color(0.2, 1.0, 0.35))
-	label.add_theme_constant_override("outline_size", 2)
-	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	label.global_position = origin
-	label.rotation_degrees = view_rotation_degrees   # upright + up-screen drift in either view
-	get_tree().root.add_child(label)
-	var tween := create_tween()
-	tween.tween_property(label, "global_position",
-			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), GameTiming.anim(0.9))
-	tween.parallel().tween_property(label, "modulate:a", 0.0, GameTiming.anim(0.9))
-	await tween.finished
-	label.queue_free()
+	_show_float_number(card_id, "+%d" % amount, Color(0.2, 1.0, 0.35))
 
 
 func _number_origin(card_id: String) -> Vector2:
@@ -1870,23 +1853,61 @@ func _number_origin(card_id: String) -> Vector2:
 
 
 func _show_damage_number(card_id: String, amount: int) -> void:
+	_show_float_number(card_id, "-%d" % amount, Color(1.0, 0.2, 0.2))
+
+
+# The one floating-number overlay (damage and heal). Two things here are
+# deliberate, and both were bugs before:
+#
+# 1. THE LABEL FREES ITSELF, not via `await tween.finished`. The tween used to be
+#    bound to the RENDERER while the label lived under the root, so anything that
+#    killed the renderer's tweens (or any frame the coroutine failed to resume on)
+#    stranded the label on the board FOREVER. It is now bound to the label itself
+#    and frees through a tween_callback, with a SceneTreeTimer as a hard backstop —
+#    a timer lives on the tree, so it fires even if the tween dies.
+# 2. THE ROTATION IS RE-SYNCED EVERY FRAME (_process), not baked at creation.
+#    `view_rotation_degrees` is a snapshot of the camera, and a hotseat handoff
+#    flips the camera 180° mid-flight — a label created in the P2 view and still
+#    alive in the P1 view rendered upside down ("-6" reading as "9-"). Combined
+#    with (1) that produced a permanent, mirrored, phantom damage number.
+var _float_labels: Array[Label] = []
+
+func _show_float_number(card_id: String, text: String, color: Color) -> void:
 	var origin := _number_origin(card_id)
 	if origin == Vector2.ZERO:
 		return
 
 	var label := Label.new()
-	label.text     = "-%d" % amount
+	label.text     = text
 	label.z_index  = 20
 	label.add_theme_font_size_override("font_size", 32)
-	label.add_theme_color_override("font_color", Color(1.0, 0.2, 0.2))
+	label.add_theme_color_override("font_color", color)
 	label.add_theme_constant_override("outline_size", 2)
 	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	label.global_position = origin
-	label.rotation_degrees = view_rotation_degrees   # upright + up-screen drift in either view
+	label.global_position  = origin
+	label.rotation_degrees = view_rotation_degrees   # kept in sync by _process
 	get_tree().root.add_child(label)
-	var tween := create_tween()
+	_float_labels.append(label)
+
+	var dur := GameTiming.anim(0.9)
+	var tween := label.create_tween()
 	tween.tween_property(label, "global_position",
-			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), GameTiming.anim(0.9))
-	tween.parallel().tween_property(label, "modulate:a", 0.0, GameTiming.anim(0.9))
-	await tween.finished
-	label.queue_free()
+			origin + Vector2(0, -60).rotated(deg_to_rad(view_rotation_degrees)), dur)
+	tween.parallel().tween_property(label, "modulate:a", 0.0, dur)
+	tween.chain().tween_callback(label.queue_free)
+
+	# Backstop: a tree timer outlives the node's own tween, so a killed or stalled
+	# tween can never leave the number stranded on the board.
+	get_tree().create_timer(dur + 1.0).timeout.connect(
+			func() -> void:
+				if is_instance_valid(label):
+					label.queue_free())
+
+
+func _sync_float_label_rotation() -> void:
+	for i in range(_float_labels.size() - 1, -1, -1):
+		var l := _float_labels[i]
+		if not is_instance_valid(l):
+			_float_labels.remove_at(i)
+			continue
+		l.rotation_degrees = view_rotation_degrees

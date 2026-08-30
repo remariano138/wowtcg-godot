@@ -30,12 +30,12 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 2,
+      "count": 3,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 1,
       "_card_name": "Chasing A-Me 01"
     },
     {
@@ -50,7 +50,7 @@
     },
     {
       "card_def_id": "azeroth_28",
-      "count": 2,
+      "count": 1,
       "_card_name": "Nature's Swiftness"
     },
     {
@@ -59,8 +59,13 @@
       "_card_name": "Innervate"
     },
     {
+      "card_def_id": "dark_portal_168",
+      "count": 1,
+      "_card_name": "Ilandre Moonspear"
+    },
+    {
       "card_def_id": "azeroth_19",
-      "count": 2,
+      "count": 1,
       "_card_name": "Circle of Life"
     },
     {
@@ -69,14 +74,29 @@
       "_card_name": "Primal Mending"
     },
     {
-      "card_def_id": "azeroth_180",
-      "count": 4,
-      "_card_name": "Crazy Igvand"
+      "card_def_id": "dark_portal_131",
+      "count": 1,
+      "_card_name": "Shadowmeld"
     },
     {
-      "card_def_id": "azeroth_197",
+      "card_def_id": "azeroth_173",
+      "count": 1,
+      "_card_name": "Acolyte Demia"
+    },
+    {
+      "card_def_id": "dark_portal_174",
+      "count": 4,
+      "_card_name": "Korthas Greybeard"
+    },
+    {
+      "card_def_id": "dark_portal_189",
+      "count": 4,
+      "_card_name": "Scaramanga"
+    },
+    {
+      "card_def_id": "azeroth_180",
       "count": 2,
-      "_card_name": "Latro Abiectus"
+      "_card_name": "Crazy Igvand"
     },
     {
       "card_def_id": "azeroth_24",
@@ -95,13 +115,13 @@
     },
     {
       "card_def_id": "dark_portal_194",
-      "count": 4,
+      "count": 3,
       "_card_name": "Vestia Abiectus"
     },
     {
-      "card_def_id": "azeroth_214",
-      "count": 1,
-      "_card_name": "Ryn Dreamstrider"
+      "card_def_id": "azeroth_209",
+      "count": 3,
+      "_card_name": "Moira Darkheart"
     },
     {
       "card_def_id": "azeroth_210",
@@ -109,18 +129,13 @@
       "_card_name": "Nerra Lifeboon"
     },
     {
-      "card_def_id": "dark_portal_178",
-      "count": 4,
-      "_card_name": "Lynda Steele"
-    },
-    {
-      "card_def_id": "dark_portal_173",
-      "count": 4,
-      "_card_name": "Kavai the Wanderer"
+      "card_def_id": "azeroth_196",
+      "count": 3,
+      "_card_name": "Lafiel"
     },
     {
       "card_def_id": "dark_portal_156",
-      "count": 4,
+      "count": 3,
       "_card_name": "Bretander of the Claw"
     }
   ],

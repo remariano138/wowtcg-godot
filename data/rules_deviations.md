@@ -12,102 +12,52 @@ what the rules/card text alone would allow.
 
 ---
 
-## For the Horde! (`azeroth_344`)
+## RESOLVED — For the Horde! / Rayder / Ryn Dreamstrider off-turn lockout
 
-**Printed text:** "Pay (1) to complete this quest. Reward: Horde allies in
-your party have +1 ATK while attacking this turn." No timing restriction is
-printed — quest completion is normally usable any time a player has priority
-(rule-legal, see `StackResolver._can_use_quest`).
+**Cards:** For the Horde! (`azeroth_344`), Rayder (`azeroth_45`), Ryn
+Dreamstrider (`azeroth_214`) — each grants a "+ATK **while attacking** this
+turn" bonus, and none of them prints a timing restriction.
 
-**Deviation:** restricted to the quest controller's own turn
-(`require_turn_player` effects flag, checked in
-`StackResolver._can_use_quest` via `quest_requires_turn_player`).
+**The deviation (removed):** all three carried `require_turn_player`, which made
+them **illegal** during an opponent's turn. Nothing on the printed cards says
+that; quest completion and ally activated powers are both usable at any priority
+by default. It was an engine-only lockout, justified by two costs of leaving
+them "legal but useless" off-turn:
 
-**Why:** in a duel, a player can only attack on their own turn, so the
-reward can never affect anything if completed off-turn. Letting it be
-"legal but useless" off-turn had two costs: (1) it forced players to keep
-manually checking/dismissing it every priority window instead of Turbo
-autoskip handling their pass, and (2) the AI had to needlessly evaluate a
-quest completion action every non-turn priority window with the
-`use_quest` branch of `BaseAI.get_reasonable_actions` never doing anything
-useful with it.
+1. the player had to dismiss them at every off-turn priority window instead of
+   Turbo autoskip handling the pass, and
+2. the AI would evaluate — and Rayder/Ryn would actually *exhaust themselves*
+   for — a reward that can do nothing off-turn.
 
-**Effect of the deviation:** Turbo autoskip can safely skip past this
-quest's completion window whenever it's not the controller's turn; the AI
-no longer offers/considers it off-turn either (it's simply not a legal
-action, so `get_reasonable_actions` never returns it — no special-casing needed
-in `base_ai.gd`).
+**Why it is gone.** Both costs are now paid for without lying about legality:
 
-**How to apply this pattern to future cards:** if a quest reward is
-timing-gated in a way the printed text doesn't spell out but is true by
-construction of the duel format (e.g. anything referencing "attacking",
-"defending", or "this combat"), add `require_turn_player` to its `effects`
-string and add an entry here — don't hardcode the card id in
-`stack_resolver.gd`.
+* Cost (1) is exactly what the **`mute_when` auto-mute column** does. All three
+  carry `mute_when:opponent_turn`, so they stay legal but no longer HOLD a
+  priority window open — Turbo and the hotseat ambush stop skip past them.
+* Cost (2) was already obsolete for `GenericAI`, whose `decide_action` gates
+  everything below its defensive hooks on `state.turn_player == player_id`, so
+  `get_reasonable_actions` is never reached off-turn. `FullRandomAI` had no such
+  gate and *was* still exposed; it now has the same one.
 
----
+**What genuinely changed for a human player:** these three are now legal to use
+on an opponent's turn, and doing so is a bad play — the reward does nothing (you
+can only attack on your own turn) and Rayder / Ryn still EXHAUST themselves for
+it, which is a real downside against destroy-exhausted-ally effects. That trap
+is what the deviation used to remove. It is now a legal-but-bad play like any
+other, which is the price of matching the printed cards; the auto-mute means
+neither AI nor autoskip walks into it, only a human deliberately clicking.
 
-## Rayder (`azeroth_45`)
+**Enforcement sites:** `mute_when` values in `data/cards.csv`,
+`InputRouter._mute_condition_holds` (`opponent_turn`), and the turn gate at the
+top of `FullRandomAI.decide_action`. Tests:
+`_test_off_turn_buffs_legal_but_muted` (test_scenarios) and
+`_test_mute_when_column` (test_deck_manager), which asserts the flag is NOT
+re-added — the mute would keep working and nobody would notice the regression.
 
-**Printed text:** "[activate] -> Allies in your party have +2 ATK while
-attacking this turn." No "use only on your turn" clause is printed — ally
-activated powers are normally usable on either player's turn by default
-(see the "No turn_player restriction" convention note in
-`StackResolver._can_use_ally_power`, e.g. Grimdron blocking during an
-opponent's attack/defend window).
-
-**Deviation:** restricted to Rayder's controller's own turn, via the
-existing `require_turn_player` effects segment (reused from the genuine "use
-only on your turn" printed-text convention, e.g. Acolyte Demia — see
-`StackResolver.requires_turn_player`).
-
-**Why:** the buff only affects allies "while attacking," which can only
-happen on the controller's turn in a duel — so activating it off-turn is
-always a no-op reward-wise, while still exhausting Rayder. An exhausted
-ally is a strictly worse board state against effects that punish exhausted
-characters (e.g. destroy-exhausted-ally effects), so the AI would
-sometimes activate the power off-turn for zero benefit and a real
-downside. Restricting it to the controller's turn removes that trap for
-both the AI and Turbo autoskip.
-
-**How to apply this pattern to future cards:** if an ally/equipment
-activated power's only effect is conditioned on something that's only ever
-true on the controller's turn (e.g. "while attacking"), add
-`require_turn_player` to its `effects` string and add an entry here. Note this reuses the same
-flag as genuine "use only on your turn" printed text (Acolyte Demia) —
-the effects string alone doesn't distinguish printed restriction from
-engine deviation, which is exactly why this file exists.
-
----
-
-## Ryn Dreamstrider (`azeroth_214`)
-
-**Printed text:** "[Activate] -> Target hero or ally has +2 ATK while
-attacking this turn." No "use only on your turn" clause is printed — ally
-activated powers are usable on either player's turn by default (see the
-"No turn_player restriction" convention note in
-`StackResolver._can_use_ally_power`).
-
-**Deviation:** restricted to Ryn's controller's own turn, via the existing
-`require_turn_player` effects segment — the same treatment as Rayder and For
-the Horde! above.
-
-**Why:** identical to Rayder's, with the buff pointed at a single target
-instead of the party. The bonus only applies "while attacking," and in a
-duel only the turn player can attack, so using the power off-turn can
-never do anything — it merely exhausts Ryn (worse against
-destroy-exhausted-ally effects) and forces both Turbo autoskip and the AI
-to keep evaluating a dead action in every non-turn priority window. The
-multiplayer formats where an off-turn ally could be attacking don't exist
-in this digital version.
-
-**Scope of the restriction:** the turn and nothing else. Per rule 701.1 a
-"use only on your turn" power stays instant-speed, so Ryn can be activated
-during his controller's own combat windows and in response to a link on the
-chain — which is exactly when a "+2 ATK while attacking" buff is worth
-using. (The stricter "non-combat action phase + empty chain" reading is the
-separate *Basic* restriction, 701.1a, a printed keyword no card in this pool
-carries; the engine deliberately has no flag for it.)
+**Do NOT use `require_turn_player` for this pattern any more.** It is once again
+what its name says: the printed "Use only on your turn" restriction (701.1). For
+a card that is merely POINTLESS at some times, add a `mute_when` token instead —
+see the Auto-mute section in CLAUDE.md.
 
 ---
 

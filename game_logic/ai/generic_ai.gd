@@ -143,6 +143,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var graccus := graccus_shield_action(state, db, player_id)
 	if graccus != null:
 		return graccus
+	var korthas := korthas_shield_action(state, db, player_id)
+	if korthas != null:
+		return korthas
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector

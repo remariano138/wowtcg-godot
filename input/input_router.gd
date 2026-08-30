@@ -2198,9 +2198,147 @@ const _INERT_WEAPON_BONUS_KEYS := {
 }
 
 
+# ── Auto-mute conditions (the `mute_when` CSV column) ─────────────────────────
+# A card whose condition holds is treated as MUTED by the auto-pass probes: it
+# stays fully playable and green-highlighted, it just doesn't HOLD a priority
+# window open, because playing it right then is provably pointless. Same effect
+# as an explicit mute, derived from the board instead of from the player.
+#
+# PURE UI CONVENIENCE. Nothing here changes legality — being wrong only means a
+# window is held open (or skipped) that needn't have been, never that a card
+# can't be played. That is why this lives in the router and not in the resolver.
+#
+# The column is a `+`-joined list of tokens; the card is muted when ANY holds.
+# Tokens (add new ones here AND to the Auto-mute section in CLAUDE.md):
+#
+#   end_phase
+#       Muted during any end phase. For a power whose whole effect is about the
+#       ACTION phase — Lynda Steele's "target ally must attack this turn if
+#       able" is a 600.2 pass-priority lock, and no ally can attack in the end
+#       phase, so using it there does nothing.
+#
+#   opponent_turn_pre_end_unless_discard
+#       Muted during an OPPONENT's turn before their end phase. For the
+#       reveal-and-draw quests (Zapped Giants, Kibler's Exotic Pets, Big Game
+#       Hunter): if you want the cards before the opponent acts you complete the
+#       quest on your OWN turn, and otherwise you would rather wait for their end
+#       phase, when they can no longer attack what you commit. Two exceptions are
+#       baked in, which is why the token names them:
+#         • their END phase is never muted — that is the moment you want it;
+#         • a discard heading your way un-mutes it at ANY window, because with
+#           one valuable card in hand you may want to draw first and have
+#           something else to feed the discard.
+#
+#   own_turn
+#       Muted during the controller's OWN turn. For a power whose effect can
+#       only bite on the opponent's turn — Lynda Steele again: her 600.2 lock
+#       constrains the TARGET controller's action phase, and the grant lasts
+#       only "this turn", so aimed at an opposing ally on our own turn it
+#       expires before their action phase ever arrives.
+#
+#   opponent_turn
+#       Muted during an OPPONENT's turn — the exact inverse of own_turn. For a
+#       power whose effect can only bite on the controller's own turn: a
+#       "+ATK while attacking this turn" grant (For the Horde!, Rayder, Ryn
+#       Dreamstrider) is dead off-turn, because in a duel you can only attack
+#       during your own action phase and the grant expires with the turn.
+#       These three used to carry `require_turn_player`, which made them
+#       ILLEGAL off-turn — a rules deviation, since the printed cards restrict
+#       no timing. Muting gets the same quiet windows without lying about the
+#       rules.
+#
+#   empty_hand
+#       Muted while the controller's hand is empty. For a power that only
+#       rearranges a hand — Moonshadow's "shuffle your hand into your deck, then
+#       draw that many cards" shuffles nothing and draws nothing at hand size 0.
+func _mute_condition_holds(token: String, card_id: String) -> bool:
+	match token:
+		"end_phase":
+			return state.phase == "end"
+		"opponent_turn_pre_end_unless_discard":
+			if state.turn_player == local_player:
+				return false          # our own turn — never muted
+			if state.phase == "end":
+				return false          # their end phase — the moment we want it
+			return not _discard_incoming(local_player)
+		"own_turn":
+			return state.turn_player == _mute_owner_of(card_id)
+		"opponent_turn":
+			return state.turn_player != _mute_owner_of(card_id)
+		"empty_hand":
+			var owner := _mute_owner_of(card_id)
+			return state.cards_in_zone(owner + "_hand").is_empty()
+	return false
+
+
+# The player whose situation a mute condition is about: the card's controller,
+# falling back to the local player for a card with none.
+func _mute_owner_of(card_id: String) -> String:
+	var card := state.get_card(card_id)
+	if card and card.controller != "":
+		return card.controller
+	return local_player
+
+
+# Is a discard heading for `player_id`? A deliberately CHEAP heuristic — it only
+# decides whether a priority window is held open, so a miss costs a stray Skip
+# click and a false positive costs nothing at all.
+#
+# Covers the two cases that can be seen coming: a discard already pending, and an
+# opposing link on the chain whose source carries a discard-causing segment.
+# Reads the same positional convention as BaseAI's chain scanners (field 0 for a
+# plain segment, field 1 for a mode, field 2 for an activated power).
+func _discard_incoming(player_id: String) -> bool:
+	if not state or not db:
+		return false
+	if state.pending_discard_player == player_id:
+		return true
+	for pending in state.pending_actions:
+		var pa := pending as PendingAction
+		if not pa or pa.source_player == player_id:
+			continue          # our own link — not a discard aimed at us
+		var src_id: String = str(pa.params.get("card_id", ""))
+		if src_id == "":
+			src_id = str(pa.params.get("hero_id", ""))
+		var src := state.get_card(src_id)
+		var src_def: CardDef = db.get_def(src.card_def_id) if src else null
+		if not src_def or src_def.effects == "":
+			continue
+		for entry in src_def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			var head := parts[0].strip_edges()
+			var key := head
+			if head in ["qmode", "mode"] and parts.size() > 1:
+				key = parts[1].strip_edges()
+			elif head == "activated_power" and parts.size() > 2:
+				key = parts[2].strip_edges()
+			if _DISCARD_KEYS.has(key):
+				return true
+	return false
+
+
+# Effect keys that make somebody OTHER than the source's controller discard.
+# `discard_from_hand` is deliberately absent — that is a card discarding its own
+# controller (A Donation of Wool), never an incoming threat.
+const _DISCARD_KEYS := {
+	"discard_opponent": true,          # Hypnotic Blade
+	"discard_per_damage": true,        # Mind Spike / Mind Blast / Ismantal
+	"attach_discard_controller": true, # Shadow Word: Pain
+	"mark_destroy_discard": true,      # Shadow Bolt
+}
+
+
 func _is_inert_play(card_id: String) -> bool:
 	if not state or not db:
 		return false
+	# Data-driven auto-mute (the `mute_when` column) — applies to ANY card, so it
+	# is checked before the hero-only weapon-bonus cases below.
+	var mute_card := state.get_card(card_id)
+	var mute_def: CardDef = db.get_def(mute_card.card_def_id) if mute_card else null
+	if mute_def and mute_def.mute_when != "":
+		for token in mute_def.mute_when.split("+", false):
+			if _mute_condition_holds(token.strip_edges(), card_id):
+				return true
 	var ps := state.players.get(local_player) as PlayerState
 	if not ps or ps.hero_instance_id != card_id:
 		return false
@@ -2255,7 +2393,11 @@ func has_any_legal_play(exclude_muted: bool = false) -> bool:
 	# Legal on either player's turn (rule 701.2).
 	for zone_suffix in ["_ally_row", "_hero_row"]:
 		for card in state.cards_in_zone(local_player + zone_suffix):
-			if exclude_muted and muted_ids.has(card.instance_id):
+			# _is_inert_play as well as muted_ids: this probe is BROADER than
+			# get_playable_card_ids (it skips the target check), so without it a
+			# card the loop above correctly muted would be re-admitted here.
+			if exclude_muted and (muted_ids.has(card.instance_id)
+					or _is_inert_play(card.instance_id)):
 				continue
 			# `_skip_target_check`: a targeted power (e.g. Elder Moorf) is a legal
 			# play even before a target is picked — validate everything but the

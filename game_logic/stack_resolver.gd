@@ -189,6 +189,13 @@ static func submit_action(state: GameState, action: PendingAction,
 				# hero) validated and both resolved off a single exhaust.
 				events.append_array(_pay_activate_costs(state, ap_card_id,
 					action.source_player, ap_data))
+				# Rule 707.1e: the sacrifice-style costs are part of ANNOUNCEMENT too —
+				# paid here, before the link is added (707.1f). Paying them at
+				# resolution left a source visibly in play with its own "destroy this"
+				# power on the chain, and let an opponent waste removal on a body that
+				# was already committed to dying.
+				events.append_array(_pay_sacrifice_costs(state, ap_card_id,
+					action, ap_data, db))
 		"activate_power":
 			# Pay the hero power's resource cost; mark power as used.
 			var hero_id: String = action.params.get("hero_id", "")
@@ -5800,85 +5807,19 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 		return []
 
 	var events: Array[GameEvent] = []
-	var extra_cost: String = ap.get("extra_cost", "")
-	# ATK of the ally eaten by a sacrifice_ally cost, captured as it is paid —
-	# Mezzik Darkspark's X. 0 when this power has no such cost, or when the
-	# sacrifice already left play.
-	var sac_atk := 0
-	# Resource cost, the [Activate] tap symbol, the once-per-turn mark and the
-	# "exhaust your hero" extra cost were ALL paid at submission time, on chain
-	# entry (rule 412.2 — see _pay_activate_costs in submit_action). Only the
-	# costs below are still paid here at resolution, deliberately: a sacrifice
-	# whose card is killed in response no-ops while the effect still resolves.
-	if power_has_extra_cost(extra_cost, "put_damage_self") \
-			or power_has_extra_cost(extra_cost, "activate_put_damage_self"):
-		# Rule 405.3: put (not deal) damage on the source itself (Acolyte Demia;
-		# Kena Shadowbrand). Can be exactly fatal — check destruction after paying.
-		var put_amount := power_extra_cost_arg(extra_cost, "put_damage_self",
-			power_extra_cost_arg(extra_cost, "activate_put_damage_self", 1))
-		events.append_array(GameLogic.put_damage(state, card_id, put_amount, db))
-		events.append_array(_check_destroyed_trigger(state, card_id, card_id, db))
-	elif power_has_extra_cost(extra_cost, "rfg_allies"):
-		# Augustus Corpsemonger: remove N ally cards in your graveyard from the
-		# game (rule 415.7a — owner's RFG zone). The specific cards are auto-
-		# chosen in graveyard order (see data/rules_deviations.md — the player
-		# doesn't pick which dead allies leave, only a cost is paid).
-		var rfg_n := power_extra_cost_arg(extra_cost, "rfg_allies", 0)
-		var removed := 0
-		for gy_card in state.cards_in_zone(action.source_player + "_graveyard"):
-			if removed >= rfg_n:
-				break
-			var gy_def := db.get_def(gy_card.card_def_id) as CardDef
-			# 305.3a — a Totem card in a graveyard is an ally card.
-			if is_ally_card_def(gy_def):
-				events.append_array(GameLogic.move_card(state, gy_card.instance_id, gy_card.owner + "_rfg"))
-				events.append(GameEvent.card_removed_from_game(gy_card.instance_id, action.source_player))
-				removed += 1
-	elif power_has_extra_cost(extra_cost, "put_damage_ally"):
-		# Soul Link: "Put 1 damage on an ally in your party ->". The ally IS the
-		# power's own chosen_friendly_ally pick (a CHOICE, not a target — 706
-		# does not apply), so it rides target_id like Bizzik's sacrifice.
-		# Like every sacrifice-style cost this is paid at RESOLUTION: an ally
-		# killed in response no-ops the cost and the effect still resolves.
-		# Rule 405.3 — put (not deal) damage, so it is unpreventable, it feeds
-		# no damage watchers, and it can be exactly fatal.
-		var pda_id: String = action.params.get("target_id", "")
-		var pda_amount := power_extra_cost_arg(extra_cost, "put_damage_ally", 1)
-		var pda_card := state.get_card(pda_id)
-		if _is_ally(state, pda_id) and pda_card 				and pda_card.controller == action.source_player:
-			events.append_array(GameLogic.put_damage(state, pda_id, pda_amount, db))
-			events.append_array(_check_destroyed_trigger(state, pda_id, card_id, db))
-	elif power_has_extra_cost(extra_cost, "sacrifice_ally"):
-		# Destroy a chosen ally in your party as a cost. Bizzik Sparkcog's
-		# sacrifice IS its only target, so it rides target_id (may be Bizzik
-		# himself); Gertha, The Old Crone and Besh'iah name it separately in
-		# sacrifice_id because their target_id is what the EFFECT destroys — an
-		# ally for Gertha, an ability for Besh'iah. Like
-		# sacrifice_self, the cost is paid here at resolution — if the chosen
-		# ally already left play (killed in response), the sacrifice no-ops and
-		# the effect still resolves, matching "costs are paid at announcement".
-		var sac_id: String = action.params.get("sacrifice_id",
-			action.params.get("target_id", ""))
-		if _is_ally(state, sac_id):
-			# Mezzik Darkspark: "X is the ATK of the destroyed ally." Read LIVE
-			# off the sacrifice the instant before it dies, so an ATK buff or
-			# aura on it counts and one that was answered in the response window
-			# does not. A sacrifice that already left play never gets here, and
-			# sac_atk stays 0 — the cost no-ops and the effect still resolves
-			# (for nothing), exactly as for Gertha and Besh'iah.
-			sac_atk = state.get_atk(sac_id, db)
-			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
-	elif power_has_extra_cost(extra_cost, "sacrifice_self") \
-			or power_has_extra_cost(extra_cost, "activate_sacrifice_self"):
-		# Kavai the Wanderer / Mana Agate / Staff of Dominance: destroy the
-		# source itself as a cost.
-		# The source may be an ally (Kavai) or an ongoing ability in the hero row
-		# (Mana Agate) — any in-play source works. If an opponent already
-		# destroyed it in response, the destroy no-ops and the effect still
-		# resolves — matching the printed rules, where the cost was paid at
-		# announcement.
-		if state.is_in_play(card_id):
-			events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
+	# EVERY cost of this power was paid at ANNOUNCEMENT (rule 707.1e), on chain
+	# entry: the resource cost, the [Activate] tap symbol, the once-per-turn mark
+	# and the exhaust_hero extra cost in _pay_activate_costs, and the
+	# sacrifice-style costs (sacrifice_self, sacrifice_ally, put_damage_self,
+	# put_damage_ally, rfg_allies) in _pay_sacrifice_costs. NOTHING is paid here.
+	#
+	# So the source is frequently ALREADY GONE by now — a sacrifice_self power
+	# destroyed it as it was announced. That is why this function has no
+	# is_in_play guard on the source: per 707.3 an effect exists independently of
+	# its source, so the link resolves in full either way.
+	#
+	# Mezzik Darkspark's X was captured as the sacrifice died and rides the action.
+	var sac_atk: int = int(action.params.get("_sac_atk", 0))
 	events.append(GameEvent.make("ally_power_used",
 		{"ally_id": card_id, "player": action.source_player,
 			"target_id": action.params.get("target_id", "")}))
@@ -6271,6 +6212,37 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 					"prevent_combat_damage", 1, "turns", 1))
 				events.append(GameEvent.make("damage_shield_granted", {
 					"target": pc_target, "source": card_id, "kind": "combat",
+				}))
+		"prevent_next_damage_target":
+			# Korthas Greybeard: "[Activate] -> Prevent the next 1 damage that
+			# would be dealt to target hero or ally this turn." (ERRATA — the
+			# printed card omits "this turn".) Graccus' counted shield reached
+			# from an ally activated power instead of a hero flip, which is only
+			# an ECONOMY difference: his is once per GAME for 3 points, hers is
+			# 1 point every time she readies. Everything else is inherited whole
+			# — the same `prevent_damage_amount` Buff (duration turns:1, so the
+			# end-of-turn sweep gives "this turn" for free, correct even when
+			# used on the OPPONENT's turn, which is the only turn it usually
+			# matters, and leaving play clears it), spent point by point in
+			# GameLogic.prevent branch (a4) BEFORE the armor pool, netted out of
+			# the armor prevention point by _prevention_offer, bypassed WITHOUT
+			# being consumed by unpreventable damage (717 short-circuits before
+			# every shield), and ignored entirely by a destroy effect.
+			# Either party's characters are legal ("target hero or ally", no
+			# "friendly" clause), so a human may shield the opponent's board;
+			# re-checked at resolution (706 / 4217 — a target that left play or
+			# became Untargetable fizzles the shield, and the tap is still
+			# spent). The grants STACK, one per ready.
+			var pt_target: String = action.params.get("target_id", "")
+			if _is_legal_target(state, pt_target, db) \
+					and _is_hero_or_ally(state, pt_target, db):
+				var pt_amount: int = int(ap.get("amount", 1))
+				state.get_card(pt_target).active_buffs.append(Buff.make(
+					"prevent_next_damage", card_id,
+					"prevent_damage_amount", pt_amount, "turns", 1))
+				events.append(GameEvent.make("damage_shield_granted", {
+					"target": pt_target, "source": card_id,
+					"kind": "counted", "amount": pt_amount,
 				}))
 		"prevent_next_hero_damage":
 			# Soul Link: "-> Prevent the next 1 damage that would be dealt to
@@ -10297,6 +10269,108 @@ static func _pay_activate_costs(state: GameState, card_id: String,
 	return events
 
 
+# Sacrifice-style extra costs, paid at ANNOUNCEMENT (rule 707.1e — "You must
+# then pay costs in any order", inside the announcement sequence, BEFORE 707.1f
+# adds the link to the chain). Called from submit_action right after
+# _pay_activate_costs, which handles the exhaust-style costs.
+#
+# These used to be paid at RESOLUTION, which let an opponent see a source sitting
+# in play with its own "destroy this" power already on the chain, and let them
+# waste removal on a body that was already committed to dying. Both are now
+# impossible: the source is in its owner's graveyard before anyone gets priority.
+#
+# Consequences of paying here, all of them intended:
+#   • The announcement becomes NON-RETRACTABLE (`_cost_paid_irreversibly`, the
+#     mark Sever the Cord already used) — a destroyed card can't be un-destroyed,
+#     and 707.2's rewind is about failing to finish announcing, not about a
+#     voluntary take-back.
+#   • Per 707.3 the effect exists independently of its source, so the link still
+#     resolves in full with the source in the graveyard. _resolve_use_ally_power
+#     deliberately has no is_in_play guard on the source for exactly this reason.
+#   • Mezzik Darkspark's X ("the ATK of the destroyed ally") is captured HERE, as
+#     the ally dies, and rides the action as `_sac_atk` — the ally is gone by
+#     resolution, so it cannot be read there.
+#   • Destroying the source can fire its own on_destroyed trigger (Boneshanks)
+#     during submission. That queues a choice which the priority gate drains, the
+#     same as any other destruction.
+static func _pay_sacrifice_costs(state: GameState, card_id: String,
+		action: PendingAction, ap: Dictionary, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var extra_cost: String = ap.get("extra_cost", "")
+	var paid := false
+
+	if power_has_extra_cost(extra_cost, "put_damage_self") \
+			or power_has_extra_cost(extra_cost, "activate_put_damage_self"):
+		# Rule 405.3: put (not deal) damage on the source itself (Acolyte Demia;
+		# Kena Shadowbrand). Can be exactly fatal — check destruction after paying.
+		var put_amount := power_extra_cost_arg(extra_cost, "put_damage_self",
+			power_extra_cost_arg(extra_cost, "activate_put_damage_self", 1))
+		events.append_array(GameLogic.put_damage(state, card_id, put_amount, db))
+		events.append_array(_check_destroyed_trigger(state, card_id, card_id, db))
+		paid = true
+	elif power_has_extra_cost(extra_cost, "rfg_allies"):
+		# Augustus Corpsemonger: remove N ally cards in your graveyard from the
+		# game (rule 415.7a — owner's RFG zone). The specific cards are auto-
+		# chosen in graveyard order (see data/rules_deviations.md).
+		var rfg_n := power_extra_cost_arg(extra_cost, "rfg_allies", 0)
+		var taken := 0
+		for gy_card in state.cards_in_zone(action.source_player + "_graveyard"):
+			if taken >= rfg_n:
+				break
+			if is_ally_card_def(db.get_def(gy_card.card_def_id) as CardDef if db else null):
+				events.append_array(GameLogic.move_card(
+					state, gy_card.instance_id, gy_card.owner + "_rfg"))
+				events.append(GameEvent.make("card_removed_from_game",
+					{"card": gy_card.instance_id}))
+				taken += 1
+		paid = true
+	elif power_has_extra_cost(extra_cost, "put_damage_ally"):
+		# Soul Link: put N damage on a CHOSEN ally in your party (405.3 — put,
+		# not dealt: unpreventable, invisible to damage watchers, and permitted
+		# to be exactly fatal).
+		var pda_id: String = action.params.get("target_id", "")
+		var pda_amount := power_extra_cost_arg(extra_cost, "put_damage_ally", 1)
+		if _is_ally(state, pda_id):
+			events.append_array(GameLogic.put_damage(state, pda_id, pda_amount, db))
+			events.append_array(_check_destroyed_trigger(state, pda_id, card_id, db))
+		paid = true
+	elif power_has_extra_cost(extra_cost, "sacrifice_ally"):
+		# Destroy a chosen ally in your party as a cost. Bizzik Sparkcog's
+		# sacrifice IS its only target, so it rides target_id (may be Bizzik
+		# himself); Gertha, The Old Crone and Besh'iah name it separately in
+		# sacrifice_id because their target_id is what the EFFECT destroys.
+		#
+		# Naming the sacrifice as the effect's target too is a legal announcement
+		# (707.1d picks targets before 707.1e pays costs) and simply fizzles at
+		# resolution — the same ruling Sever the Cord carries.
+		var sac_id: String = action.params.get("sacrifice_id",
+			action.params.get("target_id", ""))
+		if _is_ally(state, sac_id):
+			# Mezzik Darkspark: "X is the ATK of the destroyed ally." Read LIVE
+			# off the sacrifice the instant before it dies and stashed on the
+			# action, since resolution can no longer see it.
+			action.params["_sac_atk"] = state.get_atk(sac_id, db)
+			events.append_array(_destroy_card_trigger(state, sac_id, card_id, db))
+		paid = true
+	elif power_has_extra_cost(extra_cost, "sacrifice_self") \
+			or power_has_extra_cost(extra_cost, "activate_sacrifice_self"):
+		# Kavai the Wanderer / Confessor Mildred / Moira Darkheart / Mana Agate /
+		# Staff of Dominance: destroy the source itself as a cost. The source may
+		# be an ally or an ongoing ability / equipment in the hero row.
+		# _pay_activate_costs has already exhausted it where the printed cost
+		# carries the [Activate] symbol (activate_sacrifice_self), which is the
+		# right order: it must be READY to tap, and is then destroyed.
+		if state.is_in_play(card_id):
+			events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
+		paid = true
+
+	if paid:
+		# A destroyed permanent, exiled graveyard cards and put damage are all
+		# irreversible, so the announcement can no longer be taken back.
+		action.params["_cost_paid_irreversibly"] = true
+	return events
+
+
 # Undo _pay_activate_costs when the power is retracted off the chain. Safe to
 # ready unconditionally: submission validated that the source (and the hero, for
 # exhaust_hero) were READY, so those exhausts were ours to undo.
@@ -11484,6 +11558,24 @@ static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 		#
 		# The board is read at RESOLUTION, so an ally that arrived in the response
 		# window is hit and one that left is not.
+		# "At the start of your turn, destroy Shadowmeld." — Fire Nova Totem's
+		# self-destroy with the burn rider removed, so it is a pure EXPIRY: the
+		# card pays for its own ongoing grant by leaving play. Mandatory, free,
+		# targetless and choiceless, but still a respondable chain link like every
+		# other start-of-turn trigger (500.2 / 708.1), which is what gives the
+		# opponent their one window to act while the grant is still up.
+		#
+		# 709.2c: a source that already left play in the response window has
+		# nothing to destroy, so the link resolves into nothing — and the grant is
+		# gone either way, since every aura read is live off the board.
+		#
+		# The destroy goes through _destroy_card_trigger, so on_destroyed triggers
+		# and the ally_destroyed turn-log entry behave as for any destruction, and
+		# the card reaches its OWNER's graveyard (415.9d).
+		"turn_start_destroy_self":
+			if not source or not state.is_in_play(source_id):
+				return events   # 709.2c — nothing left to destroy
+			events.append_array(_destroy_card_trigger(state, source_id, source_id, db))
 		"turn_start_destroy_self_damage_opposing":
 			if not source or not state.is_in_play(source_id):
 				return events   # 709.2c — no destroy to perform, so no burn either

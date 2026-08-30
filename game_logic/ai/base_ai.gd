@@ -153,6 +153,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var graccus := graccus_shield_action(state, db, player_id)
 	if graccus != null:
 		return graccus
+	var korthas := korthas_shield_action(state, db, player_id)
+	if korthas != null:
+		return korthas
 	var kill_protector := destroy_protector_action(state, db, player_id)
 	if kill_protector != null:
 		return kill_protector
@@ -1941,6 +1944,78 @@ func graccus_shield_action(state: GameState, db, player_id: String) -> PendingAc
 	if StackResolver.can_submit(state, act, db):
 		return act
 	return null
+
+
+# ── Korthas Greybeard (dark_portal_174) — the small repeatable shield ───────
+# "[Activate] -> Prevent the next 1 damage that would be dealt to target hero or
+# ally this turn."
+#
+# Graccus' counted shield on a body, with the opposite economy: his flip is once
+# per GAME for 3 points, so it is spent generously; hers is 1 point every time
+# she readies, so the bar is that the point must actually CHANGE AN OUTCOME. A
+# single prevented damage almost never does — so unlike Graccus there is no
+# "drops us to the free-block floor" arm, and no unused-points generosity for a
+# body: both arms require the shield to be exactly the difference between dying
+# and surviving.
+#
+# The tap also costs us her Protector block for the turn (602.2), which is the
+# real competing use of the card; that trade is deliberately not modelled — the
+# protector decision happens later, at its own point, and by then the shield is
+# already standing on whoever needed it.
+#
+# Held out of _get_ally_power_actions entirely, and fired from any window: the
+# grant lasts the turn, and priority is LIFO, so a shield announced in response
+# to a damage link is standing when it resolves.
+func korthas_shield_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	var best_action: PendingAction = null
+	var best_score := -1
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var ap := StackResolver._ally_activated_power(def)
+		if ap.get("effect", "") != "prevent_next_damage_target":
+			continue
+		var shield: int = int(ap.get("amount", 1))
+		if shield <= 0:
+			continue
+		# Our own hero first (its loss ends the game), then our allies, most
+		# valuable first — but every candidate must clear the same bar.
+		var pool: Array[String] = []
+		var ps := state.players.get(player_id) as PlayerState
+		if ps and ps.hero_instance_id != "":
+			pool.append(ps.hero_instance_id)
+		for ally in state.cards_in_zone(player_id + "_ally_row"):
+			pool.append(ally.instance_id)
+		for tid in pool:
+			if not state.is_in_play(tid):
+				continue
+			var target := state.get_card(tid)
+			if not target:
+				continue
+			var incoming := _forecast_damage_to(state, db, player_id, tid)
+			if incoming <= 0:
+				continue
+			var hp := state.get_current_hp(tid, db) + GameLogic.granted_shield(target)
+			if incoming < hp:
+				continue                      # survives on its own
+			if incoming - shield >= hp:
+				continue                      # dies anyway — the point buys nothing
+			# The hero outranks every body; among allies, the dearest.
+			var score := 9999
+			if tid != (ps.hero_instance_id if ps else ""):
+				var t_def := db.get_def(target.card_def_id) as CardDef
+				score = t_def.cost if t_def else 0
+			if score <= best_score:
+				continue
+			var act := PendingAction.make("use_ally_power", player_id,
+				{"card_id": card.instance_id, "target_id": tid})
+			if StackResolver.can_submit(state, act, db):
+				best_score = score
+				best_action = act
+	return best_action
 
 
 # ── Helwen (azeroth_126) — the optional ready ────────────────────────────────
@@ -4571,6 +4646,14 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 						"sacrifice_id": best_sac})
 				if StackResolver.can_submit(state, mez_act, db):
 					result.append(mez_act)
+		elif ap.get("effect", "") == "prevent_next_damage_target":
+			# Korthas Greybeard: "[Activate] -> Prevent the next 1 damage that
+			# would be dealt to target hero or ally this turn." The generic
+			# hero_or_ally branch below reads a non-heal effect as DAMAGE and
+			# would point the shield at the enemy, which is exactly backwards.
+			# Held for damage actually on its way to our side; see
+			# korthas_shield_action().
+			continue
 		elif ap.get("targets", "") in ["hero_or_ally"]:
 			var is_heal: bool = ap.get("effect", "") == "heal_target"
 			var candidates: Array[String] = []

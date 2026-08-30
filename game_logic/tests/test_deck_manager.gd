@@ -29,12 +29,14 @@ func _ready() -> void:
 	_test_ritual_sacrifice_recipe()
 	_test_unpreventable_holy_recipes()
 	_test_resurrection_recipe()
+	_test_mute_when_column()
 	_test_gift_of_the_elven_magi_recipe()
 	_test_graccus_recipe()
 	_test_hammer_of_justice_recipe()
 	_test_holy_light_recipe()
 	_test_healing_wave_recipe()
 	_test_dismantle_recipe()
+	_test_shadowmeld_recipe()
 	_test_soul_link_count_power()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
@@ -387,6 +389,72 @@ func _test_dismantle_recipe() -> void:
 	var blow := db.get_def("azeroth_168") as CardDef
 	_check(blow != null and StackResolver.destroy_target_kind(blow) == "equipment",
 		"...sharing Shattering Blow's pool exactly")
+
+
+func _test_shadowmeld_recipe() -> void:
+	# Shadowmeld is almost entirely CSV — the aura half is pure data, since
+	# _hero_keyword_aura scans every segment. So a typo in either keyword is
+	# COMPLETELY silent: the card just quietly grants one thing, or nothing.
+	# Pin all four segments against the REAL database.
+	var db := _make_db()
+	var meld := db.get_def("dark_portal_131") as CardDef
+	_check(meld != null, "dark_portal_131 (Shadowmeld) resolves in the database")
+	if meld == null:
+		return
+	_check(meld.card_type == "Ability" and not meld.is_instant,
+		"Shadowmeld is a plain (sorcery-speed) Ability")
+	_check(meld.cost == 3, "Shadowmeld costs 3")
+	var segs := Array(meld.effects.split("|"))
+	_check("ongoing" in segs, "...ongoing — it stays in play in the hero row")
+	_check("hero_keyword:elusive" in segs, "...granting the hero elusive")
+	_check("hero_keyword:untargetable" in segs,
+		"...AND untargetable — the first card to carry two hero_keyword segments")
+	_check("turn_start_destroy_self" in segs,
+		"...and destroying itself at the start of your turn")
+	_check("requires_hero_race:Night Elf" in segs,
+		"...Night Elf Hero Required (100.2b, deck legality only)")
+
+
+func _test_mute_when_column() -> void:
+	var db := _make_db()
+	# The whole point of the column is that a typo does NOTHING observable — the
+	# card simply keeps holding priority windows open — so the values are pinned
+	# against the REAL database rather than a MockDB.
+	var EXPECTED := {
+		"dark_portal_178": "end_phase+own_turn",                 # Lynda Steele
+		"azeroth_361": "opponent_turn_pre_end_unless_discard",   # Zapped Giants
+		"azeroth_355": "opponent_turn_pre_end_unless_discard",   # Kibler's Exotic Pets
+		"azeroth_348": "opponent_turn_pre_end_unless_discard",   # Big Game Hunter
+		"azeroth_6":   "empty_hand",                             # Moonshadow
+		"azeroth_344": "opponent_turn",                          # For the Horde!
+		"azeroth_45":  "opponent_turn",                          # Rayder
+		"azeroth_214": "opponent_turn",                          # Ryn Dreamstrider
+	}
+	for id: String in EXPECTED:
+		var d := db.get_def(id) as CardDef
+		_check(d != null, "%s resolves in the database" % id)
+		if d == null:
+			continue
+		_check(d.mute_when == EXPECTED[id],
+			"%s (%s) carries mute_when=%s" % [id, d.card_name, EXPECTED[id]])
+	# Every token used anywhere in the database must be one the router knows —
+	# an unknown token is silently inert, which is the failure mode this catches.
+	var KNOWN := ["end_phase", "own_turn", "opponent_turn",
+		"opponent_turn_pre_end_unless_discard", "empty_hand"]
+	# The regularized three: dropping require_turn_player is the whole point of
+	# the swap, so a re-added flag must fail here rather than silently restoring
+	# the deviation (the mute would still work, and nobody would notice).
+	for id: String in ["azeroth_344", "azeroth_45", "azeroth_214"]:
+		var rd := db.get_def(id) as CardDef
+		if rd != null:
+			_check(not StackResolver.requires_turn_player(rd),
+				"%s (%s) is LEGAL off-turn as printed — no require_turn_player" % [id, rd.card_name])
+	for d: CardDef in db.get_all_defs():
+		if d.mute_when == "":
+			continue
+		for tok in d.mute_when.split("+", false):
+			_check(KNOWN.has(tok.strip_edges()),
+				"%s: mute_when token '%s' is a known condition" % [d.card_name, tok.strip_edges()])
 
 
 func _test_gift_of_the_elven_magi_recipe() -> void:

@@ -95,6 +95,9 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var graccus := graccus_shield_action(state, db, player_id)
 	if graccus != null:
 		return graccus
+	var korthas := korthas_shield_action(state, db, player_id)
+	if korthas != null:
+		return korthas
 	# Withdraw save-bounce (BaseAI) — deterministic, never left to the dice.
 	var save := save_bounce_action(state, db, player_id)
 	if save != null:
@@ -120,6 +123,23 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var use_it := use_it_or_lose_it_attack_action(state, db, player_id)
 	if use_it != null:
 		return use_it
+	# Off-turn, everything below is a blind random play out of our own hand and
+	# board — the deterministic defensive hooks above are the only things worth
+	# doing in an opponent's window. GenericAI gates the same way (see the
+	# "our own action window only" guard in its decide_action).
+	#
+	# This gate is also what lets a card whose effect only bites on its
+	# controller's turn stay LEGAL off-turn as the printed rules require: For the
+	# Horde!, Rayder and Ryn Dreamstrider used to carry `require_turn_player`
+	# purely so the AI wouldn't waste them off-turn, which was a rules deviation.
+	# They now carry `mute_when:opponent_turn` instead, and this gate is the AI
+	# half of that swap.
+	if state.turn_player != player_id:
+		_responded = false
+		# Rule 600.2 still applies: the engine refuses our pass while one of our
+		# characters must attack and is able to.
+		return forced_attack_action(state, db, player_id)
+
 	var legal := get_reasonable_actions(state, db, player_id)
 	if legal.is_empty():
 		_responded = false

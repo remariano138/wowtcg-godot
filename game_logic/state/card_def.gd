@@ -24,6 +24,16 @@ var rarity: String = ""        # "Common", "Uncommon", "Rare", "Epic"
 var keywords: Array[String] = []   # lowercase, e.g. ["protector", "ferocity"]
 var effects: String = ""       # raw recipe string from CSV effects column
 var image_path: String = ""    # relative path under res://
+# Auto-mute conditions, from the `mute_when` CSV column: a `+`-joined list of
+# named condition tokens. When ANY of them holds, the card is treated as muted
+# by the auto-pass probes (InputRouter.has_any_legal_play(true)) — it stays
+# fully playable and highlighted, it just no longer HOLDS a priority window
+# open, because playing it right then is provably pointless.
+#
+# PURE UI DATA. Nothing in game_logic reads it and it never changes legality;
+# InputRouter._mute_condition_holds is the one interpreter. See the Auto-mute
+# section in CLAUDE.md for the token list.
+var mute_when: String = ""
 # True for defs loaded from data/tokens.csv. Tokens are created by effects, are
 # never deckable (DeckManager.authorize_deck_def rejects them), and cease to
 # exist the moment they leave play (GameLogic.move_card redirects them to RFG).
@@ -68,6 +78,8 @@ static func from_csv_row(id: String, row: Dictionary) -> CardDef:
 	if kw_str != "":
 		for k in kw_str.split(","):
 			d.keywords.append(k.strip_edges().to_lower())
+
+	d.mute_when = row.get("mute_when", "").strip_edges()
 
 	return d
 

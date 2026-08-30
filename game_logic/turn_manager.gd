@@ -368,6 +368,7 @@ const YOUR_TURN_TRIGGERS := [
 	"turn_start_pay_or_destroy",        # Rain of Fire (upkeep, paid in resources)
 	"turn_start_discard_or_destroy",    # Last Stand (upkeep, paid in cards)
 	"turn_start_destroy_self_damage_opposing",  # Fire Nova Totem
+	"turn_start_destroy_self",          # Shadowmeld (plain self-destroy, no rider)
 ]
 
 

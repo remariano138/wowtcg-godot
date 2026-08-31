@@ -3961,6 +3961,12 @@ func _on_game_event(event: GameEvent) -> void:
 		"combat_cancelled":
 			_show_combat_cancelled_notice(event.payload)
 		"combat_concluded":
+			# F's auto-pass is a ONE-SHOT for the combat it was armed in. Clearing
+			# it only in _drain_passes' event scan leaked it across combats: a
+			# conclusion reached from choose_protector / choose_prevention emits
+			# outside a drain, so the flag survived and silently auto-passed every
+			# later combat window of this player's — no log line, no stop.
+			_auto_pass_combat = false
 			if _in_protect_mode:
 				_resolve_protection("")   # safety: clean up any orphaned protect UI
 			_clear_combat_highlight()
@@ -8067,6 +8073,11 @@ func _drain_passes() -> void:
 				if not (in_combat or owns_top):
 					_auto_pass_combat = false
 					break
+				if in_combat:
+					# Every other in-combat auto-pass says so in the log; this one
+					# didn't, which made a leaked flag impossible to diagnose.
+					_log_entry("[color=#667]-- F auto-passed %s --[/color]" \
+							% _describe_priority_stop_reason())
 				_mark_priority_info_seen()
 				events = StackResolver.pass_priority(_state, _db)
 			elif LAYER2_NOTHING_CHANGED_AUTOPASS and not owns_top \
@@ -8130,7 +8141,8 @@ func _drain_passes() -> void:
 		for e: GameEvent in events:
 			if e.event_type == "combat_concluded":
 				had_combat_conclusion = true
-				_auto_pass_combat = false  # one-shot per combat
+				# (the one-shot is cleared in the combat_concluded event handler,
+				# which every conclusion goes through — drained or not)
 			elif e.event_type == "card_moved" and e.payload.get("from", "") == "chain":
 				var cid: String = e.payload.get("card", "")
 				var moved_card := _state.get_card(cid)

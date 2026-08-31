@@ -7583,7 +7583,12 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 			events.append(GameEvent.game_over(
 				_other_player(state, card.controller), card.controller))
 		else:
-			events.append_array(_check_destroyed_trigger(state, cid, attacker_id, db))
+			# The killer is the OTHER combatant — the one whose packet landed on
+			# this card — not whoever initiated the combat. Passing attacker_id
+			# for both made an attacker that died to the retaliation read as
+			# "destroyed by <itself>" in the log.
+			var killer := attacker_id if cid == defender_id else defender_id
+			events.append_array(_check_destroyed_trigger(state, cid, killer, db))
 
 	# Green Whelp Armor (rule 305.2 triggered equipment power): when an attacking
 	# ally deals combat damage to the wielder's hero, the wielder MAY pay to bounce

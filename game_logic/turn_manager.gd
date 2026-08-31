@@ -370,14 +370,37 @@ const YOUR_TURN_TRIGGERS := [
 	"turn_start_destroy_self_damage_opposing",  # Fire Nova Totem
 	"turn_start_destroy_self",          # Shadowmeld (plain self-destroy, no rider)
 ]
+# Effects segments that trigger "at the start of YOUR turn" while the card is in
+# that player's GRAVEYARD — rule 703.3a: "a card's power that can trigger only
+# while that card is in a non-play zone is active only while that card is
+# revealed in that zone", an explicit exception to 703.3's face-up-in-play rule.
+# These are collected from the turn player's graveyard instead of from the board,
+# which is the ONLY difference; everything downstream (the chain link, the
+# response window, 707.3) is shared with the in-play triggers.
+#
+# Keep this list disjoint from the two above: membership is what decides which
+# ZONE a trigger's source is looked for in, both here and in the
+# still-active re-check at announcement (StackResolver._trigger_source_active).
+const GRAVEYARD_TURN_TRIGGERS := [
+	"graveyard_turn_start_pay_to_hand",  # Wisp
+]
 
 
-# Build the ordered queue of this ready step's triggered effects. Nothing fires
-# and nothing goes on the chain here — 500.2: the powers trigger as the step
-# starts, but the effects are added to the chain during PPP. Order is 708.1a:
-# the turn player's triggers first, then the opponent's; within a player, board
-# order (which stands in for "that player chooses the order" — see
-# data/rules_deviations.md "Start-of-turn trigger order").
+# Build the queue of this ready step's triggered effects. Nothing fires and
+# nothing goes on the chain here — 500.2: the powers trigger as the step starts,
+# but the effects are added to the chain during PPP.
+#
+# The queue is grouped by player in 708.1a order — the turn player's triggers
+# first, then the opponent's — because that is the order they are ADDED to the
+# chain. The chain being LIFO, the opponent's therefore RESOLVE first, which is
+# the rulebook's own Voss/Donna example. Order WITHIN a player is not decided
+# here: 708.1a gives that player the choice, and StackResolver asks him for it as
+# the triggers go on (see pending_trigger_order_player), so board order here is
+# only the order the candidates are offered in.
+#
+# Two zones are scanned per player: the board (703.3), and — for the turn player
+# only, since every key on the list is a "your turn" one — his graveyard, for
+# the powers 703.3a keeps active there (Wisp).
 static func _collect_turn_start_triggers(state: GameState, db) -> void:
 	state.pending_turn_start_triggers.clear()
 	if not db:
@@ -389,27 +412,56 @@ static func _collect_turn_start_triggers(state: GameState, db) -> void:
 	for pid in ordered_pids:
 		var is_turn_player: bool = (pid == state.turn_player)
 		for card in state.cards_in_play(pid):
-			var def := state.effective_def(card.instance_id, db)
-			if not def or def.effects == "":
-				continue
-			for entry in def.effects.split("|"):
-				var parts := entry.strip_edges().split(":")
-				var key := parts[0].strip_edges()
-				var fires := EACH_TURN_TRIGGERS.has(key) \
-					or (is_turn_player and YOUR_TURN_TRIGGERS.has(key))
-				if not fires:
-					continue
-				var args: Array = []
-				for i in range(1, parts.size()):
-					args.append(parts[i].strip_edges())
-				if not _heal_trigger_has_work(state, card, key, db):
-					continue
-				state.pending_turn_start_triggers.append({
-					"card_id":    card.instance_id,
-					"controller": card.controller,
-					"key":        key,
-					"args":       args,
-				})
+			_collect_from_card(state, card, is_turn_player, false, db)
+		# 703.3a: powers that function from the graveyard. Only the turn player's
+		# is scanned — every GRAVEYARD_TURN_TRIGGERS key is "at the start of YOUR
+		# turn" — and the def is read from the DATABASE rather than through
+		# effective_def, which answers about cards in play (700.3's blanking is a
+		# modifier on an in-play card; a card in a graveyard has no such state).
+		if is_turn_player:
+			for card in state.cards_in_zone(pid + "_graveyard"):
+				_collect_from_card(state, card, true, true, db)
+
+
+# Scan one card's effects for start-of-turn trigger segments and queue what
+# fires. `in_graveyard` selects which key list applies, so an in-play card can
+# never fire a graveyard power and vice versa.
+static func _collect_from_card(state: GameState, card: CardInstance,
+		is_turn_player: bool, in_graveyard: bool, db) -> void:
+	var def: CardDef = null
+	if in_graveyard:
+		def = db.get_def(card.card_def_id) as CardDef
+	else:
+		def = state.effective_def(card.instance_id, db)
+	if not def or def.effects == "":
+		return
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		var key := parts[0].strip_edges()
+		var fires := false
+		if in_graveyard:
+			fires = GRAVEYARD_TURN_TRIGGERS.has(key)
+		else:
+			fires = EACH_TURN_TRIGGERS.has(key) \
+				or (is_turn_player and YOUR_TURN_TRIGGERS.has(key))
+		if not fires:
+			continue
+		var args: Array = []
+		for i in range(1, parts.size()):
+			args.append(parts[i].strip_edges())
+		if not _heal_trigger_has_work(state, card, key, db):
+			continue
+		# A card in a graveyard has no controller — 401.2, it is only ever in its
+		# OWNER's graveyard (415.2), and "your turn"/"your graveyard" both mean
+		# that owner. An in-play card's controller can differ from its owner
+		# (Infernal, Helwen), so the two cases genuinely need different reads.
+		state.pending_turn_start_triggers.append({
+			"card_id":    card.instance_id,
+			"controller": card.owner if in_graveyard else card.controller,
+			"key":        key,
+			"args":       args,
+			"zone":       "graveyard" if in_graveyard else "play",
+		})
 
 
 # Pure-heal turn-start triggers are SKIPPED when nothing in their scope carries

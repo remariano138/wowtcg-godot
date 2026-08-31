@@ -521,6 +521,30 @@ static func enter_play_target_required(card_id: String, dmg_type: String, amount
 # it can go on the chain (707.1d). Mandatory choice resolved by the trigger's
 # controller via StackResolver.choose_trigger_target() — a direct call, like the
 # strike / reveal choices, NOT a chain action.
+# 708.1a: this player has two or more waiting triggered effects and chooses which
+# one goes on the chain NEXT. The chain being LIFO, the one picked first resolves
+# LAST — the UI says so rather than making the player work it out.
+static func trigger_order_required(player_id: String, card_ids: Array) -> GameEvent:
+	return make("trigger_order_required", {
+		"player": player_id, "card_ids": card_ids,
+	})
+
+
+# Wisp: the "you may pay (N)" offer opening as its trigger's link resolves.
+static func gy_return_opened(player_id: String, card_id: String,
+		cost: int) -> GameEvent:
+	return make("gy_return_opened", {
+		"player": player_id, "card_id": card_id, "cost": cost,
+	})
+
+
+static func gy_return_resolved(player_id: String, card_id: String,
+		paid: bool) -> GameEvent:
+	return make("gy_return_resolved", {
+		"player": player_id, "card_id": card_id, "paid": paid,
+	})
+
+
 static func trigger_target_required(card_id: String, player_id: String,
 		key: String, args: Array) -> GameEvent:
 	return make("trigger_target_required", {
@@ -586,6 +610,17 @@ static func card_revealed_from_deck(card_id: String, player_id: String) -> GameE
 static func card_returned_to_hand(card_id: String, source_id: String) -> GameEvent:
 	return make("card_returned_to_hand", {
 		"card_id": card_id, "source_id": source_id,
+	})
+
+# A card was removed from combat (rule 602.4) from EITHER role. `role` is
+# "attacker" or "defender". Distinct from attacker_removed_from_combat, which is
+# Blink's / Escape Artist's attacker-only sweep; this one carries the role
+# because Avanthera can leave from either side. Per 602.4 the combat step does
+# not end — the conclusion's 603.1b check simply deals no damage.
+static func card_removed_from_combat(card_id: String, source_id: String,
+		role: String) -> GameEvent:
+	return make("card_removed_from_combat", {
+		"card_id": card_id, "source_id": source_id, "role": role,
 	})
 
 static func attacker_removed_from_combat(attacker_id: String, source_id: String) -> GameEvent:

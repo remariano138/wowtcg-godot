@@ -373,6 +373,10 @@ var _in_feral_rage_mode: bool = false
 var _feral_rage_nodes: Array[Node] = []
 var _in_upkeep_mode: bool = false        # human deciding a Rain of Fire upkeep
 var _upkeep_nodes: Array[Node] = []
+var _in_gy_return_mode: bool = false     # human deciding Wisp's "you may pay (1)"
+var _gy_return_nodes: Array[Node] = []
+var _in_trigger_order_mode: bool = false # human ordering his triggers (708.1a)
+var _trigger_order_nodes: Array[Node] = []
 var _in_ready_choice_mode: bool = false
 var _ready_choice_nodes: Array[Node] = []
 var _in_track_look_mode: bool = false
@@ -2363,6 +2367,7 @@ func _refresh_ui() -> void:
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_strike_ready_mode and not _in_whelp_bounce_mode \
 			and not _in_feral_rage_mode and not _in_upkeep_mode \
+			and not _in_gy_return_mode and not _in_trigger_order_mode \
 			and not _in_ready_choice_mode \
 			and not _in_track_look_mode:
 		_router.refresh_highlights()
@@ -3647,6 +3652,11 @@ func _log_event(event: GameEvent) -> void:
 			var can_def: String = _log_card(event.payload.get("defender_id", ""))
 			_log_entry("[color=#a66][b]-- combat cancelled --[/b] (%s ⚔ %s, no damage)[/color]"
 				% [can_att, can_def])
+		"card_removed_from_combat":
+			# Avanthera. Rule 602.4 — the step plays on; 603.1b then deals no damage.
+			var rfc_card: String = _log_card(event.payload.get("card_id", ""))
+			_log_entry("[color=#a66]%s removed itself from combat (%s) — no combat damage[/color]"
+				% [rfc_card, event.payload.get("role", "")])
 		"attacker_removed_from_combat":
 			var rem_att: String = _log_card(event.payload.get("attacker_id", ""))
 			var rem_src: String = _log_card(event.payload.get("source_id", ""))
@@ -4009,6 +4019,16 @@ func _on_game_event(event: GameEvent) -> void:
 			_window_generation += 1
 			_handle_upkeep(event.payload)
 		"upkeep_paid", "upkeep_declined":
+			_refresh_ui()
+		"gy_return_opened":
+			_window_generation += 1
+			_handle_gy_return(event.payload)
+		"gy_return_resolved":
+			_refresh_ui()
+		"trigger_order_required":
+			_window_generation += 1
+			_handle_trigger_order(event.payload)
+		"trigger_order_chosen":
 			_refresh_ui()
 		"track_look_opened":
 			_window_generation += 1
@@ -7476,6 +7496,138 @@ func _resolve_upkeep(pay: bool) -> void:
 	_drain_passes()
 
 
+# ── Wisp's graveyard return (703.3a / 709.2b) ────────────────────────────────
+# "At the start of your turn, if Wisp is in your graveyard, you may pay (1). If
+# you do, put Wisp into your hand." Board-public — a graveyard is open
+# information — so any human decides inline like the upkeep, the off-screen
+# hotseat player included. Unlike the upkeep, declining costs nothing.
+func _handle_gy_return(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pay: bool = ai.choose_gy_return(_state, _db, player,
+				String(payload.get("card_id", "")),
+				int(payload.get("cost", 0))) if ai else false
+		var events := StackResolver.choose_gy_return(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_gy_return_inline(payload)
+
+
+func _show_gy_return_inline(payload: Dictionary) -> void:
+	_in_gy_return_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_cancel_btn.visible = false
+
+	var cost: int    = payload.get("cost", 0)
+	var who: String  = payload.get("player", "")
+	var card_id: String = payload.get("card_id", "")
+	var card := _state.get_card(card_id)
+	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
+	var card_name: String = def.name if def else "this card"
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var buttons: Array = [
+		{
+			"text": "Pay %d: return %s to hand" % [cost, card_name],
+			"callback": func() -> void: _resolve_gy_return(true),
+		},
+		{
+			# Naming the consequence rather than the rule: declining is free and
+			# the offer comes back, which is the whole difference from an upkeep.
+			"text": "Leave it in the graveyard",
+			"callback": func() -> void: _resolve_gy_return(false),
+		},
+	]
+	_gy_return_nodes.append(_build_choice_popup(
+		"%s%s is in your graveyard — pay %d to take it back?" % [prefix, card_name, cost],
+		Color(0.55, 0.85, 0.95), buttons, true))
+
+
+func _resolve_gy_return(pay: bool) -> void:
+	_in_gy_return_mode = false
+	for n in _gy_return_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_gy_return_nodes.clear()
+	_set_board_block(false)
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_gy_return(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
+# ── 708.1a trigger ordering ──────────────────────────────────────────────────
+# "First the turn player chooses in what order his triggered effects go on the
+# chain." Asked only when a player has TWO OR MORE waiting — one is not a
+# decision — and expressed as a repeated "which goes on NEXT", which is exactly
+# equivalent to naming a full order up front.
+#
+# THE CHAIN IS LIFO, so the trigger put on FIRST resolves LAST. The prompt says
+# that outright rather than making the player derive it, because getting it
+# backwards is the whole trap of this rule. Board-public (every source is a card
+# in play, or a card in a graveyard), so any human decides inline.
+func _handle_trigger_order(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var ids: Array = payload.get("card_ids", [])
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pick: String = ai.choose_trigger_order(_state, _db, player, ids) if ai \
+			else (String(ids[0]) if not ids.is_empty() else "")
+		var events := StackResolver.choose_trigger_order(_state, pick, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_trigger_order_inline(payload)
+
+
+func _show_trigger_order_inline(payload: Dictionary) -> void:
+	_in_trigger_order_mode = true
+	_ai_timer.stop()
+	_cancel_btn.visible = false
+
+	var who: String = payload.get("player", "")
+	var ids: Array  = payload.get("card_ids", [])
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var buttons: Array = []
+	for cid in ids:
+		var card := _state.get_card(String(cid))
+		var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
+		var nm: String = def.name if def else String(cid)
+		buttons.append({
+			"text": nm,
+			"callback": func() -> void: _resolve_trigger_order(String(cid)),
+		})
+	_trigger_order_nodes.append(_build_choice_popup(
+		"%sWhich trigger goes on the chain next? (it will resolve LAST)" % prefix,
+		Color(0.8, 0.75, 0.95), buttons, true))
+
+
+func _resolve_trigger_order(card_id: String) -> void:
+	_in_trigger_order_mode = false
+	for n in _trigger_order_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_trigger_order_nodes.clear()
+	_set_board_block(false)
+	_router.refresh_highlights()
+
+	var events := StackResolver.choose_trigger_order(_state, card_id, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
 # ── Helwen's optional ready (501.1a) ──────────────────────────────────────────
 # "You may choose not to ready Helwen during your ready step." Board-public
 # (whether a card in play is ready is open information), so any human decides
@@ -7945,6 +8097,10 @@ func _schedule_next_turn() -> void:
 		return  # wait for Helwen's optional-ready choice before advancing
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		return  # wait for Track Humanoids' top/bottom choice before advancing
+	if _state.pending_gy_return_player != "" or _in_gy_return_mode:
+		return  # wait for Wisp's pay/decline offer before advancing
+	if _state.pending_trigger_order_player != "" or _in_trigger_order_mode:
+		return  # 708.1b: nobody acts until every waiting trigger is on the chain
 	if _state.pending_upkeep_player != "" or _in_upkeep_mode:
 		return  # wait for the upkeep pay-or-destroy choice (Rain of Fire)
 	if _state.pending_weapon_ready_player != "":
@@ -8040,6 +8196,8 @@ func _drain_passes() -> void:
 				or _state.pending_whelp_bounce_player != "" \
 				or _state.pending_vestia_return_player != "" or _gy_vestia_mode \
 				or _state.pending_ready_choice_player != "" \
+				or _state.pending_gy_return_player != "" or _in_gy_return_mode \
+				or _state.pending_trigger_order_player != "" or _in_trigger_order_mode \
 				or _state.pending_upkeep_player != "" or _in_upkeep_mode \
 				or _state.pending_track_look_player != "" or _in_track_look_mode \
 				or _state.pending_weapon_ready_player != "":
@@ -8187,6 +8345,10 @@ func _maybe_turbo_pass() -> void:
 	if _state.pending_track_look_player != "" or _in_track_look_mode:
 		_wrap_up_active = false
 		return
+	if _state.pending_gy_return_player != "" or _in_gy_return_mode:
+		return  # wait for Wisp's pay/decline offer before advancing
+	if _state.pending_trigger_order_player != "" or _in_trigger_order_mode:
+		return  # 708.1b: nobody acts until every waiting trigger is on the chain
 	if _state.pending_upkeep_player != "" or _in_upkeep_mode:
 		_wrap_up_active = false
 		return

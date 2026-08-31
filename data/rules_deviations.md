@@ -90,46 +90,60 @@ queued normally, because those can matter to the responder.
 
 ---
 
-## Start-of-turn triggered effects — drained one at a time
+## RESOLVED — Start-of-turn triggered effects, drained one at a time
+
+**This was a deviation and no longer is.** The engine now follows 708.1a/708.1b
+exactly: every waiting start-of-turn trigger is added to the chain in ONE PPP,
+before anybody gets priority, and they then resolve top-down like any other
+stack of links.
 
 **Rules:** 500.2 — "when a turn, phase, or step starts, any powers or modifiers
 that trigger at the start of that turn, phase, or step trigger. Triggered
 effects are added to the chain during PPP (410.5)." 501.1a's "None of this uses
 the chain" covers the ready step's *automatic actions* (expiries, readying,
-modifier creation) — **not** the effects those actions trigger. 708.1a: if
-multiple triggered effects are waiting, the turn player chooses the order his go
-on the chain, then the next player clockwise, and they all go on in that one
-PPP, under a single priority window.
+modifier creation) — **not** the effects those actions trigger. 708.1a: the turn
+player chooses the order his go on the chain, then the next player clockwise
+stacks his on top. 708.1b: "no player gets priority until all waiting triggered
+effects have been added to the chain."
 
-**Engine:** `TurnManager._collect_turn_start_triggers` builds one ordered queue
-of every start-of-turn trigger on the board as the ready step's automatic
-actions finish (turn player's first, then the opponent's — 708.1a). Nothing
-resolves inline. `StackResolver.advance_turn_start_triggers` then drains the
-queue **one trigger at a time**: the front trigger announces its targets
-(707.1d, a direct-call choice via `choose_trigger_target`), goes on the chain as
-a `resolve_turn_start_trigger` link, and a normal priority window opens before
-it resolves. Only once the chain is empty again does the next trigger fire —
-see the queue check in `pass_priority`'s window-close branch. Every
-start-of-turn effect in the game goes through this one path: Searing Totem's
-ping, Infernal's discard-or-control, Healing Stream Totem's party heal,
-Fireball's attached burn, Spirit Bond, Tooga's self-removal, plain self-heals.
+**Engine:** `TurnManager._collect_turn_start_triggers` builds the queue grouped
+by player (turn player's first) as the ready step's automatic actions finish.
+`StackResolver.advance_turn_start_triggers` then adds *all* of them, looping
+until the queue is empty and only then opening the single priority window. It
+stops only for the announcement choices each trigger owes — the adding player's
+708.1a ordering choice (`choose_trigger_order`) and a targeted trigger's target
+(707.1d, `choose_trigger_target`) — and both of those hard-block `can_submit`
+and `pass_priority`, which is what makes the sequence uninterruptible as 708.1b
+requires.
 
-**Deviation:** paper adds *all* waiting triggers to the chain in one PPP under a
-single window; the engine gives each trigger its own announcement and its own
-window, in sequence.
+**The order is LIFO, and that is the whole point.** The turn player's triggers
+are added first, so they sit at the bottom and resolve LAST; the opponent's go
+on top and resolve FIRST. That is the rulebook's own worked example at 708.1a
+(Voss Treebender vs Donna Calister). The same inversion applies within one
+player, which is exactly why 708.1a hands him the choice: the trigger he puts on
+first resolves last. The UI says so in the prompt rather than making the player
+derive it.
 
-**Why:** with everything stacked at once, every target must be chosen before any
-of them resolves — you would pick Searing Totem's target without knowing what
-the other trigger did. Sequential draining lets each choice be made with the
-previous outcome known, which is strictly friendlier and offers *more*
-interaction points rather than fewer. It cannot make a legal line illegal: the
-501.1a/708.1a firing order (turn player first) is preserved, and each link still
-gets a real window. The one thing it changes is that a player cannot respond to
-trigger B *before* trigger A resolves — which matters only for a card that keys
-off two simultaneous triggers, of which none exist.
+**The ordering choice is a repeated "which goes on next"**, not an ordering
+widget. That is equivalent to naming a full order up front, and it means the
+point never opens for a player with only one trigger left — there is no decision
+there. Answering it is tracked by `pending_trigger_front_settled` so the point
+is not re-asked for the trigger just picked.
 
-**What is NOT deviating any more** (both were previously listed here as
-deviations and are now rules-correct):
+**What this cost, and why it is still right.** Under the old sequential drain a
+target could be chosen with the previous trigger's outcome already known; now
+every target must be chosen before any of them resolves, which is genuinely less
+friendly (you pick Searing Totem's target without knowing what the other trigger
+did). That friendliness is exactly what the rules trade away for a real chain,
+and holding two links at once is what lets a player respond to trigger B *before*
+trigger A resolves — which the old drain could not express at all.
+
+---
+
+## Start-of-turn triggered effects — notes
+
+**Rules-correct behaviour worth stating explicitly** (each was once listed
+here as a deviation):
 
 - **Infernal's trigger is respondable and its choice is made at resolution.**
   707.1 locks in only X, modes and targets at announcement; a discard is none of

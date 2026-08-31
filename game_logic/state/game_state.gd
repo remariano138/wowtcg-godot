@@ -211,6 +211,17 @@ var pending_vestia_return_ids: Array = []
 var pending_feral_rage_queue: Array[String] = []   # player ids, front-first
 var pending_feral_rage_player: String = ""         # who must decide now; "" = none
 var pending_feral_rage_cost: int = 0
+# Wisp (dark_portal_197): "At the start of your turn, if Wisp is in your
+# graveyard, you may pay (1). If you do, put Wisp into your hand." The optional
+# payment is a 709.2b RESOLUTION choice (707.1 locks in only X, modes and
+# targets), so this opens from the trigger's chain link resolving, not when it
+# fires — resources freed inside the response window can still pay it. Declining
+# costs nothing, so the offer simply comes back next turn. Resolved via
+# StackResolver.choose_gy_return() (direct call, like the whelp bounce);
+# can_submit and pass_priority hard-block while it is pending. "" = none.
+var pending_gy_return_player: String = ""
+var pending_gy_return_card_id: String = ""
+var pending_gy_return_cost: int = 0
 # Track Humanoids: "At the start of your turn, look at the top card of your deck.
 # You may put it on the bottom of your deck." Non-empty while the controller is
 # deciding. The looked-at card is NOT drawn and never leaves the deck — keeping
@@ -381,15 +392,34 @@ var pending_reveal_pick_private: bool = false
 # carries no per-card special cases — the dispatch lives in one place
 # (StackResolver._resolve_turn_start_trigger).
 #
-# They are drained ONE AT A TIME by StackResolver.advance_turn_start_triggers:
-# the front trigger announces its targets (707.1d — a direct-call choice while
-# pending_trigger_target_player is non-empty), goes on the chain as a
-# `resolve_turn_start_trigger` link, and a normal priority window opens before
-# it resolves. Only once the chain is empty again does the next trigger fire —
-# see pass_priority's window-close branch. Non-target choices are NOT made here;
-# per 709.2b they are made as the link resolves (Infernal's discard).
+# They are ALL added to the chain in ONE PPP by
+# StackResolver.advance_turn_start_triggers (708.1a/708.1b), turn player's
+# first, then the opponent's, and only then does anybody get priority. Because
+# the chain is LIFO, that means the OPPONENT's triggers resolve first, and
+# within one player the trigger he adds LAST resolves FIRST — which is why the
+# order within a player is his own CHOICE (pending_trigger_order_player below)
+# rather than board order. Each announcement may still stop for a target
+# (707.1d — a direct-call choice while pending_trigger_target_player is
+# non-empty); both of those points hard-block can_submit and pass_priority, so
+# 708.1b holds. Non-target choices are NOT made here; per 709.2b they are made
+# as the link resolves (Infernal's discard, Rain of Fire's payment, Wisp's).
 var pending_turn_start_triggers: Array = []
 var pending_trigger_target_player: String = ""  # must pick a target for triggers[0]; "" = none
+# 708.1a: "first the turn player chooses in what order his triggered effects go
+# on the chain". Non-empty while a player with TWO OR MORE waiting triggers is
+# being asked which one goes on next — the choice is expressed as a repeated
+# "pick the next one", which is exactly equivalent to ordering them up front and
+# needs no ordering widget. `_ids` is the source card ids he may pick from,
+# recomputed each time. Resolved via StackResolver.choose_trigger_order()
+# (a direct call, NOT the chain). One remaining trigger is not a decision, so
+# the point does not open for it.
+var pending_trigger_order_player: String = ""
+var pending_trigger_order_ids: Array = []
+# True once the adding player has named the trigger that goes on NEXT, so the
+# ordering point is not re-asked for the one he just picked. Cleared as each
+# trigger leaves the queue (announced or skipped), which is what makes the point
+# reopen for the trigger after it.
+var pending_trigger_front_settled: bool = false
 # WHICH queue that pending target choice belongs to: "turn_start" or "play".
 # The two share the choice point (and therefore the whole UI and AI flow), so
 # this is what tells StackResolver.choose_trigger_target which queue to pop and
@@ -665,6 +695,29 @@ func has_attachment_flag(instance_id: String, flag: String, db) -> bool:
 		var att_def: CardDef = db.get_def(att.card_def_id)
 		if att_def and _def_has_segment(att_def, flag):
 			return true
+	return false
+
+
+# True when one of this card's attachments grants `keyword` — the mirror of
+# has_attachment_flag for a segment that CARRIES an argument
+# (`attached_keyword:stealth`, Lessons in Lurking). Live, so the grant lifts the
+# instant the attachment leaves play, and read from StackResolver._has_keyword so
+# every gate that governs a keyword answers it through the one funnel.
+func attachment_grants_keyword(instance_id: String, keyword: String, db) -> bool:
+	var inst := get_card(instance_id)
+	if not inst or not db or keyword == "":
+		return false
+	for att_id in inst.attachments:
+		var att := get_card(att_id)
+		if not att or att.zone_id != "attached":
+			continue
+		var att_def: CardDef = db.get_def(att.card_def_id)
+		if not att_def:
+			continue
+		for seg in att_def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0] == "attached_keyword" and p.size() > 1 					and p[1].strip_edges() == keyword:
+				return true
 	return false
 
 

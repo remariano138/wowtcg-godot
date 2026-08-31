@@ -9,14 +9,9 @@
       "_card_name": "Dragonkin Menace"
     },
     {
-      "card_def_id": "azeroth_361",
-      "count": 2,
-      "_card_name": "Zapped Giants"
-    },
-    {
-      "card_def_id": "azeroth_355",
-      "count": 2,
-      "_card_name": "Kibler's Exotic Pets"
+      "card_def_id": "azeroth_340",
+      "count": 4,
+      "_card_name": "The Defias Brotherhood"
     },
     {
       "card_def_id": "azeroth_349",
@@ -44,9 +39,14 @@
       "_card_name": "In Dreams"
     },
     {
-      "card_def_id": "azeroth_323",
-      "count": 2,
-      "_card_name": "The Hammer of Grace"
+      "card_def_id": "azeroth_322",
+      "count": 1,
+      "_card_name": "Gift of the Elven Magi"
+    },
+    {
+      "card_def_id": "azeroth_189",
+      "count": 1,
+      "_card_name": "Kailis Truearc"
     },
     {
       "card_def_id": "azeroth_28",
@@ -89,14 +89,19 @@
       "_card_name": "Korthas Greybeard"
     },
     {
-      "card_def_id": "dark_portal_189",
+      "card_def_id": "azeroth_197",
       "count": 4,
-      "_card_name": "Scaramanga"
+      "_card_name": "Latro Abiectus"
     },
     {
       "card_def_id": "azeroth_180",
-      "count": 2,
+      "count": 4,
       "_card_name": "Crazy Igvand"
+    },
+    {
+      "card_def_id": "dark_portal_159",
+      "count": 2,
+      "_card_name": "Cerwyn"
     },
     {
       "card_def_id": "azeroth_24",
@@ -104,9 +109,9 @@
       "_card_name": "Mark of the Wild"
     },
     {
-      "card_def_id": "azeroth_20",
+      "card_def_id": "dark_portal_146",
       "count": 2,
-      "_card_name": "Entangling Roots"
+      "_card_name": "Lessons in Lurking"
     },
     {
       "card_def_id": "azeroth_27",
@@ -120,7 +125,7 @@
     },
     {
       "card_def_id": "azeroth_209",
-      "count": 3,
+      "count": 2,
       "_card_name": "Moira Darkheart"
     },
     {
@@ -130,13 +135,13 @@
     },
     {
       "card_def_id": "azeroth_196",
-      "count": 3,
+      "count": 2,
       "_card_name": "Lafiel"
     },
     {
-      "card_def_id": "dark_portal_156",
-      "count": 3,
-      "_card_name": "Bretander of the Claw"
+      "card_def_id": "azeroth_214",
+      "count": 1,
+      "_card_name": "Ryn Dreamstrider"
     }
   ],
   "recommended_ai_id": "ai_generic",

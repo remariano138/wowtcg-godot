@@ -196,7 +196,12 @@ func _ready() -> void:
 		_test_turn_start_trigger_is_respondable,
 		_test_infernal_sacrificed_in_response,
 		_test_totem_ping_survives_totem_death,
-		_test_turn_start_triggers_drain_sequentially,
+		_test_wisp_returns_itself_from_the_graveyard,
+		_test_wisp_decline_is_free_and_recurs,
+		_test_wisp_scope_and_gates,
+		_test_turn_start_triggers_all_go_on_in_one_ppp,
+		_test_turn_start_triggers_both_players_lifo,
+		_test_turn_start_triggers_both_players_multiple_each,
 		_test_infernal_decline_gives_control,
 		_test_infernal_decline_pet_uniqueness,
 		_test_infernal_end_of_turn_damage,
@@ -434,6 +439,7 @@ func _ready() -> void:
 		_test_bala_bonus_turns_on_mid_combat,
 		_test_mark_of_the_wild_attach_buff,
 		_test_primal_mending_attach_heal,
+		_test_lessons_in_lurking,
 		_test_entangling_roots_ready_lock,
 		_test_attach_fizzles_when_target_dies,
 		_test_ai_attach_target_choice,
@@ -591,6 +597,9 @@ func _ready() -> void:
 		_test_holy_shield_wards_and_reflects,
 		_test_holy_shield_scope_and_fizzle,
 		_test_ai_holy_shield,
+		_test_avanthera_removes_herself_from_combat,
+		_test_avanthera_attacking_and_repeatable,
+		_test_ai_avanthera,
 		_test_katsin_shields_combat_both_ways,
 		_test_katsin_scope_and_expiry,
 		_test_ai_katsin_saves_dying_ally,
@@ -1802,6 +1811,13 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int,
 						all_events.append_array(_headless_discard(state, ae, db))
 					elif ae.event_type == "control_discard_choice_opened":
 						all_events.append_array(_headless_control_discard(state, db))
+					elif ae.event_type == "trigger_order_required":
+						all_events.append_array(_headless_trigger_order(state, db))
+						if state.pending_trigger_target_player != "":
+							all_events.append_array(_headless_trigger_target(state, db))
+					elif ae.event_type == "gy_return_opened":
+						all_events.append_array(
+							StackResolver.choose_gy_return(state, _gy_return_pay, db))
 					elif ae.event_type == "trigger_target_required":
 						var t_ev := _headless_trigger_target(state, db)
 						all_events.append_array(t_ev)
@@ -1818,6 +1834,13 @@ func _drive_turns(state: GameState, db, p1_ai, p2_ai, max_turns: int,
 				all_events.append_array(_headless_equipment_sacrifice(state, e, db))
 			elif e.event_type == "enter_play_target_required":
 				all_events.append_array(_headless_enter_play_target(state, e, db))
+			elif e.event_type == "trigger_order_required":
+				all_events.append_array(_headless_trigger_order(state, db))
+				if state.pending_trigger_target_player != "":
+					all_events.append_array(_headless_trigger_target(state, db))
+			elif e.event_type == "gy_return_opened":
+				all_events.append_array(
+					StackResolver.choose_gy_return(state, _gy_return_pay, db))
 			elif e.event_type == "trigger_target_required":
 				var t_ev := _headless_trigger_target(state, db)
 				all_events.append_array(t_ev)
@@ -1961,8 +1984,18 @@ func _drain_turn_start_triggers(state: GameState, db) -> Array[GameEvent]:
 	var guard := 64
 	while guard > 0:
 		guard -= 1
+		# 708.1a: a player with two or more waiting triggers says which goes on
+		# the chain next. Answered in queue order unless a test overrides.
+		if state.pending_trigger_order_player != "":
+			events.append_array(_headless_trigger_order(state, db))
+			continue
 		if state.pending_trigger_target_player != "":
 			events.append_array(_headless_trigger_target(state, db))
+			continue
+		# Wisp's "you may pay (1)" offer, opened from its link's resolution.
+		if state.pending_gy_return_player != "":
+			events.append_array(
+				StackResolver.choose_gy_return(state, _gy_return_pay, db))
 			continue
 		# Only ever drive OUR links: a chain link put there by something else
 		# (a test mid-action-phase) must not be resolved by this helper.
@@ -1993,6 +2026,31 @@ func _drain_turn_start_triggers(state: GameState, db) -> Array[GameEvent]:
 # Resolves each queued totem trigger. If _totem_target_pref is set and legal it
 # is used; otherwise the acting player's opposing hero is targeted.
 var _totem_target_pref: String = ""
+
+# Whether the headless Wisp offer pays. Tests that care set it either way.
+var _gy_return_pay := true
+# Source card id the headless 708.1a ordering choice should pick NEXT (i.e. the
+# one that resolves LAST). "" = take the queue's own order.
+var _trigger_order_pref := ""
+
+
+func _headless_trigger_order(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var guard := 16
+	while state.pending_trigger_order_player != "" and guard > 0:
+		guard -= 1
+		var ids: Array = state.pending_trigger_order_ids
+		if ids.is_empty():
+			break
+		var pick: String = _trigger_order_pref \
+			if _trigger_order_pref != "" and ids.has(_trigger_order_pref) \
+			else String(ids[0])
+		var sub := StackResolver.choose_trigger_order(state, pick, db)
+		if sub.is_empty():
+			break
+		events.append_array(sub)
+	return events
+
 
 func _headless_trigger_target(state: GameState, db) -> Array[GameEvent]:
 	var events: Array[GameEvent] = []
@@ -5637,6 +5695,95 @@ func _test_magni_dwarf_protector_aura() -> void:
 	var after := StackResolver.get_legal_protectors(state, "theirs", "elf", db)
 	ok(not ("ours" in after), "mag-g: the grant lifts when Magni leaves play")
 	ok(not ("p1_hero" in after), "mag-g2: …for the hero as well")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lessons in Lurking (dark_portal_146): "Attach to target ally. Ongoing:
+# Attached ally has stealth."
+#
+# The engine's first KEYWORD-granting attachment. Every other grant lives on the
+# card (a Buff), on a card in a row (the auras) or on a form; this one lives on
+# the HOST's attachment list and is read live inside the one `_has_keyword`
+# funnel — so stealth's own gate (602.2a, in get_legal_protectors) answers it
+# with no combat code, and the grant lifts the instant the attachment leaves
+# play, which killing the host does for free (400.5).
+# ══════════════════════════════════════════════════════════════════════════════
+func _test_lessons_in_lurking() -> void:
+	_buf.append("
+-- Lessons in Lurking: attached ally has stealth --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("rogue_def", 3, 2, [], 2)
+	db.ally("wall_def", 1, 5, ["protector"], 3)
+	db.ability("dark_portal_146", 2,
+		"ongoing|attach:ally|attached_keyword:stealth")
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	var rogue := _add_ally(st, "rogue", "rogue_def", "p1")
+	rogue.just_summoned = false
+	_add_ally(st, "wall", "wall_def", "p2")
+	_add_card_to_hand(st, "lil", "dark_portal_146", "p1")
+	_add_resources(st, "p1", 2)
+
+	# Before: their Protector can step in front of our attacker.
+	ok("wall" in StackResolver.get_legal_protectors(st, "rogue", "p2_hero", db),
+		"lil-a: without the attachment their Protector may protect")
+
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "lil", "target_id": "rogue"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+
+	var lil := st.get_card("lil")
+	eq(lil.zone_id, "attached", "lil-b: the attachment is in the attached zone")
+	eq(lil.attached_to, "rogue", "lil-c: its host is our rogue")
+	ok(StackResolver._has_keyword(rogue, "stealth", db, st),
+		"lil-d: the host has stealth")
+
+	# 602.2a: while a stealth character is attacking, characters can't protect.
+	ok(StackResolver.get_legal_protectors(st, "rogue", "p2_hero", db).is_empty(),
+		"lil-e: nothing may protect against the stealthed attacker")
+
+	# Scope: the grant is the HOST's alone — not our other cards, not theirs.
+	var other := _add_ally(st, "other", "rogue_def", "p1")
+	ok(not StackResolver._has_keyword(other, "stealth", db, st),
+		"lil-f: our other ally gains nothing — it is not an aura")
+
+	# Live: it lifts the moment the attachment leaves play (400.5 via the host).
+	GameLogic.destroy_card(st, "rogue", "")
+	eq(lil.zone_id, "p1_graveyard", "lil-g: the attachment follows its host out")
+	var rogue2 := _add_ally(st, "rogue2", "rogue_def", "p1")
+	rogue2.just_summoned = false
+	ok(not StackResolver._has_keyword(rogue2, "stealth", db, st),
+		"lil-h: no lingering grant once the attachment is gone")
+
+	# -- "Target ally" is either party's, so a human may stealth an opposing
+	#    ally; the AI must never do it. --
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	var theirs := _add_ally(st2, "theirs", "rogue_def", "p2")
+	_add_card_to_hand(st2, "lil2", "dark_portal_146", "p1")
+	_add_resources(st2, "p1", 2)
+	ok(StackResolver.can_submit(st2, PendingAction.make("play_ability", "p1",
+			{"card_id": "lil2", "target_id": "theirs"}), db),
+		"lil-i: an OPPOSING ally is a legal attach target, as printed")
+
+	var ai := BaseAI.new()
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	st3.players["p1"].resource_placed_this_turn = true
+	_add_resources(st3, "p1", 2)
+	_add_card_to_hand(st3, "lil3", "dark_portal_146", "p1")
+	db.ally("small_def", 1, 2, [], 2)
+	_add_ally(st3, "small", "small_def", "p1")
+	_add_ally(st3, "big", "rogue_def", "p1")
+	_add_ally(st3, "enemy", "rogue_def", "p2")
+	var picks: Array = []
+	for a in ai.get_reasonable_actions(st3, db, "p1"):
+		if (a as PendingAction).params.get("card_id", "") == "lil3":
+			picks.append((a as PendingAction).params.get("target_id", ""))
+	eq(picks.size(), 1, "lil-j: AI generates exactly one attach")
+	eq(str(picks[0] if not picks.is_empty() else ""), "big",
+		"lil-k: AI stealths its OWN highest-ATK ally, never the enemy's")
 
 
 func _test_are_we_there_yeti() -> void:
@@ -11943,9 +12090,133 @@ func _test_totem_ping_survives_totem_death() -> void:
 	eq(victim.damage_taken, 1, "sc39f-c: the ping still landed after its source died")
 
 
-func _test_turn_start_triggers_drain_sequentially() -> void:
+# ══════════════════════════════════════════════════════════════════════════════
+# SCENARIO — Wisp (dark_portal_197): "At the start of your turn, if Wisp is in
+# your graveyard, you may pay (1). If you do, put Wisp into your hand."
+# The engine's first power that functions from a GRAVEYARD (rule 703.3a).
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _wisp_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("wisp_def", 0, 1, [], 1, "graveyard_turn_start_pay_to_hand:1")
+	return db
+
+
+func _put_in_graveyard(state: GameState, inst_id: String, def_id: String,
+		owner: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, owner, owner + "_graveyard")
+	card.owner = owner
+	state.cards[inst_id] = card
+	state.zones[owner + "_graveyard"].card_ids.append(inst_id)
+	return card
+
+
+func _test_wisp_returns_itself_from_the_graveyard() -> void:
+	_buf.append("\n-- Wisp: pay (1) at the start of your turn to return it from the graveyard --")
+	var db := _wisp_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_put_in_graveyard(state, "wisp", "wisp_def", "p1")
+	_add_resources(state, "p1", 3)
+
+	state.phase       = "end"
+	state.turn_player = "p2"
+	var ev := TurnManager.advance_phase(state, db)   # → p1's ready step
+
+	# 703.3a: the power is active in the graveyard, so the trigger is queued and
+	# announced onto the chain like any in-play one.
+	eq(state.pending_actions.size(), 1, "wisp-a: the graveyard trigger is on the chain")
+	eq(state.pending_actions[0].source_player, "p1", "wisp-b: it belongs to the owner")
+	ok(state.pending_gy_return_player == "",
+		"wisp-c: the payment is NOT offered at announcement (709.2b)")
+
+	# The offer opens only as the LINK RESOLVES.
+	_drain_turn_start_triggers(state, db)
+	eq(state.get_card("wisp").zone_id, "p1_hand", "wisp-d: paying returned Wisp to hand")
+	eq(state.get_available_resources("p1"), 2, "wisp-e: and cost 1 resource")
+	ok(ev != null, "wisp-f: ready step ran")
+
+
+func _test_wisp_decline_is_free_and_recurs() -> void:
+	_buf.append("\n-- Wisp: declining costs nothing and the offer returns next turn --")
+	var db := _wisp_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_put_in_graveyard(state, "wisp", "wisp_def", "p1")
+	_add_resources(state, "p1", 3)
+
+	_gy_return_pay = false
+	state.phase       = "end"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)
+	_drain_turn_start_triggers(state, db)
+	eq(state.get_card("wisp").zone_id, "p1_graveyard",
+		"wisp-g: declining leaves Wisp in the graveyard")
+	eq(state.get_available_resources("p1"), 3, "wisp-h: and costs nothing")
+
+	# Unlike an upkeep, nothing was lost — so it asks again on the next turn.
+	_gy_return_pay = true
+	state.phase       = "end"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)
+	eq(state.pending_actions.size(), 1, "wisp-i: the trigger fires again next turn")
+	_drain_turn_start_triggers(state, db)
+	eq(state.get_card("wisp").zone_id, "p1_hand", "wisp-j: and can be paid for then")
+
+
+func _test_wisp_scope_and_gates() -> void:
+	_buf.append("\n-- Wisp: zone, turn and affordability gates --")
+	var db := _wisp_db()
+
+	# (a) It is the OWNER's turn that matters — nothing fires on the opponent's.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_put_in_graveyard(state, "wisp", "wisp_def", "p1")
+	_add_resources(state, "p1", 3)
+	state.phase       = "end"
+	state.turn_player = "p1"
+	TurnManager.advance_phase(state, db)   # → p2's ready step
+	eq(state.pending_actions.size(), 0, "wisp-k: p1's Wisp does not fire on p2's turn")
+
+	# (b) Unaffordable opens no point at all (Feral Rage's rule) — and the card
+	# is NOT lost for failing to pay, unlike an upkeep.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_put_in_graveyard(s2, "wisp", "wisp_def", "p1")
+	s2.phase       = "end"
+	s2.turn_player = "p2"
+	TurnManager.advance_phase(s2, db)
+	_drain_turn_start_triggers(s2, db)
+	eq(s2.pending_gy_return_player, "", "wisp-l: no offer with 0 resources")
+	eq(s2.get_card("wisp").zone_id, "p1_graveyard", "wisp-m: and the Wisp survives")
+
+	# (c) 709.2c — a Wisp exiled in the response window has nothing to return, so
+	# the link resolves and only as much as possible happens (nothing), with the
+	# resources unspent.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_put_in_graveyard(s3, "wisp", "wisp_def", "p1")
+	_add_resources(s3, "p1", 3)
+	s3.phase       = "end"
+	s3.turn_player = "p2"
+	TurnManager.advance_phase(s3, db)
+	eq(s3.pending_actions.size(), 1, "wisp-n: link announced")
+	GameLogic.move_card(s3, "wisp", "p1_rfg")
+	_drain_turn_start_triggers(s3, db)
+	eq(s3.pending_gy_return_player, "", "wisp-o: no offer for a Wisp that left the graveyard")
+	eq(s3.get_available_resources("p1"), 3, "wisp-p: nothing was paid")
+
+	# (d) A Wisp in play is NOT a graveyard trigger — the zone recorded when it
+	# was collected is what decides, so the two lists can never cross.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(s4, "wisp_play", "wisp_def", "p1")
+	_add_resources(s4, "p1", 3)
+	s4.phase       = "end"
+	s4.turn_player = "p2"
+	TurnManager.advance_phase(s4, db)
+	eq(s4.pending_actions.size(), 0, "wisp-q: an in-play Wisp queues nothing")
+
+
+func _test_turn_start_triggers_all_go_on_in_one_ppp() -> void:
 	_buf.append("
--- Scenario 39g: multiple start-of-turn triggers drain one window at a time --")
+-- Scenario 39g: every start-of-turn trigger goes on the chain in ONE PPP (708.1a/b) --")
 	var db := MockDB.new()
 	db.hero("p1_hero", 30)
 	db.hero("p2_hero", 30)
@@ -11960,13 +12231,122 @@ func _test_turn_start_triggers_drain_sequentially() -> void:
 	state.phase       = "end"
 	state.turn_player = "p2"
 	TurnManager.advance_phase(state, db)
-	eq(state.pending_actions.size(), 1, "sc39g-a: only the FIRST trigger is on the chain")
-	eq(state.pending_turn_start_triggers.size(), 1, "sc39g-b: the second is still queued")
+
+	# 708.1a: p1 owns BOTH triggers, so he is asked which goes on next — and
+	# nothing is on the chain and nobody has priority until he answers (708.1b).
+	eq(state.pending_trigger_order_player, "p1",
+		"sc39g-a: p1 orders his two waiting triggers")
+	eq(state.pending_actions.size(), 0, "sc39g-b: nothing on the chain yet")
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"sc39g-c: 708.1b — passing is blocked mid-announcement")
+
+	# Answering the ordering point adds BOTH links in the same PPP: the second
+	# is not a decision, so no further choice opens.
+	StackResolver.choose_trigger_order(state, "stream_b", db)
+	eq(state.pending_actions.size(), 2, "sc39g-d: both links are on the chain at once")
+	eq(state.pending_turn_start_triggers.size(), 0, "sc39g-e: queue drained")
+	eq(state.pending_trigger_order_player, "", "sc39g-f: no further ordering choice")
+
+	# LIFO: the one picked FIRST was added first, so it sits at the bottom and
+	# resolves LAST.
+	eq(state.pending_actions[0].params.get("card_id", ""), "stream_b",
+		"sc39g-g: the trigger picked first is at the BOTTOM of the chain")
+	eq(state.pending_actions[1].params.get("card_id", ""), "stream_a",
+		"sc39g-h: the one picked second is on top and resolves first")
 
 	_drain_turn_start_triggers(state, db)
-	eq(state.pending_turn_start_triggers.size(), 0, "sc39g-c: queue drained")
-	eq(mine.damage_taken, 1, "sc39g-d: both heals resolved (3 - 1 - 1)")
-	eq(state.phase, "ready", "sc39g-e: the ready step did NOT advance while triggers remained")
+	eq(mine.damage_taken, 1, "sc39g-i: both heals resolved (3 - 1 - 1)")
+	eq(state.phase, "ready", "sc39g-j: the ready step did NOT advance while links remained")
+
+
+func _test_turn_start_triggers_both_players_lifo() -> void:
+	_buf.append("
+-- Scenario 39h: both players' start-of-turn triggers — 708.1a ordering, LIFO resolution --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	# "At the start of EACH turn" heals, so both players' totems fire on p1's turn.
+	db.totem("stream_def", 1, "ongoing|totem:water|heal_party_each_turn:1")
+	db.ally("grunt_def", 2, 4, [], 2)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "mine_stream", "stream_def", "p1")
+	_add_ally(state, "theirs_stream", "stream_def", "p2")
+	var mine  := _add_ally(state, "mine",  "grunt_def", "p1")
+	var yours := _add_ally(state, "yours", "grunt_def", "p2")
+	mine.damage_taken  = 2
+	yours.damage_taken = 2
+
+	state.phase       = "end"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)   # → p1's turn
+
+	# One trigger each, so neither player is asked to order anything — both links
+	# go on in the same PPP, turn player's FIRST (708.1a).
+	eq(state.pending_trigger_order_player, "", "sc39h-a: no ordering choice with one each")
+	eq(state.pending_actions.size(), 2, "sc39h-b: both players' triggers are on the chain")
+	eq(state.pending_turn_start_triggers.size(), 0, "sc39h-c: queue drained in one PPP")
+	eq(state.pending_actions[0].source_player, "p1",
+		"sc39h-d: the turn player's link was added first (bottom of the chain)")
+	eq(state.pending_actions[1].source_player, "p2",
+		"sc39h-e: the opponent's went on top — so it RESOLVES FIRST (708.1a)")
+
+	# And the window that opened is the turn player's, once, for both links.
+	eq(state.priority_player, "p1", "sc39h-f: turn player gets priority (410)")
+	eq(state.consecutive_passes, 0, "sc39h-g: a fresh window, not a resumed one")
+
+	_drain_turn_start_triggers(state, db)
+	eq(mine.damage_taken,  1, "sc39h-h: p1's party healed 1")
+	eq(yours.damage_taken, 1, "sc39h-i: p2's party healed 1")
+
+
+func _test_turn_start_triggers_both_players_multiple_each() -> void:
+	_buf.append("
+-- Scenario 39i: BOTH players hold several start-of-turn triggers in one turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.totem("stream_def", 1, "ongoing|totem:water|heal_party_each_turn:1")
+	db.ally("grunt_def", 2, 4, [], 2)
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "p1_a", "stream_def", "p1")
+	_add_ally(state, "p1_b", "stream_def", "p1")
+	_add_ally(state, "p2_a", "stream_def", "p2")
+	_add_ally(state, "p2_b", "stream_def", "p2")
+	var mine  := _add_ally(state, "mine",  "grunt_def", "p1")
+	var yours := _add_ally(state, "yours", "grunt_def", "p2")
+	mine.damage_taken  = 3
+	yours.damage_taken = 3
+
+	state.phase       = "end"
+	state.turn_player = "p2"
+	TurnManager.advance_phase(state, db)   # → p1's turn
+
+	# 708.1a: the TURN PLAYER orders his group first, and only his — p2 is not
+	# asked anything until p1's two are both on the chain.
+	eq(state.pending_trigger_order_player, "p1", "sc39i-a: turn player orders first")
+	eq(state.pending_trigger_order_ids.size(), 2, "sc39i-b: and only his own two")
+	ok(not state.pending_trigger_order_ids.has("p2_a"),
+		"sc39i-c: the opponent's triggers are not in his pool")
+	StackResolver.choose_trigger_order(state, "p1_b", db)
+
+	# p1's second is not a decision, so the point moves straight on to p2.
+	eq(state.pending_trigger_order_player, "p2", "sc39i-d: then the opponent orders his")
+	eq(state.pending_actions.size(), 2, "sc39i-e: p1's two are already on the chain")
+	StackResolver.choose_trigger_order(state, "p2_b", db)
+
+	eq(state.pending_actions.size(), 4, "sc39i-f: all four links, one PPP (708.1b)")
+	eq(state.pending_turn_start_triggers.size(), 0, "sc39i-g: queue drained")
+	# Bottom-to-top: p1's group first (p1_b then p1_a), then p2's on top.
+	var order: Array = []
+	for a in state.pending_actions:
+		order.append(a.params.get("card_id", ""))
+	eq(str(order), str(["p1_b", "p1_a", "p2_b", "p2_a"]),
+		"sc39i-h: turn player's group at the BOTTOM, each player's first pick under his second")
+	eq(state.priority_player, "p1", "sc39i-i: one window, turn player first")
+
+	_drain_turn_start_triggers(state, db)
+	eq(mine.damage_taken,  1, "sc39i-j: p1's two heals resolved (3 - 1 - 1)")
+	eq(yours.damage_taken, 1, "sc39i-k: p2's two heals resolved (3 - 1 - 1)")
 
 
 func _test_infernal_discard_keeps_control() -> void:
@@ -35660,3 +36040,169 @@ func _test_shadowmeld_expiry_is_respondable() -> void:
 		"smx-g: exiled in the window, it is not dragged to a graveyard")
 	ok(not StackResolver._has_keyword(gone.get_card("p1_hero"), "elusive", db, gone),
 		"smx-h: and the grant lifted anyway — every aura read is live")
+
+
+# ── Avanthera (dark_portal_154) ───────────────────────────────────────────────
+# "(1) -> If Avanthera is in combat, remove her from combat."
+func _avanthera_db():
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("avanthera_def", 3, 2, [], 2,
+		"activated_power:1:remove_self_from_combat:0:::no_activate")
+	db.ally("brute_def", 4, 4, [], 3)
+	return db
+
+
+func _test_avanthera_removes_herself_from_combat() -> void:
+	_buf.append("\n-- Avanthera: escapes a combat, cancelling it in BOTH directions --")
+	var db = _avanthera_db()
+
+	# av-a: she DEFENDS against a 4/4 that would kill her, and walks away.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.turn_player     = "p2"
+	st.priority_player = "p2"
+	_add_resources(st, "p1", 1)
+	var av := _add_ally(st, "av", "avanthera_def", "p1")
+	av.just_summoned = false
+	var brute := _add_ally(st, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+	st.players["p1"].resource_placed_this_turn = true
+	st.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "brute", "defender_id": "av"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # combat starts -> attack window
+
+	# 602.1/602.3b: she is an attacker/defender-to-be but NOT YET in combat, so
+	# the power is illegal here — the whole point of the defend-window gate.
+	ok(st.combat_attack_window, "av-a0: attack window open")
+	ok(not StackResolver.is_in_combat(st, "av"),
+		"av-a1: not in combat during the attack window (602.1)")
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "av"}), db), "av-a2: power illegal in the attack window")
+
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # no protectors -> defend window
+	ok(st.combat_defend_window, "av-a3: defend window open")
+	ok(StackResolver.is_in_combat(st, "av"), "av-a4: in combat now (602.3)")
+
+	StackResolver.pass_priority(st, db)   # turn player (p2) passes -> p1
+	var ev := StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "av"}), db)
+	ok(not av.is_exhausted, "av-a5: no [Activate] tap symbol — she doesn't exhaust")
+	eq(st.get_available_resources("p1"), 0, "av-a6: paid 1")
+	StackResolver.pass_priority(st, db)
+	var res := StackResolver.pass_priority(st, db)   # the power resolves
+	eq(st.combat_defender, "", "av-b: removed from combat")
+	var saw := false
+	for e in res:
+		if e.event_type == "card_removed_from_combat" \
+				and e.payload.get("card_id", "") == "av" \
+				and e.payload.get("role", "") == "defender":
+			saw = true
+	ok(saw, "av-b2: card_removed_from_combat emitted with the role")
+	ok(st.combat_defend_window,
+		"av-b3: 602.4 — the combat step does NOT end immediately")
+
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # window closes -> conclusion (603.1b)
+	ok(not st.combat_defend_window, "av-c: combat concluded")
+	eq(st.get_card("av").damage_taken, 0, "av-c2: she took no damage")
+	eq(st.get_card("brute").damage_taken, 0,
+		"av-c3: and dealt none either — 603.1b cancels BOTH packets")
+	ok(st.get_card("brute").is_exhausted,
+		"av-c4: the attacker stays exhausted and doesn't ready (602.1/603.1b)")
+
+
+func _test_avanthera_attacking_and_repeatable() -> void:
+	_buf.append("\n-- Avanthera: works from the ATTACKING role, and is repeatable --")
+	var db = _avanthera_db()
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.turn_player     = "p1"
+	st.priority_player = "p1"
+	_add_resources(st, "p1", 2)
+	var av := _add_ally(st, "av", "avanthera_def", "p1")
+	av.just_summoned = false
+	var brute := _add_ally(st, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+	st.players["p1"].resource_placed_this_turn = true
+	st.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(st, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "av", "defender_id": "brute"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # attack window
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # defend window
+	ok(st.combat_defend_window, "av-d0: defend window open")
+	ok(av.is_exhausted, "av-d1: she exhausted to attack (602.1)")
+
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "av"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.combat_attacker, "", "av-d: the ATTACKER can leave too")
+	ok(av.is_exhausted,
+		"av-d2: still exhausted — leaving combat is not a ready effect")
+
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)   # conclusion
+	eq(st.get_card("brute").damage_taken, 0, "av-e: no damage dealt")
+	eq(st.get_card("av").damage_taken, 0, "av-e2: and none taken")
+
+	# av-f: out of combat, the power is illegal — the "if" clause is a use gate.
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "av"}), db), "av-f: illegal outside combat")
+	# ...and no_activate means being exhausted never blocked it (av-d proved the
+	# use; this pins that the refusal above is the combat gate, not the exhaust).
+	ok(av.is_exhausted, "av-f2: still exhausted, so the gate above was 'in combat'")
+
+
+func _test_ai_avanthera() -> void:
+	_buf.append("\n-- Avanthera AI: escapes only a combat she would not survive --")
+	var db = _avanthera_db()
+	var ai := BaseAI.new()
+
+	# av-g: 4/4 attacker vs her 3/2 — she dies, so pull out.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	st.turn_player = "p2"
+	_add_resources(st, "p1", 1)
+	var av := _add_ally(st, "av", "avanthera_def", "p1")
+	av.just_summoned = false
+	var brute := _add_ally(st, "brute", "brute_def", "p2")
+	brute.just_summoned = false
+	st.combat_attacker = "brute"
+	st.combat_defender = "av"
+	st.combat_defend_window = true
+	st.priority_player = "p1"
+	var act = ai.avanthera_escape_action(st, db, "p1")
+	ok(act != null and act.params.get("card_id", "") == "av",
+		"av-g: escapes a lethal combat")
+
+	# av-h: a 1/1 attacker — she wins the fight, so leaving throws the kill away.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	st2.turn_player = "p2"
+	_add_resources(st2, "p1", 1)
+	db.ally("chump_def", 1, 1, [], 1)
+	var av2 := _add_ally(st2, "av", "avanthera_def", "p1")
+	av2.just_summoned = false
+	var chump := _add_ally(st2, "chump", "chump_def", "p2")
+	chump.just_summoned = false
+	st2.combat_attacker = "chump"
+	st2.combat_defender = "av"
+	st2.combat_defend_window = true
+	st2.priority_player = "p1"
+	ok(ai.avanthera_escape_action(st2, db, "p1") == null,
+		"av-h: holds when she survives the combat")
+
+	# av-i: not in combat at all — nothing to do.
+	var st3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st3, "p1", 1)
+	var av3 := _add_ally(st3, "av", "avanthera_def", "p1")
+	av3.just_summoned = false
+	st3.priority_player = "p1"
+	ok(ai.avanthera_escape_action(st3, db, "p1") == null,
+		"av-i: no action outside combat")

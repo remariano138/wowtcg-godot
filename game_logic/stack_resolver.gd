@@ -531,6 +531,14 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_feral_rage() before priority can move.
 	if state.pending_feral_rage_player != "":
 		return []
+	# 708.1b: no player gets priority until every waiting triggered effect has
+	# been added to the chain, so the ordering choice blocks passing outright.
+	if state.pending_trigger_order_player != "":
+		return []
+	# Wisp's "you may pay (1)" offer must be resolved (or declined) via
+	# choose_gy_return() before priority can move.
+	if state.pending_gy_return_player != "":
+		return []
 	# A pending Track Humanoids look must be resolved via
 	# choose_track_placement() before priority can move.
 	if state.pending_track_look_player != "":
@@ -624,15 +632,12 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 					return events
 				events.append_array(_do_combat_conclusion(state, db))
 				return events
-			# Rule 500.2 / 708.1: start-of-turn triggered effects are drained one
-			# at a time. The chain is empty and everyone has passed, so the link
-			# that was on it has fully resolved — announce the next trigger and
-			# keep the ready step open rather than advancing the phase.
-			if not state.pending_turn_start_triggers.is_empty():
-				var next_trigger := advance_turn_start_triggers(state, db)
-				if not next_trigger.is_empty():
-					events.append_array(next_trigger)
-					return events
+			# NOTE: start-of-turn triggers are NOT re-drained here. Per 708.1a/b
+			# every one of them went on the chain in a single PPP back in
+			# _enter_ready, before anybody got priority, so an empty chain here
+			# really does mean the ready step is over. (This used to announce
+			# them one at a time — see data/rules_deviations.md, where that is
+			# now recorded as RESOLVED.)
 
 			# Rule 410.4b: chain empty → window closes, phase advances.
 			_clear_damage_prevention(state)   # window over — unspent block expires
@@ -778,6 +783,16 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Feral Rage's draw offer blocks everything until resolved (or declined) via
 	# choose_feral_rage().
 	if state.pending_feral_rage_player != "":
+		return false
+
+	# 708.1a's ordering choice blocks everything until answered via
+	# choose_trigger_order() — 708.1b, nobody acts mid-announcement.
+	if state.pending_trigger_order_player != "":
+		return false
+
+	# Wisp's "you may pay (1)" offer blocks everything until resolved (or
+	# declined) via choose_gy_return().
+	if state.pending_gy_return_player != "":
 		return false
 
 	# Track Humanoids' look blocks everything until resolved via
@@ -5643,6 +5658,17 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if skip_target:
 			return true
 		return _is_exhausted_ally(state, action.params.get("target_id", ""), db)
+	# Avanthera: "(1) -> If Avanthera is in combat, remove her from combat."
+	# The "if" clause is a legality gate on USING the power, not a condition
+	# checked at resolution — and rule 602.3b is what it means: a character is in
+	# combat only while there is an opposing attacker or defender, which per
+	# 602.1 ("becomes an attacker ... but is NOT YET in combat (602.3)") begins
+	# as the DEFEND window opens. So the attack window is deliberately excluded;
+	# see is_in_combat(). Non-targeted, so the highlight probe reaches this too
+	# and she goes dark whenever the power would do nothing.
+	if String(ap.get("effect", "")) == "remove_self_from_combat" \
+			and not is_in_combat(state, card_id):
+		return false
 	# An "ally"-kind power needs an ally in play to point at — a hero is never a
 	# legal target for one, so on a board with no ally the no-target highlight
 	# probe must go dark rather than green (Lynda Steele, Gertha, Augustus).
@@ -5712,6 +5738,25 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if heal_target_id == target_id2:
 			return false
 	return true
+
+
+# Rule 602.3b: "An attacker or defender is IN COMBAT while there's an opposing
+# attacker or defender." Being an attacker is NOT enough — 602.1 is explicit
+# that a proposed attacker "becomes an attacker, and starts attacking, but is
+# not yet in combat (602.3)". Both combatants enter combat together as the
+# defend window opens, so this is true exactly while that window is up and both
+# sides are still present (something removed from combat by 602.4 clears its
+# slot, and the survivor stops being in combat with it).
+#
+# The ONE read behind Avanthera's power — its legality gate, the highlight
+# probe and the AI hook all ask it, so they cannot disagree about when she is
+# in combat.
+static func is_in_combat(state: GameState, card_id: String) -> bool:
+	if card_id == "" or not state.combat_defend_window:
+		return false
+	if state.combat_attacker == "" or state.combat_defender == "":
+		return false
+	return card_id == state.combat_attacker or card_id == state.combat_defender
 
 
 # Whether an in-play card sits in an ally row (i.e. is an ally on the board).
@@ -6309,6 +6354,38 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			if galway_hero:
 				events.append_array(GameLogic.ready_card(state, galway_hero.instance_id))
 			events.append_array(_open_weapon_ready_choice(state, galway_pid, card_id, db))
+		"remove_self_from_combat":
+			# ── Avanthera (dark_portal_154) ───────────────────────────────────
+			# "(1) -> If Avanthera is in combat, remove her from combat."
+			#
+			# Blink's `remove_attackers` pointed at the SOURCE instead of at the
+			# opposing side, and reachable from either combat ROLE — she gets out
+			# of a fight she is losing whether she attacked into it or was
+			# attacked. Nothing is announced (no target, no choice), so 706
+			# Untargetable is irrelevant and it can never fizzle for want of a
+			# target.
+			#
+			# Re-checked here rather than trusted from announcement: the "if" is a
+			# condition of the effect as well as a use gate, and the defend window
+			# is a real priority window (709.2a — a Withdraw or a kill in response
+			# takes her out of combat first, and the link then does nothing).
+			#
+			# Rule 602.4: this does NOT end the combat step. The window plays out
+			# normally, and the conclusion's 603.1b check then deals no damage in
+			# EITHER direction — which is the card: the opponent has already paid
+			# for the attack, exhausted the attacker (602.1) and spent whatever
+			# they committed to the fight, and it all evaporates. An attacker left
+			# with no defender also doesn't ready (603.1b). She stays exhausted
+			# herself if she was the attacker; the exhaust was paid at 602.1 and
+			# leaving combat is not a ready effect.
+			if is_in_combat(state, card_id):
+				var av_role := "attacker" if card_id == state.combat_attacker else "defender"
+				if av_role == "attacker":
+					state.combat_attacker = ""
+				else:
+					state.combat_defender = ""
+				events.append(GameEvent.card_removed_from_combat(
+					card_id, card_id, av_role))
 		"buff_atk_self":
 			# ── Warmaster Hork (dark_portal_241) ──────────────────────────────
 			# "(2) -> Warmaster Hork has +1 ATK this turn." Elder Moorf's
@@ -6987,6 +7064,16 @@ static func _has_keyword(card: CardInstance, keyword: String, db,
 	# funnel every other keyword uses.
 	if state != null and _is_hero(state, card.instance_id) \
 			and state.hero_form_keyword(card.controller, keyword, db):
+		return true
+	# "Ongoing: Attached ally has <keyword>." (Lessons in Lurking). An ATTACHMENT
+	# grant, so it lives neither on the card (like a Buff) nor on a card in a row
+	# (like the auras above) — it is read live off the host's own attachments, and
+	# lifts the instant the attachment leaves play, which killing the host does for
+	# free (400.5). Deliberately NOT gated on the recipient being an ally: the
+	# attach description is what restricts the host, and a future
+	# `attach:hero_or_ally` card printing the same clause needs no new branch.
+	if state != null and db and state.attachment_grants_keyword(
+			card.instance_id, keyword, db):
 		return true
 	# The card's OWN printed keywords. Rule 700.1 makes a keyword a power, so
 	# this is the one branch Polymorph silences — read off the effective def
@@ -11225,64 +11312,194 @@ static func _resolve_choose_enter_play_target(state: GameState, action: PendingA
 # during PPP, so a normal priority window opens before it resolves and either
 # player may respond.
 #
-# The queue is built by TurnManager._collect_turn_start_triggers and drained ONE
-# AT A TIME:
+# The queue is built by TurnManager._collect_turn_start_triggers and every
+# trigger in it is added to the chain in ONE PPP — 708.1a, and 708.1b: "no
+# player gets priority until all waiting triggered effects have been added to
+# the chain".
 #
-#   advance_turn_start_triggers → front trigger needs a target?
-#       yes → pending_trigger_target_player set, trigger_target_required emitted;
-#             the controller answers via choose_trigger_target (direct call)
-#       no  → announced straight onto the chain
-#     → `resolve_turn_start_trigger` link + priority window (turn player first)
-#     → link resolves (_resolve_turn_start_trigger)
-#     → chain empties, both players pass → pass_priority calls back in here for
-#       the next trigger, and only closes the window once the queue is empty.
+#   advance_turn_start_triggers  loops until the queue is empty:
+#       the player currently adding has 2+ triggers left?
+#           yes → pending_trigger_order_player set, trigger_order_required
+#                 emitted; he answers via choose_trigger_order (direct call)
+#       front trigger needs a target?
+#           yes → pending_trigger_target_player set, trigger_target_required
+#                 emitted; the controller answers via choose_trigger_target
+#           no  → pushed straight onto the chain
+#     → queue empty → ONE priority window opens (turn player first, rule 410)
+#     → links resolve top-down (_resolve_turn_start_trigger), a window between
+#       each, as for any other stack of links.
 #
-# Sequential draining (rather than 708.1a's "add every waiting trigger in one
-# PPP") is deliberate — see data/rules_deviations.md "Start-of-turn trigger
-# order". It lets each target be chosen with the previous trigger's outcome
-# already known, which is strictly friendlier and never changes a legal line.
+# Both choice points hard-block can_submit and pass_priority, so the whole
+# announcement sequence really is uninterruptible as 708.1b requires.
+#
+# THE ORDER IS LIFO AND THAT IS THE POINT. The turn player's triggers are added
+# first, so they sit at the BOTTOM of the chain and resolve LAST; the opponent's
+# go on top and resolve FIRST. That is the rulebook's own worked example at
+# 708.1a (Voss Treebender vs Donna Calister: "your effect is added to the chain
+# first … Donna's effect resolves first"). Within one player it is the same
+# inversion, which is exactly why 708.1a hands him the choice — see
+# choose_trigger_order.
 #
 # 707.1 is the complete list of what is chosen at ANNOUNCEMENT: X, modes and
-# targets. Nothing else. Infernal's "discard a card, or…" is therefore NOT
-# decided here — it is a 709.2b resolution choice, made as the link resolves,
-# which is why an instant that draws in response can still save an empty hand.
+# targets. Nothing else. Infernal's "discard a card, or…", Rain of Fire's
+# payment and Wisp's are therefore NOT decided here — they are 709.2b resolution
+# choices, made as the link resolves, which is why an instant that draws in
+# response can still save an empty hand.
 
 # Trigger keys that announce a target (707.1d). Everything else goes on the chain
 # with no announcement choices at all.
 const TARGETED_TURN_START_TRIGGERS := ["ongoing_damage_each_turn"]
 
 
-# Announce the next queued trigger. Skips any whose source has left play (707.1:
-# the effect is created by a power on a card in play; a source that is gone never
-# triggers in the first place) and any targeted trigger with no legal target
-# (707.1d — the link can't be added). Returns the choice event when a target is
-# needed, the announcement events when it isn't, or [] once the queue is empty.
+# Is a queued trigger's source still where its power functions? 703.3 for an
+# in-play source, 703.3a for one in a graveyard (Wisp) — the zone was recorded
+# when the trigger was collected, so this cannot confuse the two. A source that
+# has moved since the step started never gets its link added (707.1: the effect
+# is created by a power on that card).
+static func _trigger_source_active(state: GameState, trigger: Dictionary) -> bool:
+	var source_id: String = trigger.get("card_id", "")
+	if String(trigger.get("zone", "play")) == "graveyard":
+		var card := state.get_card(source_id)
+		if card == null:
+			return false
+		return card.zone_id == String(trigger.get("controller", "")) + "_graveyard"
+	return state.is_in_play(source_id)
+
+
+# Add EVERY waiting trigger to the chain, in 708.1a order, stopping only for the
+# announcement choices each one owes (the adding player's ordering choice, and a
+# targeted trigger's target). Skips any trigger whose source has left the zone
+# its power works in, and any targeted trigger with no legal target (707.1d /
+# 708.2 — the link can't be added, so the effect ceases to exist). Returns the
+# choice event when one is owed, otherwise the announcement events plus the
+# window that opens once the queue is empty.
 static func advance_turn_start_triggers(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
 	while not state.pending_turn_start_triggers.is_empty():
-		var trigger: Dictionary = state.pending_turn_start_triggers[0]
-		var source_id: String = trigger.get("card_id", "")
-		if not state.is_in_play(source_id):
-			state.pending_turn_start_triggers.pop_front()
+		# 708.1a: the adding player is the turn player while he has any left,
+		# then the next player clockwise. Anything queued for a LATER player
+		# cannot jump ahead, which is what keeps the two groups in order.
+		var adding := _trigger_adding_player(state)
+		var own_ids := _orderable_trigger_ids(state, adding)
+		if own_ids.size() >= 2 and not state.pending_trigger_front_settled:
+			state.pending_trigger_order_player = adding
+			state.pending_trigger_order_ids    = own_ids
+			state.priority_player              = adding
+			events.append(GameEvent.trigger_order_required(adding, own_ids))
+			return events
+		var idx := _next_trigger_index(state, adding)
+		if idx < 0:
+			break
+		var trigger: Dictionary = state.pending_turn_start_triggers[idx]
+		if not _trigger_source_active(state, trigger):
+			state.pending_turn_start_triggers.remove_at(idx)
+			state.pending_trigger_front_settled = false
 			continue
 		var key: String = trigger.get("key", "")
 		if TARGETED_TURN_START_TRIGGERS.has(key):
-			# 707.1d: no legal target → the link can't be added at all.
+			# 707.1d / 708.2: no legal target → the link can't be added at all.
 			if get_turn_start_trigger_targets(state, db).is_empty():
-				state.pending_turn_start_triggers.pop_front()
+				state.pending_turn_start_triggers.remove_at(idx)
+				state.pending_trigger_front_settled = false
 				continue
 			state.pending_trigger_target_player = String(trigger.get("controller", ""))
 			state.pending_trigger_kind = "turn_start"
 			# The choice belongs to the trigger's controller, who may not be the
 			# turn player (an opposing Searing Totem also fires now).
 			state.priority_player = state.pending_trigger_target_player
-			return [GameEvent.trigger_target_required(
-				source_id, state.pending_trigger_target_player, key,
-				trigger.get("args", []))]
+			events.append(GameEvent.trigger_target_required(
+				trigger.get("card_id", ""), state.pending_trigger_target_player,
+				key, trigger.get("args", [])))
+			return events
 		# Targetless — straight onto the chain.
-		state.pending_turn_start_triggers.pop_front()
-		return _announce_turn_start_trigger(state, trigger, "", db)
-	state.pending_trigger_target_player = ""
-	return []
+		state.pending_turn_start_triggers.remove_at(idx)
+		state.pending_trigger_front_settled = false
+		events.append_array(_announce_turn_start_trigger(state, trigger, "", db))
+	state.pending_trigger_target_player  = ""
+	state.pending_trigger_order_player   = ""
+	state.pending_trigger_order_ids      = []
+	state.pending_trigger_front_settled  = false
+	# 708.1b satisfied — every waiting effect is on the chain. NOW a window
+	# opens, and only one, however many links went on. (Harmless when nothing
+	# was queued at all: _enter_ready has already opened the same window.)
+	state.consecutive_passes = 0
+	state.priority_player    = state.turn_player   # rule 410
+	return events
+
+
+# Which player is currently adding his triggers (708.1a): the turn player while
+# any of his remain, then the next clockwise.
+static func _trigger_adding_player(state: GameState) -> String:
+	for trigger in state.pending_turn_start_triggers:
+		if String(trigger.get("controller", "")) == state.turn_player:
+			return state.turn_player
+	if state.pending_turn_start_triggers.is_empty():
+		return state.turn_player
+	return String(state.pending_turn_start_triggers[0].get("controller", ""))
+
+
+# The source ids of `player`'s waiting triggers, in queue order — the pool his
+# 708.1a ordering choice picks from. Sources that are no longer active are left
+# out, so he is never asked to order an effect that will not be added.
+static func _orderable_trigger_ids(state: GameState, player: String) -> Array:
+	var ids: Array = []
+	for trigger in state.pending_turn_start_triggers:
+		if String(trigger.get("controller", "")) != player:
+			continue
+		if not _trigger_source_active(state, trigger):
+			continue
+		ids.append(String(trigger.get("card_id", "")))
+	return ids
+
+
+# Index of the next trigger to add for `player` — the front of his group.
+static func _next_trigger_index(state: GameState, player: String) -> int:
+	for i in range(state.pending_turn_start_triggers.size()):
+		if String(state.pending_turn_start_triggers[i].get("controller", "")) == player:
+			return i
+	return -1
+
+
+# Answer the 708.1a ordering choice: `card_id` is the trigger this player wants
+# added to the chain NEXT. Expressing the ordering as a repeated "pick the next
+# one" is exactly equivalent to naming a full order up front, and it means the
+# point never opens for a player with only one trigger left — there is no
+# decision there. Because the chain is LIFO, the trigger picked FIRST here
+# resolves LAST of his; the UI says so rather than making the player derive it.
+static func choose_trigger_order(state: GameState, card_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_trigger_order_player == "":
+		return []
+	var player := state.pending_trigger_order_player
+	if not state.pending_trigger_order_ids.has(card_id):
+		return []
+	# Move the chosen trigger to the front of that player's group. Only his own
+	# group is reordered, so the 708.1a player order is untouched.
+	var idx := -1
+	for i in range(state.pending_turn_start_triggers.size()):
+		var t: Dictionary = state.pending_turn_start_triggers[i]
+		if String(t.get("controller", "")) == player \
+				and String(t.get("card_id", "")) == card_id:
+			idx = i
+			break
+	if idx < 0:
+		return []
+	var chosen: Dictionary = state.pending_turn_start_triggers[idx]
+	state.pending_turn_start_triggers.remove_at(idx)
+	state.pending_turn_start_triggers.insert(_next_trigger_index_or_end(state, player), chosen)
+	state.pending_trigger_order_player  = ""
+	state.pending_trigger_order_ids     = []
+	state.pending_trigger_front_settled = true
+	var events: Array[GameEvent] = [GameEvent.make("trigger_order_chosen", {
+		"player": player, "card_id": card_id,
+	})]
+	events.append_array(advance_turn_start_triggers(state, db))
+	return events
+
+
+static func _next_trigger_index_or_end(state: GameState, player: String) -> int:
+	var idx := _next_trigger_index(state, player)
+	return state.pending_turn_start_triggers.size() if idx < 0 else idx
 
 
 # Answer the active trigger's target choice (Searing Totem). 706 is checked here
@@ -11304,13 +11521,27 @@ static func choose_trigger_target(state: GameState, target_id: String,
 		return _announce_play_trigger(state, play_trigger, target_id)
 	if state.pending_turn_start_triggers.is_empty():
 		return []
-	var trigger: Dictionary = state.pending_turn_start_triggers.pop_front()
+	# The awaiting trigger is the front of the ANNOUNCING player's group, not
+	# necessarily the front of the whole queue (his opponent's may sit ahead of
+	# it once his own group is exhausted).
+	var idx := _next_trigger_index(state, state.pending_trigger_target_player)
+	if idx < 0:
+		state.pending_trigger_target_player = ""
+		return []
+	var trigger: Dictionary = state.pending_turn_start_triggers[idx]
+	state.pending_turn_start_triggers.remove_at(idx)
 	state.pending_trigger_target_player = ""
-	return _announce_turn_start_trigger(state, trigger, target_id, db)
+	state.pending_trigger_front_settled = false
+	var events := _announce_turn_start_trigger(state, trigger, target_id, db)
+	# 708.1b: keep adding — nobody gets priority until the queue is empty.
+	events.append_array(advance_turn_start_triggers(state, db))
+	return events
 
 
-# Put a trigger on the chain as a `resolve_turn_start_trigger` link and open the
-# priority window (rule 410: the turn player gets priority first).
+# Put a trigger on the chain as a `resolve_turn_start_trigger` link. It does NOT
+# open a priority window: 708.1b forbids anyone getting priority until every
+# waiting effect has been added, so the ONE window is opened by
+# advance_turn_start_triggers once the queue is empty.
 static func _announce_turn_start_trigger(state: GameState, trigger: Dictionary,
 		target_id: String, _db) -> Array[GameEvent]:
 	var source_id: String = trigger.get("card_id", "")
@@ -11331,8 +11562,6 @@ static func _announce_turn_start_trigger(state: GameState, trigger: Dictionary,
 		params["host_id"] = source.attached_to
 	var link := PendingAction.make("resolve_turn_start_trigger", controller, params)
 	state.pending_actions.push_back(link)
-	state.consecutive_passes = 0
-	state.priority_player    = state.turn_player   # rule 410
 	return [GameEvent.make("action_proposed", {
 		"action_type": "resolve_turn_start_trigger",
 		"player":      controller,
@@ -11536,6 +11765,32 @@ static func _resolve_turn_start_trigger(state: GameState, action: PendingAction,
 					state.pending_upkeep_kind    = "discard"
 					events.append(GameEvent.upkeep_choice_opened(
 						controller, source_id, discard_n, "discard"))
+
+		# Wisp: "At the start of your turn, if Wisp is in your graveyard, you may
+		# pay (1). If you do, put Wisp into your hand." The one trigger whose
+		# source is NOT in play — 703.3a keeps the power active in the graveyard —
+		# so the guard is a graveyard check rather than is_in_play.
+		#
+		# The payment is a 709.2b RESOLUTION choice (707.1 locks in only X, modes
+		# and targets), so resources freed inside the response window can still
+		# pay it — Infernal's discard is the identical call. Unaffordable opens
+		# no point at all (Feral Rage's rule), and unlike Rain of Fire's upkeep
+		# DECLINING COSTS NOTHING: the card stays in the graveyard and the offer
+		# comes back next turn.
+		#
+		# 709.2c: a Wisp that left the graveyard in the response window (exiled
+		# by Cannibalize or Ophelia) has nothing to return, so the link resolves
+		# and only as much as possible happens — which is nothing.
+		"graveyard_turn_start_pay_to_hand":
+			var gy_cost := int(args[0]) if args.size() > 0 else 0
+			var in_gy := source != null \
+					and source.zone_id == controller + "_graveyard"
+			if in_gy and state.get_available_resources(controller) >= gy_cost:
+				state.pending_gy_return_player  = controller
+				state.pending_gy_return_card_id = source_id
+				state.pending_gy_return_cost    = gy_cost
+				events.append(GameEvent.gy_return_opened(
+					controller, source_id, gy_cost))
 
 		# Fire Nova Totem: "At the start of your turn, destroy Fire Nova Totem. If
 		# you do, it deals AMOUNT DMG_TYPE damage to each opposing hero and ally."
@@ -11771,6 +12026,40 @@ static func choose_upkeep(state: GameState, pay: bool,
 		if state.is_in_play(card_id):
 			events.append_array(_destroy_card_trigger(state, card_id, card_id, db))
 		events.append(GameEvent.upkeep_declined(player_id, card_id))
+	return events
+
+
+# Answer Wisp's "you may pay (1). If you do, put Wisp into your hand." offer —
+# a direct call, NOT the chain, opened from the trigger's resolution.
+#
+# "If you do" is 709.2f: the return happens only because the payment did, so an
+# unaffordable `pay` falls through to the decline rather than returning the card
+# for free (belt and braces — the point hard-blocks priority, so nothing can
+# have spent the resources since it opened). The card is re-checked as still
+# being in the graveyard for the same reason.
+#
+# Declining is free and non-destructive, which is what makes this a recurring
+# engine rather than an upkeep: the Wisp stays put and asks again next turn.
+static func choose_gy_return(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_gy_return_player == "":
+		return []
+	var player_id := state.pending_gy_return_player
+	var card_id   := state.pending_gy_return_card_id
+	var cost      := state.pending_gy_return_cost
+	state.pending_gy_return_player  = ""
+	state.pending_gy_return_card_id = ""
+	state.pending_gy_return_cost    = 0
+
+	var events: Array[GameEvent] = []
+	var card := state.get_card(card_id)
+	var in_gy: bool = card != null and card.zone_id == player_id + "_graveyard"
+	if pay and in_gy and state.get_available_resources(player_id) >= cost:
+		events.append_array(_pay_resources(state, player_id, cost, db))
+		events.append_array(GameLogic.move_card(state, card_id, player_id + "_hand"))
+		events.append(GameEvent.gy_return_resolved(player_id, card_id, true))
+	else:
+		events.append(GameEvent.gy_return_resolved(player_id, card_id, false))
 	return events
 
 

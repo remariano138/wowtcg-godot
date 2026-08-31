@@ -138,6 +138,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	if mortal != null:
 		return mortal
 	# Katsin Bloodoath — shield an ally that would die in this combat.
+	# Avanthera — pull her out of a combat she would not survive.
+	var avanthera := avanthera_escape_action(state, db, player_id)
+	if avanthera != null:
+		return avanthera
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
@@ -1497,6 +1501,50 @@ func exhaust_attacker_ally_power_action(state: GameState, db, player_id: String)
 # Works in the attack window, the defend window and in response to a combat
 # proposal still on the chain: the grant lasts the turn, so any of those is
 # early enough to cover the conclusion.
+# ── Avanthera (dark_portal_154) ───────────────────────────────────────────────
+# "(1) -> If Avanthera is in combat, remove her from combat."
+#
+# WHEN: only while she would actually DIE to the combat. She is a 3/2, so she
+# wins plenty of fights and pulling out of one throws the kill away and pays 1
+# for the privilege — which is what the generic untargeted branch would do every
+# defend window. `combat_kills` is the shared "does this combat remove that
+# card?" predicate, so a Devotion Aura reduction, a Brigg-style finisher and a
+# Meatwall reflect are all counted for free.
+#
+# A trade she does not survive is still worth escaping: removing her from combat
+# cancels the conclusion in BOTH directions (603.1b), so we lose the kill either
+# way — the only question is whether we keep the body, and 1 resource for a
+# 2-cost 3/2 is a good price. So unlike Katsin's shield there is no
+# card_value_score comparison: any death is enough.
+#
+# The engine's own legality gate (StackResolver.is_in_combat) restricts this to
+# the defend window, so there is no window check here — can_submit is the
+# authority, and asking it is what keeps the hook and the rule from disagreeing.
+func avanthera_escape_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if state.combat_attacker == "" or state.combat_defender == "":
+		return null
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		var cid := card.instance_id
+		if not StackResolver.is_in_combat(state, cid):
+			continue
+		var def := state.effective_def(cid, db) as CardDef
+		if not def:
+			continue
+		if StackResolver._ally_activated_power(def).get(
+				"effect", "") != "remove_self_from_combat":
+			continue
+		var is_attacker := (cid == state.combat_attacker)
+		var foe: String = state.combat_defender if is_attacker else state.combat_attacker
+		if not combat_kills(state, db, foe, cid, not is_attacker):
+			continue
+		var act := PendingAction.make("use_ally_power", player_id, {"card_id": cid})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
 func katsin_shield_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null
@@ -3970,6 +4018,58 @@ func choose_feral_rage(_state: GameState, _db, _player_id: String) -> bool:
 	return true
 
 
+# Wisp: "you may pay (1). If you do, put Wisp into your hand." A 1-cost 0/1 body
+# back for 1 resource is a fine rate, and unlike a draw it cannot be wasted on a
+# full hand — so the only reasons to decline are the two provable wastes.
+#
+# (1) HAND ROOM. The card arrives in hand, so with no room it would be discarded
+#     at wrap-up (503.2a) and we would have paid for nothing. Declining is free
+#     and the offer returns next turn, so waiting costs us only tempo.
+# (2) RESOURCES WE STILL NEED. The offer resolves in the READY step, before the
+#     action phase, so paying here is spending against the whole turn ahead. We
+#     buy the Wisp only out of resources we would otherwise not miss — hence the
+#     spare-resource floor rather than mere affordability.
+const WISP_MIN_SPARE_RESOURCES := 2
+
+
+func choose_gy_return(state: GameState, db, player_id: String,
+		_card_id: String, cost: int) -> bool:
+	var hand := state.zones.get(player_id + "_hand") as Zone
+	if hand != null and hand.card_ids.size() >= state.get_max_hand_size(player_id, db):
+		return false
+	return state.get_available_resources(player_id) - cost >= WISP_MIN_SPARE_RESOURCES
+
+
+# 708.1a: with two or more of our own triggers waiting, we choose which goes on
+# the chain next. The chain is LIFO, so the one picked FIRST resolves LAST.
+#
+# The ordering only matters when one trigger changes what another can do, and the
+# one case in the shipped pool is a KILL: Searing Totem's ping (and Fire Nova
+# Totem's burn) can remove a character another trigger wanted, and a heal can
+# save one. So the heuristic is simply "do the damage last" — pick damage
+# triggers FIRST here, since picking first means resolving last, which lets the
+# heals and the payments resolve while the board is still whole.
+#
+# Overridable, and a future AI should replace it outright rather than tune it:
+# judging this properly needs a model of what each trigger will do to a board
+# that the other triggers are still going to change.
+const _LATE_RESOLVING_TRIGGER_KEYS := [
+	"ongoing_damage_each_turn",                 # Searing Totem
+	"turn_start_destroy_self_damage_opposing",  # Fire Nova Totem
+	"attached_damage_turn_start",               # Fireball, Rend
+]
+
+
+func choose_trigger_order(state: GameState, _db, _player_id: String,
+		card_ids: Array) -> String:
+	for trigger in state.pending_turn_start_triggers:
+		var cid := String(trigger.get("card_id", ""))
+		if card_ids.has(cid) \
+				and _LATE_RESOLVING_TRIGGER_KEYS.has(String(trigger.get("key", ""))):
+			return cid
+	return String(card_ids[0]) if not card_ids.is_empty() else ""
+
+
 # The smallest end-of-turn burn worth an upkeep payment. With Rain of Fire's
 # printed 1 damage that means the opponent must hold at least two allies (hero +
 # 2 allies = 3), which is roughly where a 4-resource-a-turn tax starts paying for
@@ -4717,6 +4817,13 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# "ally" branch below would otherwise point it at our OWN best ally
 			# and force us to attack with it. Held for the opponent's turn; see
 			# must_attack_action().
+			continue
+		elif ap.get("effect", "") == "remove_self_from_combat":
+			# Avanthera: "(1) -> If Avanthera is in combat, remove her from
+			# combat." The generic untargeted branch below would fire it in every
+			# defend window she is in — including fights she WINS, throwing the
+			# kill away and paying 1 for it. Held for a combat she would not
+			# survive; see avanthera_escape_action().
 			continue
 		elif ap.get("effect", "") == "prevent_combat_damage_target":
 			# Katsin Bloodoath: "(3) -> Prevent all combat damage dealt to and by
@@ -6644,8 +6751,13 @@ func _attach_actions(state: GameState, db, player_id: String,
 	# heal attachment reaching the debuff branch below would do exactly that,
 	# which is the bug this predicate exists to prevent. Anything else
 	# (Entangling Roots' exhaust + ready-lock) is a debuff for the opponent.
+	# A KEYWORD grant (Lessons in Lurking's stealth) is friendly for the same
+	# reason: every keyword in the pool is a benefit, so handing one to the
+	# opponent is never wanted even though "target ally" makes it legal. Ranked
+	# by ATK like a stat buff — stealth pays off on the body we attack with.
 	var is_heal := StackResolver._has_effect_flag_prefix(def, "attach_heal") or StackResolver._has_effect_flag_prefix(def, "attached_heal_turn_end")
-	var is_buff := StackResolver._has_effect_flag_prefix(def, "attached_buff") or is_heal
+	var is_grant := StackResolver._has_effect_flag_prefix(def, "attached_keyword")
+	var is_buff := StackResolver._has_effect_flag_prefix(def, "attached_buff") or is_heal or is_grant
 	var side := player_id if is_buff else ("p2" if player_id == "p1" else "p1")
 	var best: PendingAction = null
 	var best_score := -1

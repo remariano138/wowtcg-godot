@@ -27,6 +27,7 @@ func _ready() -> void:
 	_test_rain_of_fire_recipe()
 	_test_polymorph_recipe()
 	_test_ritual_sacrifice_recipe()
+	_test_avanthera_recipe()
 	_test_unpreventable_holy_recipes()
 	_test_resurrection_recipe()
 	_test_mute_when_column()
@@ -38,6 +39,8 @@ func _ready() -> void:
 	_test_dismantle_recipe()
 	_test_shadowmeld_recipe()
 	_test_soul_link_count_power()
+	_test_wisp_recipe()
+	_test_lessons_in_lurking_recipe()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -94,6 +97,21 @@ func _test_tokens_csv_loads() -> void:
 			% [token_id, def.card_type])
 		_check(def.printed_atk == 1 and def.printed_health == 1,
 			"%s is 1/1 (got %d/%d)" % [token_id, def.printed_atk, def.printed_health])
+		# ART. A token has never been in a zone, so no CardNode exists for it
+		# until it is MINTED mid-game — a wrong path or an un-imported image
+		# therefore shows up as a blank card in play and nowhere else. Both
+		# halves are needed: the path must point at a real file, AND Godot must
+		# have imported it (load() returns null without a .import sibling, which
+		# is the failure mode a plain FileAccess check misses).
+		var art := def.image_path.replace("\\", "/")
+		_check(art != "", "%s declares an image_path" % token_id)
+		if art == "":
+			continue
+		_check(FileAccess.file_exists("res://" + art),
+			"%s art exists on disk (%s)" % [token_id, art])
+		_check(ResourceLoader.exists("res://" + art),
+			"%s art is imported — load() would return a texture (%s)"
+				% [token_id, art])
 	# King Magni's token must carry its RACE where the aura can find it — the
 	# token CSV puts "Dwarf Warrior" in the SUBTYPE column, not tags, so a
 	# tags-only read would silently leave his own tokens without protector.
@@ -721,3 +739,69 @@ func _test_polymorph_recipe() -> void:
 	# as a DEBUFF and aims it at the opponent, which is the whole targeting policy.
 	_check(not ("attached_buff" in segments) and not ("attach_heal" in segments),
 		"…and carries no friendly grant, so the AI aims it at the opponent")
+
+
+# Avanthera is PURE CSV on the engine side — one effect key, no target, no
+# rider. A typo in the key or a stray `[Activate]` (i.e. a missing
+# `no_activate`) would leave a silent 2-cost vanilla 3/2 with nothing to fail
+# on, so pin the whole recipe against the REAL database.
+func _test_avanthera_recipe() -> void:
+	var db := _make_db()
+	var av := db.get_def("dark_portal_154") as CardDef
+	_check(av != null, "dark_portal_154 (Avanthera) resolves in the database")
+	if av == null:
+		return
+	_check(av.cost == 2 and av.printed_atk == 3 and av.printed_health == 2,
+		"Avanthera is a 2-cost 3/2")
+	var ap := StackResolver._ally_activated_power(av)
+	_check(ap.get("effect", "") == "remove_self_from_combat",
+		"…her power removes her from combat")
+	_check(StackResolver.power_resource_cost(ap, 0) == 1, "…for (1)")
+	_check(ap.get("targets", "") == "",
+		"…non-targeted, so 706 Untargetable is irrelevant")
+	_check(StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "no_activate"),
+		"…with NO [Activate] tap symbol: no exhaust, no summoning sickness, repeatable")
+
+
+# Wisp (dark_portal_197). The card is PURE CSV on the data side — the whole
+# behaviour hangs off one effects key, and the key is what decides which ZONE
+# TurnManager scans for the trigger (GRAVEYARD_TURN_TRIGGERS, rule 703.3a). A
+# typo there is completely silent: the Wisp becomes a vanilla 0/1 that never
+# comes back, with nothing to fail on. So pin it against the REAL database.
+func _test_wisp_recipe() -> void:
+	var db := _make_db()
+	var w := db.get_def("dark_portal_197") as CardDef
+	_check(w != null, "dark_portal_197 (Wisp) resolves in the database")
+	if w == null:
+		return
+	_check(w.cost == 1 and w.printed_atk == 0 and w.printed_health == 1,
+		"Wisp is a 1-cost 0/1")
+	_check(w.card_type == "Ally", "…an Ally card, so it can be reanimated/fetched normally")
+	_check(w.effects.find("graveyard_turn_start_pay_to_hand:1") >= 0,
+		"…carrying the graveyard return power for (1)")
+	_check(TurnManager.GRAVEYARD_TURN_TRIGGERS.has("graveyard_turn_start_pay_to_hand"),
+		"…and that key is collected from the GRAVEYARD (703.3a), not the board")
+	_check(not TurnManager.YOUR_TURN_TRIGGERS.has("graveyard_turn_start_pay_to_hand") 			and not TurnManager.EACH_TURN_TRIGGERS.has("graveyard_turn_start_pay_to_hand"),
+		"…the three trigger-zone lists stay disjoint")
+
+func _test_lessons_in_lurking_recipe() -> void:
+	# Lessons in Lurking is pure CSV on top of the general attachment machinery
+	# plus one generic keyword key, so a typo in the KEYWORD argument is
+	# completely silent: the attachment still lands and simply grants nothing.
+	var db := _make_db()
+	var lil := db.get_def("dark_portal_146") as CardDef
+	_check(lil != null, "dark_portal_146 (Lessons in Lurking) resolves in the database")
+	if lil == null:
+		return
+	_check(lil.card_type == "Ability" and not lil.is_instant,
+		"Lessons in Lurking is a plain (sorcery-speed) Ability")
+	_check(lil.cost == 2, "Lessons in Lurking costs 2")
+	var segments: Array = []
+	for entry in lil.effects.split("|"):
+		segments.append(entry.strip_edges().split(":")[0].strip_edges())
+	_check("ongoing" in segments, "…is ongoing, so it stays in play as an attachment")
+	_check("attach" in segments and StackResolver.attach_parts(lil).size() > 1
+		and StackResolver.attach_parts(lil)[1] == "ally",
+		"…attaches to target ALLY, so a hero is never a legal target")
+	_check(StackResolver._effect_flag_arg(lil, "attached_keyword") == "stealth",
+		"…and grants STEALTH — the argument a typo would silently blank")

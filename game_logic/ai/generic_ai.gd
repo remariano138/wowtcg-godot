@@ -128,6 +128,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	if mortal != null:
 		return mortal
 	# Katsin Bloodoath — shield an ally that would die in this combat.
+	# Avanthera — pull her out of a combat she would not survive.
+	var avanthera := avanthera_escape_action(state, db, player_id)
+	if avanthera != null:
+		return avanthera
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin

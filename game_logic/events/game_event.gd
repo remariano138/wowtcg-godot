@@ -122,7 +122,7 @@ static func protect_chosen(protector_id: String, defending_player: String) -> Ga
 # Rule 603.1b: a combatant left play (bounced, destroyed, removed from combat)
 # before the conclusion, so no damage is dealt. Emitted right before the
 # combat_concluded that carries cancelled = true; `reason` is one of
-# "attacker_gone" / "defender_gone" / "attacker_removed".
+# "attacker_gone" / "defender_gone" / "attacker_removed" / "defender_removed".
 static func combat_cancelled(attacker_id: String, defender_id: String,
 		reason: String) -> GameEvent:
 	return make("combat_cancelled", {

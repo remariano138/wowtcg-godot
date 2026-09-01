@@ -856,6 +856,19 @@ static func heal(state: GameState, target_id: String, amount: int, db, source_id
 	if is_heal_blocked(target):
 		return []
 
+	# Hide of the Wild: "If your hero would heal damage, it heals that amount of
+	# damage plus 1 instead." A REPLACEMENT effect on healing — Chromatic Cloak's
+	# shape, on the other side of the ledger — so it is applied HERE, in the one
+	# choke point every heal goes through, and covers abilities, activated
+	# powers, combat triggers, party sweeps and turn-start triggers by
+	# construction. Gated on the HERO being the healer, which is why the source
+	# of a "your hero heals..." effect must be passed as that hero (see
+	# hero_heal_bonus in CLAUDE.md): a heal a card performs itself (Lady Courtney
+	# Noel, Healing Stream Totem, Maxum Ironbrew) is deliberately NOT boosted.
+	# Applied BEFORE the damage cap below, so the +1 is real only when there is
+	# damage for it to remove — "heals that amount plus 1" can never overheal.
+	amount += hero_heal_bonus(state, source_id, db)
+
 	var events: Array[GameEvent] = []
 	var old_hp := state.get_current_hp(target_id, db)
 
@@ -866,6 +879,35 @@ static func heal(state: GameState, target_id: String, amount: int, db, source_id
 		events.append(GameEvent.hp_changed(target_id, old_hp, new_hp, state.get_max_hp(target_id, db), source_id))
 
 	return events
+
+
+# The total "+N to each heal your hero performs" in play for the healer (Hide of
+# the Wild, `hero_heal_bonus:N`). `source_id` must BE a player's hero instance —
+# an ally, totem or equipment healing on its own behalf gets nothing, which is
+# the printed restriction ("if YOUR HERO would heal"). Read live off that
+# player's hero_row and ally_row (the aura is armor today, but nothing about the
+# read cares), never cached, so it lifts the instant the source leaves play, and
+# summed per copy.
+static func hero_heal_bonus(state: GameState, source_id: String, db) -> int:
+	if not db or source_id == "":
+		return 0
+	var src := state.get_card(source_id)
+	if src == null:
+		return 0
+	var ps := state.players.get(src.controller) as PlayerState
+	if ps == null or ps.hero_instance_id != source_id:
+		return 0
+	var bonus := 0
+	for zone_suffix in ["_hero_row", "_ally_row"]:
+		for card in state.cards_in_zone(src.controller + zone_suffix):
+			var def := state.effective_def(card.instance_id, db)
+			if def == null or def.effects == "":
+				continue
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				if parts[0].strip_edges() == "hero_heal_bonus" and parts.size() > 1:
+					bonus += int(parts[1])
+	return bonus
 
 
 # Is this character under a "can't be healed" restriction (Mortal Strike)?

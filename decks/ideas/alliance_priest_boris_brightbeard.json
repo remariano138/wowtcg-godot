@@ -39,9 +39,9 @@
       "_card_name": "In Dreams"
     },
     {
-      "card_def_id": "azeroth_332",
+      "card_def_id": "azeroth_294",
       "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
+      "_card_name": "Hide of the Wild"
     },
     {
       "card_def_id": "azeroth_298",
@@ -64,6 +64,11 @@
       "_card_name": "Resurrection"
     },
     {
+      "card_def_id": "azeroth_224",
+      "count": 1,
+      "_card_name": "Wyneth Harridan"
+    },
+    {
       "card_def_id": "azeroth_89",
       "count": 1,
       "_card_name": "Smite"
@@ -75,23 +80,33 @@
     },
     {
       "card_def_id": "azeroth_77",
-      "count": 1,
+      "count": 2,
       "_card_name": "Dispel Magic"
     },
     {
+      "card_def_id": "azeroth_79",
+      "count": 1,
+      "_card_name": "Heal"
+    },
+    {
       "card_def_id": "azeroth_174",
-      "count": 2,
+      "count": 1,
       "_card_name": "Adept Breton"
     },
     {
       "card_def_id": "azeroth_76",
-      "count": 2,
+      "count": 4,
       "_card_name": "Chastise"
     },
     {
-      "card_def_id": "dark_portal_160",
+      "card_def_id": "azeroth_84",
+      "count": 1,
+      "_card_name": "Prayer of Healing"
+    },
+    {
+      "card_def_id": "dark_portal_68",
       "count": 2,
-      "_card_name": "\"Chipper\" Ironbane"
+      "_card_name": "Clarity of Thought"
     },
     {
       "card_def_id": "azeroth_181",
@@ -99,19 +114,14 @@
       "_card_name": "Donna Calister"
     },
     {
-      "card_def_id": "azeroth_173",
-      "count": 1,
-      "_card_name": "Acolyte Demia"
+      "card_def_id": "azeroth_78",
+      "count": 2,
+      "_card_name": "Flash Heal"
     },
     {
-      "card_def_id": "azeroth_176",
+      "card_def_id": "dark_portal_160",
       "count": 2,
-      "_card_name": "Apprentice Teep"
-    },
-    {
-      "card_def_id": "azeroth_222",
-      "count": 2,
-      "_card_name": "Warden Tonarin"
+      "_card_name": "\"Chipper\" Ironbane"
     },
     {
       "card_def_id": "azeroth_219",
@@ -119,19 +129,9 @@
       "_card_name": "Tracker Gallen"
     },
     {
-      "card_def_id": "azeroth_183",
-      "count": 2,
-      "_card_name": "Freya Lightsworn"
-    },
-    {
       "card_def_id": "azeroth_180",
       "count": 4,
       "_card_name": "Crazy Igvand"
-    },
-    {
-      "card_def_id": "azeroth_212",
-      "count": 2,
-      "_card_name": "Parvink"
     },
     {
       "card_def_id": "azeroth_192",
@@ -139,14 +139,14 @@
       "_card_name": "Kor Cindervein"
     },
     {
+      "card_def_id": "azeroth_83",
+      "count": 2,
+      "_card_name": "Power Word: Fortitude"
+    },
+    {
       "card_def_id": "azeroth_171",
       "count": 2,
       "_card_name": "Vanquish"
-    },
-    {
-      "card_def_id": "azeroth_221",
-      "count": 2,
-      "_card_name": "Tristan Rapidstrike"
     },
     {
       "card_def_id": "azeroth_214",

@@ -103,6 +103,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var freeze_draws := brain_freeze_action(state, db, player_id)
 	if freeze_draws != null:
 		return freeze_draws
+	# Wing Clip: the same interrupt point as Litori's freeze, on a 1-cost
+	# hand card, and narrowed to proposals aimed at our own HERO.
+	var clip := wing_clip_action(state, db, player_id)
+	if clip != null:
+		return clip
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
@@ -132,6 +137,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var avanthera := avanthera_escape_action(state, db, player_id)
 	if avanthera != null:
 		return avanthera
+	# Ghost Wolf — cancel an ally attack our hero is defending against.
+	var ghost_wolf := ghost_wolf_action(state, db, player_id)
+	if ghost_wolf != null:
+		return ghost_wolf
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin

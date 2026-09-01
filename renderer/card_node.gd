@@ -441,6 +441,15 @@ func update_counter(count: int) -> void:
 	_counter_badge_lbl.visible = show_it
 	if show_it:
 		_counter_badge_lbl.text = str(count)
+		# An ATTACHMENT is tucked behind its host with only its TOP sliver
+		# showing (BoardRenderer.ATTACH_PEEK), so the badge's usual bottom-left
+		# corner is buried under the host card. Move it to the top-left corner
+		# for those, which is the part that peeks out — Cyclone's wind counters
+		# have to be readable without picking the card up.
+		var corner_y: float = (-H * 0.5 + 2.0) if is_attachment 				else (H * 0.5 - SMALL_BADGE_D - 2.0)
+		var corner := Vector2(-W * 0.5 + 2, corner_y)
+		_counter_badge_bg.position  = corner
+		_counter_badge_lbl.position = corner
 
 
 # Show/hide the damage-prevention badge (top-right). `amount` is the counted

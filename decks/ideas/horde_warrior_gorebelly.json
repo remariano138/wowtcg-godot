@@ -34,14 +34,19 @@
       "_card_name": "Wraith Scythe"
     },
     {
+      "card_def_id": "azeroth_283",
+      "count": 1,
+      "_card_name": "Deathdealer Breastplate"
+    },
+    {
       "card_def_id": "azeroth_312",
       "count": 3,
       "_card_name": "Annihilator"
     },
     {
-      "card_def_id": "azeroth_290",
+      "card_def_id": "azeroth_286",
       "count": 1,
-      "_card_name": "Golem Skull Helm"
+      "_card_name": "Edgemaster's Handguards"
     },
     {
       "card_def_id": "azeroth_285",
@@ -110,7 +115,7 @@
     },
     {
       "card_def_id": "azeroth_262",
-      "count": 4,
+      "count": 3,
       "_card_name": "Vaerik Proudhoof"
     },
     {

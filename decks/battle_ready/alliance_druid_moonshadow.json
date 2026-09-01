@@ -10,8 +10,13 @@
     },
     {
       "card_def_id": "azeroth_340",
-      "count": 4,
+      "count": 2,
       "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_354",
+      "count": 3,
+      "_card_name": "It's a Secret to Everybody"
     },
     {
       "card_def_id": "azeroth_349",
@@ -25,7 +30,7 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 3,
+      "count": 2,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
@@ -84,9 +89,9 @@
       "_card_name": "Acolyte Demia"
     },
     {
-      "card_def_id": "dark_portal_174",
+      "card_def_id": "azeroth_222",
       "count": 4,
-      "_card_name": "Korthas Greybeard"
+      "_card_name": "Warden Tonarin"
     },
     {
       "card_def_id": "azeroth_197",
@@ -99,9 +104,9 @@
       "_card_name": "Crazy Igvand"
     },
     {
-      "card_def_id": "dark_portal_159",
+      "card_def_id": "dark_portal_189",
       "count": 2,
-      "_card_name": "Cerwyn"
+      "_card_name": "Scaramanga"
     },
     {
       "card_def_id": "azeroth_24",
@@ -139,9 +144,9 @@
       "_card_name": "Lafiel"
     },
     {
-      "card_def_id": "azeroth_214",
+      "card_def_id": "dark_portal_154",
       "count": 1,
-      "_card_name": "Ryn Dreamstrider"
+      "_card_name": "Avanthera"
     }
   ],
   "recommended_ai_id": "ai_generic",

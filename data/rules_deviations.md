@@ -12,6 +12,36 @@ what the rules/card text alone would allow.
 
 ---
 
+## NOT A DEVIATION — Point Blank is legal outside a defend window
+
+**Card:** Point Blank (`dark_portal_37`) — "If your hero is defending, it deals
+3 ranged damage to target attacker."
+
+Recorded here because it *looks* like a missing restriction. The engine lets you
+play Point Blank whenever you have priority and a legal target (some character
+is attacking), including during the attack window, where the "if" clause is
+false and the link resolves into nothing with the card still spent.
+
+That is correct, on two rules:
+
+- **707.1** — the announcement sequence is announce/reveal, choose modes, X and
+  targets, pay costs, add the link. It never asks whether the effect will
+  accomplish anything. The CR's own worked example for those steps is Shield
+  Bash, whose "If you targeted a hero, you may interrupt…" clause is likewise
+  not decided until the link resolves.
+- **709.2c** — "If some of the link is impossible to perform, only as much as
+  possible is performed." A false condition means nothing is performed.
+
+Refusing the announcement would be an engine-only **use restriction** that the
+printed card does not carry — the same mistake as the RESOLVED For the Horde! /
+Rayder / Ryn Dreamstrider lockout above, and it would forbid a play that can be
+worth making on purpose: a future "when you play a <class> ability" watcher
+(Spiritual Healing's shape) pays off on the play itself, not on the effect.
+
+The convenience is delivered without the lie: `mute_when:hero_not_defending`
+stops the card holding priority windows open, and `BaseAI.combat_instant_action`
+asks `StackResolver.hero_defending_condition_ok` before ever spending it.
+
 ## RESOLVED — For the Horde! / Rayder / Ryn Dreamstrider off-turn lockout
 
 **Cards:** For the Horde! (`azeroth_344`), Rayder (`azeroth_45`), Ryn

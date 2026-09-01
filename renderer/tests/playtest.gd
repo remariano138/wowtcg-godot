@@ -520,6 +520,8 @@ func _build_scene() -> void:
 	_router.targeting_cancelled.connect(_on_targeting_cancelled)
 	_router.modal_choice_opened.connect(_on_modal_choice_opened)
 	_router.modal_choice_cancelled.connect(_on_modal_choice_cancelled)
+	_router.multi_modal_prompt.connect(_on_multi_modal_prompt)
+	_router.multi_modal_prompt_closed.connect(_on_modal_choice_cancelled)
 	_router.trigger_target_resolved.connect(_on_trigger_target_resolved)
 	_router.death_target_resolved.connect(_on_death_target_resolved)
 	_router.quest_flow_resolved.connect(_on_quest_flow_resolved)
@@ -3438,6 +3440,24 @@ func _try_pass(skip_confirm: bool = false) -> void:
 		_schedule_next_turn()
 		return
 	if _state.priority_player != _local_player:
+		# Priority is the OTHER seat's. Normally the drain loop has already dealt
+		# with that — auto-passing an off-screen hotseat human with no legal
+		# response, or stopping in ambush mode and arming their own pass button.
+		# If neither happened the game is parked: their button reads the inert
+		# "Priority", ours reads "Waiting for …", and this key was a silent no-op
+		# with nothing left to re-drive the loop. (Seen with an orphaned chain
+		# link — an enters-play trigger whose target was sacrificed in response —
+		# where the drain was not re-entered after the responder's own link
+		# resolved.) Kick the drain here: it either hands them the window properly
+		# or passes for them, and it is re-entrancy guarded, so a redundant call
+		# during normal play does nothing.
+		_drain_passes()
+		var still_parked := _state.priority_player != _local_player
+		if still_parked and not _in_ambush_mode and not _handoff_pending:
+			_show_transient_notice(
+				"Waiting for %s — it is their window to act."
+					% _player_name(_state.priority_player),
+				Color(1.0, 0.6, 0.0))
 		return
 	# Rule 600.2 (Lynda Steele / Mocking Blow): the engine refuses this pass while
 	# one of our characters must attack and is able to. The pass button says so;
@@ -4154,6 +4174,14 @@ func _refresh_atk_badges() -> void:
 				# used, shrinks as damage eats it, and disappears when the
 				# end-of-turn sweep expires it, with no event of its own.
 				cn.update_shield(GameLogic.granted_shield(card))
+	# Attachments live in the shared "attached" zone, not in either row, so they
+	# need their own pass — and they need ONLY the counter badge: an Ability
+	# card has no ATK, health or shield of its own. Cyclone's wind counters are
+	# the countdown to its own destruction, so the number has to be on the card.
+	for card in _state.cards_in_zone("attached"):
+		var att_cn := _renderer.card_nodes.get(card.instance_id) as CardNode
+		if att_cn:
+			att_cn.update_counter(card.real_counter_total())
 
 
 func _on_window_closed() -> void:
@@ -5155,6 +5183,10 @@ func _handle_circle_choice(payload: Dictionary) -> void:
 	_gy_circle_mode = true
 	_gy_confirm_btn.text = "Put into play (C)"
 	_gy_cancel_btn.text = "Decline (Esc)"
+	# Every candidate is a copy of the SAME card (same name), so the pick is a
+	# formality — preselect the first so the player can just confirm. They can
+	# still deselect it (decline) or pick another copy.
+	_gy_preselect_first()
 	_set_status("%s was destroyed — put another into play exhausted, or decline" % card_name)
 	_refresh_ui()
 
@@ -6247,6 +6279,19 @@ func _make_gy_card_button(instance_id: String) -> Button:
 	return btn
 
 
+# Preselect the first selectable card in the browser. Sets `button_pressed`,
+# which fires the toggled handler, so `_gy_selected`, the blue frame and the
+# confirm button all update exactly as if the player had clicked it.
+func _gy_preselect_first() -> void:
+	for grid in _gy_body.get_children():
+		if not (grid is GridContainer):
+			continue
+		for btn in grid.get_children():
+			if btn is Button and (btn as Button).toggle_mode and not (btn as Button).disabled:
+				(btn as Button).button_pressed = true
+				return
+
+
 func _update_gy_confirm() -> void:
 	_gy_confirm_btn.disabled = _gy_selected.size() < _gy_min \
 			or _gy_selected.size() > _gy_max
@@ -6664,6 +6709,11 @@ func _on_card_clicked_scene(instance_id: String) -> void:
 # Returns the root Panel; freeing it (queue_free) tears down the whole popup, so
 # callers append just the panel to their existing `_*_nodes` array.
 const CHOICE_POPUP_CENTER := Vector2(960, 470)
+# A choice popup is a PROMPT — it must never be painted over by the draggable
+# tool windows (chain / turn info / controls, z 12, or 13 for the one last
+# dragged). Kept below the graveyard browser's dimmer (19) and every dialog
+# above it, which are choice UI in their own right and never co-exist with one.
+const CHOICE_POPUP_Z := 15
 
 
 # Single entry point for the modal board block. `allowed_ids` (only meaningful
@@ -6737,6 +6787,7 @@ func _build_choice_popup(header_text: String, header_color: Color, buttons: Arra
 	var panel := Panel.new()
 	panel.size     = Vector2(panel_w, panel_h)
 	panel.position = CHOICE_POPUP_CENTER - Vector2(panel_w, panel_h) * 0.5
+	panel.z_index  = CHOICE_POPUP_Z
 	panel.add_theme_stylebox_override("panel", _make_stylebox(Color(0.10, 0.11, 0.16, 0.97)))
 	_hud.add_child(panel)
 
@@ -6828,6 +6879,9 @@ func _show_combat_cancelled_notice(payload: Dictionary) -> void:
 	match reason:
 		"attacker_removed":
 			detail = "the attacker was removed from combat"
+		"defender_removed":
+			# Avanthera: she is still in play, she just isn't in the combat.
+			detail = "the defender was removed from combat"
 		"attacker_gone":
 			detail = "%s left play" % (att if att != "" else "the attacker")
 		_:
@@ -6859,6 +6913,25 @@ func _on_modal_choice_opened(card_id: String, mode_labels: Array) -> void:
 		"callback": func() -> void: _router.cancel_modal_choice(),
 	})
 
+	_modal_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons, true))
+
+
+# ── Multi-modal "choose one or more" (Totemic Call) ───────────────────────────
+# One yes/no popup per AVAILABLE mode, in the card's printed order — the router
+# never offers a mode whose totem the player doesn't control, so there is no
+# "unavailable" state to render. A TARGETED mode is not prompted here at all: it
+# opens the ordinary targeting flow, where Esc / right-click declines that mode
+# alone. Nothing is submitted until the last answer, so Cancel is free.
+func _on_multi_modal_prompt(card_id: String, _mode_index: int, label: String) -> void:
+	_clear_modal_buttons()
+	var card := _state.get_card(card_id)
+	var def: CardDef = _db.get_def(card.card_def_id) if card and _db else null
+	var header_text := "%s — %s" % [def.card_name if def else "Choose one or more", label]
+	var buttons: Array = [
+		{"text": "Yes", "callback": func() -> void: _router.answer_multi_modal(true)},
+		{"text": "No",  "callback": func() -> void: _router.answer_multi_modal(false)},
+		{"text": "Cancel", "callback": func() -> void: _router.cancel_multi_modal()},
+	]
 	_modal_nodes.append(_build_choice_popup(header_text, Color(0.9, 0.5, 0.2), buttons, true))
 
 
@@ -7530,21 +7603,29 @@ func _show_gy_return_inline(payload: Dictionary) -> void:
 	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
 	var card_name: String = def.name if def else "this card"
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	# The point serves two cards with different prices: Wisp asks for a payment
+	# every turn it sits in the graveyard, while Masten Everspirit's death
+	# trigger is FREE and fires once. A free offer is a plain yes/no — printing
+	# "Pay 0" would invent a cost the card doesn't have.
+	var take_text := "Return %s to hand" % card_name if cost <= 0 \
+		else "Pay %d: return %s to hand" % [cost, card_name]
+	var header := "%s%s is in your graveyard — take it back?" % [prefix, card_name] \
+		if cost <= 0 \
+		else "%s%s is in your graveyard — pay %d to take it back?" % [prefix, card_name, cost]
 	var buttons: Array = [
 		{
-			"text": "Pay %d: return %s to hand" % [cost, card_name],
+			"text": take_text,
 			"callback": func() -> void: _resolve_gy_return(true),
 		},
 		{
 			# Naming the consequence rather than the rule: declining is free and
-			# the offer comes back, which is the whole difference from an upkeep.
+			# leaves the card where recursion can still find it.
 			"text": "Leave it in the graveyard",
 			"callback": func() -> void: _resolve_gy_return(false),
 		},
 	]
 	_gy_return_nodes.append(_build_choice_popup(
-		"%s%s is in your graveyard — pay %d to take it back?" % [prefix, card_name, cost],
-		Color(0.55, 0.85, 0.95), buttons, true))
+		header, Color(0.55, 0.85, 0.95), buttons, true))
 
 
 func _resolve_gy_return(pay: bool) -> void:
@@ -8159,10 +8240,72 @@ func _set_turbo_mode(on: bool) -> void:
 # already only fire under Turbo or a wrap-up burst, so they are untouched.
 const LAYER2_NOTHING_CHANGED_AUTOPASS := false
 
+# ── TEMPORARY: _drain_passes tracing ─────────────────────────────────────────
+# Flip to true to print why the drain loop stopped. It exists because a drain
+# that exits without either passing for the off-screen player or entering ambush
+# mode PARKS priority on them: their pass button is the inert "Priority", the
+# seated player's reads "Waiting for …", and nothing is left to re-drive the
+# loop. That froze a hotseat game when an enters-play link fizzled and its
+# resolution emitted no events (fixed in StackResolver — both the specific path
+# and a systemic guard in pass_priority). Delete this block and its call sites
+# once the flow has been stable for a while.
+const TRACE_DRAIN := false
+
+func _trace_drain(what: String) -> void:
+	if not TRACE_DRAIN:
+		return
+	var pid := _state.priority_player if _state else "?"
+	var chain := _state.pending_actions.size() if _state else -1
+	print("[drain] %-28s prio=%s local=%s chain=%d ambush=%s handoff=%s"
+		% [what, pid, _local_player, chain, _in_ambush_mode, _handoff_pending])
+
+
+# Which engine-side choice, if any, is holding the drain up — the second and
+# third break groups collapsed into one readable name for the trace.
+func _trace_pending_reason() -> String:
+	if not _state:
+		return "no state"
+	var flags := {
+		"protect_point": _state.in_protect_point, "strike": _state.pending_strike_player != "",
+		"ready": _state.pending_ready_player != "", "strike_ready": _state.pending_strike_ready_player != "",
+		"attack_exhaust": _state.pending_attack_exhaust_player != "",
+		"prevention": _state.pending_prevention_player != "",
+		"enter_play": not _state.pending_enter_play_effect.is_empty(),
+		"discard": _state.pending_discard_count > 0,
+		"pet_sac": _state.pending_pet_sacrifice_player != "",
+		"equip_sac": _state.pending_equip_sacrifice_player != "",
+		"unique_sac": _state.pending_unique_sacrifice_player != "",
+		"form_sac": _state.pending_form_sacrifice_player != "",
+		"form_return": _state.pending_form_return_player != "",
+		"control_discard": _state.pending_control_discard_player != "",
+		"resource_place": _state.pending_resource_place_player != "",
+		"hand_play": _state.pending_hand_play_player != "",
+		"reveal_pick": _state.pending_reveal_pick_player != "",
+		"trigger_target": _state.pending_trigger_target_player != "",
+		"death_target": _state.pending_death_target_player != "",
+		"quest_choice": StackResolver._quest_choice_pending(_state),
+		"whelp": _state.pending_whelp_bounce_player != "",
+		"vestia": _state.pending_vestia_return_player != "",
+		"ready_choice": _state.pending_ready_choice_player != "",
+		"gy_return": _state.pending_gy_return_player != "",
+		"trigger_order": _state.pending_trigger_order_player != "",
+		"upkeep": _state.pending_upkeep_player != "",
+		"track_look": _state.pending_track_look_player != "",
+		"weapon_ready": _state.pending_weapon_ready_player != "",
+	}
+	var on: Array[String] = []
+	for k: String in flags:
+		if bool(flags[k]):
+			on.append(k)
+	return ", ".join(on) if not on.is_empty() else "ui mode only"
+
+
 func _drain_passes() -> void:
 	if _draining:
+		_trace_drain("skip (already draining)")
 		return
 	_draining = true
+	_trace_drain("enter")
 	_ai_timer.stop()
 	var had_combat_conclusion  := false
 	var had_ai_chain_play      := false
@@ -8170,6 +8313,7 @@ func _drain_passes() -> void:
 	while limit > 0:
 		limit -= 1
 		if _handoff_pending or _in_ambush_mode:
+			_trace_drain("break: handoff/ambush")
 			break
 		if _game_over or _state.in_protect_point or _in_protect_mode \
 				or _state.pending_strike_player != "" or _in_strike_mode \
@@ -8178,6 +8322,7 @@ func _drain_passes() -> void:
 				or _state.pending_attack_exhaust_player != "" \
 				or _state.pending_prevention_player != "" or _in_prevention_mode \
 				or _in_ally_exhaust_mode:
+			_trace_drain("break: point (%s)" % _trace_pending_reason())
 			break
 		if not _state.pending_enter_play_effect.is_empty() \
 				or _state.pending_discard_count > 0 or _state.pending_pet_sacrifice_player != "" \
@@ -8201,11 +8346,13 @@ func _drain_passes() -> void:
 				or _state.pending_upkeep_player != "" or _in_upkeep_mode \
 				or _state.pending_track_look_player != "" or _in_track_look_mode \
 				or _state.pending_weapon_ready_player != "":
+			_trace_drain("break: choice (%s)" % _trace_pending_reason())
 			_wrap_up_active = false
 			break
 		var in_combat     := _state.combat_attack_window or _state.combat_defend_window
 		var chain_pending := not _state.pending_actions.is_empty()
 		if not in_combat and not chain_pending:
+			_trace_drain("break: nothing pending")
 			break
 		var pid := _state.priority_player
 		var pid_type := _p1_type if pid == "p1" else _p2_type
@@ -8214,6 +8361,7 @@ func _drain_passes() -> void:
 			# Hotseat off-screen human: auto-pass (hand hidden), unless they have
 			# a legal instant response — then stop the window for them.
 			if _offscreen_has_play(pid) and not _wrap_up_skippable_window(pid):
+				_trace_drain("break: ambush stop for %s" % pid)
 				_enter_ambush_mode(pid)
 				break
 			events = StackResolver.pass_priority(_state, _db)
@@ -8292,6 +8440,9 @@ func _drain_passes() -> void:
 			else:
 				events = StackResolver.pass_priority(_state, _db)
 		if events.is_empty():
+			# THE freeze: a link resolved (or a pass fired) emitting nothing, so
+			# the loop stops with priority possibly parked on the other seat.
+			_trace_drain("break: EMPTY EVENTS  <-- parks priority")
 			break
 		await EventBus.emit_events(events)
 		_refresh_ui()
@@ -8309,6 +8460,7 @@ func _drain_passes() -> void:
 					if owner_type != "human":
 						had_ai_chain_play = true
 	_draining = false
+	_trace_drain("exit")
 	var delay := GameTiming.resolution_delay() if (had_combat_conclusion or had_ai_chain_play) else 0.0
 	if delay > 0.0:
 		get_tree().create_timer(delay).timeout.connect(

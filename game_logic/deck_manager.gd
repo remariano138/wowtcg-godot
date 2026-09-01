@@ -30,11 +30,10 @@ const GENERIC_AI_PROFILE_ID := "ai_generic"
 
 # WoW TCG two-letter class abbreviations (multi-class cards concatenate them
 # in the cards.csv class column, e.g. Mooncloth Robe = "MaPrLo").
-const CLASS_ABBREVS := {
-	"Dk": "Death Knight", "Dr": "Druid",  "Hu": "Hunter",  "Ma": "Mage",
-	"Pa": "Paladin",      "Pr": "Priest", "Ro": "Rogue",   "Sh": "Shaman",
-	"Lo": "Warlock",      "Wa": "Warrior",
-}
+# The class-abbreviation table now lives on CardDef (the format is a property
+# of the card data, and the rules engine needs it too for Lok'delar's play
+# trigger). Aliased here so existing readers keep working.
+const CLASS_ABBREVS := CardDef.CLASS_ABBREVS
 
 static var _index: DeckLibraryIndex = null
 
@@ -204,20 +203,7 @@ static func talent_spec(def: CardDef) -> String:
 # abbreviations for multi-class cards ("MaPrLo"). Returns ["?"] when the
 # value parses as neither — authorize_deck_def reports it as a data error.
 static func _parse_class_restriction(raw: String) -> Array[String]:
-	var s := raw.strip_edges()
-	if s.is_empty():
-		return []
-	if s in CLASS_ABBREVS.values():
-		return [s]
-	if s.length() % 2 != 0:
-		return ["?"]
-	var classes: Array[String] = []
-	for i in range(0, s.length(), 2):
-		var abbrev := s.substr(i, 2)
-		if not CLASS_ABBREVS.has(abbrev):
-			return ["?"]
-		classes.append(CLASS_ABBREVS[abbrev])
-	return classes
+	return CardDef.parse_class_restriction(raw)
 
 
 # ── DeckDefinition → runtime Deck ──────────────────────────────────────────────

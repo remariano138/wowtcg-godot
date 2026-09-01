@@ -500,6 +500,11 @@ var pending_quest_ready_source: String = ""     # quest instance id (UI)
 var pending_weapon_ready_player: String = ""
 var pending_weapon_ready_source: String = ""    # the power's source card (UI)
 var pending_weapon_ready_ids: Array[String] = []
+# Totemic Call's Air mode says "one of your MELEE weapons" where Galway
+# Steamwhistle says "one of your weapons". The flag rides the pending state so
+# choose_weapon_ready's re-check asks the same question the point was opened
+# with, and neither can drift from the other.
+var pending_weapon_ready_melee_only: bool = false
 # Poison Water "Shuffle any number of cards from your graveyard into your deck":
 # the completer CHOOSES a subset of their own graveyard (not a target). "Any
 # number" includes zero, so an empty pick is a legal answer.
@@ -721,6 +726,38 @@ func attachment_grants_keyword(instance_id: String, keyword: String, db) -> bool
 	return false
 
 
+# Damage-reflect grants this card's attachments carry ("Ongoing: When attached
+# character is dealt combat damage, it deals N <type> damage to the source of
+# that combat damage" — Thorns), one entry per attachment, in attach order.
+# The mirror of attachment_grants_keyword for a segment carrying TWO arguments,
+# and a LIST rather than a bool because copies stack: two Thorns on one host
+# reflect twice, as two separate packets. Live, so the grant lifts the instant
+# the attachment leaves play — which is why the combat conclusion samples this
+# BEFORE its packets land (400.5 takes the attachment with a host that dies to
+# the very hit that triggered it).
+func attachment_reflect_specs(instance_id: String, db) -> Array:
+	var out: Array = []
+	var inst := get_card(instance_id)
+	if not inst or not db:
+		return out
+	for att_id in inst.attachments:
+		var att := get_card(att_id)
+		if not att or att.zone_id != "attached":
+			continue
+		var att_def: CardDef = db.get_def(att.card_def_id)
+		if not att_def:
+			continue
+		for seg in att_def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0] != "attached_combat_damage_reflect":
+				continue
+			out.append({
+				"amount": int(p[1]) if p.size() > 1 else 1,
+				"dmg_type": p[2].strip_edges() if p.size() > 2 else "",
+			})
+	return out
+
+
 # True while an in-play card is under a "loses all powers" attachment.
 func has_lost_powers(instance_id: String, db) -> bool:
 	return has_attachment_flag(instance_id, LOST_POWERS_FLAG, db)
@@ -907,6 +944,15 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 		var wps := players.get(inst.controller) as PlayerState
 		if wps:
 			atk += wps.ranged_weapon_atk_bonus
+	# (2c) Eye of Rend: "Your weapons have +1 ATK." Elendril's grant above as a
+	# STATIC aura instead of a timed one, and untyped — the card says "weapons",
+	# so Melee and Ranged alike. Applied to the WEAPON itself, which is what
+	# makes every downstream reader get it for free: the 303.2b struck-weapon
+	# sum below, best_melee_weapon_atk (Mortal Strike), the AI's strike
+	# forecast, and the ATK badge. Read live off the weapon's own controller's
+	# hero row, so it lifts the instant the source leaves play.
+	if is_weapon:
+		atk += _weapon_atk_aura(inst, db)
 	# (3) Party auras granted by other cards in play (e.g. Zorm Stonefury).
 	atk += _aura_atk_mods(inst, is_attacking, db)
 	# (3b) Strike modifier (rule 303.2b): +X ATK per weapon associated with this
@@ -930,21 +976,26 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 		var b_ps := players.get(inst.controller) as PlayerState
 		if b_ps and b_ps.hero_instance_id == instance_id:
 			atk += _pending_berserk_atk(inst.controller, db)
-	# (4) Party-wide "while attacking this turn" grants (Rayder, For the
-	# Horde!) — tracked per-player, not per-card, so they also cover allies
-	# that entered play after the effect resolved. Card text is "allies", so
-	# a hero attacking never gets these.
-	if is_attacking:
-		var zone := zones.get(inst.zone_id) as Zone
-		var is_ally := zone != null and zone.zone_type == "ally_row"
-		if is_ally:
-			var ps := players.get(inst.controller) as PlayerState
-			if ps:
-				for grant in ps.party_atk_buffs_this_turn:
-					var alignment: String = grant.get("alignment", "")
-					if alignment != "" and def.alignment != alignment:
-						continue
-					atk += int(grant.get("amount", 0))
+	# (4) Party-wide this-turn ATK grants — tracked per-player, not per-card, so
+	# they also cover allies that entered play after the effect resolved. Card
+	# text is "allies", so a HERO never gets these.
+	#
+	# Each grant says whether it is conditional on ATTACKING: Rayder and For the
+	# Horde! are ("+X ATK WHILE ATTACKING this turn"), Totemic Call's Earth mode
+	# is not ("allies in your party have +1 ATK this turn"), so that one counts
+	# while defending, protecting and retaliating too. A grant with no flag is
+	# read as while-attacking, which is what every pre-existing one meant.
+	var zone := zones.get(inst.zone_id) as Zone
+	if zone != null and zone.zone_type == "ally_row":
+		var ps := players.get(inst.controller) as PlayerState
+		if ps:
+			for grant in ps.party_atk_buffs_this_turn:
+				if bool(grant.get("while_attacking", true)) and not is_attacking:
+					continue
+				var alignment: String = grant.get("alignment", "")
+				if alignment != "" and def.alignment != alignment:
+					continue
+				atk += int(grant.get("amount", 0))
 	# ATK floors at 0 — a character can't have negative ATK. Only the clamp is
 	# applied here; the raw negative buff (Ravenous Bite's -3) stays on the card,
 	# so a later +ATK effect counts from the true value, not from 0.
@@ -1126,6 +1177,30 @@ func _aura_atk_mods(inst: CardInstance, is_attacking: bool, db) -> int:
 					# get this bonus. Stacks with multiple copies.
 					if is_attacking and inst_is_ally:
 						bonus += int(p[1]) if p.size() > 1 else 1
+				"other_party_allies_buff":
+					# Warchief Thrall: "OTHER Horde allies in your party have
+					# +3 ATK and +3 health"
+					# (other_party_allies_buff:ALIGNMENT:ATK:HP; the health half
+					# is the twin arm in _aura_health_mods, so the two stats can
+					# never disagree about who qualifies).
+					#
+					# Three filters, and all three do real work. "Other" excludes
+					# the SOURCE — unlike Zorm's aura above, and it matters here
+					# because the source is an ALLY sitting in the very row it
+					# buffs. ALIGNMENT ("" = any) is matched against the printed
+					# alignment, so a neutral ally in a Horde party gets nothing.
+					# And "allies in your party" is the controller's ally_row read
+					# live, so TOTEMS qualify (305.3a) while the hero does not.
+					#
+					# Unconditional, so it counts while defending, protecting and
+					# retaliating too. Stacks per copy; lifts the instant the
+					# source leaves play, which for the health half can put an
+					# already-damaged ally at 0 — a state-based death swept at
+					# the priority gate (drain_state_based_deaths).
+					if inst_is_ally and source.instance_id != inst.instance_id \
+							and def != null \
+							and (p.size() < 2 or p[1] == "" or def.alignment == p[1]):
+						bonus += int(p[2]) if p.size() > 2 else 0
 	for source in cards_in_zone(inst.controller + "_hero_row"):
 		var src_def2: CardDef = effective_def(source.instance_id, db)
 		if not src_def2:
@@ -1412,6 +1487,15 @@ func _aura_health_mods(inst: CardInstance, db) -> int:
 		for seg in src_def.effects.split("|"):
 			var p := seg.split(":")
 			match p[0]:
+				"other_party_allies_buff":
+					# Warchief Thrall's health half — the twin of the ATK arm in
+					# _aura_atk_mods; see that comment for the three filters.
+					# The enclosing loop already skips the source, which is the
+					# "other" clause.
+					if inst.zone_id == inst.controller + "_ally_row" \
+							and def != null \
+							and (p.size() < 2 or p[1] == "" or def.alignment == p[1]):
+						bonus += int(p[3]) if p.size() > 3 else 0
 				"party_health_aura":
 					# Nerra Lifeboon: "Other allies in your party have +X health."
 					# "An ally in your party" is the controller's ally_row read
@@ -1490,6 +1574,25 @@ func _type_cost_auras(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 # are untouched, and stacks per copy in play. As with Elemental Focus the FLOOR
 # is on the REDUCTION, not on the cost: a printed-0 or printed-1 ally is returned
 # untouched (never raised), the discount simply can't take a dearer one below it.
+# Eye of Rend (azeroth_288): "Your weapons have +1 ATK." Controller-scoped, so
+# the scan reads only the WEAPON's own controller's hero row — an opposing Eye
+# never boosts it. Stacks per copy (Head (1) caps that at one per player today).
+# Read through effective_def, so a blanked source (Polymorph) grants nothing.
+func _weapon_atk_aura(inst: CardInstance, db) -> int:
+	if not db:
+		return 0
+	var bonus := 0
+	for c in cards_in_zone(inst.controller + "_hero_row"):
+		var a_def: CardDef = effective_def(c.instance_id, db)
+		if not a_def or a_def.effects == "":
+			continue
+		for seg in a_def.effects.split("|"):
+			var p := seg.strip_edges().split(":")
+			if p[0].strip_edges() == "weapon_atk_bonus":
+				bonus += int(p[1]) if p.size() > 1 else 1
+	return bonus
+
+
 func _ally_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 	if not db or not def.is_ally_card():
 		return cost

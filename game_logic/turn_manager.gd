@@ -369,6 +369,7 @@ const YOUR_TURN_TRIGGERS := [
 	"turn_start_discard_or_destroy",    # Last Stand (upkeep, paid in cards)
 	"turn_start_destroy_self_damage_opposing",  # Fire Nova Totem
 	"turn_start_destroy_self",          # Shadowmeld (plain self-destroy, no rider)
+	"turn_start_remove_counter_destroy", # Cyclone (counter countdown, then self-destroy)
 ]
 # Effects segments that trigger "at the start of YOUR turn" while the card is in
 # that player's GRAVEYARD — rule 703.3a: "a card's power that can trigger only

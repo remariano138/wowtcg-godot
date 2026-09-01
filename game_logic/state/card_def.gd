@@ -40,6 +40,47 @@ var mute_when: String = ""
 var is_token: bool = false
 
 
+
+# cards.csv `class` column format. A single-class card stores the full class
+# name ("Hunter"); a multi-class one stores concatenated two-letter abbreviations
+# ("MaPrLo"). This lives on CardDef rather than in DeckManager because the format
+# is a property of the card DATA, and two unrelated readers need it: deck
+# legality (rule 100.2a) and Lok'delar's "when you play a <class> ability" play
+# trigger. DeckManager delegates here so there is one source of truth.
+const CLASS_ABBREVS := {
+	"Dk": "Death Knight", "Dr": "Druid",  "Hu": "Hunter",  "Ma": "Mage",
+	"Pa": "Paladin",      "Pr": "Priest", "Ro": "Rogue",   "Sh": "Shaman",
+	"Lo": "Warlock",      "Wa": "Warrior",
+}
+
+
+# The classes this card's `class` column names: [] = no restriction (legal for
+# any hero), one or more full class names otherwise, or ["?"] when the value
+# parses as neither — DeckManager.authorize_deck_def reports that as a data error.
+static func parse_class_restriction(raw: String) -> Array[String]:
+	var t := raw.strip_edges()
+	if t.is_empty():
+		return []
+	if t in CLASS_ABBREVS.values():
+		return [t]
+	if t.length() % 2 != 0:
+		return ["?"]
+	var classes: Array[String] = []
+	for i in range(0, t.length(), 2):
+		var abbrev := t.substr(i, 2)
+		if not CLASS_ABBREVS.has(abbrev):
+			return ["?"]
+		classes.append(CLASS_ABBREVS[abbrev])
+	return classes
+
+
+# True when this card carries `class_name_wanted`'s icon. A card with NO class
+# restriction is deliberately not "a Hunter card" — it belongs to no class, so
+# Lok'delar's trigger ignores a neutral ability even in a Hunter deck.
+func has_class(class_name_wanted: String) -> bool:
+	return class_name_wanted in parse_class_restriction(card_class)
+
+
 # Build a CardDef from a raw CSV row dictionary (as returned by CardDatabase).
 static func from_csv_row(id: String, row: Dictionary) -> CardDef:
 	var d := CardDef.new()

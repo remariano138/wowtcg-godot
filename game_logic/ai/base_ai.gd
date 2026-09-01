@@ -93,6 +93,8 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_51":  "combat_instant_counterspell", # Counterspell — interrupt ANY ability card on the chain (see counterspell_action)
 	"azeroth_70":  "combat_instant_holy_shield", # Holy Shield — counted, source-scoped hero shield that reflects (see holy_shield_action)
 	"azeroth_145": "combat_instant_mortal_strike", # Mortal Strike — damage + "can't be healed this turn" (see mortal_strike_action)
+	"dark_portal_37": "combat_instant_dmg",  # Point Blank — 3 ranged to target attacker, but ONLY while our hero is the settled defender (the require_hero_defending gate below)
+	"dark_portal_42": "combat_instant_wing_clip",  # Wing Clip — 1 melee + "can't attack your hero this turn" (see wing_clip_action)
 	"azeroth_49":  "combat_instant_brain_freeze", # Brain Freeze — "players can't draw cards this turn" (see brain_freeze_action)
 }
 
@@ -114,6 +116,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var freeze_draws := brain_freeze_action(state, db, player_id)
 	if freeze_draws != null:
 		return freeze_draws
+	# Wing Clip: the same interrupt point as Litori's freeze, on a 1-cost
+	# hand card, and narrowed to proposals aimed at our own HERO.
+	var clip := wing_clip_action(state, db, player_id)
+	if clip:
+		return clip
 	var freeze := hero_disable_action(state, db, player_id)
 	if freeze != null:
 		return freeze
@@ -142,6 +149,10 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var avanthera := avanthera_escape_action(state, db, player_id)
 	if avanthera != null:
 		return avanthera
+	# Ghost Wolf — cancel an ally attack our hero is defending against.
+	var ghost_wolf := ghost_wolf_action(state, db, player_id)
+	if ghost_wolf != null:
+		return ghost_wolf
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
@@ -290,6 +301,15 @@ func combat_instant_action(state: GameState, db, player_id: String) -> PendingAc
 			dmg = _combat_instant_dmg(def)
 		if dmg <= 0:
 			continue
+		# Point Blank: "If your hero is defending…" is an EFFECT condition, so
+		# the card is legal anywhere but resolves into nothing unless our own
+		# hero is the settled defender (602.3 — never during the attack window,
+		# where it is only a PROPOSED defender). Playing it there would burn the
+		# card for zero, so the AI asks the engine's own condition rather than
+		# re-deriving it. Data-driven: any future card printing the clause
+		# inherits the gate.
+		if not StackResolver.hero_defending_condition_ok(state, def, player_id):
+			continue
 		if attacker_cost < def.cost:
 			continue   # cheap bait — not worth the card
 		var play := false
@@ -435,6 +455,68 @@ func instant_protector_action(state: GameState, db, player_id: String) -> Pendin
 #     attacker back (a plain bad trade for us).
 # Held if a tagged damage combat-instant in hand can kill the attacker instead
 # (a cheaper, permanent answer that combat_instant_action will play later).
+# Wing Clip (dark_portal_42): "Target hero or ally can't attack your hero this
+# turn. Your hero deals 1 melee damage to that character."
+#
+# Litori Frostburn's interrupt (hero_disable_action) as a 1-cost hand card, and
+# narrowed the same way the card is: it bars the target from attacking OUR HERO
+# only, so it saves the hero and nothing else. The 601.3 re-check is what makes
+# it an interrupt — the named defender is no longer legal when the proposal
+# resolves, so combat never starts and the attacker never exhausts.
+#
+# Fired ONLY in response to an opposing propose_combat that names our own hero
+# as the defender. Everywhere else the lock is close to worthless (once the
+# attack window is open the moment has passed, and "this turn" expires before
+# their next attack step), which is also what the `no_combat_proposal` mute
+# token expresses for the human UI — see the Auto-mute section in CLAUDE.md.
+#
+# The bar is the hero's SKIN, not a trade: nothing dies here, so the question is
+# only whether the hit is worth a 1-cost card. Litori's hero branch is reused —
+# lethal on our hero, or 4+ incoming — plus a "we can just kill it instead"
+# check, since a damage instant that removes the attacker is strictly better
+# than one that sends it at our allies.
+func wing_clip_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.pending_actions.is_empty():
+		return null
+	var top: PendingAction = state.pending_actions.back()
+	if top.action_type != "propose_combat" or top.source_player == player_id:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return null
+	var attacker_id: String = top.params.get("attacker_id", "")
+	var defender_id: String = top.params.get("defender_id", "")
+	# The card only bars attacks on OUR HERO, so a proposal aimed at one of our
+	# allies is not something it can answer at all.
+	if defender_id != ps.hero_instance_id:
+		return null
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+
+	var a_atk := state.get_atk(attacker_id, db, true)
+	var a_hp  := state.get_current_hp(attacker_id, db)
+	if a_atk < 4 and a_atk < state.get_current_hp(defender_id, db):
+		return null   # a scratch — not worth a card
+
+	# Killing the attacker outright is strictly better than redirecting it.
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_dmg":
+			continue
+		var d := db.get_def(card.card_def_id) as CardDef
+		if d and _combat_instant_dmg(d) >= a_hp \
+				and d.cost <= state.get_available_resources(player_id):
+			return null
+
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if COMBAT_INSTANT_TAGS.get(card.card_def_id, "") != "combat_instant_wing_clip":
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
 func hero_disable_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db or state.pending_actions.is_empty():
 		return null
@@ -1545,6 +1627,55 @@ func avanthera_escape_action(state: GameState, db, player_id: String) -> Pending
 	return null
 
 
+# ── Ghost Wolf (azeroth_110) ───────────────────────────────────────────────────
+# "Ongoing: Exhaust your hero -> If your hero is defending, remove all attacking
+# allies from combat."
+#
+# Held out of _get_ally_power_actions entirely: the generic untargeted branch
+# would fire it at every priority window, and outside an open DEFEND window with
+# our own hero defending the power resolves into nothing (602.3) while the
+# hero-exhaust cost is still spent.
+#
+# The gate is exactly the situation the card answers: our hero is the settled
+# defender and the attacker is an ALLY (an attacking HERO is not removed, so
+# firing then buys nothing). Given that, the removal is close to free — 602.4
+# leaves the combat step running and 603.1b then deals no damage in EITHER
+# direction, while our hero was not going to attack on the opponent's turn
+# anyway — so there is deliberately no value bar beyond it. Sole cost: the hero
+# is exhausted and so can no longer PROTECT this turn, which matters only for a
+# later attack, whereas the attack in front of us is cancelled outright.
+#
+# can_submit is the authority on affordability (a ready hero, rule 412.2) and on
+# the source still being in play, which is what keeps the hook and the rule from
+# disagreeing.
+func ghost_wolf_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db:
+		return null
+	if not state.combat_defend_window:
+		return null
+	var ps := state.players.get(player_id) as PlayerState
+	if not ps or ps.hero_instance_id == "":
+		return null
+	if state.combat_defender != ps.hero_instance_id:
+		return null
+	# An attacking hero is not removed by this power — see the resolution arm.
+	var attacker := state.get_card(state.combat_attacker)
+	if not attacker or attacker.zone_id != attacker.controller + "_ally_row":
+		return null
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		var def := state.effective_def(card.instance_id, db) as CardDef
+		if not def:
+			continue
+		if StackResolver._ally_activated_power(def).get(
+				"effect", "") != "remove_attacking_allies":
+			continue
+		var act := PendingAction.make("use_ally_power", player_id,
+			{"card_id": card.instance_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
 func katsin_shield_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null
@@ -2542,6 +2673,14 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				# Attachment (rule 400): buff → own ally, debuff → enemy ally.
 				result.append_array(_attach_actions(state, db, player_id, card.instance_id, action_type, def))
 				continue
+			if def and StackResolver.is_multi_modal_def(def):
+				# Totemic Call: "choose one or more", each mode gated on a
+				# totem. See _multi_modal_action().
+				var mm_action := _multi_modal_action(state, db, player_id,
+					card.instance_id, action_type)
+				if mm_action:
+					result.append(mm_action)
+				continue
 			if def and StackResolver.is_modal_def(def):
 				# Modal spell (707.1c): every mode is enumerated (get_modal_actions)
 				# so the option space is visible, then the play policy
@@ -2637,6 +2776,26 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if StackResolver.can_submit(state, lt_action, db):
 					result.append(lt_action)
 				continue
+			# Prayer of Healing (`heal_party:N`): a non-targeted friendly party
+			# sweep, so it falls through to the generic play below and would be
+			# cast on an undamaged board every time it is drawn. Same gate as the
+			# `heal_party` activated power in _get_ally_power_actions, and the same
+			# reasoning as Healing Touch's held-while-nothing-is-damaged branch:
+			# only cast it when someone in our own party actually carries damage.
+			# Deliberately no "heals at least N total" bar — the card is cheap and
+			# the sweep is capped by damage present, so any real repair is fine.
+			if def and StackResolver._top_level_heal_party_amount(def) > 0:
+				var ph_worth := false
+				var ph_hero := state.get_hero(player_id)
+				if ph_hero and ph_hero.damage_taken > 0:
+					ph_worth = true
+				if not ph_worth:
+					for ph_ally in state.cards_in_zone(player_id + "_ally_row"):
+						if ph_ally.damage_taken > 0:
+							ph_worth = true
+							break
+				if not ph_worth:
+					continue
 			# Pure-draw spell (Innervate): don't draw past max hand size — the
 			# excess would just be discarded at wrap-up (503.2a). Same gate as
 			# the `draw` activated power in _get_ally_power_actions, minus one
@@ -4037,6 +4196,11 @@ func choose_gy_return(state: GameState, db, player_id: String,
 	var hand := state.zones.get(player_id + "_hand") as Zone
 	if hand != null and hand.card_ids.size() >= state.get_max_hand_size(player_id, db):
 		return false
+	# A FREE return (Masten Everspirit's death trigger) has no downside at all
+	# once the hand has room — the spare-resource floor below is Wisp's, and it
+	# exists only because paying for the body competes with the turn's plays.
+	if cost <= 0:
+		return true
 	return state.get_available_resources(player_id) - cost >= WISP_MIN_SPARE_RESOURCES
 
 
@@ -4352,6 +4516,29 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			if best_x != "":
 				result.append(PendingAction.make("use_ally_power", player_id,
 					{"card_id": card.instance_id, "target_id": best_x}))
+		elif ap.get("effect", "") == "destroy_ally" 				and ap.get("targets", "") == "undead_ally":
+			# Wyneth Harridan: "(3), [Activate] -> Destroy target Undead ally."
+			# Lhurg Venomblade's heuristic with the race filter doing the
+			# narrowing instead of the exhaust state — destroy the MOST valuable
+			# OPPOSING Undead ally, judged by can_submit so the race test is the
+			# engine's own. Never our own allies (the printed pool allows it, the
+			# AI never wants it), and no value floor beyond the 3 resources: a
+			# repeatable hard removal is worth any body it can legally take.
+			var opp_u := _other_player_id(state, player_id)
+			var best_u := ""
+			var best_u_score := -1.0
+			for enemy_u in state.cards_in_zone(opp_u + "_ally_row"):
+				var u_act := PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": enemy_u.instance_id})
+				if not StackResolver.can_submit(state, u_act, db):
+					continue
+				var u_score := card_value_score(state, db, enemy_u.instance_id)
+				if u_score > best_u_score:
+					best_u_score = u_score
+					best_u = enemy_u.instance_id
+			if best_u != "":
+				result.append(PendingAction.make("use_ally_power", player_id,
+					{"card_id": card.instance_id, "target_id": best_u}))
 		elif ap.get("effect", "") == "heal_party":
 			# Lady Courtney Noel: "[Activate] -> heals N damage from each hero and
 			# ally in your party." Non-targeted, so the generic else-branch below
@@ -4824,6 +5011,14 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			# defend window she is in — including fights she WINS, throwing the
 			# kill away and paying 1 for it. Held for a combat she would not
 			# survive; see avanthera_escape_action().
+			continue
+		elif ap.get("effect", "") == "remove_attacking_allies":
+			# Ghost Wolf: "Exhaust your hero -> If your hero is defending, remove
+			# all attacking allies from combat." The generic untargeted branch
+			# below would exhaust our hero at any window for a clause that is only
+			# true inside a defend window (602.3) — and the exhaust would then cost
+			# us the hero's attack on our own turn. Held for an ally attack our
+			# hero is actually defending against; see ghost_wolf_action().
 			continue
 		elif ap.get("effect", "") == "prevent_combat_damage_target":
 			# Katsin Bloodoath: "(3) -> Prevent all combat damage dealt to and by
@@ -6670,6 +6865,104 @@ func get_modal_actions(state: GameState, db, player_id: String,
 # heuristics actually play. For now only damage modes (played with the usual
 # combat-instant / targeted-damage logic); heal modes are enumerated by
 # get_modal_actions but filtered here — future work.
+
+# ── Multi-modal "choose one or more" (Totemic Call) ───────────────────────────
+# Unlike a single-choice modal there is nothing to trade off: the modes don't
+# compete, they are all free once the card is paid for, and the only reason to
+# decline one is that it would do nothing (or something we don't want). So the
+# policy is "take every available mode that has work to do", which is also what
+# makes the card's price fair — it scales with how many totems are out.
+#
+# Per mode:
+#   Air   — only when something would actually ready (our hero is exhausted, or
+#           a Melee weapon of ours is). Galway Steamwhistle's gate.
+#   Earth — only with an ally in our party to receive the +1 ATK.
+#   Fire  — only with a target worth burning, and it is the ONE mode with a
+#           target, so declining it is also how we avoid announcing one. The
+#           errata makes an illegal target at resolution interrupt the ENTIRE
+#           card, so a mode we can aim well is worth having and a doubtful one
+#           is genuinely dangerous: prefer a kill, else the opposing hero.
+#   Water — only with room in hand for both cards (503.2a) and a deck to draw
+#           from, since a blocked draw is a wasted mode.
+#
+# Announcing zero modes is not a legal play (707.1c), so with nothing worth
+# taking the card is held entirely.
+func _multi_modal_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	if not db:
+		return null
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var modes := StackResolver.totem_modes(def)
+	var chosen: Array[int] = []
+	var target := ""
+	for i in StackResolver.available_totem_modes(state, def, player_id, db):
+		var effect := String(modes[i].get("effect", ""))
+		match effect.split(":")[0]:
+			"ready_hero_and_melee_weapon":
+				if _multi_modal_ready_useful(state, db, player_id):
+					chosen.append(i)
+			"party_allies_atk_this_turn":
+				if not state.cards_in_zone(player_id + "_ally_row").is_empty():
+					chosen.append(i)
+			"draw":
+				var amount := int(effect.split(":")[1]) if effect.split(":").size() > 1 else 1
+				var hand := state.cards_in_zone(player_id + "_hand").size()
+				# The spell itself leaves the hand, hence the -1.
+				if hand - 1 + amount <= state.get_max_hand_size(player_id, db) \
+						and not state.cards_in_zone(player_id + "_deck").is_empty():
+					chosen.append(i)
+			"deal_damage_to_target":
+				var parts := effect.split(":")
+				var amount := int(parts[1]) if parts.size() > 1 else 0
+				var dmg_type := parts[2] if parts.size() > 2 else ""
+				var pick := _multi_modal_burn_target(state, db, player_id, amount, dmg_type)
+				if pick != "":
+					chosen.append(i)
+					target = pick
+	if chosen.is_empty():
+		return null
+	var params := {"card_id": card_id, "modes": chosen}
+	if target != "":
+		params["target_id"] = target
+	var action := PendingAction.make(action_type, player_id, params)
+	return action if StackResolver.can_submit(state, action, db) else null
+
+
+# Would the Air mode ready anything? Our hero, or a Melee weapon of ours.
+func _multi_modal_ready_useful(state: GameState, db, player_id: String) -> bool:
+	var hero := state.get_hero(player_id)
+	if hero and hero.is_exhausted:
+		return true
+	return not StackResolver.get_weapon_ready_candidates(
+		state, player_id, db, true).is_empty()
+
+
+# Where the fire mode points: an opposing ally the burn KILLS, else the opposing
+# hero. Never our own board — and never nothing, since announcing a target we
+# don't want is how the errata's "the entire card is interrupted" clause bites.
+func _multi_modal_burn_target(state: GameState, db, player_id: String,
+		amount: int, dmg_type: String) -> String:
+	var opp := _other_player_id(state, player_id)
+	var dealt := StackResolver.preview_hero_damage_amount(
+		state, db, player_id, amount, dmg_type, true)
+	var best := ""
+	var best_score := -1.0
+	for enemy in state.cards_in_zone(opp + "_ally_row"):
+		if state.get_current_hp(enemy.instance_id, db) > dealt:
+			continue
+		var score := card_value_score(state, db, enemy.instance_id)
+		if score > best_score:
+			best_score = score
+			best = enemy.instance_id
+	if best != "":
+		return best
+	var opp_hero := state.get_hero(opp)
+	return opp_hero.instance_id if opp_hero else ""
+
+
 func _modal_mode_playable(mode_effect: String) -> bool:
 	return mode_effect.begins_with("deal_damage_to_target")
 
@@ -6734,6 +7027,21 @@ func _attach_actions(state: GameState, db, player_id: String,
 				{"card_id": card_id, "target_id": m_hero.instance_id})
 			if StackResolver.can_submit(state, m_act, db):
 				result.append(m_act)
+		return result
+	# Thorns (`attached_combat_damage_reflect`): a FRIENDLY attachment, and the
+	# one whose debuff-branch misread would be actively self-harming — put it on
+	# the opponent and their character reflects at OUR attackers. It goes on our
+	# own HERO: the character that gets attacked most, always in play, and the
+	# one host that can never be killed to shed it. That is also where the
+	# `from_ability` packet earns a Chromatic Cloak's +1, since the bonus needs a
+	# HERO source (an ally host reflects for the printed 1).
+	if StackResolver._has_effect_flag_prefix(def, "attached_combat_damage_reflect"):
+		var t_hero := state.get_hero(player_id)
+		if t_hero:
+			var t_act := PendingAction.make(action_type, player_id,
+				{"card_id": card_id, "target_id": t_hero.instance_id})
+			if StackResolver.can_submit(state, t_act, db):
+				result.append(t_act)
 		return result
 	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage") \
 			or StackResolver._has_effect_flag_prefix(def, "attached_damage_turn_start"):

@@ -24,6 +24,12 @@ signal targeting_cancelled()
 # choose_modal_mode(index); Esc / cancel_modal_choice aborts (the scene removes
 # its buttons on modal_choice_cancelled — also fired when a mode is chosen).
 signal modal_choice_opened(card_id: String, mode_labels: Array)
+# Multi-modal "choose one or more" (Totemic Call): one yes/no prompt per
+# AVAILABLE mode, asked in the card's printed order. A targeted mode never
+# gets a prompt — it opens the ordinary targeting flow instead, where Esc or
+# right-click declines just that mode rather than the whole cast.
+signal multi_modal_prompt(card_id: String, mode_index: int, label: String)
+signal multi_modal_prompt_closed()
 signal modal_choice_cancelled()
 # Emitted after a human resolves an ongoing Totem start-of-turn target choice
 # (Searing Totem) so the scene can resume driving the turn.
@@ -130,6 +136,18 @@ var _targeting_x_value: int = 0
 # index riding on the current targeting flow (-1 = not a modal play).
 var _modal_pending_card: String = ""
 var _targeting_mode: int = -1
+# Multi-modal spell in the middle of being announced (Totemic Call). NOTHING
+# reaches the engine until every prompt is answered, so Esc at any point is
+# free and the game state is untouched — The Love Potion's pre-submission
+# picker rule. Modes are chosen at ANNOUNCEMENT (707.1c) and so is the fire
+# target (707.1d), which is why all of it is collected here rather than being
+# asked at resolution.
+var _mm_card: String = ""
+var _mm_queue: Array[int] = []      # available modes still to ask about
+var _mm_chosen: Array[int] = []     # answered yes
+var _mm_current: int = -1           # the mode being asked about right now
+var _mm_target: String = ""         # the targeted mode's target, if chosen
+var _mm_targeting: bool = false     # the targeted mode's pick is open
 # Quest awaiting graveyard-target selection; "" = no browser open.
 var _gy_select_quest_id: String = ""
 var _gy_select_hero_id: String = ""
@@ -399,6 +417,13 @@ func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 		return true
 	if uses_gy:
 		start_ability_graveyard_selection(instance_id)
+		return true
+	# Multi-modal "choose one or more" (Totemic Call). Checked BEFORE the
+	# needs_target gate below: only its fire mode announces a target, so
+	# _play_needs_target reads false for the card as a whole and would otherwise
+	# play it straight out of the hand with no prompts at all.
+	if action_type == "play_instant" and _is_multi_modal(instance_id):
+		_open_multi_modal(instance_id)
 		return true
 	if not needs_target:
 		return false
@@ -1190,6 +1215,18 @@ func targeting_is_mandatory() -> bool:
 
 # Abort targeting — called by Escape key or scene logic.
 func cancel_targeting() -> void:
+	# Totemic Call's fire mode declines with Esc / right-click — that drops the
+	# ONE mode, not the whole cast, so the remaining prompts still run.
+	if _mm_targeting:
+		_mm_targeting = false
+		_mm_current   = -1
+		_targeting_source       = ""
+		_targeting_action_type  = ""
+		_targeting_dmg_type     = ""
+		_targeting_first_target = ""
+		targeting_cancelled.emit()
+		_advance_multi_modal()
+		return
 	_targeting_source       = ""
 	_targeting_action_type  = ""
 	_targeting_dmg_type     = ""
@@ -1279,6 +1316,139 @@ func choose_modal_mode(mode_index: int) -> void:
 			dmg_type = "heal"
 			amount   = int(parts[1]) if parts.size() > 1 else 0
 	start_targeting(card_id, "play_instant", dmg_type, amount)
+
+
+# ── Multi-modal spells (rule 707.1c — "Choose one or more", Totemic Call) ──────
+# Clicking the card walks the AVAILABLE modes in printed order, one prompt at a
+# time. A mode whose totem the player doesn't control is never offered at all,
+# which is the whole reason the prompts are built from the engine's own
+# available_totem_modes() rather than from the def: the interface and the
+# legality gate then cannot disagree about what is choosable.
+#
+# Everything is collected BEFORE submitting, because both the modes (707.1c) and
+# the fire target (707.1d) are announcement-time choices. Nothing has reached the
+# engine until the last answer, so cancelling costs nothing. Answering "no" to
+# every prompt cancels the cast — "one or more" cannot be satisfied by zero.
+#
+# The WEAPON pick of the Air mode is deliberately NOT here: which weapon readies
+# is a RESOLUTION choice (709.2b), so it opens later through Galway
+# Steamwhistle's existing point — and, as there, only when there are two or more
+# to choose between.
+
+func _is_multi_modal(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null and StackResolver.is_multi_modal_def(def)
+
+
+func _open_multi_modal(card_id: String) -> void:
+	_reset_multi_modal()
+	var def := db.get_def(state.get_card(card_id).card_def_id) as CardDef
+	_mm_card  = card_id
+	_mm_queue = StackResolver.available_totem_modes(state, def, local_player, db)
+	if _mm_queue.is_empty():
+		_reset_multi_modal()
+		return
+	_advance_multi_modal()
+
+
+# Ask about the next available mode, or submit once the queue is drained.
+func _advance_multi_modal() -> void:
+	if _mm_card == "":
+		return
+	if _mm_queue.is_empty():
+		_submit_multi_modal()
+		return
+	var def := db.get_def(state.get_card(_mm_card).card_def_id) as CardDef
+	var modes := StackResolver.totem_modes(def)
+	_mm_current = _mm_queue.pop_front()
+	var effect := String(modes[_mm_current].get("effect", ""))
+	if StackResolver.mode_target_kind(effect) != "":
+		# The targeted mode (fire) asks by opening the target picker: clicking a
+		# character chooses the mode AND its target in one go, while Esc /
+		# right-click declines this mode alone and moves on.
+		_mm_targeting = true
+		var parts := effect.split(":")
+		var dmg_type := parts[2].to_lower() if parts.size() > 2 else ""
+		var amount := _preview_dmg(int(parts[1]) if parts.size() > 1 else 0, dmg_type, true)
+		start_targeting(_mm_card, "play_instant", dmg_type, amount)
+		return
+	multi_modal_prompt.emit(_mm_card, _mm_current,
+		_multi_modal_label(String(modes[_mm_current].get("element", "")), effect))
+
+
+# The scene's yes/no answer for a non-targeted mode.
+func answer_multi_modal(yes: bool) -> void:
+	if _mm_card == "" or _mm_current < 0:
+		return
+	multi_modal_prompt_closed.emit()
+	if yes:
+		_mm_chosen.append(_mm_current)
+	_mm_current = -1
+	_advance_multi_modal()
+
+
+func _submit_multi_modal() -> void:
+	var card_id := _mm_card
+	var chosen := _mm_chosen.duplicate()
+	var target := _mm_target
+	_reset_multi_modal()
+	if card_id == "" or chosen.is_empty():
+		# Declining everything is a cancelled cast, not an empty announcement.
+		refresh_highlights()
+		return
+	var params := {"card_id": card_id, "modes": chosen}
+	if target != "":
+		params["target_id"] = target
+	var action := PendingAction.make("play_instant", local_player, params)
+	if not StackResolver.can_submit(state, action, db):
+		refresh_highlights()
+		return
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
+
+
+# Abort the whole announcement (the popup's Cancel, or Esc on a yes/no
+# prompt). Nothing has been submitted, so the game state is untouched.
+func cancel_multi_modal() -> void:
+	if _mm_card == "":
+		return
+	_reset_multi_modal()
+	multi_modal_prompt_closed.emit()
+	refresh_highlights()
+
+
+func _reset_multi_modal() -> void:
+	_mm_card      = ""
+	_mm_queue     = []
+	_mm_chosen    = []
+	_mm_current   = -1
+	_mm_target    = ""
+	_mm_targeting = false
+
+
+func _multi_modal_label(element: String, effect: String) -> String:
+	var head := element.capitalize()
+	var parts := effect.split(":")
+	match parts[0]:
+		"ready_hero_and_melee_weapon":
+			return "%s: ready your hero and one of your Melee weapons?" % head
+		"party_allies_atk_this_turn":
+			return "%s: allies in your party have +%s ATK this turn?" % [
+				head, parts[1] if parts.size() > 1 else "1"]
+		"draw":
+			return "%s: draw %s cards?" % [head, parts[1] if parts.size() > 1 else "1"]
+		"deal_damage_to_target":
+			return "%s: deal %s %s damage to target hero or ally?" % [
+				head, parts[1] if parts.size() > 1 else "0",
+				parts[2].to_lower() if parts.size() > 2 else ""]
+	return "%s: %s" % [head, effect]
 
 
 # Is the active targeting flow a modal interrupt mode (Escape Artist)? The mode
@@ -1608,6 +1778,26 @@ func _submit_divided() -> void:
 
 
 func _handle_instant_targeting_click(instance_id: String) -> void:
+	# Totemic Call's fire mode: the click chooses the mode AND its target, but
+	# does NOT submit — the remaining modes still have to be asked about, and
+	# every mode is announced together (707.1c).
+	if _mm_targeting and _targeting_source == _mm_card:
+		var probe_modes := _mm_chosen.duplicate()
+		probe_modes.append(_mm_current)
+		var mm_probe := PendingAction.make("play_instant", local_player,
+			{"card_id": _mm_card, "modes": probe_modes, "target_id": instance_id})
+		if not StackResolver.can_submit(state, mm_probe, db):
+			return
+		_mm_target = instance_id
+		_mm_chosen.append(_mm_current)
+		_mm_current   = -1
+		_mm_targeting = false
+		_targeting_source      = ""
+		_targeting_action_type = ""
+		_targeting_dmg_type    = ""
+		targeting_cancelled.emit()
+		_advance_multi_modal()
+		return
 	if _is_multi_target(_targeting_source):
 		_handle_chain_lightning_click(instance_id)
 		return
@@ -2162,7 +2352,7 @@ func get_playable_card_ids() -> Array:
 					{"card_id": card.instance_id,
 						"_skip_target_check": (ap_data.get("targets", "") as String) in [
 							"graveyard_ally", "ability_or_equipment", "ability",
-							"equipment", "exhausted_ally",
+							"equipment", "exhausted_ally", "undead_ally",
 							"friendly_ally", "chosen_friendly_ally", "pet"]})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
@@ -2265,6 +2455,75 @@ func _mute_condition_holds(token: String, card_id: String) -> bool:
 			return state.turn_player == _mute_owner_of(card_id)
 		"opponent_turn":
 			return state.turn_player != _mute_owner_of(card_id)
+		"outside_combat":
+			# Ravenous Bite: every use of the ATK swing is a COMBAT trick — turning
+			# a defend window around, pumping the attacker before the protect point
+			# to Skewer with it, or shrinking an attacking ally to take less damage
+			# on our hero. Outside combat the buffs simply expire at end of turn
+			# having changed nothing, so the card should never hold a window open.
+			# A combat PROPOSAL still on the chain counts too — combat_attacker is
+			# not set until it RESOLVES (602.1), so the chain is checked separately;
+			# that is a real response window and the pump is legal there.
+			if state.combat_attack_window or state.combat_defend_window:
+				return false
+			if state.in_protect_point or state.combat_attacker != "":
+				return false
+			for pending in state.pending_actions:
+				var pc := pending as PendingAction
+				if pc and pc.action_type == "propose_combat":
+					return false
+			return true
+		"no_combat_proposal":
+			# Wing Clip: it is an INTERRUPT — cast in response to a combat
+			# proposal naming our hero, the 601.3 re-check finds the defender no
+			# longer legal and the combat never starts. Once the attack window is
+			# open that moment has passed (602.1 — the attacker is already
+			# attacking), and outside combat entirely the lock is worth little,
+			# since "this turn" expires before their next attack step. So the
+			# ONE window it should hold open is a window with a propose_combat
+			# link on the chain. Legality is untouched — the 1 melee damage is
+			# always a real, if small, play.
+			for pending in state.pending_actions:
+				var pc := pending as PendingAction
+				if pc and pc.action_type == "propose_combat":
+					return false
+			return true
+		"hero_not_defending":
+			# Point Blank: "If your hero is defending, it deals 3 ranged damage
+			# to target attacker." The whole effect is conditional, and per 602.3
+			# defending exists only AFTER the protect point — so anywhere but an
+			# open defend window with our own hero as the settled defender, the
+			# card resolves into nothing. It stays perfectly LEGAL there (707.1
+			# never asks whether an effect will accomplish anything, and a
+			# deliberately fizzling play can still matter to a "when you play an
+			# ability" payoff); this only stops it holding priority windows open.
+			var pb_owner := _mute_owner_of(card_id)
+			var pb_ps := state.players.get(pb_owner) as PlayerState
+			if not pb_ps or pb_ps.hero_instance_id == "":
+				return true
+			if not state.combat_defend_window:
+				return true
+			return state.combat_defender != pb_ps.hero_instance_id
+		"hero_not_defending_vs_ally":
+			# Ghost Wolf: "Exhaust your hero -> If your hero is defending, remove
+			# all attacking allies from combat." Narrower than Point Blank's
+			# `hero_not_defending` on one axis: the effect removes ALLIES only, so
+			# even a defend window against an attacking HERO is a window in which
+			# the power resolves into nothing. Per 602.3 defending exists only
+			# after the protect point, so the attack window is muted too — there
+			# our hero is merely a PROPOSED defender. It stays perfectly LEGAL
+			# everywhere (707.1 never asks whether an effect will accomplish
+			# anything); this only stops it holding priority windows open.
+			var gw_owner := _mute_owner_of(card_id)
+			var gw_ps := state.players.get(gw_owner) as PlayerState
+			if not gw_ps or gw_ps.hero_instance_id == "":
+				return true
+			if not state.combat_defend_window:
+				return true
+			if state.combat_defender != gw_ps.hero_instance_id:
+				return true
+			var gw_att := state.get_card(state.combat_attacker)
+			return gw_att == null 				or gw_att.zone_id != gw_att.controller + "_ally_row"
 		"empty_hand":
 			var owner := _mute_owner_of(card_id)
 			return state.cards_in_zone(owner + "_hand").is_empty()
@@ -2492,10 +2751,10 @@ func get_context_actions(instance_id: String) -> Array:
 				var ap_data := StackResolver._ally_activated_power(def)
 				if ap_data != {}:
 					var ap_kind: String = ap_data.get("targets", "") as String
-					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "chosen_friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment", "exhausted_ally"]
+					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "chosen_friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment", "exhausted_ally", "undead_ally"]
 					var ap_needs_gy_target: bool = ap_kind == "graveyard_ally"
 					var ap_enabled: bool
-					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability", "equipment", "exhausted_ally"]:
+					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability", "equipment", "exhausted_ally", "undead_ally"]:
 						# Target picked afterward (graveyard browser / targeting mode) —
 						# the skip-target probe checks everything else, including that
 						# a candidate exists at all.

@@ -80,6 +80,11 @@ var recomb_from_index: int = -1
 # every turn (so it lasts exactly the turn it was gained in).
 var ranged_weapon_atk_bonus: int = 0
 
+# Heroic Strike: "Your weapons have +3 ATK this turn." Elendril's grant
+# untyped — Melee and Ranged alike. Applied to this player's weapons in
+# GameState.get_atk; cleared at the start of every turn.
+var weapon_atk_bonus_this_turn: int = 0
+
 # Party-wide "+X ATK while attacking this turn" grants (Rayder, For the
 # Horde!). Kept here instead of as per-card buffs so they also apply to
 # allies that enter play AFTER the effect resolves, for the rest of the turn.

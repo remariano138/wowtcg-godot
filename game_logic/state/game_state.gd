@@ -952,6 +952,12 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 		var wps := players.get(inst.controller) as PlayerState
 		if wps:
 			atk += wps.ranged_weapon_atk_bonus
+	# (2b2) Heroic Strike: "Your weapons have +3 ATK this turn." Elendril's
+	# grant untyped — Melee and Ranged alike (the card says "weapons").
+	if is_weapon:
+		var hwps := players.get(inst.controller) as PlayerState
+		if hwps:
+			atk += hwps.weapon_atk_bonus_this_turn
 	# (2c) Eye of Rend: "Your weapons have +1 ATK." Elendril's grant above as a
 	# STATIC aura instead of a timed one, and untyped — the card says "weapons",
 	# so Melee and Ranged alike. Applied to the WEAPON itself, which is what

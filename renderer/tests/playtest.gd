@@ -5261,9 +5261,9 @@ func _on_death_target_resolved() -> void:
 
 # ── Quest reward choice ("Choose one … you may choose both") ───────────────────
 # Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
-# Earth. The completer picks one reward mode — or both, in an order of their
-# choosing, when the hero-race condition is met. Two-step popup for humans:
-# first "one or both", then (if Both) which resolves first.
+# Earth. The completer picks one reward mode — or both, when the hero-race
+# condition is met. "Both" resolves in a fixed order (draw first, if any is
+# among the modes) rather than asking which goes first.
 
 func _quest_mode_label(mode: String) -> String:
 	match mode.split(":")[0]:
@@ -5327,30 +5327,25 @@ func _show_quest_choice_popup(quest_id: String, modes: Array, can_both: bool) ->
 			"callback": func() -> void: _pick_quest_modes([captured_m]),
 		})
 	if can_both:
+		# Resolution order for "both" is fixed rather than asked: draw first
+		# (if present) so its card is in hand before the other mode's target
+		# picker opens, then whatever else was chosen — no "which first" prompt.
 		var pair := avail.duplicate()
+		var draw_idx := -1
+		for i in pair.size():
+			if (pair[i] as String).begins_with("draw"):
+				draw_idx = i
+				break
+		if draw_idx > 0:
+			var d = pair[draw_idx]
+			pair.remove_at(draw_idx)
+			pair.push_front(d)
 		buttons.append({
-			"text": "Both (choose order)",
-			"callback": func() -> void: _show_quest_order_popup(qname, pair),
+			"text": "Both",
+			"callback": func() -> void: _pick_quest_modes(pair),
 		})
 	_quest_choice_nodes.append(
 		_build_choice_popup(header, Color(0.95, 0.8, 0.3), buttons, true))
-
-
-# Second step after "Both": which mode resolves first (the other follows).
-func _show_quest_order_popup(qname: String, pair: Array) -> void:
-	_clear_quest_choice_nodes()
-	_in_quest_choice_mode = true
-	var buttons: Array = []
-	for i in pair.size():
-		var first: String = pair[i]
-		var second: String = pair[1 - i]
-		buttons.append({
-			"text": "%s — first" % _quest_mode_label(first),
-			"callback": func() -> void: _pick_quest_modes([first, second]),
-		})
-	_quest_choice_nodes.append(_build_choice_popup(
-		"%s — both: which resolves first?" % qname,
-		Color(0.95, 0.8, 0.3), buttons, true))
 
 
 func _pick_quest_modes(chosen: Array) -> void:
@@ -5668,6 +5663,14 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 		else:
 			_set_status("▼ %s — select the ally that gets %+d ATK this turn  [click the spell to go back]"
 				% [name_str, amt])
+	# Crushing Blow's "choose one or both": armor phase can be skipped forward
+	# (nothing chosen yet), weapon phase steps back to armor instead.
+	elif dmg_type == "cb_armor":
+		_set_status("🔨 %s — select target armor to destroy  [click the spell to skip]%s"
+			% [name_str, cancel_hint])
+	elif dmg_type == "cb_weapon":
+		_set_status("🔨 %s — select target weapon to destroy  [click the spell to go back]"
+			% [name_str])
 	else:
 		# Lightning Storm: X clicks, one per point of damage — the prompt counts
 		# "N / X target" (the same ally may be clicked more than once).

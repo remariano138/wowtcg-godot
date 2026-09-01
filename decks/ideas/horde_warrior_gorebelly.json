@@ -9,9 +9,14 @@
       "_card_name": "Lazy Peons"
     },
     {
-      "card_def_id": "azeroth_348",
-      "count": 3,
-      "_card_name": "Big Game Hunter"
+      "card_def_id": "azeroth_345",
+      "count": 4,
+      "_card_name": "Torek's Assault"
+    },
+    {
+      "card_def_id": "dark_portal_302",
+      "count": 4,
+      "_card_name": "Hidden Enemies"
     },
     {
       "card_def_id": "azeroth_358",
@@ -20,13 +25,8 @@
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 2,
+      "count": 1,
       "_card_name": "Chasing A-Me 01"
-    },
-    {
-      "card_def_id": "dark_portal_302",
-      "count": 4,
-      "_card_name": "Hidden Enemies"
     },
     {
       "card_def_id": "azeroth_293",
@@ -42,11 +42,6 @@
       "card_def_id": "azeroth_283",
       "count": 1,
       "_card_name": "Deathdealer Breastplate"
-    },
-    {
-      "card_def_id": "dark_portal_286",
-      "count": 1,
-      "_card_name": "Viking Warhammer"
     },
     {
       "card_def_id": "azeroth_312",
@@ -74,9 +69,9 @@
       "_card_name": "Rak Skyfury"
     },
     {
-      "card_def_id": "azeroth_137",
+      "card_def_id": "azeroth_142",
       "count": 1,
-      "_card_name": "Charge"
+      "_card_name": "Heroic Strike"
     },
     {
       "card_def_id": "dark_portal_243",
@@ -85,8 +80,13 @@
     },
     {
       "card_def_id": "dark_portal_127",
-      "count": 2,
+      "count": 1,
       "_card_name": "Dual Wield"
+    },
+    {
+      "card_def_id": "azeroth_137",
+      "count": 2,
+      "_card_name": "Charge"
     },
     {
       "card_def_id": "dark_portal_135",
@@ -94,9 +94,9 @@
       "_card_name": "Blood Fury"
     },
     {
-      "card_def_id": "azeroth_266",
+      "card_def_id": "dark_portal_232",
       "count": 4,
-      "_card_name": "Voss Treebender"
+      "_card_name": "Scout Omerrta"
     },
     {
       "card_def_id": "azeroth_146",
@@ -109,18 +109,23 @@
       "_card_name": "Overseer Oilfist"
     },
     {
-      "card_def_id": "dark_portal_208",
-      "count": 3,
-      "_card_name": "Elithys Firestorm"
+      "card_def_id": "azeroth_274",
+      "count": 1,
+      "_card_name": "Zorm Stonefury"
+    },
+    {
+      "card_def_id": "dark_portal_224",
+      "count": 2,
+      "_card_name": "Morik"
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 2,
+      "count": 3,
       "_card_name": "Taz'dingo"
     },
     {
       "card_def_id": "azeroth_165",
-      "count": 2,
+      "count": 1,
       "_card_name": "Quick Strike"
     },
     {
@@ -129,24 +134,24 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "azeroth_262",
-      "count": 3,
-      "_card_name": "Vaerik Proudhoof"
+      "card_def_id": "dark_portal_227",
+      "count": 4,
+      "_card_name": "Outrider Zarg"
     },
     {
-      "card_def_id": "azeroth_155",
-      "count": 2,
-      "_card_name": "Skewer"
+      "card_def_id": "dark_portal_124",
+      "count": 1,
+      "_card_name": "Slam"
     },
     {
-      "card_def_id": "azeroth_249",
+      "card_def_id": "azeroth_135",
       "count": 2,
-      "_card_name": "Kulan Earthguard"
+      "_card_name": "Battle Shout"
     },
     {
-      "card_def_id": "azeroth_275",
+      "card_def_id": "dark_portal_120",
       "count": 2,
-      "_card_name": "Zygore Bladebreaker"
+      "_card_name": "Crushing Blow"
     }
   ],
   "recommended_ai_id": "ai_generic",

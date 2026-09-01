@@ -127,6 +127,8 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			p.melee_strike_discount = 0
 			# Elendril's "+3 ATK to Ranged weapons this turn" likewise expires.
 			p.ranged_weapon_atk_bonus = 0
+			# Heroic Strike's "+3 ATK to your weapons this turn" likewise.
+			p.weapon_atk_bonus_this_turn = 0
 			# Rapid Fire's "whenever you strike ... this turn" grant likewise.
 			p.rapid_fire_ready_cost = -1
 			# Cold Blood's "when your hero deals damage to an ally this turn"

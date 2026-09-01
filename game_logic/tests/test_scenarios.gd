@@ -197,6 +197,9 @@ func _ready() -> void:
 		_test_flamestrike,
 		_test_chain_lightning,
 		_test_multi_shot,
+		_test_cleave_weapon_atk_two_targets,
+		_test_cleave_scope_fizzle_and_highlight,
+		_test_ai_cleave,
 		_test_untargetable_keyword,
 		_test_infernal_discard_keeps_control,
 		_test_turn_start_trigger_is_respondable,
@@ -293,6 +296,7 @@ func _ready() -> void:
 		_test_mortal_strike,
 		_test_mortal_strike_heal_lock,
 		_test_ai_mortal_strike,
+		_test_slam,
 		_test_rend,
 		_test_thorns_reflects_combat_damage,
 		_test_thorns_scope_and_stacking,
@@ -344,6 +348,7 @@ func _ready() -> void:
 		_test_diplomacy_ally_cost_aura,
 		_test_natures_swiftness_discount,
 		_test_natures_swiftness_ai_gate,
+		_test_heroic_strike_weapon_bonus,
 		_test_lightning_storm_divided_damage,
 		_test_lightning_storm_targets_focus_and_ai,
 		_test_devilsaur_leggings,
@@ -440,6 +445,9 @@ func _ready() -> void:
 		_test_moira_killed_in_response_and_ai,
 		_test_dispel_magic_instant_destroy_ability,
 		_test_sunder_armor_destroys_armor,
+		_test_crushing_blow_choose_one_or_both,
+		_test_crushing_blow_scope_fizzle_and_highlight,
+		_test_ai_crushing_blow,
 		_test_warmaster_hork_pump,
 		_test_mildred_sacrifice_destroys_ability,
 		_test_mildred_killed_in_response_and_ai,
@@ -12038,6 +12046,150 @@ func _test_chain_lightning() -> void:
 			"sc46-m3: waves 2 and 1 kill the two 1-HP allies")
 
 
+func _test_cleave_weapon_atk_two_targets() -> void:
+	_buf.append("\n-- Cleave: X = 1 + best Melee weapon ATK, up to two ally targets --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_138", 4, "cleave_weapon_atk:1:melee", "Arms")
+	db.weapon("krol_def", 2, 3, 1)                            # Melee, 3 ATK
+	db.weapon("bow_def", 2, 4, 1, "Ranged", "ranged_weapon")  # not Melee
+	db.ally("victim_a", 2, 8, [], 3)
+	db.ally("victim_b", 2, 8, [], 3)
+
+	# cv-a: no target at all -> illegal ("up to two" still needs at least one).
+	var s0 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s0, "p1", 4)
+	_add_card_to_hand(s0, "cv0", "azeroth_138", "p1")
+	ok(not StackResolver.can_submit(s0,
+		PendingAction.make("play_ability", "p1", {"card_id": "cv0"}), db),
+		"cv-a: no target at all is illegal")
+
+	# cv-b: no Melee weapon in play -> X = 1 (the flat part alone).
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	_add_card_to_hand(s1, "cv1", "azeroth_138", "p1")
+	_add_ally(s1, "va1", "victim_a", "p2")
+	StackResolver.submit_action(s1, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv1", "target_id": "va1"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	eq(s1.get_card("va1").damage_taken, 1, "cv-b: no weapon -> flat 1 damage")
+	eq(s1.get_card("cv1").zone_id, "p1_graveyard", "cv-b2: Cleave in graveyard")
+
+	# cv-c: a Melee weapon in play -> X = 1 + 3 = 4, applied to BOTH targets.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_card_to_hand(s2, "cv2", "azeroth_138", "p1")
+	_add_ally(s2, "va2", "victim_a", "p2")
+	_add_ally(s2, "vb2", "victim_b", "p2")
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	s2.cards["krol"] = krol
+	s2.zones["p1_hero_row"].card_ids.append("krol")
+	var bow := CardInstance.create("bow", "bow_def", "p1", "p1_hero_row")
+	s2.cards["bow"] = bow
+	s2.zones["p1_hero_row"].card_ids.append("bow")   # Ranged — must NOT count
+	StackResolver.submit_action(s2, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv2", "target_id": "va2", "target_id_2": "vb2"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	eq(s2.get_card("va2").damage_taken, 4, "cv-c: 1st target took 1+3=4")
+	eq(s2.get_card("vb2").damage_taken, 4, "cv-c2: 2nd target took 1+3=4 too")
+
+	# cv-d: a hero is NOT a legal target (allies only, unlike Multi-Shot).
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	_add_card_to_hand(s3, "cv3", "azeroth_138", "p1")
+	_add_ally(s3, "va3", "victim_a", "p2")
+	ok(not StackResolver.can_submit(s3, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv3", "target_id": "p2_hero"}), db),
+		"cv-d: a hero is not a legal target")
+	ok(not StackResolver.can_submit(s3, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv3", "target_id": "va3", "target_id_2": "p2_hero"}), db),
+		"cv-d2: a hero is not a legal 2nd target either")
+
+	# cv-e: the same ally named twice is illegal (distinct targets, no
+	# Ravenous-Bite-style self-cancel here).
+	ok(not StackResolver.can_submit(s3, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv3", "target_id": "va3", "target_id_2": "va3"}), db),
+		"cv-e: a repeated target is illegal")
+
+	# cv-e2: a third slot is illegal — "up to TWO", not three (Multi-Shot's cap).
+	_add_ally(s3, "vb3", "victim_b", "p2")
+	ok(not StackResolver.can_submit(s3, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv3", "target_id": "va3", "target_id_2": "vb3", "target_id_3": "va3"}), db),
+		"cv-e2: a third target slot is illegal")
+
+
+func _test_cleave_scope_fizzle_and_highlight() -> void:
+	_buf.append("\n-- Cleave: per-target fizzle (706/711.1) and the highlight probe --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_138", 4, "cleave_weapon_atk:1:melee", "Arms")
+	db.weapon("krol_def", 2, 3, 1)
+	db.ally("victim_a", 2, 1, [], 3)   # 1 health -- dies to the flat 1 alone
+	db.ally("victim_b", 2, 8, [], 3)
+
+	# A target killed in the response window fizzles only its own wave; the
+	# other still resolves, and the card is spent either way.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "cv1", "azeroth_138", "p1")
+	_add_ally(state, "va1", "victim_a", "p2")
+	_add_ally(state, "vb1", "victim_b", "p2")
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "cv1", "target_id": "va1", "target_id_2": "vb1"}), db)
+	GameLogic.move_card(state, "va1", "p2_graveyard")   # gone before it resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("vb1").damage_taken, 1, "cv-f: 2nd wave still landed")
+	eq(state.get_card("cv1").zone_id, "p1_graveyard", "cv-g: spent either way")
+
+	# Highlight probe: dark with no ally anywhere, lit once one exists — a
+	# Melee weapon is NOT required to announce it (the flat part alone works).
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_card_to_hand(s2, "cv2", "azeroth_138", "p1")
+	ok(not StackResolver.can_play_ability_no_target_check(s2, "cv2", "p1", db),
+		"cv-h: dark with no ally in play at all")
+	_add_ally(s2, "va2", "victim_a", "p1")   # even the caster's OWN ally counts
+	ok(StackResolver.can_play_ability_no_target_check(s2, "cv2", "p1", db),
+		"cv-i: lit with an ally in play, no weapon required")
+
+
+func _test_ai_cleave() -> void:
+	_buf.append("\n-- AI: Cleave hits up to two kills, else falls back to soak --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_138", 4, "cleave_weapon_atk:1:melee", "Arms")
+	db.weapon("krol_def", 2, 3, 1)                    # Melee, 3 ATK -> X = 4
+	db.ally("frail_a", 2, 4, [], 2)                   # dies to 4
+	db.ally("frail_b", 2, 4, [], 2)                   # dies to 4
+	db.ally("tough", 2, 10, [], 2)                    # survives 4
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	_add_card_to_hand(state, "cv1", "azeroth_138", "p1")
+	var krol := CardInstance.create("krol", "krol_def", "p1", "p1_hero_row")
+	state.cards["krol"] = krol
+	state.zones["p1_hero_row"].card_ids.append("krol")
+	_add_ally(state, "fa", "frail_a", "p2")
+	_add_ally(state, "fb", "frail_b", "p2")
+	_add_ally(state, "tg", "tough", "p2")
+
+	var act := ai._cleave_action(state, db, "p1", "cv1", "play_ability")
+	ok(act != null, "cbai-a: AI finds a play")
+	var picked := {}
+	picked[act.params.get("target_id", "")] = true
+	if act.params.get("target_id_2", "") != "":
+		picked[act.params.get("target_id_2", "")] = true
+	ok(picked.has("fa") and picked.has("fb"),
+		"cbai-b: both killable allies are the ones picked")
+
+
 func _test_multi_shot() -> void:
 	_buf.append("\n-- Scenario 46b: Multi-Shot — up to 3 targets, flat 2 ranged each --")
 	var db := MockDB.new()
@@ -17616,6 +17768,52 @@ func _test_natures_swiftness_discount() -> void:
 	state.phase = "end"
 	_advance_phase(state, db)   # end -> next turn (ready)
 	eq(state.players["p1"].next_card_cost_mod, 0, "ns-f: grant cleared at turn start")
+
+
+func _test_heroic_strike_weapon_bonus() -> void:
+	_buf.append("\n-- Heroic Strike: your weapons have +3 ATK this turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("azeroth_142", 1, "weapon_atk_this_turn:3", "Arms")
+	db.weapon("axe_def", 3, 3, 1)                               # Melee, ATK 3, strike 1
+	db.weapon("bow_def", 3, 2, 2, "Ranged", "ranged_weapon")     # Ranged, ATK 2, strike 2
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_card_to_hand(state, "hs", "azeroth_142", "p1")
+	_add_resources(state, "p1", 5)
+	var axe := CardInstance.create("axe", "axe_def", "p1", "p1_hero_row")
+	state.cards["axe"] = axe
+	state.zones["p1_hero_row"].card_ids.append("axe")
+	var bow := CardInstance.create("bow", "bow_def", "p1", "p1_hero_row")
+	state.cards["bow"] = bow
+	state.zones["p1_hero_row"].card_ids.append("bow")
+
+	# hs-a: no bonus before it resolves.
+	eq(state.get_atk("axe", db), 3, "hs-a: axe unbuffed")
+	eq(state.get_atk("bow", db), 2, "hs-a2: bow unbuffed")
+
+	# hs-b: resolve Heroic Strike (a plain Ability -> graveyard).
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "hs"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("hs").zone_id, "p1_graveyard", "hs-b: Heroic Strike resolved away")
+	eq(state.players["p1"].weapon_atk_bonus_this_turn, 3, "hs-b2: the grant is live")
+
+	# hs-c: BOTH weapons are boosted — Melee and Ranged alike, unlike Elendril.
+	eq(state.get_atk("axe", db), 6, "hs-c: melee axe 3 + 3")
+	eq(state.get_atk("bow", db), 5, "hs-c2: ranged bow 2 + 3")
+	eq(state.get_atk("p2_hero", db), 0, "hs-c3: opponent's hero unaffected")
+
+	# hs-d: the bonus is a "this turn" effect — gone after a turn boundary.
+	var guard := 0
+	while state.turn_player == "p1" and guard < 20:
+		_advance_phase(state, db)
+		guard += 1
+	eq(state.players["p1"].weapon_atk_bonus_this_turn, 0,
+		"hs-d: bonus cleared at the start of the next turn")
+	eq(state.get_atk("axe", db), 3, "hs-d2: axe back to printed ATK")
 
 
 func _test_natures_swiftness_ai_gate() -> void:
@@ -33750,6 +33948,161 @@ func _test_ai_counterspell() -> void:
 # are Equipment but never legal targets. Either player's armor is legal.
 # ══════════════════════════════════════════════════════════════════════════════
 
+func _test_crushing_blow_choose_one_or_both() -> void:
+	_buf.append("\n-- Crushing Blow: choose one or both — target armor / target weapon --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("plate_def", 3, "equipment:head:2", "Plate")
+	db.weapon("sword_def", 2, 3, 1)
+	db.ally("bear_def", 2, 3, [], 2)
+	db.ability("dark_portal_120", 4, "choose_destroy:armor:weapon", "Fury")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(state, "bear", "bear_def", "p2")
+	_add_resources(state, "p1", 6)
+	var plate := CardInstance.create("plate", "plate_def", "p2", "p2_hero_row")
+	state.cards["plate"] = plate
+	state.zones["p2_hero_row"].card_ids.append("plate")
+	var sword := CardInstance.create("sword", "sword_def", "p2", "p2_hero_row")
+	state.cards["sword"] = sword
+	state.zones["p2_hero_row"].card_ids.append("sword")
+
+	_add_card_to_hand(state, "cb1", "dark_portal_120", "p1")
+
+	# cb-a: neither slot filled -- "one or both" requires at least one.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1"}), db), "cb-a: nothing chosen is illegal")
+	# cb-b: armor alone is legal.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1", "target_id": "plate"}), db), "cb-b: armor alone is legal")
+	# cb-c: weapon alone is legal.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1", "target_id_2": "sword"}), db), "cb-c: weapon alone is legal")
+	# cb-d: both together is legal.
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1", "target_id": "plate", "target_id_2": "sword"}), db),
+		"cb-d: both together is legal")
+	# cb-e: a kind mismatch (armor in the weapon slot, weapon in the armor slot)
+	# is illegal — each slot is a target of its OWN kind.
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1", "target_id_2": "plate"}), db),
+		"cb-e: armor can't fill the weapon slot")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1", "target_id": "sword"}), db),
+		"cb-e2: a weapon can't fill the armor slot")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+			{"card_id": "cb1", "target_id": "bear"}), db),
+		"cb-f: an ally is not a legal target at all")
+
+	# cb-g: resolving BOTH destroys both, either player's equipment being legal
+	# (no "opposing" clause).
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "cb1", "target_id": "plate", "target_id_2": "sword"}), db)
+	eq(state.get_available_resources("p1"), 2, "cb-g: 4 resources paid")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("plate").zone_id, "p2_graveyard", "cb-h: armor destroyed")
+	eq(state.get_card("sword").zone_id, "p2_graveyard", "cb-i: weapon destroyed")
+	eq(state.get_card("cb1").zone_id, "p1_graveyard", "cb-j: Crushing Blow in graveyard")
+
+
+func _test_crushing_blow_scope_fizzle_and_highlight() -> void:
+	_buf.append("\n-- Crushing Blow: per-half fizzle (706) and the highlight probe --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("plate_def", 3, "equipment:head:2", "Plate")
+	db.weapon("sword_def", 2, 3, 1)
+	db.ability("dark_portal_120", 4, "choose_destroy:armor:weapon", "Fury")
+
+	# 706 / glossary 4217: killing ONE half's target in the response window
+	# fizzles only that half — the other still resolves, and the card is spent.
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 4)
+	var plate := CardInstance.create("plate", "plate_def", "p2", "p2_hero_row")
+	state.cards["plate"] = plate
+	state.zones["p2_hero_row"].card_ids.append("plate")
+	var sword := CardInstance.create("sword", "sword_def", "p2", "p2_hero_row")
+	state.cards["sword"] = sword
+	state.zones["p2_hero_row"].card_ids.append("sword")
+	_add_card_to_hand(state, "cb1", "dark_portal_120", "p1")
+	StackResolver.submit_action(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "cb1", "target_id": "plate", "target_id_2": "sword"}), db)
+	GameLogic.move_card(state, "plate", "p2_graveyard")   # armor gone before it resolves
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("sword").zone_id, "p2_graveyard", "cb-k: weapon half still resolved")
+	eq(state.get_card("cb1").zone_id, "p1_graveyard", "cb-l: spell spent either way")
+
+	# Highlight probe: dark with neither armor nor weapon in play, lit with
+	# EITHER pool non-empty.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_card_to_hand(s2, "cb2", "dark_portal_120", "p1")
+	ok(not StackResolver.can_play_ability_no_target_check(s2, "cb2", "p1", db),
+		"cb-m: dark with nothing to destroy")
+	var sword2 := CardInstance.create("sword2", "sword_def", "p2", "p2_hero_row")
+	s2.cards["sword2"] = sword2
+	s2.zones["p2_hero_row"].card_ids.append("sword2")
+	ok(StackResolver.can_play_ability_no_target_check(s2, "cb2", "p1", db),
+		"cb-n: lit once a weapon exists, with no armor at all")
+	var plate2 := CardInstance.create("plate2", "plate_def", "p2", "p2_hero_row")
+	s2.cards["plate2"] = plate2
+	s2.zones["p2_hero_row"].card_ids.append("plate2")
+	ok(StackResolver.can_play_ability_no_target_check(s2, "cb2", "p1", db),
+		"cb-o: lit with both pools present")
+
+
+func _test_ai_crushing_blow() -> void:
+	_buf.append("\n-- AI: Crushing Blow takes BOTH halves when both are worth it --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("plate_def", 4, "equipment:head:2", "Plate")      # cost 4, worth it
+	db.equipment("cloak_def", 2, "equipment:back:0", "Cloth")      # cost 2, too cheap
+	db.weapon("sword_def", 5, 3, 1)                                # cost 5, worth it
+	db.ability("dark_portal_120", 4, "choose_destroy:armor:weapon", "Fury")
+	var ai := BaseAI.new()
+
+	# cbai-a: both an armor and a weapon worth the cost -> both slots filled.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 4)
+	var plate1 := CardInstance.create("plate1", "plate_def", "p2", "p2_hero_row")
+	s1.cards["plate1"] = plate1
+	s1.zones["p2_hero_row"].card_ids.append("plate1")
+	var sword1 := CardInstance.create("sword1", "sword_def", "p2", "p2_hero_row")
+	s1.cards["sword1"] = sword1
+	s1.zones["p2_hero_row"].card_ids.append("sword1")
+	_add_card_to_hand(s1, "cb1", "dark_portal_120", "p1")
+	var acts1 := ai._targeted_instant_actions(s1, db, "p1", "cb1", "play_ability")
+	eq(acts1.size(), 1, "cbai-a: one combined announcement")
+	eq(acts1[0].params.get("target_id", ""), "plate1", "cbai-a2: armor half filled")
+	eq(acts1[0].params.get("target_id_2", ""), "sword1", "cbai-a3: weapon half filled")
+
+	# cbai-b: only a too-cheap armor and no weapon -> the card is held.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	var cloak2 := CardInstance.create("cloak2", "cloak_def", "p2", "p2_hero_row")
+	s2.cards["cloak2"] = cloak2
+	s2.zones["p2_hero_row"].card_ids.append("cloak2")
+	_add_card_to_hand(s2, "cb2", "dark_portal_120", "p1")
+	var acts2 := ai._targeted_instant_actions(s2, db, "p1", "cb2", "play_ability")
+	ok(acts2.is_empty(), "cbai-b: held — the only armor is cheaper than the spell")
+
+	# cbai-c: a worthwhile weapon alone -> only that half is announced.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s3, "p1", 4)
+	var sword3 := CardInstance.create("sword3", "sword_def", "p2", "p2_hero_row")
+	s3.cards["sword3"] = sword3
+	s3.zones["p2_hero_row"].card_ids.append("sword3")
+	_add_card_to_hand(s3, "cb3", "dark_portal_120", "p1")
+	var acts3 := ai._targeted_instant_actions(s3, db, "p1", "cb3", "play_ability")
+	eq(acts3.size(), 1, "cbai-c: one action")
+	eq(acts3[0].params.get("target_id", ""), "", "cbai-c2: no armor to fill")
+	eq(acts3[0].params.get("target_id_2", ""), "sword3", "cbai-c3: weapon half filled")
+
+
 func _test_sunder_armor_destroys_armor() -> void:
 	_buf.append("
 -- Sunder Armor: destroy target armor --")
@@ -34165,6 +34518,49 @@ func _test_mortal_strike() -> void:
 	StackResolver.pass_priority(st, db)
 	eq(st.get_current_hp("p2_hero", db), 19,
 		"ms-d: 1 + 3 (the surviving weapon) = 4 damage")
+
+
+func _test_slam() -> void:
+	_buf.append("\n-- Slam: 1 + best Melee weapon ATK, sorcery speed --")
+	var db := _mortal_db()
+	db.ability("dark_portal_124", 3, "deal_damage_weapon_atk:1:melee")
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 20)
+
+	# sl-a: no Melee weapon — still castable for the flat part alone.
+	_add_card_to_hand(st, "sl1", "dark_portal_124", "p1")
+	var a1 := PendingAction.make("play_ability", "p1",
+		{"card_id": "sl1", "target_id": "p2_hero"})
+	ok(StackResolver.can_submit(st, a1, db), "sl-a: playable with no weapon")
+	StackResolver.submit_action(st, a1, db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_current_hp("p2_hero", db), 29, "sl-a2: dealt 1")
+
+	# sl-b: the best Melee weapon in play adds its ATK.
+	_put_in_hero_row(st, "krol", "krol_def", "p1")
+	_add_card_to_hand(st, "sl2", "dark_portal_124", "p1")
+	StackResolver.submit_action(st, PendingAction.make("play_ability", "p1",
+		{"card_id": "sl2", "target_id": "p2_hero"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_current_hp("p2_hero", db), 25, "sl-b: 1 + 3 = 4 damage")
+
+	# sl-c: sorcery speed — can't be played once a combat window is open.
+	var attacker := _add_ally(st, "atk", "bear_def", "p2")
+	attacker.just_summoned = false
+	st.turn_player = "p2"
+	st.priority_player = "p2"
+	var pc := PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "atk", "defender_id": "p1_hero"})
+	StackResolver.submit_action(st, pc, db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(st.combat_attack_window, "sl-c: attack window open")
+	_add_card_to_hand(st, "sl3", "dark_portal_124", "p1")
+	var a3 := PendingAction.make("play_ability", "p1",
+		{"card_id": "sl3", "target_id": "p2_hero"})
+	ok(not StackResolver.can_submit(st, a3, db), "sl-c2: illegal during a combat window")
 
 
 func _test_mortal_strike_heal_lock() -> void:

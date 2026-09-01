@@ -1029,6 +1029,13 @@ static func _can_play_instant(state: GameState, action: PendingAction,
 		elif def and is_damage_and_heal_def(def):
 			# Shock and Soothe: two mandatory, DISTINCT hero-or-ally targets.
 			if not _can_play_damage_and_heal(state, action, db): return false
+		elif def and is_choose_destroy_def(def):
+			# Crushing Blow: "choose one or both" — two independently optional
+			# targets, at least one required.
+			if not _can_play_choose_destroy(state, def, action, db): return false
+		elif def and is_cleave_def(def):
+			# Cleave: up to two distinct ally targets, weapon-derived amount.
+			if not _can_play_cleave(state, action, db): return false
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db):
@@ -1171,6 +1178,13 @@ static func _can_play_ability(state: GameState, action: PendingAction,
 		elif def and is_damage_and_heal_def(def):
 			# Shock and Soothe: two mandatory, DISTINCT hero-or-ally targets.
 			if not _can_play_damage_and_heal(state, action, db): return false
+		elif def and is_choose_destroy_def(def):
+			# Crushing Blow: "choose one or both" — two independently optional
+			# targets, at least one required.
+			if not _can_play_choose_destroy(state, def, action, db): return false
+		elif def and is_cleave_def(def):
+			# Cleave: up to two distinct ally targets, weapon-derived amount.
+			if not _can_play_cleave(state, action, db): return false
 		elif def and _instant_needs_target(def):
 			var target_id: String = action.params.get("target_id", "")
 			if not _is_legal_target(state, target_id, db): return false
@@ -1358,6 +1372,20 @@ static func _targeted_play_has_legal_target(state: GameState, def: CardDef, db,
 	# Shock and Soothe: needs TWO distinct legal hero-or-ally targets.
 	if is_damage_and_heal_def(def):
 		return _has_two_legal_hero_or_ally_targets(state, db)
+	# Crushing Blow: lit while EITHER pool (armor / weapon) has a candidate.
+	if is_choose_destroy_def(def):
+		return _any_choose_destroy_candidate(state, def, db)
+	# Cleave: lit while at least one legal ally target exists (a weapon is not
+	# required to ANNOUNCE it — with no Melee weapon it just deals its flat 1).
+	if is_cleave_def(def):
+		for cl_pid in ["p1", "p2"]:
+			var cl_zone := state.zones.get(cl_pid + "_ally_row") as Zone
+			if not cl_zone:
+				continue
+			for cl_cid in cl_zone.card_ids:
+				if _is_legal_target(state, cl_cid, db):
+					return true
+		return false
 	# Point Blank: dark whenever nobody is attacking (706.2). It stays LIT
 	# during the attack window, where it is legal but would fizzle — that is
 	# a `mute_when` matter, not a legality one.
@@ -1528,7 +1556,8 @@ static func _instant_needs_target(def: CardDef) -> bool:
 	for entry in def.effects.split("|"):
 		var parts := entry.strip_edges().split(":")
 		if parts[0] in ["destroy_target", "deal_damage_to_target", "exhaust_target",
-				"return_to_hand", "attach", "atk_swing", "deal_damage_and_heal",
+				"return_to_hand", "attach", "atk_swing", "choose_destroy", "cleave_weapon_atk",
+				"deal_damage_and_heal",
 				"grant_keyword_target", "divided_damage", "buff_atk_target",
 				"ally_atk_damage", "heal_target", "deal_damage_weapon_atk",
 				# Holy Shield: the target is the character WARDED AGAINST, not the
@@ -2083,6 +2112,96 @@ static func _can_play_atk_swing(state: GameState, action: PendingAction, db) -> 
 	return true
 
 
+# ── Crushing Blow (dark_portal_120) — `choose_destroy:armor:weapon` ───────────
+# "Choose one or both: Destroy target armor; or destroy target weapon." Two
+# INDEPENDENT, individually OPTIONAL targets announced with the play — target_id
+# for the armor half (kinds[0]), target_id_2 for the weapon half (kinds[1]),
+# either of which may be "" to skip that half. At least one must be chosen
+# (707.1c — "one or both"). Each half is a real target of its OWN kind (706),
+# re-checked independently at resolution (709.2a) — killing/bouncing one target
+# in response fizzles only that half, Ravenous Bite's shape with the mandatory
+# halves made individually optional. Either player's armor/weapon is legal (no
+# "opposing" clause).
+static func choose_destroy_kinds(def: CardDef) -> Array:
+	var kinds: Array = []
+	if not def:
+		return kinds
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0] == "choose_destroy":
+			for i in range(1, parts.size()):
+				kinds.append(parts[i].strip_edges().to_lower())
+			break
+	return kinds
+
+
+static func is_choose_destroy_def(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "choose_destroy")
+
+
+# Is target_id a legal destroy target of the given KIND ("armor"/"weapon")?
+static func _is_destroyable_kind(state: GameState, target_id: String,
+		kind: String, db) -> bool:
+	match kind:
+		"armor":
+			return _is_destroyable_armor(state, target_id, db)
+		"weapon":
+			return _is_weapon_equipment(state, target_id, db)
+	return false
+
+
+# At least one of target_id (kinds[0]) / target_id_2 (kinds[1]) must be
+# announced and a legal target of its own kind; an empty slot is a legal skip.
+static func _can_play_choose_destroy(state: GameState, def: CardDef,
+		action: PendingAction, db) -> bool:
+	var kinds := choose_destroy_kinds(def)
+	if kinds.is_empty():
+		return false
+	var slot_keys := ["target_id", "target_id_2"]
+	var any_chosen := false
+	for i in kinds.size():
+		if i >= slot_keys.size():
+			break
+		var tid: String = action.params.get(slot_keys[i], "")
+		if tid == "":
+			continue
+		any_chosen = true
+		if not _is_legal_target(state, tid, db) \
+				or not _is_destroyable_kind(state, tid, kinds[i], db):
+			return false
+	return any_chosen
+
+
+# Highlight probe: lit while ANY of the card's kinds has a legal candidate
+# anywhere on the board (706-filtered) — dark only when both pools are empty.
+static func _any_choose_destroy_candidate(state: GameState, def: CardDef, db) -> bool:
+	for kind in choose_destroy_kinds(def):
+		for cid in get_destroy_kind_candidates(state, db, kind):
+			if _is_legal_target(state, cid, db):
+				return true
+	return false
+
+
+# Destroys whichever of the two announced halves are still legal at resolution
+# (706 / glossary 4217 — a target that left play or became Untargetable in the
+# response window fizzles only its own half); a skipped ("") slot never fires.
+static func _apply_choose_destroy(state: GameState, action: PendingAction,
+		def: CardDef, source_id: String, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	var kinds := choose_destroy_kinds(def)
+	var keys := ["target_id", "target_id_2"]
+	for i in kinds.size():
+		if i >= keys.size():
+			break
+		var tid: String = action.params.get(keys[i], "")
+		if tid == "":
+			continue
+		if _is_legal_target(state, tid, db) \
+				and _is_destroyable_kind(state, tid, kinds[i], db):
+			events.append_array(_destroy_card_trigger(state, tid, source_id, db))
+	return events
+
+
 # ── Shock and Soothe (dark_portal_100) — `deal_damage_and_heal` as a hand card ─
 # "Your hero deals 3 nature damage to target hero or ally and heals 3 damage
 # from ANOTHER target hero or ally." Same effect key as the Grennan hero power /
@@ -2605,6 +2724,53 @@ static func weapon_atk_damage_amount(state: GameState, def: CardDef,
 	return 0
 
 
+# ── Cleave (azeroth_138) — `cleave_weapon_atk:BASE:DMG_TYPE` ──────────────────
+# "Your hero deals X melee damage to each of up to two target allies, where X
+# is 1 plus the ATK of one of your Melee weapons." Mortal Strike's weapon-
+# derived amount (best_melee_weapon_atk, read LIVE at resolution — 709.2b, so a
+# weapon destroyed in the response window shrinks or zeroes the spell, same
+# fragility as Mortal Strike) applied to Multi-Shot's "up to N, same amount
+# each" multi-target shape, narrowed on two axes: only 2 slots (not 3), and the
+# pool is ALLIES only (not "heroes and/or allies") — a hero is never a legal
+# target here.
+static func cleave_damage_amount(state: GameState, def: CardDef,
+		player_id: String, db) -> int:
+	if def == null or def.effects == "":
+		return 0
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts[0].strip_edges() != "cleave_weapon_atk":
+			continue
+		var base := int(parts[1]) if parts.size() > 1 else 0
+		return base + best_melee_weapon_atk(state, player_id, db)
+	return 0
+
+
+static func is_cleave_def(def: CardDef) -> bool:
+	return def != null and _has_effect_flag_prefix(def, "cleave_weapon_atk")
+
+
+# Up to 2 distinct, legal ALLY targets (target_id mandatory — "up to two" reads
+# as 1 or 2 per Lightning Storm's / Multi-Shot's "at least one" convention;
+# target_id_2 optional). Ordinary targets, not Multi-Shot's select-don't-target
+# exception — the printed text gives no reason to depart from plain 706.
+static func _can_play_cleave(state: GameState, action: PendingAction, db) -> bool:
+	var t1: String = action.params.get("target_id",   "")
+	var t2: String = action.params.get("target_id_2", "")
+	if action.params.get("target_id_3", "") != "":
+		return false   # only two slots exist — "up to TWO"
+	if t1 == "":
+		return false
+	if not _is_ally(state, t1) or not _is_legal_target(state, t1, db):
+		return false
+	if t2 != "":
+		if t2 == t1:
+			return false
+		if not _is_ally(state, t2) or not _is_legal_target(state, t2, db):
+			return false
+	return true
+
+
 # True if target_id is an in-play Melee weapon (Equipment with a weapon segment
 # and dmg_type "Melee"). Used by Windfury Weapon's attach target check.
 static func _is_melee_weapon(state: GameState, target_id: String, db) -> bool:
@@ -2869,6 +3035,9 @@ static func get_destroy_kind_candidates(state: GameState, db, kind: String) -> A
 					matches = _is_in_play_ability(state, card.instance_id, db)
 				"armor":
 					matches = _is_destroyable_armor(state, card.instance_id, db)
+				"weapon":
+					# Crushing Blow: equipment narrowed to WEAPON (_is_weapon_equipment).
+					matches = _is_weapon_equipment(state, card.instance_id, db)
 				_:
 					matches = _is_in_play_equipment(state, card.instance_id, db)
 			if matches:
@@ -4087,6 +4256,12 @@ static func _resolve_play_instant(state: GameState,
 						# response fizzles only that half of the card. Picking
 						# the same ally for both slots nets 0, as printed.
 						events.append_array(_apply_atk_swing(state, action, def, card_id, db))
+					"choose_destroy":
+						# Crushing Blow: "Choose one or both: Destroy target armor;
+						# or destroy target weapon." Each announced half resolves
+						# independently — see _apply_choose_destroy.
+						events.append_array(
+							_apply_choose_destroy(state, action, def, card_id, db))
 					"exhaust_target":
 						# "Exhaust target ally." (Exhaustion) or "Exhaust target hero
 						# or ally." (hero_or_ally variant). Re-check at resolution
@@ -4535,6 +4710,34 @@ static func _resolve_play_instant(state: GameState,
 									"target": ms_target_id, "amount": ms_amount,
 									"from_ability": true})
 							events.append_array(defer_packets(state, db, ms_packets))
+					"cleave_weapon_atk":
+						# Cleave: "Your hero deals X melee damage to each of up to
+						# two target allies, where X is 1 plus the ATK of one of
+						# your Melee weapons." X is read LIVE at resolution
+						# (709.2b) via best_melee_weapon_atk, same as Mortal
+						# Strike — a weapon destroyed in the response window
+						# shrinks or zeroes X, and with none at all the spell
+						# still deals its flat part. Each target resolves
+						# independently in announced order with its own 706/
+						# 709.2a re-check and its own destroy/game-over check
+						# (711.1) — a target killed by the first wave just can't
+						# be hit by the second.
+						var cl_dmg_type := parts[2].to_lower().strip_edges() \
+							if parts.size() > 2 else "melee"
+						var cl_amount := (int(parts[1]) if parts.size() > 1 else 0) \
+							+ best_melee_weapon_atk(state, action.source_player, db)
+						var cl_ps := state.players.get(action.source_player) as PlayerState
+						var cl_hero_id: String = cl_ps.hero_instance_id if cl_ps else ""
+						if cl_hero_id != "" and cl_amount > 0:
+							var cl_packets: Array = []
+							for cl_target_id in _chain_lightning_targets(action):
+								if not _is_legal_target(state, cl_target_id, db) \
+										or not _is_ally(state, cl_target_id):
+									continue
+								cl_packets.append({"source": cl_hero_id,
+									"target": cl_target_id, "amount": cl_amount,
+									"dmg_type": cl_dmg_type, "from_ability": true})
+							events.append_array(defer_packets(state, db, cl_packets))
 					"interrupt_ability":
 						# "Interrupt target ability card." (Counterspell, rule
 						# 711; Escape Artist's mode adds "…that's targeting your
@@ -4635,6 +4838,20 @@ static func _resolve_play_instant(state: GameState,
 								ncd_ps3.next_card_cost_mod = ncd_amt
 							events.append(GameEvent.next_card_discount_gained(
 								action.source_player, ncd_amt))
+					"weapon_atk_this_turn":
+						# Heroic Strike: "Your weapons have +3 ATK this turn."
+						# Elendril's grant untyped — Melee and Ranged alike (the
+						# card says "weapons", not "Ranged weapons"). Player-wide,
+						# this-turn, so it lives on PlayerState
+						# (weapon_atk_bonus_this_turn), applied live in
+						# GameState.get_atk and cleared at the start of every turn.
+						# Nothing is announced, so it can never fizzle.
+						var wa_amount := int(parts[1]) if parts.size() > 1 else 0
+						var wa_ps := state.players.get(action.source_player) as PlayerState
+						if wa_ps and wa_amount != 0:
+							wa_ps.weapon_atk_bonus_this_turn += wa_amount
+							events.append(GameEvent.ranged_weapon_bonus_gained(
+								action.source_player, wa_amount))
 					"hero_damage_destroys_ally_this_turn":
 						# Cold Blood: "When your hero deals damage to an ally this
 						# turn, destroy that ally." A player-wide, this-turn grant

@@ -2662,6 +2662,14 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if ms_action:
 					result.append(ms_action)
 				continue
+			if def and StackResolver.is_cleave_def(def):
+				# Cleave: up to 2 enemy ALLY targets (no hero fallback — the
+				# card can't target one), each taking the same weapon-derived
+				# amount. AI always targets opponents only.
+				var cv_action := _cleave_action(state, db, player_id, card.instance_id, action_type)
+				if cv_action:
+					result.append(cv_action)
+				continue
 			if def and StackResolver.is_divided_damage_def(def):
 				# Lightning Storm: X is both the price and the damage pool, so
 				# the AI buys exactly the points it can convert into kills.
@@ -6232,6 +6240,53 @@ func _divided_damage_action(state: GameState, db, player_id: String,
 	return null
 
 
+# Cleave: "Your hero deals X melee damage to each of up to two target allies,
+# where X is 1 plus the ATK of one of your Melee weapons." Multi-Shot's
+# kills-first-then-soak heuristic, narrowed to 2 slots, ALLIES only (no hero
+# fallback — the card can't target one) and X read LIVE off the board
+# (StackResolver.cleave_damage_amount) instead of a flat parsed constant.
+func _cleave_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var amount := StackResolver.cleave_damage_amount(state, def, player_id, db)
+	if amount <= 0:
+		return null
+	var opp := _other_player_id(state, player_id)
+	var kills: Array[String] = []
+	var soak:  Array[String] = []
+	for ally in state.cards_in_zone(opp + "_ally_row"):
+		if state.get_current_hp(ally.instance_id, db) <= amount:
+			kills.append(ally.instance_id)
+		else:
+			soak.append(ally.instance_id)
+	# Higher-HP allies soak the swing that won't kill anything.
+	soak.sort_custom(func(a, b):
+		return state.get_current_hp(a, db) > state.get_current_hp(b, db))
+	var ordered: Array[String] = []
+	ordered.append_array(kills)
+	ordered.append_array(soak)
+	if ordered.is_empty():
+		return null
+	var keys := ["target_id", "target_id_2"]
+	var params := {"card_id": card_id}
+	var chosen := 0
+	for cand in ordered:
+		if chosen >= 2:
+			break
+		var probe_params := params.duplicate()
+		probe_params[keys[chosen]] = cand
+		var probe := PendingAction.make(action_type, player_id, probe_params)
+		if StackResolver.can_submit(state, probe, db):
+			params = probe_params
+			chosen += 1
+	if chosen == 0:
+		return null
+	return PendingAction.make(action_type, player_id, params)
+
+
 func _multi_shot_action(state: GameState, db, player_id: String,
 		card_id: String, action_type: String) -> PendingAction:
 	var card := state.get_card(card_id)
@@ -6694,6 +6749,43 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 				{"card_id": card_id, "target_id": cid})
 			if StackResolver.can_submit(state, d_act, db):
 				result.append(d_act)
+		return result
+
+	# Crushing Blow (`choose_destroy:armor:weapon`): "choose one or both" — the
+	# two halves are announced TOGETHER in one submission, so unlike the
+	# Sunder-Armor-style loop above (one action per candidate, left for scoring
+	# to pick among) this builds ONE action carrying whichever half(s) clear the
+	# same value bar (opposing, printed cost >= the spell's own — Burn Away's
+	# convention). Both halves fire when both have a worthwhile target, one
+	# fires alone when only that kind does, and the card is held when neither
+	# opposing pool clears the bar.
+	if spell_def and StackResolver.is_choose_destroy_def(spell_def):
+		var cb_kinds := StackResolver.choose_destroy_kinds(spell_def)
+		var cb_keys := ["target_id", "target_id_2"]
+		var cb_params := {"card_id": card_id}
+		var cb_picked := false
+		for i in cb_kinds.size():
+			if i >= cb_keys.size():
+				break
+			var cb_best_id := ""
+			var cb_best_cost := -1
+			for cid in StackResolver.get_destroy_kind_candidates(state, db, cb_kinds[i]):
+				var cb_t_card := state.get_card(cid)
+				if not cb_t_card or cb_t_card.controller != opp:
+					continue
+				var cb_t_def := db.get_def(cb_t_card.card_def_id) as CardDef
+				if not cb_t_def or cb_t_def.cost < spell_def.cost:
+					continue
+				if cb_t_def.cost > cb_best_cost:
+					cb_best_cost = cb_t_def.cost
+					cb_best_id = cid
+			if cb_best_id != "":
+				cb_params[cb_keys[i]] = cb_best_id
+				cb_picked = true
+		if cb_picked:
+			var cb_act := PendingAction.make(action_type, player_id, cb_params)
+			if StackResolver.can_submit(state, cb_act, db):
+				result.append(cb_act)
 		return result
 
 	# Coup de Grâce (destroy_target:exhausted_ally): destroy the MOST valuable

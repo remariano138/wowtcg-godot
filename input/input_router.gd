@@ -123,6 +123,11 @@ var _in_quest_facedown_mode: bool = false
 var _quest_facedown_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
+# Crushing Blow (`choose_destroy:armor:weapon`): each half is independently
+# optional, so it gets its own small state machine — see _begin_choose_destroy.
+var _cd_source: String = ""
+var _cd_phase: int = -1   # -1 = inactive; index into choose_destroy_kinds()
+var _cd_picks: Dictionary = {"target_id": "", "target_id_2": ""}
 # Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
 # The player can stop after 1 or 2 picks via pass_priority_action() (Space / pass button).
 var _chain_lightning_picked: Array[String] = []
@@ -435,6 +440,11 @@ func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 	if action_type == "play_instant" and _is_atk_swing(instance_id):
 		_targeting_first_target = ""
 		start_targeting(instance_id, "play_instant", "atk_up", 0)
+		return true
+	# Crushing Blow: "choose one or both" — its own two-phase flow, since
+	# unlike every other sequential pick each half is independently skippable.
+	if _is_choose_destroy(instance_id):
+		_begin_choose_destroy(instance_id)
 		return true
 	# Skewer: the ally that will deal the damage is CHOSEN first (your party
 	# only), the ally it hits second.
@@ -1235,6 +1245,9 @@ func cancel_targeting() -> void:
 	_targeting_mode         = -1
 	_chain_lightning_picked = []
 	_divided_picked         = []
+	_cd_source = ""
+	_cd_phase  = -1
+	_cd_picks  = {"target_id": "", "target_id_2": ""}
 	refresh_highlights()
 	targeting_cancelled.emit()
 
@@ -1646,15 +1659,29 @@ func _is_multi_target(card_id: String) -> bool:
 	if not def:
 		return false
 	return StackResolver._has_effect_flag_prefix(def, "chain_lightning") \
-		or StackResolver._has_effect_flag_prefix(def, "multi_shot")
+		or StackResolver._has_effect_flag_prefix(def, "multi_shot") \
+		or StackResolver.is_cleave_def(def)
+
+
+# The slot cap for a multi-target card — 3 for Chain Lightning / Multi-Shot,
+# 2 for Cleave ("up to TWO target allies"). Read once per click sequence
+# rather than hardcoded, so _chain_lightning_params/_handle_chain_lightning_click
+# stay a single shared flow for every card on this key.
+func _multi_target_max(card_id: String) -> int:
+	if not db or card_id == "":
+		return 3
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return 2 if def and StackResolver.is_cleave_def(def) else 3
 
 
 func _chain_lightning_params(extra_target_id: String = "") -> Dictionary:
 	var params := {"card_id": _targeting_source}
 	var keys := ["target_id", "target_id_2", "target_id_3"]
+	var max_n := _multi_target_max(_targeting_source)
 	for i in _chain_lightning_picked.size():
 		params[keys[i]] = _chain_lightning_picked[i]
-	if extra_target_id != "" and _chain_lightning_picked.size() < 3:
+	if extra_target_id != "" and _chain_lightning_picked.size() < max_n:
 		params[keys[_chain_lightning_picked.size()]] = extra_target_id
 	return params
 
@@ -1668,14 +1695,15 @@ func _handle_chain_lightning_click(instance_id: String) -> void:
 			# any remaining optional targets, same as pressing Space.
 			_submit_chain_lightning()
 		return
-	if _chain_lightning_picked.size() >= 3 or instance_id in _chain_lightning_picked:
+	var max_n := _multi_target_max(_targeting_source)
+	if _chain_lightning_picked.size() >= max_n or instance_id in _chain_lightning_picked:
 		return
 	var probe := PendingAction.make(_action_type_for(_targeting_source), local_player,
 		_chain_lightning_params(instance_id))
 	if not StackResolver.can_submit(state, probe, db):
 		return
 	_chain_lightning_picked.append(instance_id)
-	if _chain_lightning_picked.size() >= 3:
+	if _chain_lightning_picked.size() >= max_n:
 		_submit_chain_lightning()
 	else:
 		# Re-emit to refresh the cursor/status text and re-highlight remaining targets.
@@ -1802,6 +1830,34 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		return
 	if _is_divided_damage(_targeting_source):
 		_handle_divided_click(instance_id)
+		return
+	# Crushing Blow: armor phase, then weapon phase — each independently
+	# skippable. Clicking the SPELL itself is the skip/step-back gesture:
+	# in the armor phase it skips straight to the weapon phase (nothing has
+	# been picked yet, so there's nothing to lose); in the weapon phase it
+	# steps back and re-opens the armor phase from scratch (Ravenous Bite's
+	# "click the spell to go back" convention) rather than cancelling the
+	# whole cast — Esc/right-click still does that, at either phase.
+	if _is_choose_destroy(_targeting_source) and _cd_phase >= 0:
+		if instance_id == _targeting_source:
+			# Skipping phase 0 (armor) forward is only offered when a later
+			# phase still has something to pick — skipping the only nonempty
+			# pool would strand the cast with nothing chosen at all.
+			if _cd_phase == 0 and _cd_remaining_candidate_exists(1):
+				_advance_choose_destroy(1)
+			elif _cd_phase != 0:
+				_cd_picks["target_id"] = ""
+				_advance_choose_destroy(0)
+			return
+		var cd_key := "target_id" if _cd_phase == 0 else "target_id_2"
+		var cd_params: Dictionary = _cd_picks.duplicate()
+		cd_params["card_id"] = _cd_source
+		cd_params[cd_key] = instance_id
+		var cd_probe := PendingAction.make(_targeting_action_type, local_player, cd_params)
+		if not StackResolver.can_submit(state, cd_probe, db):
+			return
+		_cd_picks[cd_key] = instance_id
+		_advance_choose_destroy(_cd_phase + 1)
 		return
 	# Ravenous Bite: phase 1 picks the +ATK ally, phase 2 the -ATK ally.
 	if _is_atk_swing(_targeting_source) and _targeting_first_target == "":
@@ -3191,6 +3247,9 @@ func _get_ability_targets(card_id: String) -> Array:
 	var kind := _destroy_kind(card_id)
 	if kind in ["ability", "equipment", "armor"]:
 		return _get_destroy_kind_targets(card_id, "play_ability", kind)
+	# Crushing Blow: the CURRENT phase's pool only (armor first, then weapon).
+	if _is_choose_destroy(card_id):
+		return _get_choose_destroy_targets(card_id, "play_ability")
 	# Windfury Weapon (`attach:melee_weapon`): targets are the caster's own Melee
 	# weapons in the hero row, not heroes/allies.
 	var src_card := state.get_card(card_id)
@@ -3279,6 +3338,9 @@ func _get_instant_targets(card_id: String) -> Array:
 	var kind := _destroy_kind(card_id)
 	if kind in ["ability", "equipment", "armor"]:
 		return _get_destroy_kind_targets(card_id, "play_instant", kind)
+	# Crushing Blow: the CURRENT phase's pool only (armor first, then weapon).
+	if _is_choose_destroy(card_id):
+		return _get_choose_destroy_targets(card_id, "play_instant")
 	var result: Array = []
 	for pid in state.players:
 		for card in state.cards_in_zone(pid + "_ally_row"):
@@ -3486,6 +3548,105 @@ func _is_atk_swing(card_id: String) -> bool:
 	return StackResolver.is_atk_swing_def(def)
 
 
+# ── Crushing Blow (dark_portal_120) — `choose_destroy:armor:weapon` ───────────
+# "Choose one or both: Destroy target armor; or destroy target weapon." Unlike
+# every other two-pick spell in the pool, EACH half is independently OPTIONAL —
+# so this is its own small state machine (_cd_source / _cd_phase / _cd_picks)
+# layered on top of the ordinary targeting flow rather than a rider on
+# `_targeting_first_target`, which has no notion of "skip this pick".
+func _is_choose_destroy(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return StackResolver.is_choose_destroy_def(def)
+
+
+func _begin_choose_destroy(card_id: String) -> void:
+	_cd_source = card_id
+	_cd_picks  = {"target_id": "", "target_id_2": ""}
+	_advance_choose_destroy(0)
+
+
+# Opens the pick for kinds[phase] (armor first, then weapon), skipping a phase
+# entirely — with no prompt — when its pool is empty (there is nothing to skip
+# TO, so no decision exists). Once every phase has been visited, submits
+# whatever was picked (at least one half, guaranteed by _play_needs_target's
+# gate having required a candidate to exist before this flow ever opened).
+func _advance_choose_destroy(phase: int) -> void:
+	var def := db.get_def(state.get_card(_cd_source).card_def_id) as CardDef
+	var kinds := StackResolver.choose_destroy_kinds(def)
+	if phase >= kinds.size():
+		_finish_choose_destroy()
+		return
+	var kind: String = kinds[phase]
+	if StackResolver.get_destroy_kind_candidates(state, db, kind).is_empty():
+		_advance_choose_destroy(phase + 1)
+		return
+	_cd_phase = phase
+	_targeting_source      = _cd_source
+	_targeting_action_type = _action_type_for(_cd_source)
+	targeting_started.emit(_cd_source, "cb_" + kind, 0)
+	refresh_highlights()
+
+
+# Does any phase from `from_phase` onward still have a candidate to pick?
+# Guards the "skip this phase" gesture — skipping the only remaining
+# nonempty pool would strand the cast with nothing chosen (707.1c requires
+# at least one).
+func _cd_remaining_candidate_exists(from_phase: int) -> bool:
+	var def := db.get_def(state.get_card(_cd_source).card_def_id) as CardDef
+	var kinds := StackResolver.choose_destroy_kinds(def)
+	for i in range(from_phase, kinds.size()):
+		if not StackResolver.get_destroy_kind_candidates(state, db, kinds[i]).is_empty():
+			return true
+	return false
+
+
+func _finish_choose_destroy() -> void:
+	var atype := _action_type_for(_cd_source)
+	var params := {"card_id": _cd_source}
+	params.merge(_cd_picks)
+	var action := PendingAction.make(atype, local_player, params)
+	_cd_source = ""
+	_cd_phase  = -1
+	_targeting_source      = ""
+	_targeting_action_type = ""
+	targeting_cancelled.emit()
+	if not StackResolver.can_submit(state, action, db):
+		refresh_highlights()
+		return
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		refresh_highlights()
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
+
+
+# Legal candidates for the CURRENT phase only (armor OR weapon, never both at
+# once), with whatever the other phase already picked riding along on the probe.
+func _get_choose_destroy_targets(card_id: String, action_type: String) -> Array:
+	var result: Array = []
+	if _cd_phase < 0:
+		return result
+	var def := db.get_def(state.get_card(card_id).card_def_id) as CardDef
+	var kinds := StackResolver.choose_destroy_kinds(def)
+	if _cd_phase >= kinds.size():
+		return result
+	var kind: String = kinds[_cd_phase]
+	var key := "target_id" if _cd_phase == 0 else "target_id_2"
+	for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+		var params: Dictionary = _cd_picks.duplicate()
+		params["card_id"] = card_id
+		params[key] = cid
+		var act := PendingAction.make(action_type, local_player, params)
+		if StackResolver.can_submit(state, act, db):
+			result.append(cid)
+	return result
+
+
 # Largest X the player can announce for an X-cost hand card right now. Asked of
 # get_play_cost one X at a time rather than derived arithmetically, so any
 # cost aura it applies is honoured exactly — Elemental Focus' "(1) less, to a
@@ -3583,7 +3744,7 @@ func _card_dmg_type(card_id: String) -> String:
 		var key := entry.strip_edges().split(":")[0].strip_edges()
 		match key:
 			"destroy_target", "destroy_exhausted_ally": return "destroy"
-			"deal_damage_to_target", "deal_damage_and_heal", "attach_deal_damage", 					"deal_damage_weapon_atk":
+			"deal_damage_to_target", "deal_damage_and_heal", "attach_deal_damage", 					"deal_damage_weapon_atk", "cleave_weapon_atk":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 2: return parts[2].to_lower()
 			"chain_lightning":
@@ -3616,6 +3777,12 @@ func _chain_lightning_amount_for(card_id: String, picked_count: int) -> int:
 		# Multi-Shot deals the same amount to every target (recipe multi_shot:N:TYPE).
 		if parts[0].strip_edges() == "multi_shot" and parts.size() > 1:
 			return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
+		# Cleave: live weapon read (flat part plus the best Melee weapon's ATK),
+		# same amount to every target — same live-board convention as Mortal
+		# Strike's single-target deal_damage_weapon_atk.
+		if parts[0].strip_edges() == "cleave_weapon_atk":
+			return _preview_dmg(StackResolver.cleave_damage_amount(
+				state, def, local_player, db), _card_dmg_type(card_id), true)
 	return 0
 
 
@@ -3645,6 +3812,12 @@ func _card_dmg_amount(card_id: String) -> int:
 			"multi_shot":
 				if parts.size() > 1:
 					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
+			"cleave_weapon_atk":
+				# Cleave: the amount is a live board read, same as Mortal Strike's
+				# deal_damage_weapon_atk above — the cursor asks the resolver
+				# rather than the printed number so the two can't disagree.
+				return _preview_dmg(StackResolver.cleave_damage_amount(
+					state, def, local_player, db), _card_dmg_type(card_id), true)
 	return 0
 
 

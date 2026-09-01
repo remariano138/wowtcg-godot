@@ -662,8 +662,7 @@ func start_hero_graveyard_selection(hero_id: String) -> void:
 # How many times in a row this power could be used right now: what the resources
 # buy, capped by how many candidates there are to spend them on.
 func ally_power_max_uses(card_id: String, candidate_count: int) -> int:
-	var card := state.get_card(card_id)
-	var def := db.get_def(card.card_def_id) as CardDef if card and db else null
+	var def := StackResolver.power_source_def(state, card_id, db) if db else null
 	if not def:
 		return 0
 	var ap := StackResolver._ally_activated_power(def)
@@ -681,7 +680,7 @@ func start_ally_graveyard_selection(card_id: String, count: int = 0) -> void:
 	var card := state.get_card(card_id)
 	if not card or not db:
 		return
-	var def := db.get_def(card.card_def_id) as CardDef
+	var def := StackResolver.power_source_def(state, card_id, db)
 	var req := StackResolver.get_graveyard_search_requirement(def) if def else {}
 	if req.is_empty():
 		return
@@ -2293,11 +2292,6 @@ func get_playable_card_ids() -> Array:
 		for card in state.cards_in_zone(local_player + zone_suffix):
 			if card.controller != local_player:
 				continue
-			# Through the effective def (700.3) so a Polymorphed ally's power
-			# doesn't light up — the engine would refuse it anyway.
-			var def: CardDef = state.effective_def(card.instance_id, db) if db else null
-			if not def:
-				continue
 			# Hero power (hero in the hero row).
 			var ps := state.players.get(local_player) as PlayerState
 			if zone_suffix == "_hero_row" and ps and ps.hero_instance_id == card.instance_id:
@@ -2305,8 +2299,14 @@ func get_playable_card_ids() -> Array:
 					{"hero_id": card.instance_id, "target_id": ""})
 				if StackResolver.can_submit(state, power_check, db):
 					result.append(card.instance_id)
+					continue
+			# Activated power (ally / equipment) — the SOURCE's own, read
+			# through the effective def (700.3, so a Polymorphed ally's power
+			# doesn't light up) — or, for a hero with none of its own, one a
+			# friendly in-play card grants it (Field Repair Bot 74A).
+			var def: CardDef = StackResolver.power_source_def(state, card.instance_id, db) if db else null
+			if not def:
 				continue
-			# Activated power (ally / equipment).
 			var ap_data := StackResolver._ally_activated_power(def)
 			if ap_data == {}:
 				continue
@@ -2351,8 +2351,8 @@ func get_playable_card_ids() -> Array:
 				var ap_action := PendingAction.make("use_ally_power", local_player,
 					{"card_id": card.instance_id,
 						"_skip_target_check": (ap_data.get("targets", "") as String) in [
-							"graveyard_ally", "ability_or_equipment", "ability",
-							"equipment", "exhausted_ally", "undead_ally",
+							"graveyard_ally", "graveyard_equipment", "ability_or_equipment",
+							"ability", "equipment", "exhausted_ally", "undead_ally",
 							"friendly_ally", "chosen_friendly_ally", "pet"]})
 				if StackResolver.can_submit(state, ap_action, db):
 					result.append(card.instance_id)
@@ -2746,13 +2746,16 @@ func get_context_actions(instance_id: String) -> Array:
 						"preferred_weapon_id": preferred_weapon}),
 				"enabled": can_attack})
 
-			# Activated power (allies in the ally row; equipment in the hero row).
+			# Activated power (allies in the ally row; equipment in the hero row) —
+			# the SOURCE's own, or, for a hero with none of its own, one a friendly
+			# in-play card grants it (Field Repair Bot 74A).
 			if zone.zone_type in ["ally_row", "hero_row"] and card.controller == local_player:
-				var ap_data := StackResolver._ally_activated_power(def)
+				var ap_def := StackResolver.power_source_def(state, instance_id, db)
+				var ap_data := StackResolver._ally_activated_power(ap_def) if ap_def else {}
 				if ap_data != {}:
 					var ap_kind: String = ap_data.get("targets", "") as String
 					var ap_needs_target: bool = ap_kind in ["hero_or_ally", "ally", "friendly_ally", "chosen_friendly_ally", "hero_or_ally_two", "ability_or_equipment", "ability", "equipment", "exhausted_ally", "undead_ally"]
-					var ap_needs_gy_target: bool = ap_kind == "graveyard_ally"
+					var ap_needs_gy_target: bool = ap_kind in ["graveyard_ally", "graveyard_equipment"]
 					var ap_enabled: bool
 					if ap_needs_gy_target or ap_kind in ["ability_or_equipment", "ability", "equipment", "exhausted_ally", "undead_ally"]:
 						# Target picked afterward (graveyard browser / targeting mode) —
@@ -2782,13 +2785,16 @@ func get_context_actions(instance_id: String) -> Array:
 							and state.get_available_resources(local_player) >= int(ap_data.get("resource_cost", 0)) \
 							and StackResolver._can_pay_extra_power_cost(state, local_player, ap_extra_cost, db) \
 							and state.priority_player == local_player \
-							and (not StackResolver.requires_turn_player(def) \
+							and (not StackResolver.requires_turn_player(ap_def) \
 								or state.turn_player == local_player)
 					else:
 						var ap_action := PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id})
 						ap_enabled = StackResolver.can_submit(state, ap_action, db)
-					char_actions.append({"label": "Activate Power",
+					var ap_effect: String = ap_data.get("effect", "") as String
+					var ap_label := "Repair" if ap_effect == "graveyard_to_hand_equipment" \
+						else "Activate Power"
+					char_actions.append({"label": ap_label,
 						"action": PendingAction.make("use_ally_power", local_player,
 							{"card_id": instance_id, "_needs_target": ap_needs_target,
 								"_needs_gy_target": ap_needs_gy_target}),
@@ -2995,7 +3001,7 @@ func request_attachment_peek(host_id: String, card_ids: Array) -> void:
 	if host and db:
 		var host_def: CardDef = db.get_def(host.card_def_id)
 		if host_def:
-			host_name = host_def.name
+			host_name = host_def.card_name
 	attachment_peek_requested.emit(host_name, card_ids)
 
 

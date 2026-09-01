@@ -175,7 +175,7 @@ static func submit_action(state: GameState, action: PendingAction,
 			var ap_card_id: String = action.params.get("card_id", "")
 			if ap_card_id != "" and db:
 				var ap_card := state.get_card(ap_card_id)
-				var ap_def  := db.get_def(ap_card.card_def_id) as CardDef if ap_card else null
+				var ap_def  := power_source_def(state, ap_card_id, db) if ap_card else null
 				var ap_data := _ally_activated_power(ap_def) if ap_def else {}
 				var ap_cost := power_resource_cost(ap_data,
 					int(action.params.get("x_value", 0)))
@@ -575,6 +575,10 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_circle_of_life() before priority can move.
 	if state.pending_circle_player != "":
 		return []
+	# A pending Herod's Shoulder deck search must be resolved (or declined) via
+	# choose_deck_search_to_top() before priority can move.
+	if state.pending_deck_search_player != "":
+		return []
 	# A pending armor-prevention decision (717.2c) must be resolved via
 	# choose_prevention() before priority can move.
 	if state.pending_prevention_player != "":
@@ -846,6 +850,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Circle of Life's optional deck search blocks everything until resolved (or
 	# declined) via choose_circle_of_life().
 	if state.pending_circle_player != "":
+		return false
+
+	# Herod's Shoulder's optional enter-play deck search blocks everything until
+	# resolved (or declined) via choose_deck_search_to_top().
+	if state.pending_deck_search_player != "":
 		return false
 
 	# Armor prevention point (717.2c) blocks everything until resolved via
@@ -2790,6 +2799,26 @@ static func _is_weapon_equipment(state: GameState, card_id: String, db) -> bool:
 	return def != null and not _weapon_info(def).is_empty()
 
 
+# Def-level weapon check (rule 303): carries a strike_cost segment. Unlike
+# _is_weapon_equipment this asks nothing about being in play — it's what a
+# deck/graveyard search for "a weapon card" (Herod's Shoulder) needs.
+static func is_weapon_card_def(def: CardDef) -> bool:
+	return def != null and not _weapon_info(def).is_empty()
+
+
+# The `on_enter:search_deck_to_top:CARD_TYPE` segment's CARD_TYPE, or "" when
+# absent (Herod's Shoulder: "search your deck for a weapon card…").
+static func get_enter_play_deck_search_type(def: CardDef) -> String:
+	if not def or def.effects == "":
+		return ""
+	for entry in def.effects.split("|"):
+		var parts := entry.strip_edges().split(":")
+		if parts.size() >= 3 and parts[0].strip_edges() == "on_enter" \
+				and parts[1].strip_edges() == "search_deck_to_top":
+			return parts[2].strip_edges()
+	return ""
+
+
 # Every in-play card matching a destroy_named spec, BOTH players' — the printed
 # text carries no "opposing" clause, so a player firing one of the pair breaks
 # their own copy of the other card too. Nothing is TARGETED (the text says
@@ -3463,6 +3492,16 @@ static func _resolve_play_equipment(state: GameState,
 
 	# Slot (414.3) and Unique-name (414.3a) uniqueness are checked from the
 	# move_card queue — see drain_uniqueness_checks.
+
+	# Herod's Shoulder: "When [this] enters play, you may search your deck for
+	# a weapon card and reveal it. If you do, shuffle your deck and put that
+	# card on top." Optional and non-targeted (a deck search is a CHOICE, not a
+	# target — 706 is irrelevant), so it opens the same direct-call point
+	# Circle of Life's deck search uses rather than going on the chain.
+	if eq_def:
+		var search_type := get_enter_play_deck_search_type(eq_def)
+		if search_type != "":
+			events.append_array(_open_deck_search_to_top(state, card.controller, search_type, db))
 
 	return events
 
@@ -4995,6 +5034,49 @@ static func _ally_activated_power(def: CardDef) -> Dictionary:
 	return {}
 
 
+# Field Repair Bot 74A: "Friendly heroes have '1, [Activate] -> Put an
+# equipment card from your graveyard into your hand.'" — a static grant of an
+# ENTIRE activated power to the controller's hero, not to the granting card
+# itself. Rather than a separate copy of the ally-power machinery, the granted
+# power's recipe rides an ordinary `activated_power` segment on the granting
+# card, marked with the `hero_grants_only` extra-cost token so the card itself
+# can never activate it directly (the [Activate] tap belongs to the HERO).
+#
+# The def a source card's activated power should be read off: its own
+# effective def when it carries a real (non-granted) power, or — for a hero
+# with none of its own — whichever friendly in-play card grants it one. Read
+# live off the board, so the grant starts the moment the source lands and
+# lifts the instant it leaves, with nothing stored on the hero itself. Returns
+# null when card_id has no activatable power at all (including a
+# `hero_grants_only` card asked about on its own behalf — Field Repair Bot
+# itself is never directly activatable).
+static func power_source_def(state: GameState, card_id: String, db) -> CardDef:
+	var def := state.effective_def(card_id, db)
+	if not def:
+		return null
+	var ap := _ally_activated_power(def)
+	var grants_only := power_has_extra_cost(ap.get("extra_cost", ""), "hero_grants_only")
+	if not ap.is_empty() and not grants_only:
+		return def
+	var card := state.get_card(card_id)
+	if card:
+		var ps := state.players.get(card.controller) as PlayerState
+		if ps and ps.hero_instance_id == card_id:
+			for zone_suffix in ["_hero_row", "_ally_row"]:
+				for other in state.cards_in_zone(card.controller + zone_suffix):
+					if other.instance_id == card_id:
+						continue
+					var g_def := state.effective_def(other.instance_id, db)
+					if not g_def:
+						continue
+					var g_ap := _ally_activated_power(g_def)
+					if not g_ap.is_empty() and power_has_extra_cost(
+							g_ap.get("extra_cost", ""), "hero_grants_only"):
+						return g_def
+			return def   # hero's own (powerless) def — the ordinary "no power" case
+	return null if grants_only else def
+
+
 # The resource cost an activated power actually charges. Fixed for every power
 # printed so far; for an X-cost power ("Chipper" Ironbane) it's the x_value
 # announced with the action. The ONE place the two cases are reconciled — pay
@@ -6038,9 +6120,10 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		return false
 	if not db:
 		return false
-	# The SOURCE's own power, so read off the effective def (700.3): a card that
-	# has lost its powers has no activated power to use.
-	var def := state.effective_def(card.instance_id, db)
+	# The SOURCE's own power, read off the effective def (700.3: a card that has
+	# lost its powers has no activated power to use) — or, for a hero with none
+	# of its own, one a friendly in-play card grants it (Field Repair Bot 74A).
+	var def := power_source_def(state, card.instance_id, db)
 	if not def:
 		return false
 	var ap := _ally_activated_power(def)
@@ -6109,10 +6192,11 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if not _is_ally(state, sac_id) or not sac_card \
 				or sac_card.controller != action.source_player:
 			return false
-	# Graveyard-card-targeted powers (Ophelia Barrows): even the no-target probe
-	# requires a legal candidate in some graveyard (per the card's paired
-	# graveyard_to_rfg requirement segment); a chosen target must be one of them.
-	if targets_kind == "graveyard_ally":
+	# Graveyard-card-targeted powers (Ophelia Barrows: graveyard_ally / Field
+	# Repair Bot 74A: graveyard_equipment): even the no-target probe requires a
+	# legal candidate in some graveyard (per the card's paired requirement
+	# segment); a chosen target must be one of them.
+	if targets_kind in ["graveyard_ally", "graveyard_equipment"]:
 		var gy_req := get_graveyard_search_requirement(def)
 		if gy_req.is_empty():
 			return false
@@ -6368,7 +6452,7 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 	if not card:
 		return [GameEvent.make("action_fizzled",
 			{"action_type": "use_ally_power", "reason": "card_not_found"})]
-	var def := state.effective_def(card.instance_id, db)
+	var def := power_source_def(state, card.instance_id, db)
 	if not def:
 		return []
 	var ap := _ally_activated_power(def)
@@ -6492,7 +6576,7 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			# controller's pet capacity exactly as if one had entered play. The
 			# move above queued the check; the drain at the end of this
 			# resolution's pass_priority opens the choice.
-		"graveyard_to_hand_ally":
+		"graveyard_to_hand_ally", "graveyard_to_hand_equipment":
 			# Medoc Spiritwarden: "[Activate] -> Put target ally card from your
 			# graveyard into your hand." Call the Spirit's fetch on a repeatable
 			# body, and Ophelia Barrows' graveyard-targeted power with the exile
@@ -6506,6 +6590,12 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			# effect belongs to whoever controlled its source when it was
 			# created, so neither a dead source (707.3) nor one that changed
 			# control mid-chain may move the fetch to another player's hand.
+			#
+			# Field Repair Bot 74A ("...graveyard into your hand") shares the
+			# exact same resolution — it is granted to the hero (see
+			# power_source_def / hero_grants_only), with `graveyard_to_hand:
+			# Equipment:1:1:own` as its own paired requirement segment, and the
+			# card type filter has already done its job by candidate time.
 			var g2h_tid: String = action.params.get("target_id", "")
 			var g2h_card := state.get_card(g2h_tid)
 			# "YOUR graveyard" is the zone, checked exactly the way
@@ -8266,6 +8356,11 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	# cleared below (303.2a).
 	var atk_unpreventable := GameLogic.is_damage_unpreventable(state, db, attacker_id, true)
 	var def_unpreventable := GameLogic.is_damage_unpreventable(state, db, defender_id, true)
+	# Thrash Blade names ITSELF ("deals combat damage WITH Thrash Blade"), so —
+	# like the unpreventability reads just above — the struck-weapon ids must be
+	# captured before the associations are cleared below (303.2a).
+	var atk_struck_weapons: Array = state.combat_struck_weapons.get(attacker_id, []).duplicate()
+	var def_struck_weapons: Array = state.combat_struck_weapons.get(defender_id, []).duplicate()
 	state.combat_attacker = ""
 	state.combat_defender = ""
 	state.combat_protector = ""
@@ -8396,6 +8491,15 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	# already gone and heals nothing.
 	events.append_array(_fire_hero_combat_dmg_heals_hero(
 		state, attacker_id, defender_id, atk_events, def_events, db))
+
+	# Thrash Blade (rule 305.2 triggered equipment power): "When your hero deals
+	# combat damage with Thrash Blade for the first time on each of your turns,
+	# ready Thrash Blade and your hero." Wraith Scythe's trigger point narrowed
+	# to a NAMED weapon (like Annihilator's unpreventability) and gated once per
+	# turn — see _fire_weapon_combat_dmg_readies.
+	events.append_array(_fire_weapon_combat_dmg_readies(
+		state, attacker_id, defender_id, atk_struck_weapons, def_struck_weapons,
+		atk_events, def_events, db))
 
 	# Brigg (rule 703 triggered ally power): "When Brigg deals combat damage to
 	# an ally with damage on it, destroy that ally." Devilsaur Leggings' shape
@@ -8581,6 +8685,67 @@ static func _fire_hero_combat_dmg_heals_hero(state: GameState,
 	if _hero_wields_flag(state, defender_id, "hero_combat_dmg_heals_hero", db):
 		events.append_array(GameLogic.heal(state, defender_id,
 				_combat_dmg_landed(def_events, attacker_id), db, defender_id))
+	return events
+
+
+# weapon_combat_dmg_readies_self_and_hero equipment flag (Thrash Blade): "When
+# your hero deals combat damage with [this weapon] for the first time on each
+# of your turns, ready [this weapon] and your hero." Unlike
+# _fire_hero_combat_dmg_heals_hero (any weapon or none) this names ITSELF, so
+# the check is the same "was this specific card among the weapons struck this
+# combat" read Annihilator's `combat_damage_unpreventable` uses
+# (combat_struck_weapons), not the generic _hero_wields_flag scan.
+#
+# "On each of your turns" is the once-per-turn gate — a bookkeeping counter on
+# the weapon (cleared at the controller's ready step, TurnManager._enter_ready)
+# — AND restricts the trigger to the wielder's own turn: combat only happens
+# during the turn player's action phase, so the hero-as-attacker branch is the
+# one this ever fires from in practice, but the check is written generically
+# (state.turn_player == wielder's controller) rather than assuming the role.
+#
+# Mandatory, free, no target, no choice — nothing goes on the chain. Readying
+# an already-ready weapon/hero is a harmless no-op (GameLogic.ready_card).
+static func _fire_weapon_combat_dmg_readies(state: GameState,
+		attacker_id: String, defender_id: String,
+		atk_struck_weapons: Array, def_struck_weapons: Array,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Hero as attacker → damage it dealt this combat.
+	events.append_array(_maybe_ready_from_weapon_combat_dmg(
+			state, attacker_id, atk_struck_weapons,
+			_combat_dmg_landed(atk_events, defender_id), db))
+	# Hero as defender (attacked directly or protecting) → its retaliation.
+	events.append_array(_maybe_ready_from_weapon_combat_dmg(
+			state, defender_id, def_struck_weapons,
+			_combat_dmg_landed(def_events, attacker_id), db))
+	return events
+
+
+static func _maybe_ready_from_weapon_combat_dmg(state: GameState,
+		hero_id: String, struck_weapons: Array, dmg_landed: int, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if dmg_landed <= 0:
+		return events
+	var hero := state.get_card(hero_id)
+	if not hero:
+		return events
+	var ps := state.players.get(hero.controller) as PlayerState
+	if not ps or ps.hero_instance_id != hero_id or state.turn_player != hero.controller:
+		return events
+	for weapon_id in struck_weapons:
+		var weapon := state.get_card(weapon_id)
+		if not weapon:
+			continue
+		var wdef := state.effective_def(weapon_id, db) as CardDef
+		if not wdef or not _has_effect_flag(wdef, "weapon_combat_dmg_readies_self_and_hero"):
+			continue
+		if int(weapon.counters.get("weapon_dmg_readied_this_turn", 0)) > 0:
+			continue
+		weapon.counters["weapon_dmg_readied_this_turn"] = 1
+		events.append_array(GameLogic.ready_card(state, weapon_id))
+		events.append_array(GameLogic.ready_card(state, hero_id))
 	return events
 
 
@@ -9045,6 +9210,79 @@ static func get_circle_candidates(state: GameState, player_id: String,
 		if def and def.card_name == card_name and is_ally_card_def(def):
 			result.append(card.instance_id)
 	return result
+
+
+# ── Enter-play deck search, put on top (Herod's Shoulder) ─────────────────────
+# "When [this] enters play, you may search your deck for a CARD_TYPE card and
+# reveal it. If you do, shuffle your deck and put that card on top."
+# One-shot (fires once per entry — not a repeating turn-log watcher like Circle
+# of Life, so no queue), direct call (no chain, no priority pass — like the
+# Circle of Life search). "" declines, and rule 413.3 lets a search of a
+# non-public zone fail to find even with candidates present; either way rule
+# 413.2 shuffles the deck.
+
+# CARD_TYPE cards in this player's own DECK. "Weapon" asks the def-level weapon
+# predicate (a strike_cost segment — rule 303) rather than the printed card
+# type column, since a weapon's type line reads "Weapon" already but this stays
+# consistent with how every other typed search (`is_ally_card_def`) works.
+static func get_deck_search_to_top_candidates(state: GameState, player_id: String,
+		card_type: String, db) -> Array[String]:
+	var result: Array[String] = []
+	if db == null or card_type == "":
+		return result
+	for card in state.cards_in_zone(player_id + "_deck"):
+		var def := db.get_def(card.card_def_id) as CardDef
+		if not def:
+			continue
+		var matches: bool = (card_type == "Weapon" and is_weapon_card_def(def)) \
+			or (card_type == "Ally" and is_ally_card_def(def)) \
+			or def.card_type == card_type
+		if matches:
+			result.append(card.instance_id)
+	return result
+
+
+# Open the search if the player's deck holds at least one matching card —
+# with none, "you may search and reveal it" can never do anything, so (as
+# with Circle of Life's queue) the choice simply doesn't open rather than
+# asking the player to acknowledge an empty search.
+static func _open_deck_search_to_top(state: GameState, player_id: String,
+		card_type: String, db) -> Array[GameEvent]:
+	if db == null or card_type == "":
+		return []
+	var candidates := get_deck_search_to_top_candidates(state, player_id, card_type, db)
+	if candidates.is_empty():
+		return []
+	state.pending_deck_search_player = player_id
+	state.pending_deck_search_type   = card_type
+	return [GameEvent.deck_search_opened(player_id, card_type, candidates)]
+
+
+# Resolve the open search: card_id "" declines (or fails to find — 413.3);
+# otherwise the chosen card is revealed and put on top after the shuffle
+# (413.2 — the deck is shuffled either way, since the search happened either
+# way). Re-checked against the live pool: still a matching card in this
+# player's own deck.
+static func choose_deck_search_to_top(state: GameState, card_id: String,
+		db) -> Array[GameEvent]:
+	if state.pending_deck_search_player == "":
+		return []
+	var pid := state.pending_deck_search_player
+	var card_type := state.pending_deck_search_type
+	state.pending_deck_search_player = ""
+	state.pending_deck_search_type   = ""
+	var events: Array[GameEvent] = []
+	var deck_zone := state.zones.get(pid + "_deck") as Zone
+	var found := card_id != "" and card_id in get_deck_search_to_top_candidates(state, pid, card_type, db)
+	if found:
+		events.append(GameEvent.card_revealed_from_deck(card_id, pid))
+	if deck_zone:
+		deck_zone.card_ids.shuffle()
+		if found:
+			deck_zone.card_ids.erase(card_id)
+			deck_zone.card_ids.push_front(card_id)
+	events.append(GameEvent.deck_shuffled(pid))
+	return events
 
 
 # Peek the front queued Recombobulation fetch and open it. Skips queued entries
@@ -11293,7 +11531,7 @@ static func retract_last(state: GameState, player_id: String,
 		var ap_card_id2: String = top.params.get("card_id", "")
 		if ap_card_id2 != "":
 			var ap_card2 := state.get_card(ap_card_id2)
-			var ap_def2  := db.get_def(ap_card2.card_def_id) as CardDef if ap_card2 else null
+			var ap_def2  := power_source_def(state, ap_card_id2, db) if ap_card2 else null
 			var ap_data2 := _ally_activated_power(ap_def2) if ap_def2 else {}
 			var ap_cost2 := power_resource_cost(ap_data2,
 				int(top.params.get("x_value", 0)))

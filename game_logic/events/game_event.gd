@@ -596,6 +596,16 @@ static func circle_put_into_play(player_id: String, card_id: String,
 static func deck_shuffled(player_id: String) -> GameEvent:
 	return make("deck_shuffled", {"player": player_id})
 
+# Herod's Shoulder's optional enter-play deck search opened. The deck being
+# searched is PRIVATE, so `card_ids` here is for the deciding player's own
+# browser only — the shared game log may name what was found, never the rest
+# of the deck.
+static func deck_search_opened(player_id: String, card_type: String,
+		card_ids: Array) -> GameEvent:
+	return make("deck_search_opened", {
+		"player": player_id, "card_type": card_type, "card_ids": card_ids,
+	})
+
 static func card_returned_from_graveyard(card_id: String, player_id: String) -> GameEvent:
 	return make("card_returned_from_graveyard", {
 		"card_id": card_id, "player": player_id,

@@ -57,6 +57,7 @@ func _ready() -> void:
 	_test_shaman_ally_recipes()
 	_test_edgemasters_handguards_recipe()
 	_test_deathdealer_breastplate_recipe()
+	_test_herods_shoulder_recipe()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -1350,3 +1351,28 @@ func _test_deathdealer_breastplate_recipe() -> void:
 		var e_info: Dictionary = StackResolver._equipment_info(eye)
 		_check(e_info.get("slot", "") != info.get("slot", ""),
 			"…and Eye of Rend sits in a DIFFERENT slot, so the two coexist")
+
+
+func _test_herods_shoulder_recipe() -> void:
+	# Pure CSV on the new on_enter:search_deck_to_top key — a typo in the
+	# CARD_TYPE argument would silently leave an enter-play trigger that opens
+	# for nobody (get_deck_search_to_top_candidates would never match anything).
+	var db := _make_db()
+	var hs := db.get_def("azeroth_293") as CardDef
+	_check(hs != null, "azeroth_293 (Herod's Shoulder) resolves in the database")
+	if hs == null:
+		return
+	_check(hs.card_type == "Equipment" and hs.cost == 3,
+		"Herod's Shoulder is a 3-cost Equipment")
+	var info: Dictionary = StackResolver._equipment_info(hs)
+	_check(info.get("slot", "") == "shoulder", "…in the SHOULDER slot")
+	_check(int(info.get("def", -1)) == 1, "…with DEF 1")
+	_check(int(info.get("capacity", 0)) == 1, "…Shoulder (1), the default capacity")
+	_check(StackResolver.get_enter_play_deck_search_type(hs) == "Weapon",
+		"…on_enter search targets Weapon cards — the argument a typo would silently blank")
+	_check(hs.card_subtype == "Mail", "…printed Armor - Mail")
+	_check(hs.rarity == "Rare", "…Rare")
+	for cls in ["Paladin", "Rogue", "Shaman", "Warrior"]:
+		_check(hs.has_class(cls), "…legal for %s" % cls)
+	for cls in ["Druid", "Hunter", "Mage", "Priest", "Warlock"]:
+		_check(not hs.has_class(cls), "…NOT legal for %s" % cls)

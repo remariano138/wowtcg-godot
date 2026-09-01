@@ -34,6 +34,9 @@ func _ready() -> void:
 		_test_pet_uniqueness,
 		_test_mooncloth_robe_power,
 		_test_mooncloth_robe_hero_exhausted,
+		_test_herods_shoulder_finds_weapon,
+		_test_herods_shoulder_no_weapon_still_shuffles,
+		_test_herods_shoulder_decline_and_ai,
 		_test_activate_costs_paid_on_announce,
 		_test_activate_costs_refunded_on_retract,
 		_test_equipment_slot_uniqueness,
@@ -357,6 +360,7 @@ func _ready() -> void:
 		_test_recombobulation_scope_and_decline,
 		_test_iceblade_hacker,
 		_test_wraith_scythe,
+		_test_thrash_blade,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
 		_test_ai_elendril_flip_for_lethal,
@@ -468,6 +472,7 @@ func _ready() -> void:
 		_test_samuel_grey_discard_on_hero_combat_damage,
 		_test_ophelia_barrows_rfg_and_heal,
 		_test_medoc_spiritwarden,
+		_test_field_repair_bot,
 		_test_ophelia_barrows_gates_and_fizzle,
 		_test_fireball_attach_and_burn,
 		_test_flame_shock_attach_and_burn,
@@ -1305,6 +1310,70 @@ func _test_medoc_spiritwarden() -> void:
 	if fetch_act != null:
 		eq(fetch_act.params.get("target_id", ""), "big",
 			"md-f2: AI takes the most expensive ally card back")
+
+# Field Repair Bot 74A (dark_portal_243): "Friendly heroes have '1, [Activate]
+# -> Put an equipment card from your graveyard into your hand.'" A static
+# grant of an ENTIRE activated power to the controller's HERO rather than to
+# the granting card — see StackResolver.power_source_def.
+const FIELD_REPAIR_BOT_FX := "activated_power:1:graveyard_to_hand_equipment:0::graveyard_equipment:hero_grants_only|graveyard_to_hand:Equipment:1:1:own"
+
+func _test_field_repair_bot() -> void:
+	_buf.append("\n-- Field Repair Bot 74A: grants the hero a graveyard-equipment fetch --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("bot_def", 0, 2, [], 1, FIELD_REPAIR_BOT_FX)
+	db.equipment("robe_def", 1, "equipment:chest:0")
+
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 3)
+	var robe := CardInstance.create("robe", "robe_def", "p1", "p1_graveyard")
+	st.cards["robe"] = robe
+	st.zones["p1_graveyard"].card_ids.append("robe")
+
+	# frb-a: with no Field Repair Bot in play, the hero has no such power at all.
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "p1_hero", "_skip_target_check": true}), db),
+		"frb-a: no granting card in play -- the hero has nothing to activate")
+
+	var bot := _add_ally(st, "bot", "bot_def", "p1")
+	bot.just_summoned = false
+
+	# frb-b: the Bot ITSELF is never directly activatable (hero_grants_only) --
+	# "Friendly heroes have..." names the hero, not the card granting it.
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "bot", "_skip_target_check": true}), db),
+		"frb-b: the Bot cannot activate its own grant")
+
+	# frb-c: the hero now carries the granted power, and can pay it.
+	ok(StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "p1_hero", "target_id": "robe"}), db),
+		"frb-c: the hero can activate the granted power")
+
+	StackResolver.submit_action(st, PendingAction.make("use_ally_power", "p1",
+		{"card_id": "p1_hero", "target_id": "robe"}), db)
+	ok(st.get_card("p1_hero").is_exhausted,
+		"frb-d: the [Activate] tap exhausts the HERO, not the Bot")
+	ok(not bot.is_exhausted, "frb-d2: the Bot itself never exhausts for this")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("robe").zone_id, "p1_hand", "frb-e: the equipment card is in hand")
+
+	# frb-f: the grant lifts the instant the Bot leaves play.
+	GameLogic.ready_card(st, "p1_hero")
+	GameLogic.move_card(st, "bot", "p1_graveyard")
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "p1_hero", "_skip_target_check": true}), db),
+		"frb-f: the Bot destroyed -- the hero's grant is gone")
+
+	# frb-g: with the Bot back and an empty own graveyard, the power is unusable
+	# (the no-target probe requires a candidate to exist).
+	var bot2 := _add_ally(st, "bot2", "bot_def", "p1")
+	bot2.just_summoned = false
+	ok(not StackResolver.can_submit(st, PendingAction.make("use_ally_power", "p1",
+			{"card_id": "p1_hero", "_skip_target_check": true}), db),
+		"frb-g: no equipment card in our graveyard -- power unusable")
+
 
 # Ophelia Barrows (azeroth_253): "1 -> Remove target ally card in any graveyard
 # from the game. If you do, Ophelia Barrows heals 1 damage from herself."
@@ -2986,6 +3055,99 @@ func _test_mooncloth_robe_power() -> void:
 	# mr-h: power can't be used again (robe now exhausted).
 	ok(not StackResolver.can_submit(state, use, db),
 		"mr-h: robe power not reusable while exhausted")
+
+
+func _herod_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.equipment("herod_def", 3, "equipment:shoulder:1|on_enter:search_deck_to_top:Weapon", "Mail")
+	db.weapon("sword_def", 2, 3, 1)          # a weapon card — the search target
+	db.ally("dud_def", 1, 1, [], 1)          # not a weapon — never a candidate
+	return db
+
+
+func _test_herods_shoulder_finds_weapon() -> void:
+	_buf.append("\n-- Herod's Shoulder: enter-play deck search finds and stacks a weapon --")
+	var db := _herod_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	var herod := CardInstance.create("herod_inst", "herod_def", "p1", "p1_hand")
+	state.cards["herod_inst"] = herod
+	state.zones["p1_hand"].card_ids.append("herod_inst")
+	_add_card_to_deck(state, "sword_inst", "sword_def", "p1")
+	_add_card_to_deck(state, "dud_inst", "dud_def", "p1")
+
+	var play := PendingAction.make("play_equipment", "p1", {"card_id": "herod_inst"})
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.get_card("herod_inst").zone_id, "p1_hero_row",
+		"hs-a: Herod's Shoulder enters play")
+	eq(state.pending_deck_search_player, "p1", "hs-b: the search opened for its controller")
+	eq(StackResolver.get_deck_search_to_top_candidates(state, "p1", "Weapon", db), ["sword_inst"],
+		"hs-c: only the weapon card is a candidate")
+
+	# The choice blocks priority until answered.
+	ok(StackResolver.pass_priority(state, db).is_empty(),
+		"hs-d: pass_priority is blocked while the search is pending")
+
+	StackResolver.choose_deck_search_to_top(state, "sword_inst", db)
+	eq(state.pending_deck_search_player, "", "hs-e: choice closed")
+	eq(state.zones["p1_deck"].card_ids[0], "sword_inst",
+		"hs-f: the found weapon is on top of the (shuffled) deck")
+	eq(state.get_card("sword_inst").zone_id, "p1_deck",
+		"hs-g: the weapon stays IN the deck — it goes to the top, not to hand")
+
+
+func _test_herods_shoulder_no_weapon_still_shuffles() -> void:
+	_buf.append("\n-- Herod's Shoulder: no weapon in deck → no choice opens, still resolves cleanly --")
+	var db := _herod_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	state.players["p1"].resource_placed_this_turn = true
+	var herod := CardInstance.create("herod_inst", "herod_def", "p1", "p1_hand")
+	state.cards["herod_inst"] = herod
+	state.zones["p1_hand"].card_ids.append("herod_inst")
+	_add_card_to_deck(state, "dud_inst", "dud_def", "p1")   # no weapon anywhere
+
+	var play := PendingAction.make("play_equipment", "p1", {"card_id": "herod_inst"})
+	StackResolver.submit_action(state, play, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	eq(state.pending_deck_search_player, "",
+		"hs-h: an empty pool never opens the choice (nothing to find)")
+	ok(not StackResolver.pass_priority(state, db).is_empty(),
+		"hs-i: priority is free to move — the game isn't stalled on a phantom choice")
+
+
+func _test_herods_shoulder_decline_and_ai() -> void:
+	_buf.append("\n-- Herod's Shoulder: decline still shuffles; AI always takes the weapon --")
+	var db := _herod_db()
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var herod := CardInstance.create("herod_inst", "herod_def", "p1", "p1_hero_row")
+	state.cards["herod_inst"] = herod
+	state.zones["p1_hero_row"].card_ids.append("herod_inst")
+	_add_card_to_deck(state, "sword_inst", "sword_def", "p1")
+	state.pending_deck_search_player = "p1"
+	state.pending_deck_search_type = "Weapon"
+
+	# Decline ("" — 413.3 lets the search fail): the deck is still shuffled and
+	# the card stays in the deck.
+	StackResolver.choose_deck_search_to_top(state, "", db)
+	eq(state.pending_deck_search_player, "", "hs-j: decline closes the choice")
+	eq(state.get_card("sword_inst").zone_id, "p1_deck",
+		"hs-k: declining leaves the card in the deck (shuffled position)")
+
+	# AI always takes the weapon — no downside to guaranteeing the next draw.
+	state.pending_deck_search_player = "p1"
+	state.pending_deck_search_type = "Weapon"
+	var ai := BaseAI.new()
+	var pick := ai.choose_deck_search_to_top(state, db, "p1", "Weapon")
+	eq(pick, "sword_inst", "hs-l: AI always searches out the weapon")
 
 
 func _test_mooncloth_robe_hero_exhausted() -> void:
@@ -16982,6 +17144,117 @@ func _test_wraith_scythe() -> void:
 
 	ok(s5.get_card("tank5").damage_taken == 3, "ws-e: plain weapon dealt its damage")
 	ok(s5.get_card("p1_hero").damage_taken == 5, "ws-e2: no flag in play -> no heal")
+
+
+# Thrash Blade: "When your hero deals combat damage with Thrash Blade for the
+# first time on each of your turns, ready Thrash Blade and your hero."
+func _test_thrash_blade() -> void:
+	_buf.append("\n-- Thrash Blade: combat damage with it readies weapon + hero --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("thrash_def", 4, 2, 2, "Melee", "melee_weapon",
+		"weapon_combat_dmg_readies_self_and_hero")
+	# A plain second weapon with no trigger of its own — proves the ready is
+	# named-weapon-specific, unlike Wraith Scythe's "any weapon or none".
+	db.weapon("plain_def", 3, 3, 1)
+	db.ally("tank_def", 0, 9)     # 0/9 — soaks a strike, never retaliates
+	db.ally("biter_def", 3, 9)    # 3/9 — attacks, survives the retaliation
+
+	# ── Case 1: hero attacks and strikes with Thrash Blade. Both exhaust at the
+	# strike, then ready again from the trigger once damage lands.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 2)
+	var tank := _add_ally(s1, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+	var blade := CardInstance.create("blade", "thrash_def", "p1", "p1_hero_row")
+	s1.cards["blade"] = blade
+	s1.zones["p1_hero_row"].card_ids.append("blade")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # combat starts -> attack strike point
+	StackResolver.choose_strike(s1, "blade", db)
+	ok(s1.get_card("blade").is_exhausted, "tb-a: weapon exhausted at the strike")
+	ok(s1.get_card("p1_hero").is_exhausted, "tb-a2: hero exhausted from proposing the attack")
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # attack window closes -> defend window
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # defend window closes -> conclusion
+
+	ok(s1.get_card("tank").damage_taken == 2, "tb-b: ally took the 2 combat damage")
+	ok(not s1.get_card("blade").is_exhausted, "tb-c: weapon readied by its own trigger")
+	ok(not s1.get_card("p1_hero").is_exhausted, "tb-c2: hero readied by the trigger")
+
+	# ── Case 2: once-per-turn gate — a second combat this same turn deals
+	# damage with the (already-ready) blade again, but the trigger has already
+	# fired, so nothing breaks and both simply stay ready (no double-ready to
+	# observe, but exercised so a stray error would surface).
+	var tank2 := _add_ally(s1, "tank2", "tank_def", "p2")
+	tank2.just_summoned = false
+	_add_resources(s1, "p1", 2)   # a second strike this turn costs 2 more
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank2"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.choose_strike(s1, "blade", db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	ok(s1.get_card("tank2").damage_taken == 2, "tb-d: second combat this turn still deals damage")
+	ok(s1.get_card("blade").is_exhausted,
+		"tb-d2: once-per-turn gate already spent -> the second strike's exhaust sticks")
+
+	# ── Case 3: hero DEFENDS and retaliates with Thrash Blade, on the
+	# OPPONENT's turn — "on each of YOUR turns" means the trigger does not fire.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.turn_player     = "p2"
+	s3.priority_player = "p2"
+	_add_resources(s3, "p1", 2)
+	var biter := _add_ally(s3, "biter", "biter_def", "p2")
+	biter.just_summoned = false
+	var blade3 := CardInstance.create("blade3", "thrash_def", "p1", "p1_hero_row")
+	s3.cards["blade3"] = blade3
+	s3.zones["p1_hero_row"].card_ids.append("blade3")
+
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "biter", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # combat starts -> attack window
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # attack window closes -> defend strike point
+	StackResolver.choose_strike(s3, "blade3", db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # defend window closes -> conclusion
+
+	ok(s3.get_card("biter").damage_taken == 2, "tb-e: retaliation dealt 2 to the attacker")
+	ok(s3.get_card("blade3").is_exhausted,
+		"tb-f: NOT your turn -> no ready, weapon stays exhausted from the strike")
+
+	# ── Case 4 (gate): without the flag on the weapon, no extra ready.
+	var s4 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s4, "p1", 2)
+	var tank4 := _add_ally(s4, "tank4", "tank_def", "p2")
+	tank4.just_summoned = false
+	var plain4 := CardInstance.create("plain4", "plain_def", "p1", "p1_hero_row")
+	s4.cards["plain4"] = plain4
+	s4.zones["p1_hero_row"].card_ids.append("plain4")
+
+	StackResolver.submit_action(s4, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank4"}), db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.choose_strike(s4, "plain4", db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)
+	StackResolver.pass_priority(s4, db)
+
+	ok(s4.get_card("tank4").damage_taken == 3, "tb-g: plain weapon dealt its damage")
+	ok(s4.get_card("plain4").is_exhausted, "tb-g2: no flag -> stays exhausted")
+	ok(s4.get_card("p1_hero").is_exhausted, "tb-g3: hero stays exhausted too")
 
 
 # Ancient Bone Bow: striking with it grants the attacking hero long-range for

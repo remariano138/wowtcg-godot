@@ -3420,13 +3420,20 @@ func choose_ready_on_strike(state: GameState, db, _player_id: String) -> bool:
 
 # Galway Steamwhistle's weapon pick — called by the scene on
 # weapon_ready_required when the pending player is an AI. The point of readying
-# a weapon is striking with it again, so take the highest-ATK candidate; a
+# a weapon is striking with it again, so take the highest-ATK candidate among
+# those we can actually afford to strike with once readied (get_strike_cost
+# against our resources) — a weapon we can't pay to swing is a wasted ready. A
 # `power_weapon` (Rod of the Ogre Magi, Hypnotic Blade) is valued for its
 # activated power instead, so its ATK says nothing and it loses every tie.
-# The choice is only ever opened with two or more candidates.
+# The choice is only ever opened with two or more candidates; if none are
+# affordable to strike with, fall back to the highest-ATK candidate anyway
+# (the hero still readies, which is never wasted).
 func choose_weapon_ready(state: GameState, db, player_id: String) -> String:
+	var resources := state.get_available_resources(player_id)
 	var best := ""
 	var best_atk := -1
+	var fallback := ""
+	var fallback_atk := -1
 	for weapon_id in StackResolver.get_weapon_ready_candidates(state, player_id, db):
 		var card := state.get_card(weapon_id)
 		if not card:
@@ -3437,10 +3444,16 @@ func choose_weapon_ready(state: GameState, db, player_id: String) -> String:
 		var atk := def.printed_atk
 		if "power_weapon" in def.effects:
 			atk = -1
+		if atk > fallback_atk:
+			fallback_atk = atk
+			fallback = weapon_id
+		var strike_cost := StackResolver.get_strike_cost(state, player_id, def, db)
+		if strike_cost < 0 or strike_cost > resources:
+			continue
 		if atk > best_atk:
 			best_atk = atk
 			best = weapon_id
-	return best
+	return best if best != "" else fallback
 
 
 # Chops / Voss Treebender: "When [this] attacks, you may exhaust target hero or
@@ -3634,6 +3647,32 @@ func choose_circle_of_life(state: GameState, db, player_id: String,
 	if candidates.is_empty():
 		return ""
 	return candidates[0]
+
+
+# Herod's Shoulder: "you may search your deck for a CARD_TYPE card and reveal
+# it. If you do, shuffle your deck and put that card on top." Always takes it
+# — there's no downside (the deck gets shuffled either way, rule 413.2) and
+# guaranteeing the next draw is pure upside — picking the highest-cost
+# candidate as the value proxy.
+func choose_deck_search_to_top(state: GameState, db, player_id: String,
+		card_type: String) -> String:
+	if not db:
+		return ""
+	var candidates := StackResolver.get_deck_search_to_top_candidates(state, player_id, card_type, db)
+	if candidates.is_empty():
+		return ""
+	var best := ""
+	var best_cost := -1
+	for cid in candidates:
+		var card := state.get_card(cid)
+		var def := db.get_def(card.card_def_id) as CardDef if card else null
+		if not def:
+			continue
+		var c := StackResolver.printed_cost(def)
+		if c > best_cost:
+			best_cost = c
+			best = cid
+	return best
 
 
 # ── Quest reward choices ("Choose one … you may choose both") ────────────────
@@ -4357,7 +4396,9 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 	for card in power_sources:
 		if not db:
 			continue
-		var def := db.get_def(card.card_def_id) as CardDef
+		# The source's own power, or — for a hero with none of its own — one a
+		# friendly in-play card grants it (Field Repair Bot 74A).
+		var def := StackResolver.power_source_def(state, card.instance_id, db)
 		if not def:
 			continue
 		var ap := StackResolver._ally_activated_power(def)
@@ -4724,13 +4765,17 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 					{"card_id": card.instance_id, "target_id": best_gy})
 				if StackResolver.can_submit(state, gy_act, db):
 					result.append(gy_act)
-		elif ap.get("effect", "") == "graveyard_to_hand_ally":
+		elif ap.get("effect", "") in ["graveyard_to_hand_ally", "graveyard_to_hand_equipment"]:
 			# Medoc Spiritwarden: "[Activate] -> Put target ally card from your
 			# graveyard into your hand." The fetch is free (only her tap), so
 			# the heuristic is the reanimate one: the highest-cost ally card
 			# back, cost being the board-value proxy. The pool is our OWN
 			# graveyard by construction (the paired requirement is owner:own),
 			# so unlike Ophelia there is no side to choose.
+			#
+			# Field Repair Bot 74A grants the hero the identical power over
+			# EQUIPMENT cards instead of allies (see power_source_def) — same
+			# heuristic, `def` and `card` both already resolve to the hero here.
 			#
 			# Declined on a full hand — the card would be discarded at wrap-up
 			# (503.2a) for nothing, and her tap costs us her attack. She is a

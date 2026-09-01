@@ -29,6 +29,11 @@
       "_card_name": "Hidden Enemies"
     },
     {
+      "card_def_id": "azeroth_293",
+      "count": 1,
+      "_card_name": "Herod's Shoulder"
+    },
+    {
       "card_def_id": "azeroth_339",
       "count": 1,
       "_card_name": "Wraith Scythe"
@@ -39,8 +44,13 @@
       "_card_name": "Deathdealer Breastplate"
     },
     {
+      "card_def_id": "dark_portal_286",
+      "count": 1,
+      "_card_name": "Viking Warhammer"
+    },
+    {
       "card_def_id": "azeroth_312",
-      "count": 3,
+      "count": 2,
       "_card_name": "Annihilator"
     },
     {
@@ -49,29 +59,34 @@
       "_card_name": "Edgemaster's Handguards"
     },
     {
-      "card_def_id": "azeroth_285",
-      "count": 1,
-      "_card_name": "Draconian Deflector"
-    },
-    {
       "card_def_id": "azeroth_145",
-      "count": 2,
+      "count": 1,
       "_card_name": "Mortal Strike"
     },
     {
+      "card_def_id": "azeroth_136",
+      "count": 1,
+      "_card_name": "Berserker Stance"
+    },
+    {
+      "card_def_id": "azeroth_257",
+      "count": 1,
+      "_card_name": "Rak Skyfury"
+    },
+    {
       "card_def_id": "azeroth_137",
-      "count": 2,
+      "count": 1,
       "_card_name": "Charge"
     },
     {
-      "card_def_id": "azeroth_149",
+      "card_def_id": "dark_portal_243",
       "count": 1,
-      "_card_name": "Sunder Armor"
+      "_card_name": "Field Repair Bot 74A"
     },
     {
-      "card_def_id": "azeroth_140",
+      "card_def_id": "dark_portal_127",
       "count": 2,
-      "_card_name": "Demoralizing Shout"
+      "_card_name": "Dual Wield"
     },
     {
       "card_def_id": "dark_portal_135",
@@ -79,9 +94,9 @@
       "_card_name": "Blood Fury"
     },
     {
-      "card_def_id": "azeroth_246",
+      "card_def_id": "azeroth_266",
       "count": 4,
-      "_card_name": "Kagra of the Crossroads"
+      "_card_name": "Voss Treebender"
     },
     {
       "card_def_id": "azeroth_146",

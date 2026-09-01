@@ -93,6 +93,7 @@ const BOOKKEEPING_COUNTERS := [
 	"attacked_this_turn",        # ready-on-attack once-per-turn gate (Windseer Tarus / Windfury Totem)
 	"windfury_struck_this_turn", # ready-on-strike once-per-turn gate (Windfury Weapon)
 	"gouge_skip_ready",          # one-shot skip-next-ready mark (Gouge / Iceblade Hacker)
+	"weapon_dmg_readied_this_turn", # once-per-turn gate (Thrash Blade)
 ]
 
 

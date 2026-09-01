@@ -174,6 +174,9 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 			# "strike with attached weapon for the first time each turn" gate
 			# (Windfury Weapon).
 			card.counters.erase("windfury_struck_this_turn")
+			# "deals combat damage with [this weapon] for the first time on each
+			# of your turns" gate (Thrash Blade).
+			card.counters.erase("weapon_dmg_readied_this_turn")
 
 	# Rule 500.2 / 501.1a: start-of-turn powers TRIGGER here, but a triggered
 	# effect is not resolved here — it is added to the chain during PPP (410.5 /

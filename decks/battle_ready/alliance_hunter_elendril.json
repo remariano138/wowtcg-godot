@@ -99,6 +99,11 @@
       "_card_name": "Track Humanoids"
     },
     {
+      "card_def_id": "dark_portal_243",
+      "count": 1,
+      "_card_name": "Field Repair Bot 74A"
+    },
+    {
       "card_def_id": "dark_portal_160",
       "count": 3,
       "_card_name": "\"Chipper\" Ironbane"
@@ -135,7 +140,7 @@
     },
     {
       "card_def_id": "azeroth_209",
-      "count": 2,
+      "count": 1,
       "_card_name": "Moira Darkheart"
     },
     {

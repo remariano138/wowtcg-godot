@@ -555,6 +555,14 @@ var pending_circle_player: String = ""         # who must decide now; "" = none
 var pending_circle_name: String = ""           # the name being searched for
 var pending_death_target_player: String = ""  # controller who must pick a target ally; "" = none
 
+# Herod's Shoulder-style optional enter-play deck search: "you may search your
+# deck for a CARD_TYPE card and reveal it. If you do, shuffle your deck and put
+# that card on top." One-shot (not a queue — unlike Circle of Life this fires
+# once per entry, not per turn-log entry), direct call (no chain, no priority
+# pass). "" declines (413.3 — a search of a non-public zone may fail to find).
+var pending_deck_search_player: String = ""    # who must decide now; "" = none
+var pending_deck_search_type: String = ""      # the CARD_TYPE being searched for
+
 # Players who have been required to draw a card from an empty deck (rule
 # 410.6b). A decked player immediately loses the game (102.1a); if every
 # remaining player becomes decked simultaneously, the game is a draw.

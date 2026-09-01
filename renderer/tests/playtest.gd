@@ -277,6 +277,7 @@ var _gy_vestia_mode:    bool = false   # true = Vestia Abiectus return-an-abilit
 var _gy_stoneform_mode: bool = false   # true = Stoneform's own-hero-attachment destroy pick (multi-select; Cancel/Esc = the empty pick, not a decline)
 var _gy_recomb_mode:   bool = false    # true = Operation Recombobulation fetch (choose_recombobulation; Cancel/Esc = decline, the reward is "you may")
 var _gy_circle_mode:   bool = false    # true = Circle of Life deck search (choose_circle_of_life; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
+var _gy_herod_mode:    bool = false    # true = Herod's Shoulder enter-play deck search (choose_deck_search_to_top; Cancel/Esc = decline — "may", and 413.3 lets a search of a non-public zone fail to find)
 var _gy_jocasta_mode:  bool = false    # true = Dark Cleric Jocasta's enter-play fetch (a choose_enter_play_target chain link; Cancel/Esc = decline — "you may")
 var _gy_jocasta_source: String = ""    # the Jocasta instance whose trigger is pending (source_card_id of that link)
 var _gy_selectable:    Dictionary = {}  # reveal-pick: instance_id -> true for cards that pass the filter (others shown red, not pickable). See _gy_filter_active.
@@ -4125,6 +4126,8 @@ func _on_game_event(event: GameEvent) -> void:
 			_handle_recomb_choice(event.payload)
 		"circle_choice_opened":
 			_handle_circle_choice(event.payload)
+		"deck_search_opened":
+			_handle_deck_search_choice(event.payload)
 		"mulligan_phase_started":
 			_handle_mulligan_started(event.payload)
 		"mulligan_committed":
@@ -5188,6 +5191,33 @@ func _handle_circle_choice(payload: Dictionary) -> void:
 	# still deselect it (decline) or pick another copy.
 	_gy_preselect_first()
 	_set_status("%s was destroyed — put another into play exhausted, or decline" % card_name)
+	_refresh_ui()
+
+
+# Herod's Shoulder: "you may search your deck for a weapon card and reveal it.
+# If you do, shuffle your deck and put that card on top." A DECK is private
+# information, so this routes "private" — the off-seat hotseat player gets the
+# peek path rather than the cards being shown to the room.
+func _handle_deck_search_choice(payload: Dictionary) -> void:
+	var player: String    = payload.get("player", "")
+	var card_type: String = payload.get("card_type", "")
+	var card_ids: Array   = payload.get("card_ids", [])
+	if _route_choice(player, "private") == "ai":
+		var pick := ""
+		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
+		if ai_obj is BaseAI:
+			pick = (ai_obj as BaseAI).choose_deck_search_to_top(_state, _db, player, card_type)
+		var events := StackResolver.choose_deck_search_to_top(_state, pick, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		return
+	_open_gy_dialog(card_ids, false,
+			"Search your deck for a %s card, or decline" % card_type, 0, 1)
+	_gy_herod_mode = true
+	_gy_confirm_btn.text = "Put on top (C)"
+	_gy_cancel_btn.text = "Decline (Esc)"
+	_set_status("Search your deck for a %s card, or decline" % card_type)
 	_refresh_ui()
 
 
@@ -6315,6 +6345,9 @@ func _on_gy_confirm_pressed() -> void:
 	if _gy_circle_mode:
 		_resolve_circle_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
 		return
+	if _gy_herod_mode:
+		_resolve_deck_search_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
+		return
 	if _gy_jocasta_mode:
 		_resolve_jocasta_choice(_gy_selected[0] if not _gy_selected.is_empty() else "")
 		return
@@ -6411,6 +6444,9 @@ func _on_gy_cancel_pressed() -> void:
 	if _gy_circle_mode:
 		_resolve_circle_choice("")   # "may" + 413.3 — Esc/Cancel fails to find
 		return
+	if _gy_herod_mode:
+		_resolve_deck_search_choice("")   # "may" + 413.3 — Esc/Cancel fails to find
+		return
 	if _gy_jocasta_mode:
 		_resolve_jocasta_choice("")  # "you may" — Esc/Cancel declines the fetch
 		return
@@ -6468,6 +6504,18 @@ func _resolve_circle_choice(pick: String) -> void:
 	_schedule_next_turn()
 
 
+# Shared exit for Herod's Shoulder's browser: "" declines (or fails to find,
+# 413.3). One-shot — unlike the Circle/Recomb queues nothing re-opens after.
+func _resolve_deck_search_choice(pick: String) -> void:
+	_close_gy_dialog()
+	var events := StackResolver.choose_deck_search_to_top(_state, pick, _db)
+	_exit_choice_peek_mode()
+	EventBus.emit_events(events)
+	_set_status("")
+	_refresh_ui()
+	_schedule_next_turn()
+
+
 func _close_gy_dialog() -> void:
 	_dismiss_gy_confirm_popup()
 	_gy_ask_confirm = false
@@ -6475,6 +6523,7 @@ func _close_gy_dialog() -> void:
 	_gy_reveal_mode = false
 	_gy_recomb_mode = false
 	_gy_circle_mode = false
+	_gy_herod_mode = false
 	_gy_jocasta_mode = false
 	_gy_jocasta_source = ""
 	_gy_quest_shuffle_mode = false
@@ -7524,7 +7573,7 @@ func _show_upkeep_inline(payload: Dictionary) -> void:
 	var card_id: String = payload.get("card_id", "")
 	var card := _state.get_card(card_id)
 	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
-	var card_name: String = def.name if def else "this card"
+	var card_name: String = def.card_name if def else "this card"
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
 	# The upkeep is paid in resources (Rain of Fire) or in CARDS (Last Stand) —
 	# same choice point, so only the wording differs. Paying a discard cost then
@@ -7601,7 +7650,7 @@ func _show_gy_return_inline(payload: Dictionary) -> void:
 	var card_id: String = payload.get("card_id", "")
 	var card := _state.get_card(card_id)
 	var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
-	var card_name: String = def.name if def else "this card"
+	var card_name: String = def.card_name if def else "this card"
 	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
 	# The point serves two cards with different prices: Wisp asks for a payment
 	# every turn it sits in the graveyard, while Masten Everspirit's death
@@ -7683,7 +7732,7 @@ func _show_trigger_order_inline(payload: Dictionary) -> void:
 	for cid in ids:
 		var card := _state.get_card(String(cid))
 		var def := _db.get_def(card.card_def_id) as CardDef if card and _db else null
-		var nm: String = def.name if def else String(cid)
+		var nm: String = def.card_name if def else String(cid)
 		buttons.append({
 			"text": nm,
 			"callback": func() -> void: _resolve_trigger_order(String(cid)),

@@ -124,9 +124,10 @@ var _quest_facedown_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
 # Crushing Blow (`choose_destroy:armor:weapon`): each half is independently
-# optional, so it gets its own small state machine — see _begin_choose_destroy.
+# optional and the two may be picked in either order, so it gets its own small
+# state machine — see _begin_choose_destroy.
 var _cd_source: String = ""
-var _cd_phase: int = -1   # -1 = inactive; index into choose_destroy_kinds()
+var _cd_phase: int = -1   # -1 = inactive, 0 = a pick is open
 var _cd_picks: Dictionary = {"target_id": "", "target_id_2": ""}
 # Chain Lightning: up to 3 targets picked in order (target_id, target_id_2, target_id_3).
 # The player can stop after 1 or 2 picks via pass_priority_action() (Space / pass button).
@@ -1831,25 +1832,19 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 	if _is_divided_damage(_targeting_source):
 		_handle_divided_click(instance_id)
 		return
-	# Crushing Blow: armor phase, then weapon phase — each independently
-	# skippable. Clicking the SPELL itself is the skip/step-back gesture:
-	# in the armor phase it skips straight to the weapon phase (nothing has
-	# been picked yet, so there's nothing to lose); in the weapon phase it
-	# steps back and re-opens the armor phase from scratch (Ravenous Bite's
-	# "click the spell to go back" convention) rather than cancelling the
-	# whole cast — Esc/right-click still does that, at either phase.
+	# Crushing Blow: BOTH kinds are offered at once and the player picks in
+	# whatever order they like — clicking a weapon first then continues onto
+	# armor, and vice versa. Clicking the SPELL itself finishes the cast with
+	# whatever has been picked so far (Chain Lightning's early-submit
+	# gesture); Esc/right-click still cancels the whole thing.
 	if _is_choose_destroy(_targeting_source) and _cd_phase >= 0:
 		if instance_id == _targeting_source:
-			# Skipping phase 0 (armor) forward is only offered when a later
-			# phase still has something to pick — skipping the only nonempty
-			# pool would strand the cast with nothing chosen at all.
-			if _cd_phase == 0 and _cd_remaining_candidate_exists(1):
-				_advance_choose_destroy(1)
-			elif _cd_phase != 0:
-				_cd_picks["target_id"] = ""
-				_advance_choose_destroy(0)
+			if _cd_has_pick():
+				_finish_choose_destroy()
 			return
-		var cd_key := "target_id" if _cd_phase == 0 else "target_id_2"
+		var cd_key := _cd_slot_for(instance_id)
+		if cd_key == "":
+			return
 		var cd_params: Dictionary = _cd_picks.duplicate()
 		cd_params["card_id"] = _cd_source
 		cd_params[cd_key] = instance_id
@@ -1857,7 +1852,7 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		if not StackResolver.can_submit(state, cd_probe, db):
 			return
 		_cd_picks[cd_key] = instance_id
-		_advance_choose_destroy(_cd_phase + 1)
+		_advance_choose_destroy(0)
 		return
 	# Ravenous Bite: phase 1 picks the +ATK ally, phase 2 the -ATK ally.
 	if _is_atk_swing(_targeting_source) and _targeting_first_target == "":
@@ -3550,10 +3545,11 @@ func _is_atk_swing(card_id: String) -> bool:
 
 # ── Crushing Blow (dark_portal_120) — `choose_destroy:armor:weapon` ───────────
 # "Choose one or both: Destroy target armor; or destroy target weapon." Unlike
-# every other two-pick spell in the pool, EACH half is independently OPTIONAL —
-# so this is its own small state machine (_cd_source / _cd_phase / _cd_picks)
-# layered on top of the ordinary targeting flow rather than a rider on
-# `_targeting_first_target`, which has no notion of "skip this pick".
+# every other two-pick spell in the pool, EACH half is independently OPTIONAL
+# and the two may be picked in EITHER order — so this is its own small state
+# machine (_cd_source / _cd_phase / _cd_picks) layered on top of the ordinary
+# targeting flow rather than a rider on `_targeting_first_target`, which has
+# neither a notion of "skip this pick" nor of an order-free pair.
 func _is_choose_destroy(card_id: String) -> bool:
 	if not db or card_id == "":
 		return false
@@ -3568,39 +3564,59 @@ func _begin_choose_destroy(card_id: String) -> void:
 	_advance_choose_destroy(0)
 
 
-# Opens the pick for kinds[phase] (armor first, then weapon), skipping a phase
-# entirely — with no prompt — when its pool is empty (there is nothing to skip
-# TO, so no decision exists). Once every phase has been visited, submits
-# whatever was picked (at least one half, guaranteed by _play_needs_target's
-# gate having required a candidate to exist before this flow ever opened).
-func _advance_choose_destroy(phase: int) -> void:
-	var def := db.get_def(state.get_card(_cd_source).card_def_id) as CardDef
-	var kinds := StackResolver.choose_destroy_kinds(def)
-	if phase >= kinds.size():
+# Re-opens the pick with whichever kinds are still UNCHOSEN and still have a
+# legal candidate. The order is the player's — both kinds are offered together
+# until one is taken. With nothing left to pick the cast submits itself.
+func _advance_choose_destroy(_phase: int = 0) -> void:
+	var kinds := _cd_open_kinds()
+	if kinds.is_empty():
 		_finish_choose_destroy()
 		return
-	var kind: String = kinds[phase]
-	if StackResolver.get_destroy_kind_candidates(state, db, kind).is_empty():
-		_advance_choose_destroy(phase + 1)
-		return
-	_cd_phase = phase
+	_cd_phase = 0
 	_targeting_source      = _cd_source
 	_targeting_action_type = _action_type_for(_cd_source)
-	targeting_started.emit(_cd_source, "cb_" + kind, 0)
+	var label := "cb_any" if kinds.size() > 1 else "cb_" + String(kinds[0])
+	targeting_started.emit(_cd_source, label, 0)
 	refresh_highlights()
 
 
-# Does any phase from `from_phase` onward still have a candidate to pick?
-# Guards the "skip this phase" gesture — skipping the only remaining
-# nonempty pool would strand the cast with nothing chosen (707.1c requires
-# at least one).
-func _cd_remaining_candidate_exists(from_phase: int) -> bool:
+# Kinds not yet picked whose pool is non-empty — the pickable set right now.
+func _cd_open_kinds() -> Array:
+	var out: Array = []
+	if _cd_source == "":
+		return out
 	var def := db.get_def(state.get_card(_cd_source).card_def_id) as CardDef
 	var kinds := StackResolver.choose_destroy_kinds(def)
-	for i in range(from_phase, kinds.size()):
-		if not StackResolver.get_destroy_kind_candidates(state, db, kinds[i]).is_empty():
-			return true
-	return false
+	var keys := ["target_id", "target_id_2"]
+	for i in kinds.size():
+		if i >= keys.size():
+			break
+		if String(_cd_picks.get(keys[i], "")) != "":
+			continue
+		if StackResolver.get_destroy_kind_candidates(state, db, kinds[i]).is_empty():
+			continue
+		out.append(kinds[i])
+	return out
+
+
+# Which slot a clicked card belongs in — the positional slot of the kind it
+# matches, and only while that slot is still open. "" = not a legal pick.
+func _cd_slot_for(target_id: String) -> String:
+	var def := db.get_def(state.get_card(_cd_source).card_def_id) as CardDef
+	var kinds := StackResolver.choose_destroy_kinds(def)
+	var keys := ["target_id", "target_id_2"]
+	for i in kinds.size():
+		if i >= keys.size():
+			break
+		if String(_cd_picks.get(keys[i], "")) != "":
+			continue
+		if StackResolver.get_destroy_kind_candidates(state, db, kinds[i]).has(target_id):
+			return keys[i]
+	return ""
+
+
+func _cd_has_pick() -> bool:
+	return String(_cd_picks.get("target_id", "")) != "" 		or String(_cd_picks.get("target_id_2", "")) != ""
 
 
 func _finish_choose_destroy() -> void:
@@ -3633,17 +3649,19 @@ func _get_choose_destroy_targets(card_id: String, action_type: String) -> Array:
 		return result
 	var def := db.get_def(state.get_card(card_id).card_def_id) as CardDef
 	var kinds := StackResolver.choose_destroy_kinds(def)
-	if _cd_phase >= kinds.size():
-		return result
-	var kind: String = kinds[_cd_phase]
-	var key := "target_id" if _cd_phase == 0 else "target_id_2"
-	for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
-		var params: Dictionary = _cd_picks.duplicate()
-		params["card_id"] = card_id
-		params[key] = cid
-		var act := PendingAction.make(action_type, local_player, params)
-		if StackResolver.can_submit(state, act, db):
-			result.append(cid)
+	var keys := ["target_id", "target_id_2"]
+	for i in kinds.size():
+		if i >= keys.size():
+			break
+		if String(_cd_picks.get(keys[i], "")) != "":
+			continue
+		for cid in StackResolver.get_destroy_kind_candidates(state, db, kinds[i]):
+			var params: Dictionary = _cd_picks.duplicate()
+			params["card_id"] = card_id
+			params[keys[i]] = cid
+			var act := PendingAction.make(action_type, local_player, params)
+			if StackResolver.can_submit(state, act, db) and not result.has(cid):
+				result.append(cid)
 	return result
 
 

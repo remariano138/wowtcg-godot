@@ -4224,6 +4224,64 @@ func choose_feral_rage(_state: GameState, _db, _player_id: String) -> bool:
 	return true
 
 
+# The Shatterer: our hero was hit by a struck Shatterer, so we may pay (2) or
+# lose one of our weapons — and WHICH one is not our choice, so the question is
+# only "is 2 resources worth the best weapon they could take from us".
+#
+# We pay whenever we control a weapon worth at least the 2, judged on printed
+# cost (the pool's own value bar, _destroy_is_worth_it's convention), because
+# the striker picks and will take the best. A player holding only a Scarlet Kris
+# lets it go. Declining is also correct when we would be spending resources we
+# still need — but the offer resolves inside the opponent's combat step, at the
+# end of a turn we have usually already spent, so no floor is applied.
+func choose_weapon_break_pay(state: GameState, db, player_id: String) -> bool:
+	if not db:
+		return false
+	var cost := state.pending_weapon_break_cost
+	if state.get_available_resources(player_id) < cost:
+		return false
+	var best := 0
+	for wid in StackResolver.get_weapon_break_candidates(state, player_id, db):
+		var card := state.get_card(str(wid))
+		if not card:
+			continue
+		var wdef := db.get_def(card.card_def_id) as CardDef
+		if wdef and wdef.cost > best:
+			best = wdef.cost
+	return best >= cost
+
+
+# The Shatterer: they declined to pay, so we pick which of their weapons breaks.
+# Mandatory — there is no decline — so this always returns a candidate.
+#
+# Take the most expensive, the same board-value proxy the reanimate and steal
+# heuristics use, with ATK breaking a tie: between two equally-priced weapons the
+# one that hits harder is the one we would rather not be swung at with.
+func choose_weapon_break(state: GameState, db, _player_id: String) -> String:
+	var ids: Array = state.pending_weapon_break_ids
+	if ids.is_empty():
+		return ""
+	var best := ""
+	var best_cost := -1
+	var best_atk := -1
+	for wid in ids:
+		var card := state.get_card(str(wid))
+		if not card:
+			continue
+		var c := 0
+		var a := 0
+		if db:
+			var wdef := db.get_def(card.card_def_id) as CardDef
+			if wdef:
+				c = wdef.cost
+			a = state.get_atk(str(wid), db)
+		if c > best_cost or (c == best_cost and a > best_atk):
+			best = str(wid)
+			best_cost = c
+			best_atk = a
+	return best if best != "" else str(ids[0])
+
+
 # Wisp: "you may pay (1). If you do, put Wisp into your hand." A 1-cost 0/1 body
 # back for 1 resource is a fine rate, and unlike a draw it cannot be wasted on a
 # full hand — so the only reasons to decline are the two provable wastes.

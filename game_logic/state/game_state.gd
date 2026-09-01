@@ -211,6 +211,23 @@ var pending_vestia_return_ids: Array = []
 var pending_feral_rage_queue: Array[String] = []   # player ids, front-first
 var pending_feral_rage_player: String = ""         # who must decide now; "" = none
 var pending_feral_rage_cost: int = 0
+# The Shatterer (azeroth_334): "When your hero deals combat damage with The
+# Shatterer to a hero, destroy one of that hero's controller's weapons unless he
+# pays (2)." Two sequential direct-call points at combat conclusion, in the order
+# the CR glossary "Unless" gives ("that player may pay; if he does not, do
+# [something]"): the VICTIM is offered the payment first, and only a decline (or
+# an unaffordable cost, which opens no point at all) hands the choice of WHICH
+# weapon to the STRIKER. Answered via StackResolver.choose_weapon_break_pay() /
+# choose_weapon_break(); can_submit and pass_priority hard-block while either is
+# pending. Both heroes can qualify from one combat (a defending hero retaliating
+# with its own Shatterer), so the trigger queues and is drained one at a time.
+# Queue entries are {"payer": <victim controller>, "chooser": <striker
+# controller>, "cost": int}; the weapon pool is read LIVE when each point opens.
+var pending_weapon_break_queue: Array = []
+var pending_weapon_break_payer: String = ""     # who may pay to save a weapon; "" = none
+var pending_weapon_break_chooser: String = ""   # who picks which weapon dies; "" = none
+var pending_weapon_break_cost: int = 0
+var pending_weapon_break_ids: Array = []        # candidate weapon ids for the chooser
 # Wisp (dark_portal_197): "At the start of your turn, if Wisp is in your
 # graveyard, you may pay (1). If you do, put Wisp into your hand." The optional
 # payment is a 709.2b RESOLUTION choice (707.1 locks in only X, modes and

@@ -370,6 +370,8 @@ var _in_strike_ready_mode: bool = false
 var _strike_ready_nodes: Array[Node] = []
 var _in_whelp_bounce_mode: bool = false
 var _whelp_bounce_nodes: Array[Node] = []
+var _in_weapon_break_mode: bool = false   # The Shatterer: payment or weapon pick open
+var _weapon_break_nodes: Array[Node] = []
 var _in_feral_rage_mode: bool = false
 var _feral_rage_nodes: Array[Node] = []
 var _in_upkeep_mode: bool = false        # human deciding a Rain of Fire upkeep
@@ -2369,6 +2371,7 @@ func _refresh_ui() -> void:
 	_update_phase_label()
 	if not _in_protect_mode and not _in_strike_mode and not _in_ready_mode \
 			and not _in_strike_ready_mode and not _in_whelp_bounce_mode \
+			and not _in_weapon_break_mode \
 			and not _in_feral_rage_mode and not _in_upkeep_mode \
 			and not _in_gy_return_mode and not _in_trigger_order_mode \
 			and not _in_ready_choice_mode \
@@ -4026,6 +4029,14 @@ func _on_game_event(event: GameEvent) -> void:
 		"whelp_bounce_opened":
 			_window_generation += 1
 			_handle_whelp_bounce(event.payload)
+		"weapon_break_pay_opened":
+			_window_generation += 1
+			_handle_weapon_break_pay(event.payload)
+		"weapon_break_choice_opened":
+			_window_generation += 1
+			_handle_weapon_break_choice(event.payload)
+		"weapon_break_paid", "weapon_break_resolved":
+			_refresh_ui()   # reported by the game log (_log_event)
 		"feral_rage_opened":
 			_window_generation += 1
 			_handle_feral_rage(event.payload)
@@ -5261,9 +5272,15 @@ func _on_death_target_resolved() -> void:
 
 # ── Quest reward choice ("Choose one … you may choose both") ───────────────────
 # Hidden Enemies / A New Plague / Thwarting Kolkar Aggression / Crown of the
-# Earth. The completer picks one reward mode — or both, when the hero-race
-# condition is met. "Both" resolves in a fixed order (draw first, if any is
-# among the modes) rather than asking which goes first.
+# Earth / Poison Water. The completer picks one reward mode — or both, when the
+# hero-race condition is met. Rule 707.1c leaves the ORDER of a "choose both" to
+# the chooser, so with exactly two available modes both orderings are offered as
+# their own buttons ("Shuffle, then draw" / "Draw, then shuffle") rather than
+# resolving in a fixed order. It matters: drawing first puts the card in hand
+# before the other mode's picker opens (Poison Water's graveyard browser, Hidden
+# Enemies' target pick), while shuffling first can put that very card back into
+# the deck. Anything other than exactly two available modes falls back to one
+# "Both" button in printed order.
 
 func _quest_mode_label(mode: String) -> String:
 	match mode.split(":")[0]:
@@ -5279,6 +5296,31 @@ func _quest_mode_label(mode: String) -> String:
 			return "Opponent turns one of his quests face down"
 		"hand_to_deck_draw":
 			return "Put your hand on the bottom of your deck, draw that many"
+		"ally_cant_attack_this_turn":
+			return "Target ally can't attack this turn"
+		"shuffle_graveyard_pick":
+			return "Shuffle any number of cards from your graveyard into your deck"
+	return mode
+
+
+# Two-or-three-word form of the label above, for the combined "A, then B"
+# ordering buttons — the full sentences are far too long to pair up.
+func _quest_mode_short_label(mode: String) -> String:
+	match mode.split(":")[0]:
+		"draw":
+			return "draw"
+		"ally_ferocity_this_turn":
+			return "ferocity"
+		"ally_cant_attack_this_turn":
+			return "attack lock"
+		"each_player_destroys_ally":
+			return "destroy"
+		"opponent_quest_face_down":
+			return "quest flip"
+		"hand_to_deck_draw":
+			return "redraw hand"
+		"shuffle_graveyard_pick":
+			return "shuffle"
 	return mode
 
 
@@ -5327,23 +5369,24 @@ func _show_quest_choice_popup(quest_id: String, modes: Array, can_both: bool) ->
 			"callback": func() -> void: _pick_quest_modes([captured_m]),
 		})
 	if can_both:
-		# Resolution order for "both" is fixed rather than asked: draw first
-		# (if present) so its card is in hand before the other mode's target
-		# picker opens, then whatever else was chosen — no "which first" prompt.
-		var pair := avail.duplicate()
-		var draw_idx := -1
-		for i in pair.size():
-			if (pair[i] as String).begins_with("draw"):
-				draw_idx = i
-				break
-		if draw_idx > 0:
-			var d = pair[draw_idx]
-			pair.remove_at(draw_idx)
-			pair.push_front(d)
-		buttons.append({
-			"text": "Both",
-			"callback": func() -> void: _pick_quest_modes(pair),
-		})
+		if avail.size() == 2:
+			# 707.1c: the chooser names the order too, so offer both orderings.
+			for order in [[avail[0], avail[1]], [avail[1], avail[0]]]:
+				var pair: Array = order
+				var first: String = _quest_mode_short_label(pair[0])
+				buttons.append({
+					"text": "%s, then %s" % [
+						first.substr(0, 1).to_upper() + first.substr(1),
+						_quest_mode_short_label(pair[1]),
+					],
+					"callback": func() -> void: _pick_quest_modes(pair),
+				})
+		else:
+			var all_modes := avail.duplicate()
+			buttons.append({
+				"text": "Both",
+				"callback": func() -> void: _pick_quest_modes(all_modes),
+			})
 	_quest_choice_nodes.append(
 		_build_choice_popup(header, Color(0.95, 0.8, 0.3), buttons, true))
 
@@ -5663,14 +5706,17 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 		else:
 			_set_status("▼ %s — select the ally that gets %+d ATK this turn  [click the spell to go back]"
 				% [name_str, amt])
-	# Crushing Blow's "choose one or both": armor phase can be skipped forward
-	# (nothing chosen yet), weapon phase steps back to armor instead.
+	# Crushing Blow's "choose one or both": both kinds are offered at once and
+	# picked in any order; clicking the spell casts with what's picked so far.
+	elif dmg_type == "cb_any":
+		_set_status("🔨 %s — select target armor and/or weapon to destroy%s"
+			% [name_str, cancel_hint])
 	elif dmg_type == "cb_armor":
-		_set_status("🔨 %s — select target armor to destroy  [click the spell to skip]%s"
+		_set_status("🔨 %s — select target armor to destroy  [click the spell to cast now]%s"
 			% [name_str, cancel_hint])
 	elif dmg_type == "cb_weapon":
-		_set_status("🔨 %s — select target weapon to destroy  [click the spell to go back]"
-			% [name_str])
+		_set_status("🔨 %s — select target weapon to destroy  [click the spell to cast now]%s"
+			% [name_str, cancel_hint])
 	else:
 		# Lightning Storm: X clicks, one per point of damage — the prompt counts
 		# "N / X target" (the same ally may be clicked more than once).
@@ -8863,3 +8909,141 @@ func _resize_prompt_window(lines: int) -> void:
 		if child is Button and (child as Button).text == "Close":
 			(child as Button).position = Vector2(PROMPT_BODY_W - 100,
 				TOOL_WINDOW_TITLE_H + body_h + 6)
+
+
+# ── The Shatterer (azeroth_334) ───────────────────────────────────────────────
+# "…destroy one of that hero's controller's weapons unless he pays (2)."
+#
+# Two points, in the order the CR glossary "Unless" gives. Both are board-public
+# — spending resources and losing a card in play are open information — so any
+# human decides inline, the off-screen hotseat player included, exactly like the
+# whelp bounce and the protect/strike points.
+#
+# 1. THE PAYMENT, offered to the VICTIM. Declining is what reaches the
+#    destruction, so the popup names what is at stake rather than saying "decline".
+func _handle_weapon_break_pay(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pay: bool = false
+		if ai is BaseAI:
+			pay = (ai as BaseAI).choose_weapon_break_pay(_state, _db, player)
+		var events := StackResolver.choose_weapon_break_pay(_state, pay, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_weapon_break_pay_inline(payload)
+
+
+func _show_weapon_break_pay_inline(payload: Dictionary) -> void:
+	_in_weapon_break_mode = true
+	_ai_timer.stop()   # no AI actions while the human is deciding
+	_cancel_btn.visible = false
+
+	var cost: int = payload.get("cost", 0)
+	var ids: Array = payload.get("candidate_ids", [])
+	var stake := "a weapon"
+	if ids.size() == 1:
+		stake = _card_display_name(str(ids[0]))
+	elif ids.size() > 1:
+		stake = "one of your %d weapons" % ids.size()
+
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var header_text := "%sThe Shatterer — pay %d, or your opponent destroys %s" \
+			% [prefix, cost, stake]
+	var buttons: Array = [
+		{
+			"text": "Pay %d: keep it" % cost,
+			"callback": func() -> void: _resolve_weapon_break_pay(true),
+		},
+		{
+			"text": "Don't pay",
+			"callback": func() -> void: _resolve_weapon_break_pay(false),
+		},
+	]
+	_weapon_break_nodes.append(
+		_build_choice_popup(header_text, Color(0.9, 0.6, 0.4), buttons, true))
+
+
+func _resolve_weapon_break_pay(pay: bool) -> void:
+	_clear_weapon_break_popup()
+	var events := StackResolver.choose_weapon_break_pay(_state, pay, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
+# 2. THE PICK, handed to the STRIKER. Mandatory — the payment window was the only
+#    way out — so there is no cancel button, and the engine refuses anything
+#    outside the pool anyway. The pool is small (a player can hold two weapons at
+#    most today), so it is a button per weapon rather than the graveyard browser.
+func _handle_weapon_break_choice(payload: Dictionary) -> void:
+	var player: String = payload.get("player", "")
+	var ids: Array = payload.get("candidate_ids", [])
+	var player_type := _p1_type if player == "p1" else _p2_type
+	var ai: Object = _p1_ai if player == "p1" else _p2_ai
+	if player_type != "human":
+		var pick := str(ids[0]) if not ids.is_empty() else ""
+		if ai is BaseAI:
+			pick = (ai as BaseAI).choose_weapon_break(_state, _db, player)
+		var events := StackResolver.choose_weapon_break(_state, pick, _db)
+		EventBus.emit_events(events)
+		_refresh_ui()
+		_schedule_next_turn()
+		_drain_passes()
+	else:
+		_show_weapon_break_choice_inline(payload)
+
+
+func _show_weapon_break_choice_inline(payload: Dictionary) -> void:
+	_in_weapon_break_mode = true
+	_ai_timer.stop()
+	_cancel_btn.visible = false
+
+	var ids: Array = payload.get("candidate_ids", [])
+	var who: String = payload.get("player", "")
+	var prefix := "%s: " % who.to_upper() if _hotseat and who != "" else ""
+	var buttons: Array = []
+	for wid in ids:
+		var weapon_id := str(wid)
+		buttons.append({
+			"text": "Destroy %s" % _card_display_name(weapon_id),
+			"callback": func() -> void: _resolve_weapon_break_choice(weapon_id),
+		})
+	_weapon_break_nodes.append(_build_choice_popup(
+		"%sThe Shatterer — choose a weapon to destroy" % prefix,
+		Color(0.9, 0.6, 0.4), buttons, true))
+
+
+func _resolve_weapon_break_choice(weapon_id: String) -> void:
+	_clear_weapon_break_popup()
+	var events := StackResolver.choose_weapon_break(_state, weapon_id, _db)
+	EventBus.emit_events(events)
+	_refresh_ui()
+	_schedule_next_turn()
+	_drain_passes()
+
+
+func _clear_weapon_break_popup() -> void:
+	_in_weapon_break_mode = false
+	for n in _weapon_break_nodes:
+		if is_instance_valid(n):
+			n.queue_free()
+	_weapon_break_nodes.clear()
+	_set_board_block(false)   # release the modal board-block (see _build_choice_popup)
+	_router.refresh_highlights()
+
+
+# The printed name of an in-play card, for popup labels.
+func _card_display_name(card_id: String) -> String:
+	var card := _state.get_card(card_id)
+	if card and _db:
+		var def: CardDef = _db.get_def(card.card_def_id)
+		if def:
+			return def.card_name
+	return "that card"

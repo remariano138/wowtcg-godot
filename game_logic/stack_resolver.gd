@@ -531,6 +531,12 @@ static func _pass_priority(state: GameState, db = null) -> Array[GameEvent]:
 	# choose_feral_rage() before priority can move.
 	if state.pending_feral_rage_player != "":
 		return []
+	# The Shatterer's two points (the victim's payment, then the striker's pick)
+	# must be answered via choose_weapon_break_pay() / choose_weapon_break()
+	# before priority can move.
+	if state.pending_weapon_break_payer != "" \
+			or state.pending_weapon_break_chooser != "":
+		return []
 	# 708.1b: no player gets priority until every waiting triggered effect has
 	# been added to the chain, so the ordering choice blocks passing outright.
 	if state.pending_trigger_order_player != "":
@@ -800,6 +806,11 @@ static func can_submit(state: GameState, action: PendingAction,
 	# Feral Rage's draw offer blocks everything until resolved (or declined) via
 	# choose_feral_rage().
 	if state.pending_feral_rage_player != "":
+		return false
+	# The Shatterer's payment / weapon pick block everything until answered via
+	# choose_weapon_break_pay() / choose_weapon_break().
+	if state.pending_weapon_break_payer != "" \
+			or state.pending_weapon_break_chooser != "":
 		return false
 
 	# 708.1a's ordering choice blocks everything until answered via
@@ -8593,6 +8604,11 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	var defender_ps := state.players.get(defender.controller) as PlayerState
 	var defender_is_hero := defender_ps != null \
 			and defender_ps.hero_instance_id == defender_id
+	# The Shatterer's victim must be a HERO, and the hero can be either combatant
+	# (it fires on a defending hero's retaliation too), so both roles are sampled.
+	var attacker_ps := state.players.get(attacker.controller) as PlayerState
+	var attacker_is_hero := attacker_ps != null \
+			and attacker_ps.hero_instance_id == attacker_id
 	# Brigg: "…deals combat damage to an ally WITH DAMAGE ON IT". The condition
 	# describes the ally as the damage is dealt, i.e. damage it already carried —
 	# Brigg's own combat damage does not qualify it. That has to be sampled here,
@@ -8717,6 +8733,16 @@ static func _do_combat_conclusion(state: GameState, db = null) -> Array[GameEven
 	events.append_array(_fire_weapon_combat_dmg_readies(
 		state, attacker_id, defender_id, atk_struck_weapons, def_struck_weapons,
 		atk_events, def_events, db))
+
+	# The Shatterer (rule 305.2 triggered equipment power): "When your hero deals
+	# combat damage with The Shatterer to a hero, destroy one of that hero's
+	# controller's weapons unless he pays (2)." Thrash Blade's named-weapon read
+	# (combat_struck_weapons, not the generic _hero_wields_flag scan) with the
+	# victim narrowed to a HERO — so it needs both roles' hero-ness, sampled with
+	# the rest of the trigger facts above.
+	events.append_array(_fire_weapon_combat_dmg_break(
+		state, attacker_id, defender_id, atk_struck_weapons, def_struck_weapons,
+		attacker_is_hero, defender_is_hero, atk_events, def_events, db))
 
 	# Brigg (rule 703 triggered ally power): "When Brigg deals combat damage to
 	# an ally with damage on it, destroy that ally." Devilsaur Leggings' shape
@@ -8963,6 +8989,218 @@ static func _maybe_ready_from_weapon_combat_dmg(state: GameState,
 		weapon.counters["weapon_dmg_readied_this_turn"] = 1
 		events.append_array(GameLogic.ready_card(state, weapon_id))
 		events.append_array(GameLogic.ready_card(state, hero_id))
+	return events
+
+
+# ── The Shatterer (azeroth_334) ───────────────────────────────────────────────
+# "When your hero deals combat damage with The Shatterer to a hero, destroy one
+# of that hero's controller's weapons unless he pays (2)."
+#
+# Recipe `weapon_combat_dmg_break_weapon:COST` — the cost is an argument, so a
+# differently-priced version is data only.
+#
+# A combat CONCLUSION trigger (rule 703), like Thrash Blade / Wraith Scythe — not
+# a 602.1/602.3 chain trigger. It takes two of that family's restrictions and
+# leaves the third off:
+#   * NAMED WEAPON ("with The Shatterer") — the same "was this specific card
+#     among the weapons struck this combat" read Annihilator's unpreventability
+#     and Thrash Blade's ready use (combat_struck_weapons), NOT the generic
+#     _hero_wields_flag scan. A hero striking a different weapon while a
+#     Shatterer sits in the row triggers nothing.
+#   * HERO victim ("to a hero") — damage to an ally never fires it, which is
+#     Iceblade Hacker's clause inverted.
+#   * NO ROLE CLAUSE — "deals combat damage", full stop, so a DEFENDING hero
+#     retaliating with a struck Shatterer fires it exactly as an attacking one.
+# It also requires damage actually DEALT: a swing prevented in full was never
+# dealt (717.2b) and breaks nothing.
+#
+# "Unless he pays (2)" is the CR glossary "Unless": *that player may pay (2); if
+# he does not, destroy the weapon.* So the VICTIM is offered the payment first
+# and only a decline reaches the destruction — and being unable to pay is not a
+# choice at all, so an unaffordable cost opens no payment point and goes straight
+# to the destruction (Feral Rage's "the offer never opens when it can't be
+# afforded", except that here the failure has a consequence).
+#
+# "One of that hero's controller's weapons" is a CHOICE, not a target — nothing
+# is announced, so 706 Untargetable is irrelevant and it can never fizzle for
+# want of a target. The card does not say "its controller chooses", so the pick
+# belongs to the effect's controller: the STRIKER. It is skipped entirely when
+# the victim controls exactly one weapon (a pick between one thing is not a
+# decision), and with NO weapon on the victim's side nothing happens at all —
+# there is nothing to destroy, hence nothing worth paying for and no payment
+# point either.
+#
+# Both heroes can qualify from one combat (each striking a Shatterer at the
+# other), so offers QUEUE and are drained one at a time. Per 707.3 the source is
+# not re-checked: destroying the Shatterer in between changes nothing — and it is
+# itself a legal pick, so a Shatterer can break a Shatterer.
+#
+# Both points are direct calls, NOT chain links — see data/rules_deviations.md
+# "The Shatterer", which also records the two readings the printed text leaves
+# open (the payment is asked first; the STRIKER picks the weapon).
+static func _fire_weapon_combat_dmg_break(state: GameState,
+		attacker_id: String, defender_id: String,
+		atk_struck_weapons: Array, def_struck_weapons: Array,
+		attacker_is_hero: bool, defender_is_hero: bool,
+		atk_events: Array, def_events: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if db == null:
+		return events
+	# Hero as attacker → damage it dealt to a defending hero.
+	_queue_weapon_break(state, attacker_id, defender_id, atk_struck_weapons,
+			defender_is_hero, _combat_dmg_landed(atk_events, defender_id), db)
+	# Hero as defender (attacked directly or protecting) → its retaliation onto
+	# an attacking hero.
+	_queue_weapon_break(state, defender_id, attacker_id, def_struck_weapons,
+			attacker_is_hero, _combat_dmg_landed(def_events, attacker_id), db)
+	return _open_next_weapon_break(state, db)
+
+
+# Queues one Shatterer offer if this striker landed combat damage on a hero with
+# a struck weapon carrying the flag. The weapon POOL is deliberately not read
+# here — it is read live as the point opens, so a weapon destroyed by an earlier
+# offer in the same queue is already gone from the next one.
+static func _queue_weapon_break(state: GameState, striker_id: String,
+		victim_id: String, struck_weapons: Array, victim_is_hero: bool,
+		dmg_landed: int, db) -> void:
+	if dmg_landed <= 0 or not victim_is_hero:
+		return
+	var striker := state.get_card(striker_id)
+	var victim := state.get_card(victim_id)
+	if not striker or not victim:
+		return
+	var ps := state.players.get(striker.controller) as PlayerState
+	if not ps or ps.hero_instance_id != striker_id:
+		return   # "your HERO deals combat damage"
+	for weapon_id in struck_weapons:
+		var wdef := state.effective_def(weapon_id, db) as CardDef
+		if not wdef:
+			continue
+		var args := _effect_args(wdef, "weapon_combat_dmg_break_weapon")
+		if args.is_empty():
+			continue
+		state.pending_weapon_break_queue.append({
+			"payer":   victim.controller,
+			"chooser": striker.controller,
+			"cost":    int(args[0]),
+		})
+
+
+# Every in-play WEAPON `player_id` controls — the pool at stake. Read LIVE each
+# time a point opens, so a weapon that left play meanwhile simply isn't in it.
+static func get_weapon_break_candidates(state: GameState, player_id: String,
+		db) -> Array:
+	var out: Array = []
+	if db == null or player_id == "":
+		return out
+	for card in state.cards_in_zone(player_id + "_hero_row"):
+		if _is_weapon_equipment(state, card.instance_id, db):
+			out.append(card.instance_id)
+	return out
+
+
+# Peek the front queued Shatterer offer and open the appropriate point. An empty
+# weapon pool drops the offer outright (nothing to destroy → nothing to pay for);
+# an unaffordable cost skips the payment point and goes straight to the pick.
+static func _open_next_weapon_break(state: GameState, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if state.pending_weapon_break_payer != "" \
+			or state.pending_weapon_break_chooser != "":
+		return events   # one at a time
+	while not state.pending_weapon_break_queue.is_empty():
+		var entry: Dictionary = state.pending_weapon_break_queue[0]
+		var payer := str(entry.get("payer", ""))
+		var chooser := str(entry.get("chooser", ""))
+		var cost := int(entry.get("cost", 0))
+		var ids := get_weapon_break_candidates(state, payer, db)
+		if ids.is_empty():
+			state.pending_weapon_break_queue.pop_front()
+			continue
+		if state.get_available_resources(payer) < cost:
+			# Can't pay — not a choice (glossary "Unless"). Straight to the pick.
+			state.pending_weapon_break_queue.pop_front()
+			events.append_array(_open_weapon_break_choice(state, chooser, ids, db))
+			if state.pending_weapon_break_chooser != "":
+				return events
+			continue   # a lone weapon was destroyed inline — take the next offer
+		state.pending_weapon_break_payer = payer
+		state.pending_weapon_break_chooser = chooser
+		state.pending_weapon_break_cost = cost
+		state.pending_weapon_break_ids = ids
+		events.append(GameEvent.weapon_break_pay_opened(payer, "", cost, ids))
+		return events
+	return events
+
+
+# Hands the striker the "which weapon" pick — or, with exactly one candidate,
+# destroys it inline.
+static func _open_weapon_break_choice(state: GameState, chooser: String,
+		ids: Array, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if ids.is_empty():
+		return events
+	if ids.size() == 1:
+		events.append_array(_destroy_weapon_break(state, chooser, str(ids[0]), db))
+		return events
+	state.pending_weapon_break_chooser = chooser
+	state.pending_weapon_break_ids = ids
+	events.append(GameEvent.weapon_break_choice_opened(chooser, "", ids))
+	return events
+
+
+static func _destroy_weapon_break(state: GameState, chooser: String,
+		weapon_id: String, db) -> Array[GameEvent]:
+	var events: Array[GameEvent] = []
+	if not state.is_in_play(weapon_id):
+		return events
+	events.append(GameEvent.weapon_break_resolved(chooser, weapon_id))
+	events.append_array(_destroy_card_trigger(state, weapon_id, "", db))
+	return events
+
+
+# Entry point for the Shatterer payment (NOT chain-based — called directly by
+# the scene, like choose_whelp_bounce). pay == false declines, which is what
+# reaches the destruction.
+static func choose_weapon_break_pay(state: GameState, pay: bool,
+		db = null) -> Array[GameEvent]:
+	if state.pending_weapon_break_payer == "":
+		return []
+	var payer := state.pending_weapon_break_payer
+	var chooser := state.pending_weapon_break_chooser
+	var cost := state.pending_weapon_break_cost
+	state.pending_weapon_break_queue.pop_front()
+	state.pending_weapon_break_payer = ""
+	state.pending_weapon_break_chooser = ""
+	state.pending_weapon_break_cost = 0
+	state.pending_weapon_break_ids = []
+
+	var events: Array[GameEvent] = []
+	if pay and state.get_available_resources(payer) >= cost:
+		events.append_array(_pay_resources(state, payer, cost, db))
+		events.append(GameEvent.weapon_break_paid(payer, cost))
+	else:
+		# Re-read the pool rather than trusting the ids the point opened with.
+		events.append_array(_open_weapon_break_choice(
+				state, chooser, get_weapon_break_candidates(state, payer, db), db))
+	if state.pending_weapon_break_chooser == "":
+		events.append_array(_open_next_weapon_break(state, db))
+	return events
+
+
+# Entry point for the striker's "which weapon" pick. Mandatory — there is no
+# decline, the payment window was the only way out — so an id outside the pool
+# is refused rather than treated as a pass.
+static func choose_weapon_break(state: GameState, weapon_id: String,
+		db = null) -> Array[GameEvent]:
+	if state.pending_weapon_break_chooser == "":
+		return []
+	if not state.pending_weapon_break_ids.has(weapon_id):
+		return []
+	var chooser := state.pending_weapon_break_chooser
+	state.pending_weapon_break_chooser = ""
+	state.pending_weapon_break_ids = []
+	var events := _destroy_weapon_break(state, chooser, weapon_id, db)
+	events.append_array(_open_next_weapon_break(state, db))
 	return events
 
 

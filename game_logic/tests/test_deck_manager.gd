@@ -33,6 +33,7 @@ func _ready() -> void:
 	_test_resurrection_recipe()
 	_test_mute_when_column()
 	_test_gift_of_the_elven_magi_recipe()
+	_test_the_shatterer_recipe()
 	_test_graccus_recipe()
 	_test_hammer_of_justice_recipe()
 	_test_holy_light_recipe()
@@ -576,6 +577,7 @@ func _test_mute_when_column() -> void:
 		"dark_portal_303": "opponent_turn_pre_end_unless_discard", # Lazy Peons
 		"dark_portal_302": "opponent_turn_pre_end_unless_discard", # Hidden Enemies
 		"dark_portal_305": "opponent_turn_pre_end_unless_discard", # Poison Water
+		"azeroth_107":     "opponent_turn_pre_end_unless_discard", # Earthbind Totem
 		"azeroth_44":  "outside_combat",                         # Ravenous Bite
 		"azeroth_6":   "empty_hand",                             # Moonshadow
 		"azeroth_344": "opponent_turn",                          # For the Horde!
@@ -785,6 +787,30 @@ func _test_gift_of_the_elven_magi_recipe() -> void:
 		"…and KEEPS its [Activate] tap symbol, so it is once per ready")
 	_check(ap.get("targets", "") == "",
 		"…announcing no target — which card is looked at is a resolution read (709.2b)")
+
+
+func _test_the_shatterer_recipe() -> void:
+	var db := _make_db()
+	var sh := db.get_def("azeroth_334") as CardDef
+	_check(sh != null, "azeroth_334 (The Shatterer) resolves in the database")
+	if sh == null:
+		return
+	var segs := Array(sh.effects.split("|"))
+	_check(sh.card_type == "Equipment", "The Shatterer is Equipment (304)")
+	_check(sh.cost == 4, "…costing 4")
+	_check(sh.printed_atk == 3, "…with 3 printed ATK")
+	_check(segs.has("strike_cost:2"), "…and a strike cost of 2, so it IS a weapon (303)")
+	# The break trigger is the whole card and is pure CSV — a typo here is
+	# SILENT, leaving a vanilla 3 ATK mace with nothing to fail on. Pinned
+	# against the real database for exactly that reason.
+	_check(segs.has("weapon_combat_dmg_break_weapon:2"),
+		"…carrying the weapon-break trigger, priced at the printed (2)")
+	# It names ITSELF ("with The Shatterer"), so it must NOT be flagged
+	# power_weapon: unlike Rod of the Ogre Magi the strike is the point.
+	_check(not segs.has("power_weapon"),
+		"…and is NOT a power weapon — striking with it is how the trigger fires")
+	_check(not segs.has("two_handed"),
+		"…nor Two-Handed, so it costs one hand (406)")
 
 
 func _test_graccus_recipe() -> void:

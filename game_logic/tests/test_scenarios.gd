@@ -366,6 +366,9 @@ func _ready() -> void:
 		_test_iceblade_hacker,
 		_test_wraith_scythe,
 		_test_thrash_blade,
+		_test_the_shatterer,
+		_test_the_shatterer_scope,
+		_test_ai_the_shatterer,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
 		_test_ai_elendril_flip_for_lethal,
@@ -39835,3 +39838,242 @@ func _test_cyclone_scope_and_fizzle() -> void:
 	eq(st.get_card("c3").zone_id, "p1_graveyard", "cyc-m: it is gone")
 	ok(not st.has_attachment_flag("p1_hero", "attached_cannot_attack", db),
 		"cyc-m2: and the lock lifted with it")
+
+
+# Puts a card straight into an in-play zone (the Thrash Blade test's inline
+# pattern, factored out — several Shatterer cases need three or four at once).
+func _sh_put(state: GameState, inst_id: String, def_id: String, ctrl: String,
+		zone_id: String) -> CardInstance:
+	var card := CardInstance.create(inst_id, def_id, ctrl, zone_id)
+	state.cards[inst_id] = card
+	state.zones[zone_id].card_ids.append(inst_id)
+	return card
+
+# ── The Shatterer (azeroth_334) ───────────────────────────────────────────────
+# "When your hero deals combat damage with The Shatterer to a hero, destroy one
+# of that hero's controller's weapons unless he pays (2)."
+func _test_the_shatterer() -> void:
+	_buf.append("\n-- The Shatterer: break a weapon unless the victim pays --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("shatterer_def", 4, 3, 2, "Melee", "melee_weapon",
+		"weapon_combat_dmg_break_weapon:2")
+	# A plain weapon with no trigger — proves the break is named-weapon-specific
+	# (Thrash Blade's read), not Wraith Scythe's "any weapon or none".
+	db.weapon("plain_def", 3, 3, 1)
+	# A RANGED weapon: its own slot and 0 hands, so the victim can legally hold
+	# two weapons at once (Melee (1), rule 414.3b) and the striker has a real pick.
+	db.weapon("cheap_def", 1, 1, 0, "Ranged", "ranged_weapon")
+	db.equipment("armor_def", 2, "equipment:chest:2")
+
+	# ── Case 1: hero attacks the opposing HERO with a struck Shatterer. The
+	# victim can afford the 2 and pays — nothing is destroyed.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 2)
+	_add_resources(s1, "p2", 3)
+	_sh_put(s1, "sh1", "shatterer_def", "p1", "p1_hero_row")
+	_sh_put(s1, "vic1", "plain_def", "p2", "p2_hero_row")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # combat starts -> attack strike point
+	StackResolver.choose_strike(s1, "sh1", db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # attack window closes -> defend strike point
+	StackResolver.choose_strike(s1, "", db)   # the defender declines its own strike
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # defend window closes -> conclusion
+
+	ok(s1.get_card("p2_hero").damage_taken == 3, "sh-a: 3 combat damage landed on the hero")
+	ok(s1.pending_weapon_break_payer == "p2",
+		"sh-b: the VICTIM is offered the payment first (glossary Unless)")
+	ok(StackResolver.pass_priority(s1, db).is_empty()
+			and s1.pending_weapon_break_payer == "p2",
+		"sh-b2: the payment point hard-blocks passing priority")
+	StackResolver.choose_weapon_break_pay(s1, true, db)
+	ok(s1.is_in_play("vic1"), "sh-c: paid -> the weapon survives")
+	ok(s1.get_available_resources("p2") == 1, "sh-c2: the 2 was actually spent")
+	ok(s1.pending_weapon_break_chooser == "",
+		"sh-c3: paying ends it — the striker never gets a pick")
+
+	# ── Case 2: the victim DECLINES, with two weapons in play. The STRIKER picks
+	# which one dies, and a weapon that is not in the pool is refused.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 2)
+	_add_resources(s2, "p2", 3)
+	_sh_put(s2, "sh2", "shatterer_def", "p1", "p1_hero_row")
+	_sh_put(s2, "big", "plain_def", "p2", "p2_hero_row")
+	_sh_put(s2, "small", "cheap_def", "p2", "p2_hero_row")
+	_sh_put(s2, "armor", "armor_def", "p2", "p2_hero_row")
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.choose_strike(s2, "sh2", db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.choose_strike(s2, "", db)   # attack window closed -> defender declines its strike point
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+
+	# The chest armor opens the 717.2c prevention point first — decline it, or
+	# the 3 damage never lands and the trigger never fires.
+	StackResolver.choose_prevention(s2, "", db)
+	ok(s2.get_card("p2_hero").damage_taken == 3, "sh-c4: damage landed after declining armor")
+	StackResolver.choose_weapon_break_pay(s2, false, db)
+	ok(s2.pending_weapon_break_chooser == "p1",
+		"sh-d: declined -> the STRIKER picks which weapon breaks")
+	var pool: Array = s2.pending_weapon_break_ids
+	ok(pool.size() == 2 and pool.has("big") and pool.has("small"),
+		"sh-d2: pool is the victim's WEAPONS only — armor is never a candidate")
+	StackResolver.choose_weapon_break(s2, "armor", db)
+	ok(s2.is_in_play("armor") and s2.pending_weapon_break_chooser == "p1",
+		"sh-d3: a pick outside the pool is refused, the point stays open")
+	StackResolver.choose_weapon_break(s2, "big", db)
+	ok(not s2.is_in_play("big"), "sh-e: the chosen weapon was destroyed")
+	ok(s2.is_in_play("small"), "sh-e2: only ONE weapon breaks")
+	ok(s2.get_available_resources("p2") == 3, "sh-e3: declining spent nothing")
+
+
+func _test_the_shatterer_scope() -> void:
+	_buf.append("\n-- The Shatterer: trigger scope, unaffordable, lone weapon --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("shatterer_def", 4, 3, 2, "Melee", "melee_weapon",
+		"weapon_combat_dmg_break_weapon:2")
+	db.weapon("plain_def", 3, 3, 1)
+	db.ally("tank_def", 0, 9)
+	db.ally("biter_def", 3, 9)
+
+	# ── Case 1: victim can't afford the 2. Not a choice (glossary "Unless") —
+	# no payment point opens, and with a LONE weapon there is no pick either.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s1, "p1", 2)
+	_add_resources(s1, "p2", 1)
+	_sh_put(s1, "sh1", "shatterer_def", "p1", "p1_hero_row")
+	_sh_put(s1, "vic1", "plain_def", "p2", "p2_hero_row")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.choose_strike(s1, "sh1", db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.choose_strike(s1, "", db)   # attack window closed -> defender declines its strike point
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)
+
+	ok(s1.pending_weapon_break_payer == "",
+		"shs-a: unaffordable -> no payment point at all")
+	ok(s1.pending_weapon_break_chooser == "",
+		"shs-a2: a lone weapon is no decision -> no pick point either")
+	ok(not s1.is_in_play("vic1"), "shs-b: the weapon broke immediately")
+
+	# ── Case 2: damage to an ALLY never fires it ("to a hero"), and neither does
+	# striking a DIFFERENT weapon while the Shatterer sits in the row.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p1", 4)
+	_add_resources(s2, "p2", 5)
+	_sh_put(s2, "sh2", "shatterer_def", "p1", "p1_hero_row")
+	_sh_put(s2, "other", "plain_def", "p1", "p1_hero_row")
+	_sh_put(s2, "vic2", "plain_def", "p2", "p2_hero_row")
+	var tank := _add_ally(s2, "tank", "tank_def", "p2")
+	tank.just_summoned = false
+
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "tank"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.choose_strike(s2, "sh2", db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.choose_strike(s2, "", db)   # attack window closed -> defender declines its strike point
+	StackResolver.pass_priority(s2, db)
+	StackResolver.pass_priority(s2, db)
+	ok(s2.get_card("tank").damage_taken == 3, "shs-c: the ally took the damage")
+	ok(s2.pending_weapon_break_payer == "" and s2.is_in_play("vic2"),
+		"shs-c2: damage to an ALLY never fires it")
+
+	var s2b := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2b, "p1", 2)
+	_add_resources(s2b, "p2", 5)
+	_sh_put(s2b, "sh2b", "shatterer_def", "p1", "p1_hero_row")
+	_sh_put(s2b, "other2", "plain_def", "p1", "p1_hero_row")
+	_sh_put(s2b, "vic2b", "plain_def", "p2", "p2_hero_row")
+	StackResolver.submit_action(s2b, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(s2b, db)
+	StackResolver.pass_priority(s2b, db)
+	StackResolver.choose_strike(s2b, "other2", db)   # a DIFFERENT weapon
+	StackResolver.pass_priority(s2b, db)
+	StackResolver.pass_priority(s2b, db)
+	StackResolver.choose_strike(s2b, "", db)   # attack window closed -> defender declines its strike point
+	StackResolver.pass_priority(s2b, db)
+	StackResolver.pass_priority(s2b, db)
+	ok(s2b.get_card("p2_hero").damage_taken == 3, "shs-d: the other weapon's damage landed")
+	ok(s2b.pending_weapon_break_payer == "" and s2b.is_in_play("vic2b"),
+		"shs-d2: named-weapon read — striking a different weapon triggers nothing")
+
+	# ── Case 3: no role clause — a DEFENDING hero retaliating with a struck
+	# Shatterer fires it too. The victim here is the attacking ally's controller,
+	# so the trigger needs the ATTACKER to be a hero: an attacking ALLY doesn't
+	# qualify, and this case proves it by attacking with p2's hero.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.turn_player     = "p2"
+	s3.priority_player = "p2"
+	_add_resources(s3, "p1", 2)
+	_add_resources(s3, "p2", 0)
+	_sh_put(s3, "sh3", "shatterer_def", "p1", "p1_hero_row")
+	_sh_put(s3, "vic3", "plain_def", "p2", "p2_hero_row")
+	s3.get_card("vic3").is_exhausted = true   # p2 struck it, so it can't be used again
+
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "p2_hero", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # combat starts -> p2's attack strike point
+	StackResolver.choose_strike(s3, "", db)               # p2 declines to strike
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # attack window closes -> p1's defend strike point
+	StackResolver.choose_strike(s3, "sh3", db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # defend window closes -> conclusion
+
+	ok(s3.get_card("p2_hero").damage_taken == 3, "shs-e: the retaliation landed on their hero")
+	ok(not s3.is_in_play("vic3"),
+		"shs-f: no role clause — a defending hero's Shatterer breaks a weapon too")
+
+
+func _test_ai_the_shatterer() -> void:
+	_buf.append("\n-- The Shatterer: AI pays for a real weapon, picks the best --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("shatterer_def", 4, 3, 2, "Melee", "melee_weapon",
+		"weapon_combat_dmg_break_weapon:2")
+	db.weapon("big_def", 5, 4, 1)
+	db.weapon("junk_def", 1, 1, 0, "Ranged", "ranged_weapon")
+	var ai := BaseAI.new()
+
+	var s := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s, "p2", 4)
+	_sh_put(s, "big", "big_def", "p2", "p2_hero_row")
+	_sh_put(s, "junk", "junk_def", "p2", "p2_hero_row")
+	s.pending_weapon_break_cost = 2
+	s.pending_weapon_break_ids = ["big", "junk"]
+	ok(ai.choose_weapon_break_pay(s, db, "p2"),
+		"shai-a: a weapon worth >= the cost is worth paying to keep")
+	ok(ai.choose_weapon_break(s, db, "p1") == "big",
+		"shai-b: the striker takes the most expensive weapon")
+
+	# Only junk on the board -> not worth 2.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(s2, "p2", 4)
+	_sh_put(s2, "junk2", "junk_def", "p2", "p2_hero_row")
+	s2.pending_weapon_break_cost = 2
+	ok(not ai.choose_weapon_break_pay(s2, db, "p2"),
+		"shai-c: a 1-cost weapon isn't worth 2 — let it break")

@@ -1475,3 +1475,49 @@ conflates the two and a reader of `effective_def` would not otherwise expect any
 keyword to survive.
 
 **Enforcement site:** `GameState.effective_def`.
+
+## The Shatterer — the payment and the weapon pick are direct-call points
+
+**Card:** The Shatterer (`azeroth_334`) — "When your hero deals combat damage
+with The Shatterer to a hero, destroy one of that hero's controller's weapons
+unless he pays (2)", recipe flag `weapon_combat_dmg_break_weapon:2`.
+
+**Deviation:** by the rules this is a triggered effect (703/708.1) created at
+the combat conclusion, so it should be added to the chain and be respondable.
+The engine instead opens two direct-call choice points at the end of
+`_do_combat_conclusion` — `pending_weapon_break_payer` /
+`StackResolver.choose_weapon_break_pay`, then, on a decline,
+`pending_weapon_break_chooser` / `choose_weapon_break` — alongside Green Whelp
+Armor's bounce, Feral Rage's pay offer and Vestia Abiectus' return, each of
+which hard-blocks `can_submit` / `pass_priority` until answered.
+
+**Why:** identical to the Vestia Abiectus entry above. Every other
+conclusion-point trigger already works this way, and the chain framework that
+exists covers the start-of-turn, combat-STEP (602.1/602.3) and play moments —
+the conclusion is not one of them (603.1: "no player gets priority during combat
+conclusion"). Nothing observable is lost: nothing is announced (the weapon is
+CHOSEN, so 706 never applies), and both decisions are already offered to the
+players a window would have served. Enforcement site:
+`_fire_weapon_combat_dmg_break` / `_open_next_weapon_break` in
+`game_logic/stack_resolver.gd`.
+
+**Reading 1 — the payment comes first.** The CR glossary "Unless" defines it as
+*"that player may do [something else]. If he does not, do [something]"*, so the
+victim is asked before anything is destroyed, and **being unable to pay is not a
+choice**: an unaffordable cost opens no payment point at all and goes straight to
+the destruction. Asking in the other order (pick a weapon, then offer to save it)
+would leak which weapon the striker wanted and would ask for a pick that a
+payment then throws away.
+
+**Reading 2 — the STRIKER picks which weapon.** The printed text says "destroy
+one of that hero's controller's weapons" and, unlike the cards that spell it out
+("its controller chooses"), names nobody — so the choice belongs to the
+controller of the effect, which is the player whose hero struck. Confirmed with
+the card's owner before implementing. The pick is skipped when the victim
+controls exactly one weapon, and the whole trigger is dropped when they control
+none: there is nothing to destroy, hence nothing worth paying for.
+
+**Reading 3 — "your hero deals combat damage" has no role clause,** so a
+DEFENDING hero retaliating with a struck Shatterer breaks a weapon exactly as an
+attacking one does. That is the printed text taken literally (contrast Thrash
+Blade, whose "on each of your turns" restricts it to the wielder's own turn).

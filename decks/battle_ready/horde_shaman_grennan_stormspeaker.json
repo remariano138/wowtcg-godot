@@ -10,7 +10,7 @@
     },
     {
       "card_def_id": "azeroth_361",
-      "count": 2,
+      "count": 4,
       "_card_name": "Zapped Giants"
     },
     {
@@ -25,7 +25,7 @@
     },  
     {
       "card_def_id": "dark_portal_316",
-      "count": 4,
+      "count": 2,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
@@ -34,9 +34,14 @@
       "_card_name": "In Dreams"
     },
     {
-      "card_def_id": "azeroth_328",
+      "card_def_id": "azeroth_334",
       "count": 2,
-      "_card_name": "Iceblade Hacker"
+      "_card_name": "The Shatterer"
+    },
+    {
+      "card_def_id": "azeroth_285",
+      "count": 1,
+      "_card_name": "Draconian Deflector"
     },
     {
       "card_def_id": "azeroth_108",
@@ -44,19 +49,9 @@
       "_card_name": "Elemental Focus"
     },
     {
-      "card_def_id": "dark_portal_137",
-      "count": 1,
-      "_card_name": "War Stomp"
-    },
-    {
       "card_def_id": "azeroth_118",
       "count": 1,
       "_card_name": "Windfury Totem"
-    },
-    {
-      "card_def_id": "azeroth_154",
-      "count": 1,
-      "_card_name": "Lust for Battle"
     },
     {
       "card_def_id": "azeroth_106",
@@ -69,24 +64,24 @@
       "_card_name": "Stone Guard Rashun"
     },
     {
+      "card_def_id": "azeroth_235",
+      "count": 1,
+      "_card_name": "Elder Moorf"
+    },
+    {
       "card_def_id": "azeroth_114",
       "count": 2,
       "_card_name": "Purge"
     },
     {
-      "card_def_id": "dark_portal_98",
-      "count": 1,
-      "_card_name": "Lightning Storm"
-    },
-    {
       "card_def_id": "azeroth_107",
-      "count": 2,
+      "count": 3,
       "_card_name": "Earthbind Totem"
     },
     {
-      "card_def_id": "dark_portal_93",
+      "card_def_id": "dark_portal_137",
       "count": 1,
-      "_card_name": "Fire Nova Totem"
+      "_card_name": "War Stomp"
     },
     {
       "card_def_id": "azeroth_153",
@@ -97,6 +92,11 @@
       "card_def_id": "azeroth_266",
       "count": 4,
       "_card_name": "Voss Treebender"
+    },
+    {
+      "card_def_id": "dark_portal_232",
+      "count": 4,
+      "_card_name": "Scout Omerrta"
     },
     {
       "card_def_id": "dark_portal_199",
@@ -119,14 +119,14 @@
       "_card_name": "Bala Silentblade"
     },
     {
+      "card_def_id": "dark_portal_224",
+      "count": 2,
+      "_card_name": "Morik"
+    },
+    {
       "card_def_id": "azeroth_113",
       "count": 2,
       "_card_name": "Lightning Bolt"
-    },
-    {
-      "card_def_id": "dark_portal_227",
-      "count": 2,
-      "_card_name": "Outrider Zarg"
     },
     {
       "card_def_id": "dark_portal_100",
@@ -134,19 +134,9 @@
       "_card_name": "Shock and Soothe"
     },
     {
-      "card_def_id": "dark_portal_213",
-      "count": 2,
-      "_card_name": "Guardian Steppestrider"
-    },
-    {
       "card_def_id": "azeroth_249",
       "count": 3,
       "_card_name": "Kulan Earthguard"
-    },
-    {
-      "card_def_id": "azeroth_275",
-      "count": 2,
-      "_card_name": "Zygore Bladebreaker"
     }
   ],
   "recommended_ai_id": "ai_generic",

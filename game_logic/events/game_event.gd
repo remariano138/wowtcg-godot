@@ -445,6 +445,39 @@ static func feral_rage_resolved(player_id: String) -> GameEvent:
 static func feral_rage_declined(player_id: String) -> GameEvent:
 	return make("feral_rage_declined", {"player": player_id})
 
+# ── The Shatterer (azeroth_334) ───────────────────────────────────────────────
+# "…destroy one of that hero's controller's weapons unless he pays (2)."
+# Two points, in the CR glossary "Unless" order. First the VICTIM is offered the
+# payment (`weapon_break_pay_opened`, carrying the weapons at stake so the popup
+# can name what paying saves); paying ends it (`weapon_break_paid`). A decline —
+# or an unaffordable cost, which opens no payment point at all — hands the
+# STRIKER the choice of which weapon dies (`weapon_break_choice_opened`), which
+# is skipped when only one weapon is on the board. The destruction itself is
+# reported by the ordinary card_destroyed event accompanying
+# `weapon_break_resolved`.
+static func weapon_break_pay_opened(player_id: String, source_id: String,
+		cost: int, candidate_ids: Array) -> GameEvent:
+	return make("weapon_break_pay_opened", {
+		"player":        player_id,
+		"source_id":     source_id,
+		"cost":          cost,
+		"candidate_ids": candidate_ids,
+	})
+
+static func weapon_break_paid(player_id: String, cost: int) -> GameEvent:
+	return make("weapon_break_paid", {"player": player_id, "cost": cost})
+
+static func weapon_break_choice_opened(player_id: String, source_id: String,
+		candidate_ids: Array) -> GameEvent:
+	return make("weapon_break_choice_opened", {
+		"player":        player_id,
+		"source_id":     source_id,
+		"candidate_ids": candidate_ids,
+	})
+
+static func weapon_break_resolved(player_id: String, weapon_id: String) -> GameEvent:
+	return make("weapon_break_resolved", {"player": player_id, "weapon_id": weapon_id})
+
 # ── Upkeep (Rain of Fire, azeroth_129) ────────────────────────────────────────
 # "At the start of your turn, pay (COST) or destroy [this]." The point opens only
 # when the controller can actually afford it; declining (or being unable to pay)

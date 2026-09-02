@@ -477,6 +477,7 @@ func set_input_router(router: InputRouter) -> void:
 	_input_router = router
 	router.highlights_updated.connect(_on_highlights_updated)
 	router.conditional_highlights_updated.connect(_on_conditional_highlights_updated)
+	router.selected_highlights_updated.connect(_on_selected_highlights_updated)
 	router.targeting_started.connect(_on_targeting_started)
 	router.targeting_cancelled.connect(_on_targeting_cancelled)
 
@@ -1585,6 +1586,20 @@ func _on_highlights_updated(playable_ids: Array, color: Color = Color(0.2, 1.0, 
 		var node := card_nodes[inst_id] as Node2D
 		if node and node.has_method("set_highlighted"):
 			node.set_highlighted(inst_id in playable_ids, color)
+
+
+# Targets already picked in a multi-pick announcement. Emitted AFTER the two
+# passes below, so it paints over them: a picked target is normally no longer a
+# legal candidate and would otherwise go dark, looking exactly like a card that
+# was never clicked.
+const SELECTED_TARGET_COLOR := Color(0.25, 0.6, 1.0)
+
+
+func _on_selected_highlights_updated(selected_ids: Array) -> void:
+	for inst_id in selected_ids:
+		var cn := card_nodes.get(inst_id) as CardNode
+		if cn:
+			cn.set_highlighted(true, SELECTED_TARGET_COLOR)
 
 
 func _on_conditional_highlights_updated(orange_ids: Array) -> void:

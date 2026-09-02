@@ -538,6 +538,7 @@ func _build_scene() -> void:
 	_router.form_sacrifice_mode_ended.connect(_on_form_sacrifice_mode_ended)
 	_router.x_select_requested.connect(_on_x_select_requested)
 	_router.repeat_count_requested.connect(_on_repeat_count_requested)
+	_router.inert_play_confirm_requested.connect(_on_inert_play_confirm_requested)
 	_router.graveyard_select_requested.connect(_on_graveyard_select_requested)
 	_router.ally_exhaust_select_requested.connect(_on_ally_exhaust_select_requested)
 	_router.graveyard_examine_requested.connect(_on_graveyard_examine_requested)
@@ -3322,6 +3323,12 @@ func _input(event: InputEvent) -> void:
 		_try_pass()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_cancel"):
+		# Escape: dismiss the inert-play warning. Nothing was announced or
+		# paid, so this is a free cancel and the card stays in hand.
+		if not _inert_warn_nodes.is_empty():
+			_on_inert_warn_cancel()
+			get_viewport().set_input_as_handled()
+			return
 		# Escape: close the X dialog (cancels the whole power use).
 		if _x_dialog and _x_dialog.visible:
 			_x_dialog.visible = false
@@ -5282,6 +5289,17 @@ func _on_death_target_resolved() -> void:
 # the deck. Anything other than exactly two available modes falls back to one
 # "Both" button in printed order.
 
+# Quests whose "both" resolves in a FIXED order (draw first) instead of offering
+# the two ordering buttons. This is a UI simplification, not a rule: 707.1c does
+# leave the order to the chooser, but for these cards it changes nothing — the
+# other mode's picker reads the BOARD, so a card drawn first can't reach it, and
+# nothing in the queue can be played between the two modes. Only add a quest
+# here once you have checked that neither mode can see what the other did.
+const QUEST_BOTH_DRAW_FIRST := {
+	"dark_portal_302": true,   # Hidden Enemies (ferocity grant + draw)
+}
+
+
 func _quest_mode_label(mode: String) -> String:
 	match mode.split(":")[0]:
 		"draw":
@@ -5369,7 +5387,8 @@ func _show_quest_choice_popup(quest_id: String, modes: Array, can_both: bool) ->
 			"callback": func() -> void: _pick_quest_modes([captured_m]),
 		})
 	if can_both:
-		if avail.size() == 2:
+		var fixed_order: bool = card != null 			and QUEST_BOTH_DRAW_FIRST.has(card.card_def_id)
+		if avail.size() == 2 and not fixed_order:
 			# 707.1c: the chooser names the order too, so offer both orderings.
 			for order in [[avail[0], avail[1]], [avail[1], avail[0]]]:
 				var pair: Array = order
@@ -5383,6 +5402,11 @@ func _show_quest_choice_popup(quest_id: String, modes: Array, can_both: bool) ->
 				})
 		else:
 			var all_modes := avail.duplicate()
+			if fixed_order:
+				for i in all_modes.size():
+					if str(all_modes[i]).begins_with("draw") and i > 0:
+						all_modes.insert(0, all_modes.pop_at(i))
+						break
 			buttons.append({
 				"text": "Both",
 				"callback": func() -> void: _pick_quest_modes(all_modes),
@@ -9047,3 +9071,47 @@ func _card_display_name(card_id: String) -> String:
 		if def:
 			return def.card_name
 	return "that card"
+
+
+# --- Inert-play warning popup ------------------------------------------
+# The router holds back a play that is legal but provably does nothing right
+# now (Point Blank outside a defend window). Nothing has been announced or
+# paid, so Cancel is completely free.
+var _inert_warn_nodes: Array = []
+
+
+func _on_inert_play_confirm_requested(card_id: String, message: String) -> void:
+	_dismiss_inert_warn_popup()
+	var card := _state.get_card(card_id)
+	var def: CardDef = _db.get_def(card.card_def_id) if card else null
+	var header := message
+	if def:
+		header = "%s — %s" % [def.card_name, message]
+	var popup := _build_choice_popup(header, Color(1.0, 0.85, 0.4), [
+		{"text": "Confirm", "callback": Callable(self, "_on_inert_warn_confirm")},
+		{"text": "Cancel",  "callback": Callable(self, "_on_inert_warn_cancel")},
+	], true)
+	popup.z_index = 25
+	_inert_warn_nodes.append(popup)
+
+
+func _dismiss_inert_warn_popup() -> void:
+	for n in _inert_warn_nodes:
+		if is_instance_valid(n):
+			(n as Node).queue_free()
+	_inert_warn_nodes.clear()
+	_set_board_block(false)
+
+
+func _on_inert_warn_confirm() -> void:
+	_dismiss_inert_warn_popup()
+	_router.confirm_inert_play()
+	_refresh_ui()
+	_drain_passes()
+
+
+func _on_inert_warn_cancel() -> void:
+	_dismiss_inert_warn_popup()
+	_router.cancel_inert_play()
+	_set_status("")
+	_refresh_ui()

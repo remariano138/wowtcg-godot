@@ -15,6 +15,12 @@ extends Node
 
 signal highlights_updated(playable_ids: Array, color: Color)
 signal conditional_highlights_updated(orange_ids: Array)
+# Targets ALREADY PICKED in a multi-pick announcement (Crushing Blow, Ravenous
+# Bite, Chain Lightning, Multi-Shot, Cleave, Lightning Storm, Skewer, Sever the
+# Cord, Shock and Soothe). Painted blue OVER the ordinary highlight pass, so the
+# player can see what they have committed to — a picked target usually drops out
+# of the remaining-candidates list, which otherwise leaves it looking untouched.
+signal selected_highlights_updated(selected_ids: Array)
 # dmg_type: "fire", "melee", etc.  "" = unspecified (show crosshair)
 # dmg_amount: damage shown on the cursor overlay; 0 = don't show
 signal targeting_started(source_id: String, dmg_type: String, dmg_amount: int)
@@ -90,6 +96,13 @@ signal graveyard_peek_closed()
 # Emitted when a card's muted flag flips (context-menu Mute/Unmute) so the
 # renderer can show/hide the 🔇 badge.
 signal card_mute_changed(instance_id: String, muted: bool)
+# A play that is perfectly LEGAL but provably does NOTHING right now (Point
+# Blank cast while our hero isn't defending — 707.1 never asks whether an
+# effect will accomplish anything, so the announcement stands and the link
+# simply fizzles at 709.2c). The card stays castable on purpose; this is the
+# confirmation step so a human can't spend it by accident. The scene answers
+# with confirm_inert_play() / cancel_inert_play().
+signal inert_play_confirm_requested(card_id: String, message: String)
 
 var state: GameState
 var db
@@ -123,6 +136,9 @@ var _in_quest_facedown_mode: bool = false
 var _quest_facedown_candidates: Array[String] = []
 # Two-phase targeting for deal_damage_and_heal: first pick is stored here, second completes the action.
 var _targeting_first_target: String = ""  # "" = first pick pending; non-empty = waiting for second
+# A play_instant/play_ability action held back by the inert-play warning above,
+# replayed verbatim by confirm_inert_play().
+var _inert_pending: PendingAction = null
 # Crushing Blow (`choose_destroy:armor:weapon`): each half is independently
 # optional and the two may be picked in either order, so it gets its own small
 # state machine — see _begin_choose_destroy.
@@ -1503,6 +1519,33 @@ func cancel_modal_choice() -> void:
 
 
 func _handle_targeting_click(instance_id: String) -> void:
+	# Crushing Blow: handled AHEAD of the per-action-type match, because the
+	# flow is identical whichever way the card is played and the branch is
+	# useless in only one of them — living inside the play_instant handler is
+	# what made it unreachable for Crushing Blow, a plain (sorcery-speed)
+	# Ability, whose clicks route to _handle_ability_targeting_click.
+	# BOTH kinds are offered at once and the player picks in whatever order
+	# they like — clicking a weapon first then continues onto armor, and vice
+	# versa. Clicking the SPELL itself finishes the cast with whatever has been
+	# picked so far (Chain Lightning's early-submit gesture); Esc/right-click
+	# still cancels the whole thing.
+	if _is_choose_destroy(_targeting_source) and _cd_phase >= 0:
+		if instance_id == _targeting_source:
+			if _cd_has_pick():
+				_finish_choose_destroy()
+			return
+		var cd_key := _cd_slot_for(instance_id)
+		if cd_key == "":
+			return
+		var cd_params: Dictionary = _cd_picks.duplicate()
+		cd_params["card_id"] = _cd_source
+		cd_params[cd_key] = instance_id
+		var cd_probe := PendingAction.make(_targeting_action_type, local_player, cd_params)
+		if not StackResolver.can_submit(state, cd_probe, db):
+			return
+		_cd_picks[cd_key] = instance_id
+		_advance_choose_destroy(0)
+		return
 	match _targeting_action_type:
 		"propose_combat":            _handle_combat_targeting_click(instance_id)
 		"activate_power":            _handle_power_targeting_click(instance_id)
@@ -1832,28 +1875,6 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 	if _is_divided_damage(_targeting_source):
 		_handle_divided_click(instance_id)
 		return
-	# Crushing Blow: BOTH kinds are offered at once and the player picks in
-	# whatever order they like — clicking a weapon first then continues onto
-	# armor, and vice versa. Clicking the SPELL itself finishes the cast with
-	# whatever has been picked so far (Chain Lightning's early-submit
-	# gesture); Esc/right-click still cancels the whole thing.
-	if _is_choose_destroy(_targeting_source) and _cd_phase >= 0:
-		if instance_id == _targeting_source:
-			if _cd_has_pick():
-				_finish_choose_destroy()
-			return
-		var cd_key := _cd_slot_for(instance_id)
-		if cd_key == "":
-			return
-		var cd_params: Dictionary = _cd_picks.duplicate()
-		cd_params["card_id"] = _cd_source
-		cd_params[cd_key] = instance_id
-		var cd_probe := PendingAction.make(_targeting_action_type, local_player, cd_params)
-		if not StackResolver.can_submit(state, cd_probe, db):
-			return
-		_cd_picks[cd_key] = instance_id
-		_advance_choose_destroy(0)
-		return
 	# Ravenous Bite: phase 1 picks the +ATK ally, phase 2 the -ATK ally.
 	if _is_atk_swing(_targeting_source) and _targeting_first_target == "":
 		if instance_id == _targeting_source:
@@ -1925,12 +1946,7 @@ func _handle_instant_targeting_click(instance_id: String) -> void:
 		_targeting_x_value = 0
 		_targeting_first_target = ""
 		targeting_cancelled.emit()
-		var events := StackResolver.submit_action(state, action, db)
-		if events.is_empty():
-			return
-		EventBus.emit_events(events)
-		_pass_own_proposal(action)
-		refresh_highlights()
+		_submit_play_or_warn(action)
 	elif instance_id == _targeting_source:
 		# Ravenous Bite phase 2: clicking the spell again steps back to the
 		# +ATK pick instead of cancelling the whole cast.
@@ -2421,6 +2437,33 @@ func get_conditional_quest_ids() -> Array:
 func refresh_highlights() -> void:
 	highlights_updated.emit(get_playable_card_ids(), _highlight_color)
 	conditional_highlights_updated.emit(get_conditional_quest_ids())
+	# Last, so it paints over the two passes above.
+	selected_highlights_updated.emit(get_selected_target_ids())
+
+
+# Everything the player has already picked in the announcement currently being
+# built. Every multi-pick flow keeps its picks in its own variable, so this is
+# the one place they are collected for display; a flow that stores nothing
+# (single-target spells) simply contributes nothing.
+func get_selected_target_ids() -> Array:
+	var out: Array = []
+	if _targeting_source == "":
+		return out
+	for id in _chain_lightning_picked:
+		if not out.has(id):
+			out.append(id)
+	for id in _divided_picked:
+		if not out.has(id):
+			out.append(id)
+	for key in ["target_id", "target_id_2"]:
+		var cd_id := String(_cd_picks.get(key, ""))
+		if cd_id != "" and not out.has(cd_id):
+			out.append(cd_id)
+	if _targeting_first_target != "" and not out.has(_targeting_first_target):
+		out.append(_targeting_first_target)
+	if _mm_target != "" and not out.has(_mm_target):
+		out.append(_mm_target)
+	return out
 
 
 # Auto-mute: a play that is legal but provably does nothing right now, so it
@@ -4365,3 +4408,57 @@ func _params_for(instance_id: String, action_type: String) -> Dictionary:
 			return {"card_id": instance_id, "face_up": true}
 		_:
 			return {"card_id": instance_id}
+
+
+# --- Inert-play warning -------------------------------------------------
+# Some cards carry an effect CONDITION rather than a use restriction, so they
+# are legal to announce at any priority and simply resolve into nothing when
+# the condition is false (Point Blank's "If your hero is defending" — 602.3
+# makes that true only inside a defend window with our own hero as the settled
+# defender). Refusing the announcement would be an engine-only restriction the
+# card doesn't print, so instead a human gets one confirmation before spending
+# the card. Returns "" when there is nothing to warn about.
+func _inert_play_warning(card_id: String) -> String:
+	var card := state.get_card(card_id)
+	if not card:
+		return ""
+	var def := db.get_def(card.card_def_id) as CardDef
+	if not def:
+		return ""
+	if not StackResolver.hero_defending_condition_ok(state, def, local_player):
+		return "Warning : hero is not yet defending and no damage will be dealt."
+	return ""
+
+
+# Submit a play, or hold it back behind the warning popup first.
+func _submit_play_or_warn(action: PendingAction) -> void:
+	var card_id: String = action.params.get("card_id", "")
+	var msg := _inert_play_warning(card_id)
+	if msg != "":
+		_inert_pending = action
+		inert_play_confirm_requested.emit(card_id, msg)
+		return
+	_submit_play_now(action)
+
+
+func _submit_play_now(action: PendingAction) -> void:
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		refresh_highlights()
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
+
+
+func confirm_inert_play() -> void:
+	var action := _inert_pending
+	_inert_pending = null
+	if action:
+		_submit_play_now(action)
+
+
+func cancel_inert_play() -> void:
+	# Nothing was submitted, so the card is still in hand and nothing is paid.
+	_inert_pending = null
+	refresh_highlights()

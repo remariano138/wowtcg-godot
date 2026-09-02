@@ -7903,7 +7903,14 @@ static func _struck_weapon_grants_long_range(state: GameState, wielder_id: Strin
 static func _combat_damage_type(state: GameState, wielder_id: String, db) -> String:
 	if not db or wielder_id == "":
 		return ""
+	var w_card := state.get_card(wielder_id)
 	for weapon_id in state.combat_struck_weapons.get(wielder_id, []) as Array:
+		# 303.2a — the damage type is half of the same strike modifier as the
+		# +ATK, so a weapon that stopped being associated (destroyed in the
+		# defend window, control changed) takes its type back with it.
+		if w_card == null or not state._is_associated_weapon(
+				str(weapon_id), w_card.controller, db):
+			continue
 		var wdef := db.get_def(state.get_card(weapon_id).card_def_id) as CardDef
 		if wdef and wdef.dmg_type != "":
 			return wdef.dmg_type
@@ -8270,6 +8277,18 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 	state.combat_defender = defender_id
 	events.append_array(GameLogic.exhaust_card(state, attacker_id))
 	events.append(GameEvent.combat_started(attacker_id, defender_id))
+	# Turn event log: "that haven't attacked this turn" (The Relics of Wakening).
+	# Recorded HERE and not at proposal time, because per 602.1 a proposed
+	# attacker only BECOMES an attacker as the proposal resolves — a proposal
+	# fizzled by the 601.3 recheck above never made anything attack. The
+	# controller/row facts are snapshotted (log rule 2): by read time the card
+	# may be in a graveyard or under new control.
+	var atk_zone := state.zones.get(attacker.zone_id) as Zone
+	state.record("character_attacked", {
+		"card_id":    attacker_id,
+		"controller": attacker.controller,
+		"is_ally":    atk_zone != null and atk_zone.zone_type == "ally_row",
+	})
 	# Rule 602.1: "when this attacks" powers TRIGGER now (Morik, Donna Calister,
 	# Berserking), but the effects they create are added to the chain as the
 	# attack window opens, below — they are respondable links, not inline
@@ -10721,6 +10740,12 @@ static func _apply_quest_reward(state: GameState, player_id: String,
 			# Opens a mandatory choice unless the party holds nothing exhausted.
 			events.append_array(_open_quest_ready_choice(state, player_id, quest_id))
 			continue
+		if parts[0].strip_edges() == "ready_unattacked_allies":
+			# The Relics of Wakening: "Reward: Ready all allies in your party
+			# that haven't attacked this turn." Mandatory, free, non-targeted and
+			# choiceless, so it resolves inline and nothing is announced.
+			events.append_array(_ready_unattacked_allies(state, player_id))
+			continue
 		if parts.size() < 2:
 			continue
 		match parts[0].strip_edges():
@@ -11061,6 +11086,35 @@ static func get_quest_ready_candidates(state: GameState,
 # Open the ready choice as the reward resolves (709.2b — the choice belongs to
 # resolution, not to the announcement). Nothing exhausted in the party → the
 # reward simply does nothing and no choice point opens.
+# The Relics of Wakening (`dark_portal_296`): "Reward: Ready all allies in your
+# party that haven't attacked this turn."
+#
+# "Allies in your party" is the completer's ally_row read LIVE at resolution, so
+# a totem qualifies (305.3a) while the HERO never does, and an ally that arrived
+# after the quest was announced is readied too. "Haven't attacked this turn" is a
+# turn-HISTORY condition and is answered from the turn event log's
+# `character_attacked` entries (see game_logic/turn_state_flags.md) — the
+# `attacked_this_turn` counter next to it is NOT that record: it is only ever set
+# when a ready_on_attack source exists.
+#
+# Non-targeted, mandatory and choiceless, so nothing is announced (706 is
+# irrelevant) and it can never fizzle. GameLogic.ready_card no-ops on an
+# already-ready card, so an untouched party is a legal no-op rather than an
+# illegal completion. Ready-step locks (Earthbind Totem, Entangling Roots, Gouge)
+# deliberately do NOT gate this: they block the READY STEP, not ready effects.
+static func _ready_unattacked_allies(state: GameState,
+		player_id: String) -> Array[GameEvent]:
+	var attacked := {}
+	for e in state.turn_events_of("character_attacked"):
+		attacked[e.get("card_id", "")] = true
+	var events: Array[GameEvent] = []
+	for card in state.cards_in_zone(player_id + "_ally_row"):
+		if attacked.has(card.instance_id):
+			continue
+		events.append_array(GameLogic.ready_card(state, card.instance_id))
+	return events
+
+
 static func _open_quest_ready_choice(state: GameState, player_id: String,
 		quest_id: String) -> Array[GameEvent]:
 	if get_quest_ready_candidates(state, player_id).is_empty():

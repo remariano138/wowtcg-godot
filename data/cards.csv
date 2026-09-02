@@ -655,7 +655,7 @@ dark_portal,292,Operation Recombobulation,4,Quest,Alliance,,,,,,,Rare,,"Gnome He
 dark_portal,293,The Perfect Stout,3,Quest,Alliance,,,,,,,Common,,"Pay (3) to complete this quest. Reward: Choose one: Target ally can't attack this turn; or draw a card. If your hero is a Dwarf, you may choose both.",verified,implemented,qmode:ally_cant_attack_this_turn|qmode:draw:1|qchoice_both_race:Dwarf,assets\cards\the_perfect_stout.png,
 dark_portal,294,Raene's Cleansing,,,,,,,,,,,,,,,,assets\cards\raenes_cleansing.png,
 dark_portal,295,A Refugee's Quandary,,,,,,,,,,,,,,,,assets\cards\a_refugees_quandary.png,
-dark_portal,296,The Relics of Wakening,,,,,,,,,,,,,,,,assets\cards\the_relics_of_wakening.png,
+dark_portal,296,The Relics of Wakening,3,Quest,Alliance,,,,,,,Rare,,"Night Elf Hero Required. During your turn, pay (3) to complete this quest. Reward: Ready all allies in your party that haven't attacked this turn.",verified,implemented,requires_hero_race:Night Elf|require_turn_player|ready_unattacked_allies,assets\cards\the_relics_of_wakening.png,
 dark_portal,297,Rescue the Survivors!,,,,,,,,,,,,,,,,assets\cards\rescue_the_survivors.png,
 dark_portal,298,Tundra MacGrann's Stolen Stash,,,,,,,,,,,,,,,,assets\cards\tundra_macgranns_stolen_stash.png,
 dark_portal,299,"Wanted: ""Hogger""",,,,,,,,,,,,,,,,assets\cards\wanted_hogger.png,

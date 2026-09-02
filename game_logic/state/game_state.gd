@@ -987,8 +987,27 @@ func get_atk(instance_id: String, db, assume_attacking: bool = false, clamp_floo
 	# (3) Party auras granted by other cards in play (e.g. Zorm Stonefury).
 	atk += _aura_atk_mods(inst, is_attacking, db)
 	# (3b) Strike modifier (rule 303.2b): +X ATK per weapon associated with this
-	# wielder for the current combat step. Live lookup — never cached.
+	# wielder for the current combat step. Live lookup — never cached, because
+	# 303.2b ends "a strike modifier always uses information from the current
+	# game state": a weapon buffed or shrunk mid-combat moves the wielder's ATK
+	# with it, right up to the conclusion creating the packet.
+	#
+	# The association itself is just as live. Per 303.2a a weapon stops being
+	# associated with its wielder as it "becomes a different card (415.9a),
+	# changes controllers, stops being a weapon, or if that wielder is removed
+	# from combat (602.4)" — so a weapon destroyed, bounced or exiled in the
+	# defend window (Moira Darkheart, Crushing Blow, Dismantle) takes its ATK
+	# back out of the wielder on the spot, and a hero with no other ATK source
+	# then creates NO packet at all (408.2a). Nothing cleans the id out of
+	# combat_struck_weapons — the resolver clears the whole dictionary only at
+	# the conclusion (303.2a) — and a destroyed card is still a live
+	# CardInstance in a graveyard, so WITHOUT this guard the bonus would
+	# survive its own weapon's destruction. `_is_associated_weapon` is the
+	# guard; the 602.4 clause needs no code, since a wielder removed from
+	# combat is no longer a combatant and deals no combat damage anyway.
 	for weapon_id in combat_struck_weapons.get(instance_id, []):
+		if not _is_associated_weapon(str(weapon_id), inst.controller, db):
+			continue
 		atk += get_atk(weapon_id, db)
 	# (3b-preview) A weapon this wielder has not struck with YET (the attack
 	# cursor, after the player picked "Attack" off a specific weapon). Counted
@@ -1623,6 +1642,35 @@ func _weapon_atk_aura(inst: CardInstance, db) -> int:
 				bonus += int(p[1]) if p.size() > 1 else 1
 	return bonus
 
+
+
+# Rule 303.2a — is `weapon_id` still associated with the wielder that struck it?
+# Three of the four clauses that end an association are answerable off the
+# weapon alone, and all three are read LIVE so the strike modifier lapses the
+# instant one becomes true, mid-combat included:
+#   * "becomes a different card (415.9a)" — destroyed, bounced or exiled, i.e.
+#     no longer in play. This is the one that matters most in practice: a
+#     weapon killed in the defend window (Moira Darkheart, Dismantle, Crushing
+#     Blow) disarms the wielder before the conclusion reads its ATK.
+#   * "changes controllers" — Nyn'jah, Staff of Dominance, Helwen.
+#   * "stops being a weapon" — a weapon is an in-play Equipment carrying a
+#     strike_cost segment (rule 303), asked through effective_def so a blanked
+#     card (700.3) is a weapon of nothing.
+# The fourth ("that wielder is removed from combat", 602.4) needs no code: a
+# wielder out of combat is not a combatant and creates no combat packet.
+func _is_associated_weapon(weapon_id: String, wielder_controller: String, db) -> bool:
+	if not db or not is_in_play(weapon_id):
+		return false
+	var w := get_card(weapon_id)
+	if w == null or w.controller != wielder_controller:
+		return false
+	var w_def: CardDef = effective_def(weapon_id, db)
+	if not w_def:
+		return false
+	for seg in w_def.effects.split("|"):
+		if seg.strip_edges().split(":")[0].strip_edges() == "strike_cost":
+			return true
+	return false
 
 func _ally_cost_aura(inst: CardInstance, def: CardDef, cost: int, db) -> int:
 	if not db or not def.is_ally_card():

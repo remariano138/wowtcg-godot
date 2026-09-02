@@ -4,9 +4,14 @@
   "hero_card_def_id": "azeroth_3",
   "card_entries": [
     {
-      "card_def_id": "azeroth_348",
+      "card_def_id": "dark_portal_296",
+      "count": 1,
+      "_card_name": "The Relics of Wakening"
+    },
+    {
+      "card_def_id": "azeroth_340",
       "count": 4,
-      "_card_name": "Big Game Hunter"
+      "_card_name": "The Defias Brotherhood"
     },
     {
       "card_def_id": "dark_portal_289",
@@ -29,39 +34,29 @@
       "_card_name": "The Missing Diplomat"
     },
     {
-      "card_def_id": "azeroth_352",
+      "card_def_id": "azeroth_189",
       "count": 1,
-      "_card_name": "In Dreams"
-    },
-    {
-      "card_def_id": "dark_portal_279",
-      "count": 1,
-      "_card_name": "Lok'delar, Stave of the Ancient Keepers"
-    },
-    {
-      "card_def_id": "azeroth_283",
-      "count": 1,
-      "_card_name": "Deathdealer Breastplate"
+      "_card_name": "Kailis Truearc"
     },
     {
       "card_def_id": "dark_portal_271",
-      "count": 1,
+      "count": 2,
       "_card_name": "Blackcrow"
     },
     {
       "card_def_id": "azeroth_311",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ancient Bone Bow"
     },
     {
-      "card_def_id": "azeroth_284",
-      "count": 2,
-      "_card_name": "Devilsaur Leggings"
+      "card_def_id": "dark_portal_197",
+      "count": 1,
+      "_card_name": "Wisp"
     },
     {
-      "card_def_id": "azeroth_286",
-      "count": 1,
-      "_card_name": "Edgemaster's Handguards"
+      "card_def_id": "azeroth_39",
+      "count": 2,
+      "_card_name": "Marked for Death"
     },
     {
       "card_def_id": "azeroth_32",
@@ -70,7 +65,7 @@
     },
     {
       "card_def_id": "azeroth_43",
-      "count": 2,
+      "count": 1,
       "_card_name": "Rapid Fire"
     },
     {
@@ -79,9 +74,9 @@
       "_card_name": "Aspect of the Hawk"
     },
     {
-      "card_def_id": "azeroth_40",
+      "card_def_id": "dark_portal_168",
       "count": 1,
-      "_card_name": "Master of the Hunt"
+      "_card_name": "Ilandre Moonspear"
     },
     {
       "card_def_id": "azeroth_38",
@@ -94,49 +89,49 @@
       "_card_name": "Eagle Eye"
     },
     {
-      "card_def_id": "azeroth_46",
+      "card_def_id": "dark_portal_131",
       "count": 1,
-      "_card_name": "Track Humanoids"
+      "_card_name": "Shadowmeld"
     },
     {
-      "card_def_id": "dark_portal_243",
+      "card_def_id": "azeroth_288",
       "count": 1,
-      "_card_name": "Field Repair Bot 74A"
+      "_card_name": "Eye of Rend"
     },
     {
-      "card_def_id": "dark_portal_160",
-      "count": 3,
-      "_card_name": "\"Chipper\" Ironbane"
-    },
-    {
-      "card_def_id": "dark_portal_34",
-      "count": 4,
-      "_card_name": "Hootie"
-    },
-    {
-      "card_def_id": "dark_portal_37",
-      "count": 4,
-      "_card_name": "Point Blank"
-    },
-    {
-      "card_def_id": "dark_portal_42",
+      "card_def_id": "dark_portal_173",
       "count": 2,
-      "_card_name": "Wing Clip"
+      "_card_name": "Kavai the Wanderer"
+    },
+    {
+      "card_def_id": "azeroth_176",
+      "count": 4,
+      "_card_name": "Apprentice Teep"
+    },
+    {
+      "card_def_id": "azeroth_180",
+      "count": 2,
+      "_card_name": "Crazy Igvand"
+    },
+    {
+      "card_def_id": "azeroth_222",
+      "count": 4,
+      "_card_name": "Warden Tonarin"
     },
     {
       "card_def_id": "azeroth_33",
-      "count": 3,
+      "count": 2,
       "_card_name": "Arcane Shot"
     },
     {
       "card_def_id": "dark_portal_40",
-      "count": 4,
+      "count": 3,
       "_card_name": "Trophy Kill"
     },
     {
-      "card_def_id": "dark_portal_196",
-      "count": 3,
-      "_card_name": "Warden Ravella"
+      "card_def_id": "azeroth_184",
+      "count": 4,
+      "_card_name": "Galahandra Keeper of the Silent Grove"
     },
     {
       "card_def_id": "azeroth_209",
@@ -145,13 +140,18 @@
     },
     {
       "card_def_id": "dark_portal_179",
-      "count": 1,
+      "count": 2,
       "_card_name": "Margaret Fowl"
     },
     {
       "card_def_id": "azeroth_214",
-      "count": 2,
+      "count": 1,
       "_card_name": "Ryn Dreamstrider"
+    },
+    {
+      "card_def_id": "azeroth_197",
+      "count": 4,
+      "_card_name": "Latro Abiectus"
     }
   ],
   "recommended_ai_id": "ai_generic",

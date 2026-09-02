@@ -141,6 +141,8 @@ func _ready() -> void:
 		_test_ai_thangal_readies_to_protect,
 		_test_warrax_protector_flip,
 		_test_ai_warrax_flips_to_block,
+		_test_relics_of_wakening_readies_unattacked_allies,
+		_test_relics_of_wakening_scope_and_gates,
 		_test_toreks_assault_requires_hero_damaged_by_ally,
 		_test_find_lethal,
 		_test_find_lethal_baseline_in_ai_actions,
@@ -338,6 +340,7 @@ func _ready() -> void:
 		_test_galahandra_power_freezes_proposal,
 		_test_ai_galahandra_freeze_save,
 		_test_weapon_attack_strike,
+		_test_disarm_mid_combat_drops_strike_bonus,
 		_test_eye_of_rend_weapon_atk_aura,
 		_test_eye_of_rend_stacking_and_kris_free_strike,
 		_test_deathdealer_breastplate,
@@ -8156,6 +8159,151 @@ func _test_counterattack_requires_bigger_opposing_party() -> void:
 # ══════════════════════════════════════════════════════════════════════════════
 # SCENARIO 26c — Torek's Assault: needs opposing hero damaged by our ally this turn
 # ══════════════════════════════════════════════════════════════════════════════
+
+func _test_relics_of_wakening_readies_unattacked_allies() -> void:
+	_buf.append("
+-- The Relics of Wakening: ready every ally that hasn't attacked this turn --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("relics_def", 3, "requires_hero_race:Night Elf|require_turn_player|ready_unattacked_allies")
+	db.ally("swinger_def", 2, 3, [], 2)
+	db.ally("idler_def", 1, 3, [], 2)
+	db.totem("totem_def", 1, "ongoing|totem:earth")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	_add_resources(state, "p1", 3)
+	var quest := CardInstance.create("relics_inst", "relics_def", "p1", "p1_resource_row")
+	state.cards["relics_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("relics_inst")
+
+	var swinger := _add_ally(state, "p1_swinger", "swinger_def", "p1")
+	var idler := _add_ally(state, "p1_idler", "idler_def", "p1")
+	# A Totem is an ability ALLY (305.3a) and lives in the ally_row, so it is
+	# "an ally in your party" and qualifies like any other.
+	var totem := CardInstance.create("p1_totem", "totem_def", "p1", "p1_ally_row")
+	state.cards["p1_totem"] = totem
+	state.zones["p1_ally_row"].card_ids.append("p1_totem")
+	totem.is_exhausted = true
+	# An exhausted ally of the OPPONENT's, to prove the sweep is party-scoped.
+	var theirs := _add_ally(state, "p2_theirs", "idler_def", "p2")
+	theirs.is_exhausted = true
+	state.get_card("p1_hero").is_exhausted = true
+
+	# p1 attacks with the swinger: 602.1 records `character_attacked` as the
+	# proposal RESOLVES, which is also when the attacker exhausts.
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_swinger", "defender_id": "p2_hero"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(swinger.is_exhausted, "row-a: the attacker exhausted")
+	var log := state.turn_events_of("character_attacked")
+	eq(log.size(), 1, "row-b: one character_attacked entry recorded")
+	eq(String(log[0].get("card_id", "")), "p1_swinger", "row-c: entry names the attacker")
+	eq(String(log[0].get("controller", "")), "p1", "row-d: controller snapshotted")
+	ok(bool(log[0].get("is_ally", false)), "row-e: is_ally snapshotted")
+
+	# Idler exhausts by some other means (an activated power, say) — it never
+	# attacked, so the reward reaches it.
+	idler.is_exhausted = true
+	# Close the combat out: attack window (2 passes) then defend window (2).
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.combat_attacker, "", "row-e2: combat concluded")
+
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "relics_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+
+	ok(swinger.is_exhausted, "row-f: the ally that ATTACKED stays exhausted")
+	ok(not idler.is_exhausted, "row-g: an ally that didn't attack readies")
+	ok(not totem.is_exhausted, "row-h: a friendly totem readies (305.3a)")
+	ok(theirs.is_exhausted, "row-i: the opponent's party is untouched")
+	ok(state.get_card("p1_hero").is_exhausted,
+		"row-j: the HERO is not an ally and is never readied")
+	ok(state.get_card("relics_inst").face_down, "row-k: quest flipped face-down")
+
+
+func _test_relics_of_wakening_scope_and_gates() -> void:
+	_buf.append("
+-- The Relics of Wakening: turn gate, fizzled proposals, live party read --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.quest("relics_def", 3, "requires_hero_race:Night Elf|require_turn_player|ready_unattacked_allies")
+	db.ally("body_def", 2, 3, [], 2)
+	db.instant("freeze_def", 1, "exhaust_target:ally")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	state.turn_player     = "p1"
+	state.priority_player = "p1"
+	_add_resources(state, "p1", 4)
+	var quest := CardInstance.create("relics_inst", "relics_def", "p1", "p1_resource_row")
+	state.cards["relics_inst"] = quest
+	state.zones["p1_resource_row"].card_ids.append("relics_inst")
+	var body := _add_ally(state, "p1_body", "body_def", "p1")
+
+	# "During your turn" is the ordinary 701.1 turn gate.
+	state.turn_player = "p2"
+	ok(not StackResolver.can_use_quest_no_target_check(state, "relics_inst", "p1", db),
+		"row-sc-a: illegal during the opponent's turn")
+	state.turn_player = "p1"
+	ok(StackResolver.can_use_quest_no_target_check(state, "relics_inst", "p1", db),
+		"row-sc-b: legal on our own turn")
+
+	# A proposal FIZZLED at the 601.3 recheck never made the ally an attacker
+	# (602.1), so nothing is recorded — and the ally never exhausted either.
+	state.priority_player = "p1"
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_body", "defender_id": "p2_hero"}), db)
+	# p2 answers with an exhaust, fizzling the proposal at resolution.
+	GameLogic.exhaust_card(state, "p1_body")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.combat_attacker, "", "row-sc-c: the proposal fizzled")
+	ok(state.turn_events_of("character_attacked").is_empty(),
+		"row-sc-d: a fizzled proposal records nothing")
+
+	# So the reward still readies it — it never attacked.
+	StackResolver.submit_action(state, PendingAction.make("use_quest", "p1",
+		{"quest_id": "relics_inst"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.get_card("p1_body").is_exhausted,
+		"row-sc-e: an ally whose attack fizzled counts as not having attacked")
+
+	# An untouched party is a legal no-op, never an illegal completion: the quest
+	# prints no condition, so it is completable with nothing to ready.
+	var state2 := _base_state(db, "p1_hero", "p2_hero")
+	state2.turn_player     = "p1"
+	state2.priority_player = "p1"
+	_add_resources(state2, "p1", 3)
+	var q2 := CardInstance.create("relics2", "relics_def", "p1", "p1_resource_row")
+	state2.cards["relics2"] = q2
+	state2.zones["p1_resource_row"].card_ids.append("relics2")
+	ok(StackResolver.can_use_quest_no_target_check(state2, "relics2", "p1", db),
+		"row-sc-f: completable with an empty party")
+	StackResolver.submit_action(state2, PendingAction.make("use_quest", "p1",
+		{"quest_id": "relics2"}), db)
+	StackResolver.pass_priority(state2, db)
+	StackResolver.pass_priority(state2, db)
+	ok(state2.get_card("relics2").face_down, "row-sc-g: empty-party completion resolves")
+
+	# The log is cleared at every turn start, so "this turn" is free: an ally
+	# that attacked LAST turn is readied by a completion made this turn.
+	state2.record("character_attacked", {
+		"card_id": "stale", "controller": "p1", "is_ally": true,
+	})
+	ok(not state2.turn_events.is_empty(), "row-sc-h: entry recorded")
+	state2.turn_events.clear()
+	ok(state2.turn_events_of("character_attacked").is_empty(),
+		"row-sc-i: cleared at turn start")
+
 
 func _test_toreks_assault_requires_hero_damaged_by_ally() -> void:
 	_buf.append("\n-- Scenario 26c: Torek's Assault requires opposing hero damaged by our ally --")
@@ -16486,6 +16634,70 @@ func _test_weapon_attack_strike() -> void:
 	ok(state.combat_struck_weapons.is_empty(), "ws-e2: association cleared after combat")
 	eq(state.get_atk("p1_hero", db), 0, "ws-e3: hero ATK back to 0 after combat")
 
+
+
+# Rule 303.2a — DISARMING mid-combat. A weapon stops being associated with its
+# wielder as it "becomes a different card (415.9a)", i.e. the moment it is
+# destroyed, and 303.2b's strike modifier is read from the current game state,
+# so the +ATK lapses on the spot. A hero with no other ATK source is then at 0,
+# and per 408.2a a packet of 0 or less is NEVER CREATED — the attacker deals
+# nothing at all, not even a 0-damage hit, so nothing that watches for damage
+# being dealt fires either.
+#
+# The other half is the one that is easy to get backwards: this is NOT a
+# removal from combat (602.4), so 603.1b does not apply. Both characters are
+# still in combat and the DEFENDER still retaliates in full — disarming is
+# strictly worse for the attacker than never having attacked, since the strike
+# cost and both exhausts are already spent (412.2 / 602.1).
+func _test_disarm_mid_combat_drops_strike_bonus() -> void:
+	_buf.append("
+-- Disarm mid-combat (303.2a): strike bonus lapses --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.weapon("scythe_def", 4, 2, 2)   # Wraith Scythe: 2 ATK / 2 strike
+	db.ally("igvand_def", 3, 4)        # 3 ATK, survives the 2 it would have taken
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 3)
+	var igvand := _add_ally(state, "igvand", "igvand_def", "p2")
+	igvand.just_summoned = false
+	var scythe := CardInstance.create("scythe", "scythe_def", "p1", "p1_hero_row")
+	state.cards["scythe"] = scythe
+	state.zones["p1_hero_row"].card_ids.append("scythe")
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "p1_hero", "defender_id": "igvand"}), db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # combat starts -> attack strike point
+
+	eq(state.pending_strike_player, "p1", "dis-a: attack strike point opened")
+	StackResolver.choose_strike(state, "scythe", db)
+	eq(state.get_atk("p1_hero", db), 2, "dis-b: strike modifier gives the hero +2 ATK")
+	eq(state.get_available_resources("p1"), 1, "dis-b2: strike cost 2 paid")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # attack window closes -> defend window
+	ok(state.combat_defend_window, "dis-c: defend window open")
+
+	# The disarm itself (Moira Darkheart / Dismantle / Crushing Blow all land
+	# here). Destroying the weapon is enough — the association is not tracked
+	# separately, it is re-derived from the board on every read.
+	GameLogic.destroy_card(state, "scythe")
+	ok(not state.is_in_play("scythe"), "dis-d: weapon destroyed in the defend window")
+	eq(state.get_atk("p1_hero", db), 0,
+		"dis-d2: strike modifier lapses with the association (303.2a)")
+
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)   # defend window closes -> conclusion
+
+	eq(state.get_card("igvand").damage_taken, 0,
+		"dis-e: no packet created for a 0-ATK attacker (408.2a)")
+	eq(state.get_card("p1_hero").damage_taken, 3,
+		"dis-e2: the defender still retaliates in full - this is NOT 603.1b")
+	ok(state.get_card("p1_hero").is_exhausted,
+		"dis-e3: attacking hero stays exhausted; the strike is not refunded")
+	ok(state.combat_struck_weapons.is_empty(), "dis-e4: associations cleared (303.2a)")
 
 # Defending strike (602.3): after the protect point, the defending hero's
 # controller may strike; the hero then deals combat damage back.

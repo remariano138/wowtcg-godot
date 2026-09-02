@@ -52,6 +52,7 @@ func _ready() -> void:
 	_test_point_blank_recipe()
 	_test_lokdelar_recipe()
 	_test_wing_clip_recipe()
+	_test_relics_of_wakening_recipe()
 	_test_ghost_wolf_recipe()
 	_test_rockbiter_weapon_recipe()
 	_test_totemic_call_recipe()
@@ -728,6 +729,32 @@ func _test_shaman_ally_recipes() -> void:
 			"Masten Everspirit is a 5-cost 4/2")
 		_check(Array(masten.effects.split("|")).has("on_destroyed:return_self_to_hand"),
 			"…returning himself from the graveyard to hand when destroyed")
+
+
+func _test_relics_of_wakening_recipe() -> void:
+	var db := _make_db()
+	var rw := db.get_def("dark_portal_296") as CardDef
+	_check(rw != null, "dark_portal_296 (The Relics of Wakening) resolves in the database")
+	if rw == null:
+		return
+	_check(rw.cost == 3 and rw.card_type == "Quest",
+		"The Relics of Wakening is a 3-cost Quest")
+	var segs := Array(rw.effects.split("|"))
+	# Pinned because the reward key is otherwise SILENT if mistyped: an unknown
+	# segment is simply skipped by _apply_quest_reward, leaving a quest that
+	# completes and readies nothing, with nothing to fail on.
+	_check("ready_unattacked_allies" in segs,
+		"The Relics of Wakening carries ready_unattacked_allies")
+	# "During your turn" is the 701.1 turn gate — without it the quest would be
+	# completable in the opponent's turn, when the reward is nearly dead.
+	_check("require_turn_player" in segs,
+		"The Relics of Wakening is restricted to its controller's turn")
+	_check("requires_hero_race:Night Elf" in segs,
+		"The Relics of Wakening carries the Night Elf deckbuilding restriction")
+	# The reward is non-targeted and choiceless, so it must NOT be the
+	# choice-opening ready reward next to it.
+	_check(not ("ready_party_character" in segs),
+		"The Relics of Wakening does not open Dragonkin Menace's ready CHOICE")
 
 
 func _test_ghost_wolf_recipe() -> void:

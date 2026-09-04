@@ -4,11 +4,6 @@
   "hero_card_def_id": "azeroth_3",
   "card_entries": [
     {
-      "card_def_id": "dark_portal_296",
-      "count": 1,
-      "_card_name": "The Relics of Wakening"
-    },
-    {
       "card_def_id": "azeroth_340",
       "count": 4,
       "_card_name": "The Defias Brotherhood"
@@ -25,7 +20,7 @@
     },
     {
       "card_def_id": "azeroth_358",
-      "count": 1,
+      "count": 2,
       "_card_name": "Sunken Treasure"
     },
     {
@@ -44,19 +39,19 @@
       "_card_name": "Blackcrow"
     },
     {
-      "card_def_id": "azeroth_311",
-      "count": 1,
-      "_card_name": "Ancient Bone Bow"
-    },
-    {
       "card_def_id": "dark_portal_197",
       "count": 1,
       "_card_name": "Wisp"
     },
     {
       "card_def_id": "azeroth_39",
-      "count": 2,
+      "count": 1,
       "_card_name": "Marked for Death"
+    },
+    {
+      "card_def_id": "azeroth_333",
+      "count": 2,
+      "_card_name": "Scarlet Kris"
     },
     {
       "card_def_id": "azeroth_32",
@@ -69,9 +64,9 @@
       "_card_name": "Rapid Fire"
     },
     {
-      "card_def_id": "azeroth_34",
+      "card_def_id": "azeroth_284",
       "count": 1,
-      "_card_name": "Aspect of the Hawk"
+      "_card_name": "Devilsaur Leggings"
     },
     {
       "card_def_id": "dark_portal_168",
@@ -84,9 +79,9 @@
       "_card_name": "Fury"
     },
     {
-      "card_def_id": "azeroth_37",
-      "count": 2,
-      "_card_name": "Eagle Eye"
+      "card_def_id": "azeroth_46",
+      "count": 1,
+      "_card_name": "Track Humanoids"
     },
     {
       "card_def_id": "dark_portal_131",
@@ -104,14 +99,14 @@
       "_card_name": "Kavai the Wanderer"
     },
     {
-      "card_def_id": "azeroth_176",
+      "card_def_id": "dark_portal_159",
       "count": 4,
-      "_card_name": "Apprentice Teep"
+      "_card_name": "Cerwyn"
     },
     {
-      "card_def_id": "azeroth_180",
+      "card_def_id": "dark_portal_42",
       "count": 2,
-      "_card_name": "Crazy Igvand"
+      "_card_name": "Wing Clip"
     },
     {
       "card_def_id": "azeroth_222",
@@ -135,17 +130,17 @@
     },
     {
       "card_def_id": "azeroth_209",
-      "count": 1,
+      "count": 2,
       "_card_name": "Moira Darkheart"
     },
     {
       "card_def_id": "dark_portal_179",
-      "count": 2,
+      "count": 1,
       "_card_name": "Margaret Fowl"
     },
     {
       "card_def_id": "azeroth_214",
-      "count": 1,
+      "count": 2,
       "_card_name": "Ryn Dreamstrider"
     },
     {
@@ -155,6 +150,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
+  "strategy": "Hunt with your elusive allies",
   "source": "battle_ready",
   "metadata": {
     "author": "playtest",

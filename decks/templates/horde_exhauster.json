@@ -19,26 +19,6 @@
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
-      "card_def_id": "azeroth_235",
-      "count": 1,
-      "_card_name": "Elder Moorf"
-    },
-    {
-      "card_def_id": "azeroth_252",
-      "count": 1,
-      "_card_name": "Moko Hunts-at-Dawn"
-    },
-    {
-      "card_def_id": "azeroth_246",
-      "count": 2,
-      "_card_name": "Kagra of the Crossroads"
-    },
-    {
-      "card_def_id": "azeroth_248",
-      "count": 2,
-      "_card_name": "Ka'tali Stonetusk"
-    },
-    {
       "card_def_id": "azeroth_266",
       "count": 4,
       "_card_name": "Voss Treebender"
@@ -52,16 +32,6 @@
       "card_def_id": "azeroth_232",
       "count": 2,
       "_card_name": "Confessor Mildred"
-    },
-    {
-      "card_def_id": "azeroth_240",
-      "count": 2,
-      "_card_name": "Guardian Steelhorn"
-    },
-    {
-      "card_def_id": "azeroth_274",
-      "count": 1,
-      "_card_name": "Zorm Stonefury"
     },
     {
       "card_def_id": "dark_portal_199",
@@ -79,19 +49,9 @@
       "_card_name": "Bala Silentblade"
     },
     {
-      "card_def_id": "azeroth_264",
-      "count": 1,
-      "_card_name": "Vesh'ral"
-    },
-    {
       "card_def_id": "dark_portal_224",
       "count": 2,
       "_card_name": "Morik"
-    },
-    {
-      "card_def_id": "azeroth_155",
-      "count": 2,
-      "_card_name": "Skewer"
     },
     {
       "card_def_id": "azeroth_168",
@@ -104,39 +64,9 @@
       "_card_name": "Vanquish"
     },
     {
-      "card_def_id": "azeroth_247",
-      "count": 1,
-      "_card_name": "Karkas Deathhowl"
-    },
-    {
       "card_def_id": "dark_portal_210",
       "count": 2,
       "_card_name": "Ghank"
-    },
-    {
-      "card_def_id": "dark_portal_213",
-      "count": 1,
-      "_card_name": "Guardian Steppestrider"
-    },
-    {
-      "card_def_id": "dark_portal_227",
-      "count": 2,
-      "_card_name": "Outrider Zarg"
-    },
-    {
-      "card_def_id": "azeroth_249",
-      "count": 4,
-      "_card_name": "Kulan Earthguard"
-    },
-    {
-      "card_def_id": "dark_portal_233",
-      "count": 1,
-      "_card_name": "Sister Rot"
-    },
-    {
-      "card_def_id": "azeroth_275",
-      "count": 1,
-      "_card_name": "Zygore Bladebreaker"
     }
   ]
 }

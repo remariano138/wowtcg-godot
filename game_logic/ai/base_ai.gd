@@ -7339,8 +7339,10 @@ func _would_waste_pet(state: GameState, db, player_id: String, card: CardInstanc
 	var def := db.get_def(card.card_def_id) as CardDef
 	if not def or def.card_subtype != "Pet":
 		return false
-	var ps := state.players.get(player_id) as PlayerState
-	var capacity: int = ps.pet_capacity if ps else 1
+	# Asked for the board as it WOULD BE with this pet on it (Goldenmoon's grant
+	# is conditional on the pets' names being distinct, so committing a duplicate
+	# name lowers the capacity the moment it lands).
+	var capacity: int = StackResolver.get_pet_capacity(state, player_id, db, def.card_name)
 	var pets_in_play: Array[CardInstance] = []
 	for ally in state.cards_in_zone(player_id + "_ally_row"):
 		var ally_def := db.get_def(ally.card_def_id) as CardDef

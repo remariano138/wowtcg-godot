@@ -308,14 +308,18 @@ static func drain_uniqueness_checks(state: GameState, db = null) -> Array[GameEv
 		# events), so the queue carries no per-card knowledge of which rule
 		# could possibly apply to what.
 		events.append_array(_check_equipment_uniqueness(state, card_id, db))
-		events.append_array(_check_pet_uniqueness(state, card_id, db))
 		events.append_array(_check_unique_uniqueness(state, card_id, db))
 		events.append_array(_check_form_uniqueness(state, card_id, db))
-	# Wielding (406 / 414.3b / 414.3c) is a per-PLAYER question, not a per-card
-	# one: rule 406.2b makes a board violate when the hero LOSES a wielding
-	# keyword, and nothing entered play then, so no queue entry exists to hang
-	# the check on. Asked unconditionally here instead — the drain IS the
-	# state-based moment, and check_wielding is a cheap self-guarding scan.
+	# Wielding (406 / 414.3b / 414.3c) and PETS (414.3b) are per-PLAYER questions,
+	# not per-card ones: rule 406.2b makes a board violate when the hero LOSES a
+	# wielding keyword, and a conditional pet-capacity source (Goldenmoon) makes
+	# one when it LEAVES play — nothing entered play in either case, so no queue
+	# entry exists to hang the check on. The rulebook's own 414.1 example is
+	# exactly that: Goldenmoon takes fatal damage, and destroying her is what puts
+	# the surviving pets over capacity. Asked unconditionally here instead — the
+	# drain IS the state-based moment, and both scans are cheap and self-guarding
+	# (a pet ARRIVING is covered too: it queues its id, and this sweep runs in the
+	# same call).
 	for pid in state.players:
 		if state.pending_pet_sacrifice_player != "" \
 				or state.pending_equip_sacrifice_player != "" \
@@ -323,6 +327,7 @@ static func drain_uniqueness_checks(state: GameState, db = null) -> Array[GameEv
 				or state.pending_form_sacrifice_player != "":
 			break
 		events.append_array(check_wielding(state, pid, db))
+		events.append_array(check_pets(state, pid, db))
 	return events
 
 
@@ -14614,33 +14619,97 @@ static func _destroy_card_trigger(state: GameState, card_id: String,
 	return events
 
 
-# ── Pet uniqueness (rule 414.3b) ──────────────────────────────────────────────
+# ── Pet capacity (rule 414.3b) ────────────────────────────────────────────────
+# The "(N)" after Pet on the type line is a per-PLAYER cap, and it is a DERIVED
+# value, not a stored one: Goldenmoon raises it by one, but only "while your
+# Pets have different names", so the answer changes as pets come and go with her
+# untouched. NEVER cache it. This is the ONE funnel every capacity reader asks —
+# the uniqueness check, its post-destroy re-check, and BaseAI._would_waste_pet —
+# so a gate and the rule cannot disagree.
+#
+# `extra_pet_name` asks the question for a hypothetical board where one more pet
+# of that name has entered. The AI needs exactly that: with Goldenmoon out and
+# one pet in play the capacity READS as 2, but committing a pet of the SAME name
+# makes the names non-distinct and drops it back to 1, so the arriving pet would
+# be sacrificed on the spot.
+static func get_pet_capacity(state: GameState, player_id: String, db,
+		extra_pet_name: String = "") -> int:
+	var ps := state.players.get(player_id) as PlayerState
+	var capacity: int = ps.pet_capacity if ps else 1
+	if not db or player_id == "":
+		return capacity
+	var distinct := _pet_names_distinct(state, player_id, db, extra_pet_name)
+	# Live scan of the player's own rows — "YOU can have an additional Pet", so an
+	# opposing source never counts, and the bonus lifts the instant the source
+	# leaves play (which is the rulebook's own 414.1 example: Goldenmoon dying is
+	# what causes the violation). Read through effective_def, so a blanked source
+	# (Polymorph, 700.3) grants nothing.
+	for zone_suffix in ["_hero_row", "_ally_row"]:
+		for card in state.cards_in_zone(player_id + zone_suffix):
+			var def := state.effective_def(card.instance_id, db)
+			if not def or def.effects == "":
+				continue
+			for entry in def.effects.split("|"):
+				var parts := entry.strip_edges().split(":")
+				if parts[0].strip_edges() != "pet_capacity_bonus_distinct_names":
+					continue
+				if not distinct:
+					continue
+				capacity += int(parts[1].strip_edges()) if parts.size() > 1 else 1
+	return capacity
 
-static func _check_pet_uniqueness(state: GameState, card_id: String, db) -> Array[GameEvent]:
-	if not db:
-		return []
-	var card := state.get_card(card_id)
-	if not card:
-		return []
-	var def := db.get_def(card.card_def_id) as CardDef
-	if not def or def.card_subtype != "Pet":
-		return []
-	# Gather all pets in controller's ally_row (only ally_row counts — 414.1).
+
+# Every Pet the player controls (only the ally_row counts — 414.1). Printed def,
+# not effective_def: "Pet (1)" is a TYPE-LINE tag (202.2), which a blank text box
+# never touches, so a Polymorphed Pet is still a Pet.
+static func get_pet_ids(state: GameState, player_id: String, db) -> Array[String]:
 	var pet_ids: Array[String] = []
-	for c in state.cards_in_zone(card.controller + "_ally_row"):
+	if not db or player_id == "":
+		return pet_ids
+	for c in state.cards_in_zone(player_id + "_ally_row"):
 		var d := db.get_def(c.card_def_id) as CardDef
 		if d and d.card_subtype == "Pet":
 			pet_ids.append(c.instance_id)
-	var ps := state.players.get(card.controller) as PlayerState
-	var capacity: int = ps.pet_capacity if ps else 1
-	if pet_ids.size() <= capacity:
+	return pet_ids
+
+
+# "while your Pets have different names" — pairwise distinct, so ANY duplicate
+# turns the grant off. Fewer than two pets is trivially distinct. The name is the
+# card FACE, never the text box, so a blanked pet keeps its name.
+static func _pet_names_distinct(state: GameState, player_id: String, db,
+		extra_pet_name: String = "") -> bool:
+	var seen := {}
+	for pid in get_pet_ids(state, player_id, db):
+		var c := state.get_card(pid)
+		var d := db.get_def(c.card_def_id) as CardDef if c else null
+		var n: String = d.card_name if d else ""
+		if seen.has(n):
+			return false
+		seen[n] = true
+	if extra_pet_name != "":
+		if seen.has(extra_pet_name):
+			return false
+	return true
+
+
+# ── Pet uniqueness (rule 414.3b) ──────────────────────────────────────────────
+# Asked per-PLAYER rather than per-arriving-card, for the same reason wielding is
+# (see drain_uniqueness_checks): with a conditional capacity source in play the
+# violation can be caused by a card LEAVING, and nothing entered play then. The
+# rulebook uses this very case as its 414.1 example — Goldenmoon takes fatal
+# damage, and destroying her is what puts the remaining pets over capacity.
+static func check_pets(state: GameState, player_id: String, db) -> Array[GameEvent]:
+	if not db or player_id == "":
 		return []
-	# Violation: player must sacrifice until at most pet_capacity pets remain.
-	state.pending_pet_sacrifice_player = card.controller
+	var pet_ids := get_pet_ids(state, player_id, db)
+	if pet_ids.size() <= get_pet_capacity(state, player_id, db):
+		return []
+	# Violation: player must sacrifice until at most that many pets remain.
+	state.pending_pet_sacrifice_player = player_id
 	state.pending_pet_sacrifice_ids.assign(pet_ids)
 	var typed_ids: Array[String] = []
 	typed_ids.assign(pet_ids)
-	return [GameEvent.pet_sacrifice_required(card.controller, typed_ids)]
+	return [GameEvent.pet_sacrifice_required(player_id, typed_ids)]
 
 
 static func _can_choose_pet_sacrifice(state: GameState, action: PendingAction) -> bool:
@@ -14655,25 +14724,18 @@ static func _can_choose_pet_sacrifice(state: GameState, action: PendingAction) -
 static func _resolve_choose_pet_sacrifice(state: GameState, action: PendingAction,
 		db) -> Array[GameEvent]:
 	var chosen: String = action.params.get("card_id", "")
+	var player_id: String = state.pending_pet_sacrifice_player
 	var events: Array[GameEvent] = []
 	events.append_array(_destroy_card_trigger(state, chosen, chosen, db))
-	state.pending_pet_sacrifice_ids.erase(chosen)
-	# Re-check: still a violation if more pets remain than capacity allows.
-	var ps2 := state.players.get(state.pending_pet_sacrifice_player) as PlayerState
-	var capacity2: int = ps2.pet_capacity if ps2 else 1
-	var surviving_pets: Array[String] = []
-	for cid in state.pending_pet_sacrifice_ids:
-		if state.is_in_play(cid):
-			surviving_pets.append(cid)
-	if surviving_pets.size() <= capacity2:
-		state.pending_pet_sacrifice_player = ""
-		state.pending_pet_sacrifice_ids.clear()
-	else:
-		state.pending_pet_sacrifice_ids.assign(surviving_pets)
-		var typed_ids: Array[String] = []
-		typed_ids.assign(surviving_pets)
-		events.append(GameEvent.pet_sacrifice_required(
-			state.pending_pet_sacrifice_player, typed_ids))
+	# Re-ask the SAME question the opening check asked, over the player's whole
+	# ally row (check_pets) rather than over the remembered id list — the
+	# choose_equipment_sacrifice precedent, and for the same reason: a destroy can
+	# change the answer in ways a shrinking list can't express. With Goldenmoon
+	# out, destroying one of two same-named pets makes the remaining names
+	# DISTINCT, which raises the capacity and repairs the board on its own.
+	state.pending_pet_sacrifice_player = ""
+	state.pending_pet_sacrifice_ids.clear()
+	events.append_array(check_pets(state, player_id, db))
 	return events
 
 

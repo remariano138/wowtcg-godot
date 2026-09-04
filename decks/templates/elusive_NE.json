@@ -1,0 +1,82 @@
+{
+  "deck_id": "elusive_NE",
+  "display_name": "Template — Elusive Night Elf",
+  "hero_card_def_id": "",
+  "card_entries": [
+    {
+      "card_def_id": "azeroth_340",
+      "count": 4,
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "dark_portal_289",
+      "count": 4,
+      "_card_name": "Crown of the Earth"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 4,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 2,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "azeroth_342",
+      "count": 1,
+      "_card_name": "The Missing Diplomat"
+    },
+    {
+      "card_def_id": "azeroth_222",
+      "count": 4,
+      "_card_name": "Warden Tonarin"
+    },
+    {
+      "card_def_id": "azeroth_197",
+      "count": 4,
+      "_card_name": "Latro Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_184",
+      "count": 4,
+      "_card_name": "Galahandra Keeper of the Silent Grove"
+    },
+    {
+      "card_def_id": "azeroth_214",
+      "count": 2,
+      "_card_name": "Ryn Dreamstrider"
+    },
+    {
+      "card_def_id": "dark_portal_197",
+      "count": 1,
+      "_card_name": "Wisp"
+    },
+    {
+      "card_def_id": "azeroth_189",
+      "count": 1,
+      "_card_name": "Kailis Truearc"
+    },
+    {
+      "card_def_id": "dark_portal_131",
+      "count": 1,
+      "_card_name": "Shadowmeld"
+    },
+    {
+      "card_def_id": "dark_portal_168",
+      "count": 1,
+      "_card_name": "Ilandre Moonspear"
+    },
+    {
+      "card_def_id": "azeroth_209",
+      "count": 2,
+      "_card_name": "Moira Darkheart"
+    },
+    {
+      "card_def_id": "dark_portal_173",
+      "count": 2,
+      "_card_name": "Kavai the Wanderer"
+    }
+  ]
+}

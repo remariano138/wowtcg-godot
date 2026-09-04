@@ -4671,12 +4671,15 @@ func _handle_pet_sacrifice(payload: Dictionary) -> void:
 	var candidates: Array = payload.get("candidates", [])
 	var player_type := _p1_type if player == "p1" else _p2_type
 	if player_type != "human":
-		# AI: pick which pet to sacrifice (keep the best one, remove the rest).
-		var keep_id := _pick_ai_pet_keep(player, candidates)
-		for cid: String in candidates:
-			if cid == keep_id:
-				continue
-			var events := StackResolver.choose_pet_sacrifice(_state, cid, _db)
+		# AI: sacrifice ONE pet — the least valuable — and let the engine re-ask.
+		# Destroying every candidate but one would be wrong wherever the capacity
+		# is above 1: with Goldenmoon out, dropping one of two same-named pets
+		# makes the remaining names DISTINCT, which raises the capacity back to 2
+		# and repairs the board on its own. check_pets re-emits
+		# pet_sacrifice_required if it didn't, which re-enters this handler.
+		var drop_id := _pick_ai_pet_drop(player, candidates)
+		if drop_id != "":
+			var events := StackResolver.choose_pet_sacrifice(_state, drop_id, _db)
 			if not events.is_empty():
 				EventBus.emit_events(events)
 		_refresh_ui()
@@ -4688,14 +4691,15 @@ func _handle_pet_sacrifice(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
-# Returns the instance_id the AI wants to KEEP (the others get sacrificed).
-# Strategy: keep highest-cost pet; tie-break by highest current HP; then random.
-func _pick_ai_pet_keep(_player_id: String, candidates: Array) -> String:
+# Returns the instance_id the AI wants to SACRIFICE — the least valuable pet, so
+# the ones it keeps are the best. Strategy: lowest-cost pet; tie-break by lowest
+# current HP.
+func _pick_ai_pet_drop(_player_id: String, candidates: Array) -> String:
 	if candidates.is_empty():
 		return ""
-	var best: String = candidates[0]
-	var best_cost := -1
-	var best_hp := -1
+	var worst: String = candidates[0]
+	var worst_cost := 999
+	var worst_hp := 999
 	for cid: String in candidates:
 		var card := _state.get_card(cid)
 		if not card:
@@ -4703,11 +4707,11 @@ func _pick_ai_pet_keep(_player_id: String, candidates: Array) -> String:
 		var def: CardDef = _db.get_def(card.card_def_id) if _db else null
 		var cost: int = def.cost if def else 0
 		var hp: int = _state.get_current_hp(cid, _db)
-		if cost > best_cost or (cost == best_cost and hp > best_hp):
-			best_cost = cost
-			best_hp = hp
-			best = cid
-	return best
+		if cost < worst_cost or (cost == worst_cost and hp < worst_hp):
+			worst_cost = cost
+			worst_hp = hp
+			worst = cid
+	return worst
 
 
 # Reveal-and-pick quest reward (Big Game Hunter / Kibler's Exotic Pets / Zapped

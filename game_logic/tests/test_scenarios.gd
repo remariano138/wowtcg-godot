@@ -32,6 +32,8 @@ func _ready() -> void:
 		_test_quick_strike,
 		_test_lightning_bolt,
 		_test_pet_uniqueness,
+		_test_goldenmoon_extra_pet,
+		_test_goldenmoon_leaves_play,
 		_test_mooncloth_robe_power,
 		_test_mooncloth_robe_hero_exhausted,
 		_test_herods_shoulder_finds_weapon,
@@ -372,6 +374,7 @@ func _ready() -> void:
 		_test_the_shatterer,
 		_test_the_shatterer_scope,
 		_test_ai_the_shatterer,
+		_test_apprentice_merry_untargetable,
 		_test_bone_bow_grants_long_range,
 		_test_elendril_ranged_bonus,
 		_test_ai_elendril_flip_for_lethal,
@@ -40289,3 +40292,191 @@ func _test_ai_the_shatterer() -> void:
 	s2.pending_weapon_break_cost = 2
 	ok(not ai.choose_weapon_break_pay(s2, db, "p2"),
 		"shai-c: a 1-cost weapon isn't worth 2 — let it break")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Goldenmoon (dark_portal_165, 3-cost 2/2 Alliance Night Elf Rogue, Elusive):
+# "You can have an additional Pet while your Pets have different names."
+#
+# The engine's first PET-CAPACITY modifier, and the first one that is
+# CONDITIONAL on the very cards it caps — which is why the capacity is a live
+# read (StackResolver.get_pet_capacity) rather than the stored
+# PlayerState.pet_capacity, and why the uniqueness check is asked per-PLAYER at
+# the priority gate rather than only for a card arriving.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _goldenmoon_db() -> MockDB:
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ability("poly_def", 2,
+		"ongoing|attach:ally|attached_cannot_attack|attached_cannot_protect|attached_loses_powers")
+	db.ally("goldenmoon_def", 2, 2, (["elusive"] as Array[String]), 3,
+		"pet_capacity_bonus_distinct_names:1")
+	db.pet("hootie_def", 2, 2, ([] as Array[String]), 2)
+	db.pet("chops_def", 3, 4, ([] as Array[String]), 3)
+	# A THIRD def with the SAME printed name as hootie_def — the "different
+	# names" clause is about NAMES, not about card defs.
+	db.pet("fury_def", 5, 3, ([] as Array[String]), 5)
+	db.pet("hootie2_def", 2, 2, ([] as Array[String]), 2)
+	(db.get_def("hootie2_def") as CardDef).card_name = \
+		(db.get_def("hootie_def") as CardDef).card_name
+	return db
+
+
+func _test_goldenmoon_extra_pet() -> void:
+	_buf.append("\n-- Goldenmoon: an additional Pet while your Pets have different names --")
+	var db := _goldenmoon_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+
+	# gm-a: no Goldenmoon — base capacity is 1, so a second pet violates.
+	_add_ally(st, "hootie", "hootie_def", "p1")
+	eq(StackResolver.get_pet_capacity(st, "p1", db), 1, "gm-a: base capacity is 1")
+	_add_ally(st, "chops", "chops_def", "p1")
+	var ev := StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "p1", "gm-b: 2 pets without Goldenmoon violates")
+	ok(ev.size() > 0, "gm-b2: pet_sacrifice_required emitted")
+	st.pending_pet_sacrifice_player = ""
+	st.pending_pet_sacrifice_ids.clear()
+
+	# gm-c: Goldenmoon in play, DIFFERENT names — capacity 2, no violation.
+	_add_ally(st, "gm", "goldenmoon_def", "p1")
+	eq(StackResolver.get_pet_capacity(st, "p1", db), 2, "gm-c: capacity is 2 with Goldenmoon")
+	ev = StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "", "gm-d: 2 differently-named pets are legal")
+	eq(ev.size(), 0, "gm-d2: nothing emitted")
+
+	# gm-e: the grant is controller-scoped — "YOU can have an additional Pet",
+	# so p1's Goldenmoon does nothing for p2.
+	_add_ally(st, "p2_hootie", "hootie_def", "p2")
+	_add_ally(st, "p2_chops", "chops_def", "p2")
+	eq(StackResolver.get_pet_capacity(st, "p2", db), 1, "gm-e: opposing capacity unchanged")
+	StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "p2", "gm-f: p2 still violates at 2 pets")
+	# Repair p2 so the rest of the scenario is about p1 alone.
+	StackResolver.choose_pet_sacrifice(st, "p2_hootie", db)
+	eq(st.pending_pet_sacrifice_player, "", "gm-g: p2 repaired by one sacrifice")
+
+	# gm-h: a THIRD pet is over even the raised capacity.
+	_add_ally(st, "fury", "fury_def", "p1")
+	StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "p1", "gm-h: 3 pets violate even with Goldenmoon")
+	StackResolver.choose_pet_sacrifice(st, "fury", db)
+	eq(st.pending_pet_sacrifice_player, "", "gm-i: back to 2 legal pets")
+
+	# gm-j: DUPLICATE NAMES turn the grant off — a same-named pet arriving drops
+	# the capacity back to 1, so BOTH the newcomer and the pets already down are
+	# over the cap.
+	_add_ally(st, "hootie_dupe", "hootie2_def", "p1")
+	eq(StackResolver.get_pet_capacity(st, "p1", db), 1,
+		"gm-j: duplicate names turn the grant off")
+	StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "p1", "gm-k: duplicate-named pet violates")
+	# Destroying ONE of the duplicates makes the surviving names distinct again,
+	# which raises the capacity to 2 and repairs the board on its own — the
+	# re-check has to re-ask the whole question, not shrink a remembered list.
+	StackResolver.choose_pet_sacrifice(st, "hootie_dupe", db)
+	eq(st.pending_pet_sacrifice_player, "",
+		"gm-l: one sacrifice repairs it — names distinct again, capacity back to 2")
+	eq(st.cards_in_zone("p1_ally_row").size(), 3, "gm-m: Goldenmoon + 2 pets survive")
+
+	# gm-n: a BLANKED Goldenmoon (Polymorph, 700.3) grants nothing — the bonus is
+	# a power, so the capacity is read through effective_def. Losing it that way
+	# violates exactly as killing her would.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p2", 4)
+	_add_ally(st2, "gm2", "goldenmoon_def", "p1")
+	_add_ally(st2, "h2", "hootie_def", "p1")
+	_add_ally(st2, "c2", "chops_def", "p1")
+	_add_card_to_hand(st2, "poly", "poly_def", "p2")
+	st2.turn_player     = "p2"
+	st2.priority_player = "p2"
+	st2.phase           = "action"
+	eq(StackResolver.get_pet_capacity(st2, "p1", db), 2, "gm-n: capacity 2 before the blank")
+	StackResolver.submit_action(st2, PendingAction.make("play_ability", "p2",
+		{"card_id": "poly", "target_id": "gm2"}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	ok(st2.has_lost_powers("gm2", db), "gm-o: Goldenmoon is blanked")
+	eq(StackResolver.get_pet_capacity(st2, "p1", db), 1, "gm-p: a blanked source grants nothing")
+	eq(st2.pending_pet_sacrifice_player, "p1", "gm-q: blanking her causes the violation")
+
+
+func _test_goldenmoon_leaves_play() -> void:
+	# The rulebook's own 414.1 example: "You control Fury, Goldenmoon, and Hootie.
+	# Goldenmoon is dealt fatal damage. The first wave of pre-priority checks
+	# destroys Goldenmoon, causing a uniqueness violation. You must immediately
+	# destroy one of your pets before the game continues."
+	_buf.append("\n-- Goldenmoon: losing her is what causes the violation (414.1) --")
+	var db := _goldenmoon_db()
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st, "gm", "goldenmoon_def", "p1")
+	_add_ally(st, "hootie", "hootie_def", "p1")
+	_add_ally(st, "chops", "chops_def", "p1")
+	StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "", "gml-a: board is legal while she is out")
+
+	# She leaves play. NOTHING entered play, so there is no queue entry to hang
+	# the check on — the per-PLAYER sweep is what catches it.
+	GameLogic.destroy_card(st, "gm", "gm")
+	eq(StackResolver.get_pet_capacity(st, "p1", db), 1, "gml-b: capacity drops back to 1")
+	var ev := StackResolver.drain_uniqueness_checks(st, db)
+	eq(st.pending_pet_sacrifice_player, "p1", "gml-c: her death causes the violation")
+	var fired := 0
+	for e in ev:
+		if e.event_type == "pet_sacrifice_required":
+			fired += 1
+	eq(fired, 1, "gml-d: pet_sacrifice_required emitted once")
+	eq(st.pending_pet_sacrifice_ids.size(), 2, "gml-e: both pets are candidates")
+
+	StackResolver.choose_pet_sacrifice(st, "hootie", db)
+	eq(st.pending_pet_sacrifice_player, "", "gml-f: repaired by one sacrifice")
+	eq(st.cards_in_zone("p1_ally_row").size(), 1, "gml-g: one pet left")
+	eq(st.get_card("hootie").zone_id, "p1_graveyard", "gml-h: sacrificed pet is in the graveyard")
+
+	# gml-i: a bounce (no destruction at all) is caught by the same sweep.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_ally(st2, "gm2", "goldenmoon_def", "p1")
+	_add_ally(st2, "h2", "hootie_def", "p1")
+	_add_ally(st2, "c2", "chops_def", "p1")
+	StackResolver.drain_uniqueness_checks(st2, db)
+	eq(st2.pending_pet_sacrifice_player, "", "gml-i: legal to start")
+	GameLogic.move_card(st2, "gm2", "p1_hand")
+	StackResolver.drain_uniqueness_checks(st2, db)
+	eq(st2.pending_pet_sacrifice_player, "p1", "gml-j: bouncing her violates too")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Apprentice Merry (dark_portal_153, 1-cost 2/1 Alliance Gnome Mage) — Untargetable.
+#
+# Pure CSV — nothing new, just the existing keyword on a fresh body. The test
+# pins the one thing that matters: a destroy ability and a damage instant can
+# neither one name her (706), while a plain vanilla ally beside her stays a
+# legal target.
+# ══════════════════════════════════════════════════════════════════════════════
+
+func _test_apprentice_merry_untargetable() -> void:
+	_buf.append("\n-- Apprentice Merry: untargetable --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("merry_def", 2, 1, (["untargetable"] as Array[String]), 1)
+	db.ally("plain_def", 2, 2, [], 2)
+	db.ability("vanquish_def", 3, "destroy_target:ally")
+	db.instant("quickstrike_def", 2, "deal_damage_to_target:2:melee")
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 10)
+	_add_ally(state, "merry", "merry_def", "p2")
+	_add_ally(state, "plain", "plain_def", "p2")
+	_add_card_to_hand(state, "vq", "vanquish_def", "p1")
+	_add_card_to_hand(state, "qs", "quickstrike_def", "p1")
+
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "vq", "target_id": "merry"}), db),
+		"merry-a: untargetable — a destroy ability can't name her")
+	ok(not StackResolver.can_submit(state, PendingAction.make("play_instant", "p1",
+		{"card_id": "qs", "target_id": "merry"}), db),
+		"merry-b: untargetable — a damage instant can't name her either")
+	ok(StackResolver.can_submit(state, PendingAction.make("play_ability", "p1",
+		{"card_id": "vq", "target_id": "plain"}), db),
+		"merry-c: the plain ally beside her stays a legal target")

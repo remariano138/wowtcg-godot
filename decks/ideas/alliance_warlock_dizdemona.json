@@ -9,24 +9,14 @@
       "_card_name": "Operation Recombobulation"
     },
     {
-      "card_def_id": "azeroth_347",
-      "count": 1,
-      "_card_name": "Battle of Darrowshire"
-    },
-    {
       "card_def_id": "azeroth_340",
-      "count": 3,
+      "count": 4,
       "_card_name": "The Defias Brotherhood"
     },
     {
       "card_def_id": "azeroth_356",
-      "count": 1,
+      "count": 4,
       "_card_name": "The Love Potion"
-    },
-    {
-      "card_def_id": "azeroth_351",
-      "count": 2,
-      "_card_name": "A Donation of Wool"
     },
     {
       "card_def_id": "azeroth_355",
@@ -35,28 +25,23 @@
     },
     {
       "card_def_id": "dark_portal_316",
-      "count": 3,
+      "count": 2,
       "_card_name": "Finkle Einhorn, At Your Service!"
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 1,
+      "count": 2,
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_332",
+      "card_def_id": "dark_portal_282",
       "count": 1,
-      "_card_name": "Rod of the Ogre Magi"
+      "_card_name": "Staff of Dominance"
     },
     {
-      "card_def_id": "azeroth_298",
+      "card_def_id": "azeroth_282",
       "count": 1,
-      "_card_name": "Mooncloth Robe"
-    },
-    {
-      "card_def_id": "dark_portal_164",
-      "count": 1,
-      "_card_name": "Gertha, The Old Crone"
+      "_card_name": "Chromatic Cloak"
     },
     {
       "card_def_id": "azeroth_122",
@@ -69,9 +54,9 @@
       "_card_name": "From the Shadows"
     },
     {
-      "card_def_id": "azeroth_127",
+      "card_def_id": "azeroth_126",
       "count": 1,
-      "_card_name": "Infernal"
+      "_card_name": "Helwen"
     },
     {
       "card_def_id": "azeroth_125",
@@ -90,7 +75,7 @@
     },
     {
       "card_def_id": "azeroth_174",
-      "count": 2,
+      "count": 1,
       "_card_name": "Adept Breton"
     },
     {
@@ -109,9 +94,9 @@
       "_card_name": "Apprentice Teep"
     },
     {
-      "card_def_id": "azeroth_222",
+      "card_def_id": "dark_portal_153",
       "count": 4,
-      "_card_name": "Warden Tonarin"
+      "_card_name": "Apprentice Merry"
     },
     {
       "card_def_id": "azeroth_219",
@@ -119,19 +104,19 @@
       "_card_name": "Tracker Gallen"
     },
     {
-      "card_def_id": "azeroth_131",
+      "card_def_id": "dark_portal_114",
       "count": 2,
-      "_card_name": "Sever the Cord"
+      "_card_name": "Shred Soul"
     },
     {
       "card_def_id": "azeroth_183",
-      "count": 2,
+      "count": 1,
       "_card_name": "Freya Lightsworn"
     },
     {
-      "card_def_id": "azeroth_197",
-      "count": 3,
-      "_card_name": "Latro Abiectus"
+      "card_def_id": "dark_portal_189",
+      "count": 4,
+      "_card_name": "Scaramanga"
     },
     {
       "card_def_id": "dark_portal_177",
@@ -155,7 +140,7 @@
     },
     {
       "card_def_id": "dark_portal_184",
-      "count": 1,
+      "count": 2,
       "_card_name": "Mya, Dragonling Wrangler"
     },
     {
@@ -165,7 +150,7 @@
     }
   ],
   "recommended_ai_id": "ai_generic",
-  "strategy": "Overrun your opponent with Gnomes and dark magic",
+  "strategy": "Seduce your opponent with cute Gnomes and dark magic",
   "source": "ideas",
   "metadata": {
     "author": "playtest",

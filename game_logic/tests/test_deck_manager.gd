@@ -60,6 +60,7 @@ func _ready() -> void:
 	_test_edgemasters_handguards_recipe()
 	_test_deathdealer_breastplate_recipe()
 	_test_herods_shoulder_recipe()
+	_test_goldenmoon_recipe()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -1429,3 +1430,24 @@ func _test_herods_shoulder_recipe() -> void:
 		_check(hs.has_class(cls), "…legal for %s" % cls)
 	for cls in ["Druid", "Hunter", "Mage", "Priest", "Warlock"]:
 		_check(not hs.has_class(cls), "…NOT legal for %s" % cls)
+
+
+# Goldenmoon (dark_portal_165). Pure CSV on the data side — the engine reads one
+# effects key off the board — so a typo here is COMPLETELY SILENT: the ally still
+# lands as a vanilla elusive 2/2 and the pet cap simply never moves, with nothing
+# to fail on. Hence pinned against the REAL database.
+func _test_goldenmoon_recipe() -> void:
+	var db := _make_db()
+	var gm := db.get_def("dark_portal_165") as CardDef
+	_check(gm != null, "dark_portal_165 (Goldenmoon) resolves in the database")
+	if gm == null:
+		return
+	_check(gm.card_type == "Ally" and gm.cost == 3, "Goldenmoon is a 3-cost Ally")
+	_check(gm.printed_atk == 2 and gm.printed_health == 2, "…2 ATK / 2 health")
+	_check(gm.alignment == "Alliance", "…Alliance")
+	_check(gm.rarity == "Uncommon", "…Uncommon")
+	_check(gm.keywords.has("elusive"), "…and elusive")
+	_check(Array(gm.effects.split("|")).has("pet_capacity_bonus_distinct_names:1"),
+		"…granting exactly ONE additional Pet while your Pets have different names")
+	# She is NOT a Pet herself — she would otherwise eat the slot she grants.
+	_check(gm.card_subtype != "Pet", "…and is not herself a Pet")

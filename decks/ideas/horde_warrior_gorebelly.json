@@ -9,34 +9,34 @@
       "_card_name": "Lazy Peons"
     },
     {
-      "card_def_id": "azeroth_345",
-      "count": 4,
-      "_card_name": "Torek's Assault"
-    },
-    {
       "card_def_id": "dark_portal_302",
       "count": 4,
       "_card_name": "Hidden Enemies"
     },
     {
       "card_def_id": "azeroth_358",
-      "count": 2,
+      "count": 1,
       "_card_name": "Sunken Treasure"
     },
     {
       "card_def_id": "azeroth_350",
-      "count": 1,
+      "count": 2,
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_293",
-      "count": 1,
-      "_card_name": "Herod's Shoulder"
+      "card_def_id": "azeroth_345",
+      "count": 4,
+      "_card_name": "Torek's Assault"
     },
     {
-      "card_def_id": "azeroth_339",
+      "card_def_id": "azeroth_259",
       "count": 1,
-      "_card_name": "Wraith Scythe"
+      "_card_name": "Skorn, Mistress of Shadow"
+    },
+    {
+      "card_def_id": "azeroth_316",
+      "count": 1,
+      "_card_name": "Brain Hacker"
     },
     {
       "card_def_id": "azeroth_283",
@@ -44,24 +44,29 @@
       "_card_name": "Deathdealer Breastplate"
     },
     {
+      "card_def_id": "azeroth_313",
+      "count": 1,
+      "_card_name": "Arcanite Reaper"
+    },
+    {
       "card_def_id": "azeroth_312",
-      "count": 2,
+      "count": 3,
       "_card_name": "Annihilator"
     },
     {
-      "card_def_id": "azeroth_286",
+      "card_def_id": "dark_portal_236",
       "count": 1,
-      "_card_name": "Edgemaster's Handguards"
+      "_card_name": "Thysta Spiritlasher"
     },
     {
       "card_def_id": "azeroth_145",
-      "count": 1,
+      "count": 2,
       "_card_name": "Mortal Strike"
     },
     {
-      "card_def_id": "azeroth_136",
+      "card_def_id": "dark_portal_115",
       "count": 1,
-      "_card_name": "Berserker Stance"
+      "_card_name": "Anger Management"
     },
     {
       "card_def_id": "azeroth_257",
@@ -79,13 +84,8 @@
       "_card_name": "Field Repair Bot 74A"
     },
     {
-      "card_def_id": "dark_portal_127",
-      "count": 1,
-      "_card_name": "Dual Wield"
-    },
-    {
       "card_def_id": "azeroth_137",
-      "count": 2,
+      "count": 1,
       "_card_name": "Charge"
     },
     {
@@ -104,49 +104,39 @@
       "_card_name": "Rend"
     },
     {
-      "card_def_id": "dark_portal_245",
+      "card_def_id": "azeroth_266",
       "count": 4,
-      "_card_name": "Overseer Oilfist"
+      "_card_name": "Voss Treebender"
     },
     {
-      "card_def_id": "azeroth_274",
+      "card_def_id": "dark_portal_210",
       "count": 1,
-      "_card_name": "Zorm Stonefury"
-    },
-    {
-      "card_def_id": "dark_portal_224",
-      "count": 2,
-      "_card_name": "Morik"
+      "_card_name": "Ghank"
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 3,
+      "count": 2,
       "_card_name": "Taz'dingo"
     },
     {
-      "card_def_id": "azeroth_165",
-      "count": 1,
-      "_card_name": "Quick Strike"
-    },
-    {
-      "card_def_id": "azeroth_171",
+      "card_def_id": "azeroth_144",
       "count": 2,
-      "_card_name": "Vanquish"
+      "_card_name": "Mocking Blow"
     },
     {
-      "card_def_id": "dark_portal_227",
+      "card_def_id": "azeroth_226",
       "count": 4,
-      "_card_name": "Outrider Zarg"
+      "_card_name": "Bala Silentblade"
     },
     {
-      "card_def_id": "dark_portal_124",
-      "count": 1,
-      "_card_name": "Slam"
+      "card_def_id": "dark_portal_212",
+      "count": 4,
+      "_card_name": "Grunt Baranka"
     },
     {
-      "card_def_id": "azeroth_135",
+      "card_def_id": "azeroth_140",
       "count": 2,
-      "_card_name": "Battle Shout"
+      "_card_name": "Demoralizing Shout"
     },
     {
       "card_def_id": "dark_portal_120",

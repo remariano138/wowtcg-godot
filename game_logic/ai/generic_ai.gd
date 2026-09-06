@@ -141,6 +141,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ghost_wolf := ghost_wolf_action(state, db, player_id)
 	if ghost_wolf != null:
 		return ghost_wolf
+	# Waylay — with a stealthed hero it KILLS the attacking ally, which the
+	# shared combat_instant_exhaust path would misprice as a mere freeze.
+	var waylay := waylay_action(state, db, player_id)
+	if waylay != null:
+		return waylay
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
@@ -253,7 +258,7 @@ func _trade_action(state: GameState, db, player_id: String) -> PendingAction:
 	var opp := "p2" if player_id == "p1" else "p1"
 	var best: PendingAction = null
 	var best_key: Array = []
-	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+	for aid in BaseAI.productive_attackers(state, player_id, db):
 		if BaseAI.forecast_atk(state, db, aid) <= 0:
 			continue
 		for did in StackResolver.get_legal_defenders(state, aid, db):
@@ -323,7 +328,7 @@ func _hero_chip_action(state: GameState, db, player_id: String) -> PendingAction
 
 	var best: String = ""
 	var best_val: Array = []
-	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+	for aid in BaseAI.productive_attackers(state, player_id, db):
 		if BaseAI.forecast_atk(state, db, aid) <= 0:
 			continue
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
@@ -505,7 +510,7 @@ func _hero_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 
 	# Board attackers that can already swing this turn (forecast "while
 	# attacking" bonuses — they apply the moment combat is proposed).
-	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+	for aid in BaseAI.productive_attackers(state, player_id, db):
 		if BaseAI.forecast_atk(state, db, aid) < hero_hp:
 			continue
 		if hero_id not in StackResolver.get_legal_defenders(state, aid, db):
@@ -652,7 +657,7 @@ func _all_out_hero_lethal_action(state: GameState, db, player_id: String) -> Pen
 
 	var attackers: Array[String] = []
 	var total_atk := 0
-	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+	for aid in BaseAI.productive_attackers(state, player_id, db):
 		var atk := BaseAI.forecast_atk(state, db, aid)   # "while attacking" bonuses + weapon strike
 		if atk <= 0:
 			continue
@@ -723,7 +728,7 @@ func _all_out_with_spell_hero_lethal_action(state: GameState, db, player_id: Str
 
 	var attackers: Array[String] = []
 	var total_atk := 0
-	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+	for aid in BaseAI.productive_attackers(state, player_id, db):
 		var atk := BaseAI.forecast_atk(state, db, aid)   # "while attacking" bonuses + weapon strike
 		if atk <= 0:
 			continue
@@ -815,7 +820,7 @@ func _safe_lethal_action(state: GameState, db, player_id: String) -> PendingActi
 	# List 1: legal attackers on board + playable Ferocity allies in hand.
 	var attackers: Array[String] = []
 	var from_hand: Dictionary = {}
-	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+	for aid in BaseAI.productive_attackers(state, player_id, db):
 		if BaseAI.forecast_atk(state, db, aid) > 0:
 			attackers.append(aid)
 	for card in state.cards_in_zone(player_id + "_hand"):

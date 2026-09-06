@@ -93,6 +93,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ghost_wolf := ghost_wolf_action(state, db, player_id)
 	if ghost_wolf != null:
 		return ghost_wolf
+	# Waylay — with a stealthed hero it KILLS the attacking ally, which the
+	# shared combat_instant_exhaust path would misprice as a mere freeze.
+	var waylay := waylay_action(state, db, player_id)
+	if waylay != null:
+		return waylay
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin

@@ -120,6 +120,41 @@ queued normally, because those can matter to the responder.
 
 ---
 
+## RESOLVED — 0-ATK characters and "must attack if able"
+
+**Rule:** 601.2 (proposing an attacker) and 600.2 ("must attack if able").
+
+**The deviation (removed):** `get_legal_attackers` refused to offer a hero with
+0 ATK-while-attacking and no affordable strikeable weapon. The comment there
+called it "a practical gate, not an explicit rule", and it was: nothing in the
+printed rules conditions being ABLE TO ATTACK on being able to deal damage. A
+0-ATK character may be proposed as an attacker; it just exhausts and eats the
+retaliation for nothing.
+
+**Why it had to go.** The gate was not merely cosmetic once compulsion cards
+existed. `get_must_attack_ids` reads that same list, so a 0-ATK character was
+silently treated as **unable**, and 600.2's "if able" released the lock — Lynda
+Steele and Mocking Blow could not force a defenceless hero to walk into the
+board, which is exactly what those cards are for. It was also a latent soft-lock
+for a human: `_can_propose_combat` never carried the gate, so a compelled player
+would have had `pass_priority` refused while the UI highlight (which reads
+`get_legal_attackers`) offered them no attacker to click.
+
+**Where the judgement lives now.** "That attack accomplishes nothing" is an AI
+policy, not a rule: `BaseAI.productive_attackers` is the rules list filtered by
+`forecast_atk(..., true) > 0`, and every AI line that VOLUNTEERS an attack reads
+it (both `decide_action` paths, GenericAI's kill/trade/chip/lethal steps, the
+goad-target and strike-decision heuristics, the test suite's RandomAttackerAI).
+The one caller that deliberately reads the RAW list is `_least_bad_attack`, the
+600.2 compliance path — it must find a proposal even when every option is bad,
+or a compelled AI would stall.
+
+**Consequence worth knowing:** a human is now offered a pointless 0-ATK hero
+attack. That is the printed rules, and it is occasionally real — a hero that is
+about to gain ATK at instant speed, or one being fed to a defender on purpose.
+
+Test: `_test_must_attack_binds_a_harmless_hero`.
+
 ## RESOLVED — Start-of-turn triggered effects, drained one at a time
 
 **This was a deviation and no longer is.** The engine now follows 708.1a/708.1b

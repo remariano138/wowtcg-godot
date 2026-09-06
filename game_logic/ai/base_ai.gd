@@ -73,6 +73,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_27":  "combat_instant_dmg",   # Natural Selection — modal: damage mode only (heal mode enumerated by get_modal_actions but never played — future work)
 	"azeroth_221": "combat_instant_protector",   # Tristan Rapidstrike — 3/3 Protector
 	"azeroth_159": "combat_instant_exhaust",     # Exhaustion — exhaust target ally
+	"azeroth_105": "combat_instant_exhaust",     # Waylay — exhaust target ally (+ a stealth-gated kill: waylay_action)
 	"azeroth_17":  "combat_instant_exhaust",     # Bash — exhaust target hero or ally (+ bear form ongoing)
 	"dark_portal_137": "combat_instant_exhaust", # War Stomp — exhaust ALL opposing heroes and allies (no target)
 	"azeroth_68":  "combat_instant_exhaust",     # Hammer of Justice — Gouge's exhaust + ready-lock plus a cantrip (ready-lock not modeled for AI)
@@ -153,6 +154,11 @@ func decide_action(state: GameState, db, player_id: String) -> PendingAction:
 	var ghost_wolf := ghost_wolf_action(state, db, player_id)
 	if ghost_wolf != null:
 		return ghost_wolf
+	# Waylay — with a stealthed hero it KILLS the attacking ally, which the
+	# shared combat_instant_exhaust path would misprice as a mere freeze.
+	var waylay := waylay_action(state, db, player_id)
+	if waylay != null:
+		return waylay
 	var katsin := katsin_shield_action(state, db, player_id)
 	if katsin != null:
 		return katsin
@@ -1648,6 +1654,67 @@ func avanthera_escape_action(state: GameState, db, player_id: String) -> Pending
 # can_submit is the authority on affordability (a ready hero, rule 412.2) and on
 # the source still being in play, which is what keeps the hook and the rule from
 # disagreeing.
+# ── Waylay (azeroth_105, combat_instant_exhaust) ──────────────────────────
+# "Exhaust target ally. If your hero is stealthed, it deals damage to that ally
+# equal to that ally's health."
+#
+# The card is TWO cards, and the shared exhaust_attacker_action only knows the
+# first one. Un-stealthed it is Exhaustion, and the tag gives us that interrupt
+# for free — this hook returns null and lets that path handle it. STEALTHED it
+# is unconditional removal that also freezes, and that difference matters twice
+# over: the shared worth gate is calibrated for a freeze (it declines an attacker
+# our own ally beats anyway), and its "hold if a damage instant kills it" bail
+# would hold Waylay in favour of a card that does strictly less. So the stealthed
+# case gets its own, much lower bar here, ahead of that hook in decide_action.
+#
+# Deliberately RESPONSE-ONLY, never proactive on our own turn. The damage breaks
+# our own Stealth (destroy_self_on_hero_damage), which on our turn costs the
+# unblockable hero swing stealth exists for — that is a tempo call this AI has no
+# model for, the same one left unmade for Thangal's second attack and Maul. In an
+# opposing combat window our hero is not attacking, so the stealth is doing
+# nothing that turn and spending it is pure profit.
+func waylay_action(state: GameState, db, player_id: String) -> PendingAction:
+	if not db or state.pending_actions.is_empty():
+		return null
+	var top: PendingAction = state.pending_actions.back()
+	if top.action_type != "propose_combat" or top.source_player == player_id:
+		return null
+	# The kill half is what we are here for, so this needs a stealthed hero.
+	if not StackResolver.hero_is_stealthed(state, player_id, db):
+		return null
+
+	var attacker_id: String = top.params.get("attacker_id", "")
+	var defender_id: String = top.params.get("defender_id", "")
+	if not state.is_in_play(attacker_id) or not state.is_in_play(defender_id):
+		return null
+	# The pool is allies only, so an attacking HERO is out of reach.
+	if not StackResolver._is_ally(state, attacker_id):
+		return null
+	var defender := state.get_card(defender_id)
+	if not defender or defender.controller != player_id:
+		return null   # only answer attacks on our own side
+
+	# The bar is a removal spell's, not a freeze's: the attacker must be worth
+	# the card (_destroy_is_worth_it's convention — printed cost at least the
+	# spell's own, so we don't trade 2 for a token). Nothing about our defender
+	# enters into it, because unlike a freeze this REMOVES the attacker: the
+	# board is better off afterwards whatever happens in this one combat.
+	var a_def := db.get_def(state.get_card(attacker_id).card_def_id) as CardDef
+	if a_def == null:
+		return null
+	for card in state.cards_in_zone(player_id + "_hand"):
+		if card.card_def_id != "azeroth_105":
+			continue
+		var w_def := db.get_def(card.card_def_id) as CardDef
+		if w_def == null or a_def.cost < w_def.cost:
+			continue
+		var act := PendingAction.make(_action_type_for(card, db), player_id,
+			{"card_id": card.instance_id, "target_id": attacker_id})
+		if StackResolver.can_submit(state, act, db):
+			return act
+	return null
+
+
 func ghost_wolf_action(state: GameState, db, player_id: String) -> PendingAction:
 	if not db:
 		return null
@@ -1872,6 +1939,10 @@ func _forecast_damage_to(state: GameState, db, player_id: String,
 			if parts[0] in ["deal_damage_to_target", "multi_shot",
 					"deal_damage_and_heal", "deal_damage_weapon_atk"] 					and parts.size() > 1:
 				total += int(p.params.get("x_value", 0)) if parts[1] == "X" 					else int(parts[1])
+		# Eviscerate: X is the printed part PLUS the Combo cards its additional
+		# cost already exiled — a count captured on the link at announcement.
+		total += StackResolver.damage_per_cost_removed(src_def) \
+				* int(p.params.get("_gy_cost_removed", 0))
 	return total
 
 
@@ -2025,6 +2096,9 @@ func _hero_damage_sources(state: GameState, db, player_id: String) -> Dictionary
 					"deal_damage_and_heal", "deal_damage_weapon_atk"] and sp.size() > 1:
 				amount += int(p2.params.get("x_value", 0)) if sp[1] == "X" \
 					else int(sp[1])
+		# Eviscerate: plus what its additional cost already exiled (see above).
+		amount += StackResolver.damage_per_cost_removed(src_def) \
+				* int(p2.params.get("_gy_cost_removed", 0))
 		if amount <= 0:
 			continue
 		# An ally POWER is dealt by the ally; an ability is dealt by their hero.
@@ -2238,7 +2312,7 @@ func must_attack_action(state: GameState, db, player_id: String) -> PendingActio
 		for foe in state.cards_in_zone(opp + "_ally_row"):
 			var foe_id: String = foe.instance_id
 			# 600.2 "if able": a body that can't attack anyway takes no lock.
-			if foe_id not in StackResolver.get_legal_attackers(state, opp, db):
+			if foe_id not in productive_attackers(state, opp, db):
 				continue
 			var defenders := StackResolver.get_legal_defenders(state, foe_id, db)
 			if defenders.is_empty():
@@ -2327,7 +2401,7 @@ func use_it_or_lose_it_attack_action(state: GameState, db,
 		player_id: String) -> PendingAction:
 	if not db or state.turn_player != player_id:
 		return null
-	for attacker_id in StackResolver.get_legal_attackers(state, player_id, db):
+	for attacker_id in productive_attackers(state, player_id, db):
 		var card := state.get_card(attacker_id)
 		if not card:
 			continue
@@ -2670,6 +2744,16 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				if cv_action:
 					result.append(cv_action)
 				continue
+			if def and StackResolver.is_destroy_targets_per_cost_def(def):
+				# Expose Armor: the additional cost IS the number of targets, so
+				# the decision is HOW MUCH armor is worth breaking - and unlike
+				# Eviscerate, over-paying is illegal rather than merely wasteful.
+				# See _expose_armor_action().
+				var ea_action := _expose_armor_action(state, db, player_id,
+					card.instance_id, action_type)
+				if ea_action:
+					result.append(ea_action)
+				continue
 			if def and StackResolver.is_divided_damage_def(def):
 				# Lightning Storm: X is both the price and the damage pool, so
 				# the AI buys exactly the points it can convert into kills.
@@ -2707,10 +2791,18 @@ func get_reasonable_actions(state: GameState, db, player_id: String) -> Array[Pe
 				# Cold Snap fetches SEVERAL ("up to X"), which is a different
 				# decision (how many to buy, not which one), so it has its own.
 				var gy_req0 := StackResolver.get_graveyard_search_requirement(def)
-				var rz_act := _graveyard_multi_fetch_action(state, db, player_id,
-						card.instance_id, action_type) \
-					if StackResolver.graveyard_pick_is_multi(gy_req0) \
-					else _reanimate_action(state, db, player_id, card.instance_id, action_type)
+				var rz_act: PendingAction = null
+				if gy_req0.get("source", "graveyard") == "deck":
+					# Premeditation searches the DECK, not a graveyard — no X to buy
+					# and no distinct-name constraint, so neither hook below fits.
+					rz_act = _deck_search_action(state, db, player_id,
+							card.instance_id, action_type)
+				elif StackResolver.graveyard_pick_is_multi(gy_req0):
+					rz_act = _graveyard_multi_fetch_action(state, db, player_id,
+							card.instance_id, action_type)
+				else:
+					rz_act = _reanimate_action(state, db, player_id,
+							card.instance_id, action_type)
 				if rz_act:
 					result.append(rz_act)
 				continue
@@ -3242,6 +3334,31 @@ func choose_protector(state: GameState, db, player_id: String) -> String:
 	return best_id
 
 
+# The legal attackers this player could USEFULLY propose right now — the rules
+# list minus the ones that would accomplish nothing.
+#
+# `StackResolver.get_legal_attackers` is deliberately the RULES answer and has
+# no ATK gate: by the printed rules a 0-ATK character may be proposed as an
+# attacker, and rule 600.2's "must attack if able" binds it (Mocking Blow,
+# Lynda Steele). But volunteering such an attack only exhausts the character
+# and feeds it to the retaliation, so every AI line that CHOOSES to attack
+# filters through here. The one place that must NOT is `_least_bad_attack`,
+# which serves the 600.2 compulsion and has to find a proposal even when every
+# option is bad.
+#
+# forecast_atk is used rather than raw ATK so defender-independent "while
+# attacking" bonuses (Cat Form, Berserking's counters, Predatory Strikes) and
+# an affordable weapon strike all count — those are exactly the cases where a
+# printed-0 hero really does hit for something.
+static func productive_attackers(state: GameState, player_id: String,
+		db) -> Array[String]:
+	var result: Array[String] = []
+	for aid in StackResolver.get_legal_attackers(state, player_id, db):
+		if forecast_atk(state, db, aid, true) > 0:
+			result.append(aid)
+	return result
+
+
 # ── Weapon strikes (rules 303 / 602.1 / 602.3) ────────────────────────────────
 
 # Forecast ATK for a would-be attacker: "while attacking" bonuses plus, for a
@@ -3387,7 +3504,7 @@ func choose_strike_weapon(state: GameState, db, player_id: String) -> String:
 	# Last visible legal attacker? The current attacker is already exhausted, so
 	# it no longer appears in get_legal_attackers — an empty list means nothing
 	# else can attack us this turn.
-	if StackResolver.get_legal_attackers(state, attacker.controller, db).is_empty():
+	if productive_attackers(state, attacker.controller, db).is_empty():
 		return best
 	return ""
 
@@ -3727,7 +3844,7 @@ func _quest_mode_useful(state: GameState, db, player_id: String,
 			if state.turn_player == player_id:
 				return false
 			var lock_opp := _other_player_id(state, player_id)
-			for tid in StackResolver.get_legal_attackers(state, lock_opp, db):
+			for tid in productive_attackers(state, lock_opp, db):
 				var lc := state.get_card(tid)
 				if lc and lc.zone_id == lock_opp + "_ally_row":
 					return true
@@ -3739,6 +3856,28 @@ func _quest_mode_useful(state: GameState, db, player_id: String,
 			return not state.cards_in_zone(opp + "_ally_row").is_empty()
 		"opponent_quest_face_down":
 			return true   # available implies an opposing quest to deny
+		"ready_equipment":
+			# A Refugee's Quandary. Availability already requires an exhausted
+			# equipment of ours, and readying one is strictly better than the
+			# draw only when the readied card can still DO something this turn:
+			# a weapon we could strike with again (303.2c allows one weapon per
+			# combat, so a ready weapon is a second strike), armor that could
+			# still shield at a prevention point (717.2c), or an activated power
+			# to fire. Every shipped Equipment is one of those three, so the
+			# check is really "is anything of ours exhausted" — but it is
+			# written out so an Equipment that is genuinely spent for the turn
+			# would fall through to the draw.
+			for eid in StackResolver.get_quest_ready_candidates(
+					state, player_id, db, "equipment"):
+				var ec := state.get_card(eid)
+				if not ec:
+					continue
+				var edef := db.get_def(ec.card_def_id) as CardDef if db else null
+				if not edef:
+					continue
+				if StackResolver.is_weapon_card_def(edef) 						or StackResolver.get_armor_def(state, eid, db) > 0 						or "activated_power" in edef.effects:
+					return true
+			return false
 		"hand_to_deck_draw":
 			return _hand_is_dead(state, db, player_id)
 		"shuffle_graveyard_pick":
@@ -3962,9 +4101,37 @@ func _opposing_attack_underway(state: GameState, player_id: String) -> bool:
 
 func choose_quest_ready_target(state: GameState, db,
 		player_id: String) -> String:
-	var legal := StackResolver.get_quest_ready_candidates(state, player_id)
+	# The kind comes from the open point; the POOL is built from the player_id
+	# this hook was handed, which is what its signature promises (and what lets a
+	# test ask the question without opening the point at all).
+	var kind := state.pending_quest_ready_kind
+	if kind == "":
+		kind = "character"
+	var legal := StackResolver.get_quest_ready_candidates(state, player_id, db, kind)
 	if legal.is_empty():
 		return ""
+	# A Refugee's Quandary's equipment pool. Nothing here is a character, so the
+	# protector reasoning below does not apply: rank by ATK, which puts the
+	# weapon we would most want to strike with again first (303.2c makes a ready
+	# weapon a second strike), and falls through to the dearest card when nothing
+	# in the pool has ATK — armor, whose value is its DEF at the prevention
+	# point, and Items. A power_weapon (Rod of the Ogre Magi) loses every ATK tie
+	# for the same reason choose_weapon_ready drops it: its ATK says nothing
+	# about its worth.
+	if kind == "equipment":
+		var best := ""
+		var best_atk := -1
+		for eid in legal:
+			var edef := db.get_def(state.get_card(eid).card_def_id) as CardDef 					if db and state.get_card(eid) else null
+			var atk := 0
+			if edef and not ("power_weapon" in edef.effects):
+				atk = state.get_atk(eid, db)
+			if atk > best_atk:
+				best_atk = atk
+				best = eid
+		if best_atk > 0:
+			return best
+		return sort_valuable_cards(state, db, legal)[0]
 	# A spent PROTECTOR is what the quest is for (see ready_protector_quest_action):
 	# readying one during the opponent's turn buys another block this combat.
 	var protectors: Array[String] = []
@@ -4023,7 +4190,7 @@ func _best_attack_lock_target(state: GameState, db, player_id: String,
 	var opp := _other_player_id(state, player_id)
 	var attackers: Array[String] = []
 	var theirs: Array[String] = []
-	var can_attack := StackResolver.get_legal_attackers(state, opp, db)
+	var can_attack := productive_attackers(state, opp, db)
 	for tid in legal:
 		var card := state.get_card(tid)
 		if not card or card.controller != opp:
@@ -4375,6 +4542,34 @@ func choose_upkeep(state: GameState, db, player_id: String,
 	# Checked before the burn branch because it is EXISTENTIAL: dropping the aura
 	# can be an immediate state-based loss (see _hero_state_based_death), and no
 	# amount of end-of-turn damage outranks not losing the game.
+	# Crippling Poison: "exhaust attached character unless its controller pays."
+	# Checked FIRST because it is a different question from the two below — this
+	# is a tax levied by an OPPOSING card, not the rent on one of ours, so
+	# reading the source's def (as both branches below do) answers nothing and
+	# would fall through to a blanket decline, making the card free for them.
+	#
+	# The bar is whether READINESS is actually worth the money right now:
+	#   - an already-exhausted host buys nothing (the tax is still legal on one,
+	#     so this case really does come up) — decline;
+	#   - keep a resource back, the same floor the burn branch below uses, since
+	#     the tax is charged in the ready step before the whole action phase;
+	#   - our HERO is always worth keeping ready (it attacks, it protects, and an
+	#     exhausted hero can't be a protector at 602.2);
+	#   - an ally only when the body is worth at least what it costs to keep.
+	# Deliberately not modelled: whose turn it is. Readiness is worth having on
+	# both — attacking on ours, protecting on theirs — and the difference is a
+	# tempo judgement this AI has no model for.
+	if state.pending_upkeep_consequence == "exhaust_host":
+		var cp_host := state.get_card(state.pending_upkeep_target_id)
+		if not cp_host or cp_host.is_exhausted:
+			return false
+		if state.get_available_resources(player_id) - cost < 1:
+			return false
+		var cp_ps := state.players.get(player_id) as PlayerState
+		if cp_ps and cp_ps.hero_instance_id == cp_host.instance_id:
+			return true
+		return card_value_score(state, db, cp_host.instance_id) >= float(cost)
+
 	var hero_bonus := _upkeep_hero_health_bonus(state, db, card_id)
 	if hero_bonus > 0:
 		var up_hero := state.get_hero(player_id)
@@ -4903,7 +5098,7 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			var cp_ps := state.players.get(cp_opp) as PlayerState
 			if not cp_ps or cp_ps.hero_instance_id == "":
 				continue
-			var cp_attackers := StackResolver.get_legal_attackers(state, player_id, db)
+			var cp_attackers := productive_attackers(state, player_id, db)
 			if cp_attackers.is_empty():
 				continue
 			var cp_best_attacker: String = cp_attackers[0]
@@ -5870,7 +6065,7 @@ func _choose_graveyard_targets(state: GameState, db, _player_id: String,
 func _choose_quest_exhaust_allies(state: GameState, db, player_id: String,
 		count: int) -> Array[String]:
 	var candidates := StackResolver.get_quest_exhaust_candidates(state, player_id)
-	var attackers := StackResolver.get_legal_attackers(state, player_id, db)
+	var attackers := productive_attackers(state, player_id, db)
 	candidates.sort_custom(func(a, b):
 		var a_att := 1 if a in attackers else 0
 		var b_att := 1 if b in attackers else 0
@@ -6303,6 +6498,81 @@ func _divided_damage_action(state: GameState, db, player_id: String,
 # kills-first-then-soak heuristic, narrowed to 2 slots, ALLIES only (no hero
 # fallback — the card can't target one) and X read LIVE off the board
 # (StackResolver.cleave_damage_amount) instead of a flat parsed constant.
+# Expose Armor (`destroy_targets_per_cost_removed:armor`): "remove up to five
+# Combo cards in your graveyard from the game. Destroy X target armor, where X is
+# the number of Combo cards removed."
+#
+# TARGET-FIRST, and that is the whole difference from Eviscerate. There, the AI
+# always pays the maximum the graveyard can afford, because a card sitting in a
+# graveyard does no work for anyone and the exile IS the damage. Here the removed
+# count is the number of TARGETS, so per 707.1d an announcement that names more
+# Combo cards than there is armor to break is ILLEGAL, not just wasteful - the
+# question has to be asked from the board inwards: find the armor worth breaking,
+# then buy exactly that many.
+#
+# Value bar is Burn Away's / Sunder Armor's (OPPOSING only, printed cost >= the
+# spell's own), which is what stops a hard-won graveyard being spent on a pile of
+# DEF 0 cloaks; the best armor goes first, so a cost-capped cast breaks the
+# biggest pieces. WHICH Combo cards pay is left to graveyard order (Augustus'
+# auto-chosen `rfg_allies` convention) - a human picks freely in the browser.
+#
+# N = 0 HOLDS THE CARD. The engine would happily accept "destroy 0 target armor"
+# (see _can_play_destroy_targets_per_cost), but spending a card to do nothing is
+# never a play; the mute_when tokens keep it quiet in the same situation.
+func _expose_armor_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	if not db:
+		return null
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var kind := StackResolver.destroy_targets_per_cost_kind(def)
+	var opp := _other_player_id(state, player_id)
+
+	# Opposing armor worth breaking, dearest first (printed cost is the value
+	# proxy the destroy branches all use).
+	var ranked: Array = []
+	for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+		var t_card := state.get_card(cid)
+		if not t_card or t_card.controller != opp:
+			continue
+		var t_def := db.get_def(t_card.card_def_id) as CardDef
+		if not t_def or t_def.cost < def.cost:
+			continue
+		var pos := ranked.size()
+		for i in ranked.size():
+			if t_def.cost > int(ranked[i][0]):
+				pos = i
+				break
+		ranked.insert(pos, [t_def.cost, cid])
+	if ranked.is_empty():
+		return null
+
+	# ...capped by what the graveyard can actually pay, and by the printed five.
+	var cost_cands := StackResolver.get_play_rfg_cost_candidates(
+			state, player_id, def, db)
+	var spec := StackResolver.play_cost_rfg_graveyard_spec(def)
+	var n: int = ranked.size()
+	if cost_cands.size() < n:
+		n = cost_cands.size()
+	var printed_max: int = int(spec.get("max", 0))
+	if printed_max < n:
+		n = printed_max
+	if n < 1:
+		return null
+
+	var targets: Array = []
+	for i in n:
+		targets.append(ranked[i][1])
+	var act := PendingAction.make(action_type, player_id, {
+		"card_id":    card_id,
+		"cost_ids":   cost_cands.slice(0, n),
+		"target_ids": targets,
+	})
+	return act if StackResolver.can_submit(state, act, db) else null
+
+
 func _cleave_action(state: GameState, db, player_id: String,
 		card_id: String, action_type: String) -> PendingAction:
 	var card := state.get_card(card_id)
@@ -6619,6 +6889,55 @@ func _reanimate_action(state: GameState, db, player_id: String,
 # fetched over the limit is discarded at wrap-up (503.2a) for nothing. With
 # nothing to fetch the card is held entirely: it would exile itself for a
 # 2-resource cantrip that isn't even a cantrip.
+# Premeditation: "Search your deck for up to two Combo cards, reveal them, and
+# put them into your hand."
+#
+# Unlike Cold Snap's graveyard fetch there is no X to buy and no distinct-name
+# constraint, so the only question is HOW MANY — and the cards are free once the
+# spell is paid for, which makes the answer "as many as we can keep": the printed
+# MAX, what the deck actually holds, and the HAND ROOM left once the spell itself
+# leaves the hand (503.2a — a card fetched over the limit is discarded at wrap-up
+# for nothing).
+#
+# WHICH cards: the most expensive first. Cost is the value proxy the rest of the
+# AI uses, and a deck search hands us the pick for free.
+#
+# With nothing to find the card is HELD. Rule 413.3 makes an empty search
+# perfectly legal, but paying 4 resources and a card to shuffle our own deck is
+# not a play.
+func _deck_search_action(state: GameState, db, player_id: String,
+		card_id: String, action_type: String) -> PendingAction:
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return null
+	var req := StackResolver.get_graveyard_search_requirement(def)
+	var cands := StackResolver.get_graveyard_search_candidates(state, player_id, req, db)
+	if cands.is_empty():
+		return null
+	var ranked: Array = []
+	for cid in cands:
+		var c := state.get_card(cid)
+		var cdef := db.get_def(c.card_def_id) as CardDef if c else null
+		ranked.append({"id": cid, "cost": cdef.cost if cdef else 0})
+	ranked.sort_custom(func(a, b): return int(a["cost"]) > int(b["cost"]))
+	var hand := state.zones.get(player_id + "_hand") as Zone
+	var hand_size: int = hand.card_ids.size() if hand else 0
+	# The spell itself leaves the hand as it resolves, so it frees one slot.
+	var room := state.get_max_hand_size(player_id, db) - (hand_size - 1)
+	var take: int = min(min(StackResolver.graveyard_max_count(req), ranked.size()), room)
+	if take < 1:
+		return null
+	var picks: Array = []
+	for i in range(take):
+		picks.append(ranked[i]["id"])
+	var action := PendingAction.make(action_type, player_id,
+			{"card_id": card_id, "target_ids": picks})
+	if StackResolver.can_submit(state, action, db):
+		return action
+	return null
+
+
 func _graveyard_multi_fetch_action(state: GameState, db, player_id: String,
 		card_id: String, action_type: String) -> PendingAction:
 	var card := state.get_card(card_id)
@@ -6982,8 +7301,26 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 			return result
 		sac_val = float(sac[1])
 
+	# Eviscerate: "remove up to five Combo cards in your graveyard from the game"
+	# is an additional cost — and it IS the damage, X being 2 plus the number
+	# removed — so every announcement below carries the most the graveyard can
+	# pay. There is nothing to weigh here: a card sitting in a graveyard does no
+	# work for us, so the AI always takes the full cost, and WHICH cards is left
+	# to graveyard order (Augustus' auto-chosen rfg_allies convention). A human
+	# picks freely in the browser. "Up to" includes zero, so an empty graveyard
+	# is not a reason to hold the card — it just deals its flat part.
+	var cost_ids: Array = []
+	if spell_def:
+		var pc_spec := StackResolver.play_cost_rfg_graveyard_spec(spell_def)
+		if not pc_spec.is_empty():
+			var pc_cands := StackResolver.get_play_rfg_cost_candidates(
+					state, player_id, spell_def, db)
+			cost_ids = pc_cands.slice(0, int(pc_spec.get("max", 0)))
+
 	for ally in state.cards_in_zone(opp + "_ally_row"):
 		var params := {"card_id": card_id, "target_id": ally.instance_id}
+		if not cost_ids.is_empty():
+			params["cost_ids"] = cost_ids.duplicate()
 		if sac_id != "":
 			if card_value_score(state, db, ally.instance_id) <= sac_val:
 				continue
@@ -7005,6 +7342,8 @@ func _targeted_instant_actions(state: GameState, db, player_id: String,
 		var ps_opp := state.players.get(opp) as PlayerState
 		if ps_opp and ps_opp.hero_instance_id != "":
 			var params := {"card_id": card_id, "target_id": ps_opp.hero_instance_id}
+			if not cost_ids.is_empty():
+				params["cost_ids"] = cost_ids.duplicate()
 			if spell_def and spell_def.cost_x:
 				if max_x < 1:
 					return result
@@ -7238,8 +7577,19 @@ func _attach_actions(state: GameState, db, player_id: String,
 			if StackResolver.can_submit(state, t_act, db):
 				result.append(t_act)
 		return result
+	# Fireball / Rend / Deadly Poison (a damage attachment), and Crippling
+	# Poison (a recurring exhaust tax) all want the same host for the same two
+	# reasons: the opposing HERO is always in play, so it can never be killed
+	# to shed the attachment, and -- for the Poison pair, whose attach rider
+	# requires the host to have been combat-damaged by OUR hero this turn --
+	# it is the character our hero most often connected with, an ally attack
+	# usually having gone at a body instead. The generic debuff branch below
+	# scans ally_row only, so without this Crippling Poison would never find a
+	# legal target at all.
 	if StackResolver._has_effect_flag_prefix(def, "attach_deal_damage") \
-			or StackResolver._has_effect_flag_prefix(def, "attached_damage_turn_start"):
+			or StackResolver._has_effect_flag_prefix(def, "attached_damage_turn_start") \
+			or StackResolver._has_effect_flag_prefix(def,
+				"attached_exhaust_each_turn_unless_pay"):
 		var f_opp := "p2" if player_id == "p1" else "p1"
 		var f_hero := state.get_hero(f_opp)
 		if f_hero:

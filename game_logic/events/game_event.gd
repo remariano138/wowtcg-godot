@@ -170,7 +170,8 @@ static func player_decked(player_id: String) -> GameEvent:
 # every surface that shows the result (game-over dialog, status bar, game log).
 # `names` maps player_id -> display name; missing ids fall back to "P1"/"P2".
 # New win conditions add a `reason` branch here and nowhere else.
-static func game_over_explanation(payload: Dictionary, names: Dictionary = {}) -> String:
+static func game_over_explanation(payload: Dictionary, names: Dictionary = {},
+		include_winner: bool = true) -> String:
 	var name := func(pid: String) -> String:
 		return str(names.get(pid, "P1" if pid == "p1" else "P2"))
 	var reason: String = str(payload.get("reason", ""))
@@ -197,6 +198,8 @@ static func game_over_explanation(payload: Dictionary, names: Dictionary = {}) -
 		return "%s — the game is a draw." % " and ".join(parts)
 
 	var loser_id: String = str(losers[0]) if not losers.is_empty() else ""
+	if not include_winner:
+		return "%s." % cause.call(loser_id)
 	return "%s. %s wins!" % [cause.call(loser_id), name.call(winner)]
 
 static func discard_choice_opened(player_id: String, count: int, reason: String = "card_effect") -> GameEvent:
@@ -486,10 +489,18 @@ static func weapon_break_resolved(player_id: String, weapon_id: String) -> GameE
 # `kind` is what the upkeep is paid in: "resources" (Rain of Fire) or "discard"
 # (Last Stand), where `cost` is a card count. It rides on the event so the popup
 # can word itself without re-reading the source card.
+# `kind` is the CURRENCY (resources / discard); `consequence` is what a DECLINE
+# does — "destroy_source" for every upkeep that puts its own card at risk (Rain
+# of Fire, Last Stand), or "exhaust_host" for Crippling Poison, where the payer
+# is the attached character's controller and the card at risk is that character
+# (`target_id`), not the source naming the prompt.
 static func upkeep_choice_opened(player_id: String, card_id: String,
-		cost: int, kind: String = "resources") -> GameEvent:
+		cost: int, kind: String = "resources",
+		consequence: String = "destroy_source",
+		target_id: String = "") -> GameEvent:
 	return make("upkeep_choice_opened", {
 		"player": player_id, "card_id": card_id, "cost": cost, "kind": kind,
+		"consequence": consequence, "target_id": target_id,
 	})
 
 static func upkeep_paid(player_id: String, card_id: String, cost: int) -> GameEvent:
@@ -727,13 +738,15 @@ static func quest_ally_grant_target_required(quest_id: String,
 		"quest_id": quest_id, "player": player_id, "kind": kind,
 	})
 
-# Dragonkin Menace: the completer must choose a hero or ally in their own party
-# to ready. A CHOICE, not a target — every character in the party is eligible,
-# Untargetable ones included.
+# Dragonkin Menace ("a hero or ally in your party") and A Refugee's Quandary
+# ("one of your equipment"): the completer must choose one of their own cards to
+# ready. A CHOICE, not a target — every eligible card counts, Untargetable ones
+# included. `kind` says which pool ("character" | "equipment"), so the UI can
+# word the prompt without knowing which reward opened the point.
 static func quest_ready_target_required(quest_id: String,
-		player_id: String) -> GameEvent:
+		player_id: String, kind: String = "character") -> GameEvent:
 	return make("quest_ready_target_required", {
-		"quest_id": quest_id, "player": player_id,
+		"quest_id": quest_id, "player": player_id, "kind": kind,
 	})
 
 # Galway Steamwhistle: the controller must choose which of their own weapons

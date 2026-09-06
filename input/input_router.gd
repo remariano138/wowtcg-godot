@@ -152,6 +152,11 @@ var _chain_lightning_picked: Array[String] = []
 # repeats allowed (the same ally may be clicked several times). See
 # _handle_divided_click.
 var _divided_picked: Array[String] = []
+# Expose Armor: the armor picked so far this cast, in click order. The COUNT
+# is not free - it is exactly the size of _play_cost_gy_ids, the additional
+# cost already chosen in the graveyard browser (707.1d). Repeats are refused
+# (706.1). See _handle_expose_click.
+var _expose_picked: Array[String] = []
 # Stored X value for deal_x_damage_to_ally powers; set when player confirms the X dialog.
 var _targeting_x_value: int = 0
 # Modal spell (707.1c): card awaiting its mode choice ("" = none), and the mode
@@ -181,6 +186,15 @@ var _gy_select_ally_id: String = ""
 var _gy_select_ability_id: String = ""
 # X announced for that ability, when its pick count is "up to X" (Cold Snap).
 var _gy_select_ability_x: int = 0
+# Hand Ability whose ADDITIONAL PLAY COST is picked in the graveyard browser
+# (Eviscerate: "remove up to five Combo cards in your graveyard from the game").
+# The cost is chosen FIRST and the spell's board target second, so the picks are
+# parked here and ride every probe and the final submission as `cost_ids` — they
+# are a cost, never the effect's target. Nothing reaches the engine until the
+# target is clicked, so Esc at either step costs the player nothing.
+var _gy_select_cost_id: String = ""
+var _play_cost_gy_source: String = ""
+var _play_cost_gy_ids: Array[String] = []
 # Color used for card highlights; changes per mode (green = play, red = mandatory choice).
 var _highlight_color: Color = Color(0.2, 1.0, 0.3)
 # Muted cards (instance_id → true): a human convenience flag toggled via the
@@ -440,6 +454,14 @@ func _begin_play_from_hand(instance_id: String, action_type: String) -> bool:
 	if uses_gy:
 		start_ability_graveyard_selection(instance_id)
 		return true
+	# Eviscerate: the additional cost (exile up to five Combo cards from our own
+	# graveyard) is picked in the graveyard browser BEFORE the board target, so
+	# the targeting cursor can show what the spell will actually deal. An empty
+	# pool opens no browser at all — there is nothing to choose and "up to"
+	# includes zero, so the cast simply proceeds at the flat damage.
+	if _play_cost_uses_graveyard(instance_id):
+		if start_play_cost_graveyard_selection(instance_id):
+			return true
 	# Multi-modal "choose one or more" (Totemic Call). Checked BEFORE the
 	# needs_target gate below: only its fire mode announces a target, so
 	# _play_needs_target reads false for the card as a whole and would otherwise
@@ -772,6 +794,54 @@ func start_ability_graveyard_selection(card_id: String, x_value: int = 0) -> voi
 			StackResolver.graveyard_max_count(req, x_value))
 
 
+# True for a hand card whose ADDITIONAL PLAY COST is paid with cards in the
+# caster's own graveyard (Eviscerate, `play_cost_rfg_graveyard`). Unlike the
+# searches above these picks are a COST, not the effect's target — they ride
+# `cost_ids` and the spell still announces a board target of its own.
+func _play_cost_uses_graveyard(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null 			and not StackResolver.play_cost_rfg_graveyard_spec(def).is_empty()
+
+
+# Open the browser for that cost. Returns false when there is nothing to pick
+# (an empty pool) so the caller carries on into ordinary board targeting — "up
+# to N" includes zero, so a graveyard with no matching card is not a refusal.
+func start_play_cost_graveyard_selection(card_id: String) -> bool:
+	if not db:
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return false
+	var spec := StackResolver.play_cost_rfg_graveyard_spec(def)
+	if spec.is_empty():
+		return false
+	var candidates := StackResolver.get_play_rfg_cost_candidates(
+			state, local_player, def, db)
+	if candidates.is_empty():
+		return false
+	var cost_max: int = int(spec.get("max", 0))
+	# Expose Armor: the removed count IS the number of targets, and 707.1d
+	# refuses an announcement whose targets can't all be chosen - so the
+	# browser's ceiling is the BOARD's, not just the printed five. Asked of the
+	# engine (expose_max_targets) so the browser can never offer a pick that
+	# can_submit would then reject, which is also what stops the graveyard from
+	# ever being over-spent on armor that isn't there.
+	if _is_expose_targets(card_id):
+		cost_max = StackResolver.expose_max_targets(state, local_player, def, db)
+		if cost_max <= 0:
+			return false
+	_gy_select_cost_id = card_id
+	_play_cost_gy_source = ""
+	_play_cost_gy_ids = []
+	_expose_picked = []
+	graveyard_select_requested.emit(card_id, candidates, 0, cost_max)
+	return true
+
+
 # Detect a hand Ability whose targets are graveyard CARDS — reanimate
 # (Ancestral Spirit, dest "play"), exile (Cannibalize, dest "rfg") or fetch to
 # hand (Call the Spirit, dest "hand"). All open the graveyard browser instead
@@ -810,6 +880,30 @@ func _ability_graveyard_multi(card_id: String) -> bool:
 # UI confirmed a selection: submit the quest completion (or hero power) with
 # the announced targets.
 func confirm_graveyard_selection(selected_ids: Array) -> void:
+	# Eviscerate's additional cost: the picks are PARKED, not submitted — the
+	# spell still needs a board target, and nothing is paid until that click, so
+	# cancelling out of targeting costs the player nothing.
+	if _gy_select_cost_id != "":
+		var pc_id := _gy_select_cost_id
+		_gy_select_cost_id = ""
+		_play_cost_gy_source = pc_id
+		_play_cost_gy_ids = []
+		for sid: String in selected_ids:
+			_play_cost_gy_ids.append(sid)
+		var pc_action_type := _action_type_for(pc_id)
+		_expose_picked = []
+		# Expose Armor: the cost IS the target count (707.1d), so picking
+		# nothing announces "destroy 0 target armor" - a legal play with no
+		# target to choose. Submit it from here rather than opening a targeting
+		# mode that would accept no clicks and could only be escaped.
+		if _is_expose_targets(pc_id) and _play_cost_gy_ids.is_empty():
+			_targeting_source      = pc_id
+			_targeting_action_type = pc_action_type
+			_submit_expose()
+			return
+		start_targeting(pc_id, pc_action_type,
+				_card_dmg_type(pc_id), _card_dmg_amount(pc_id))
+		return
 	if _gy_select_quest_id != "":
 		var quest_id := _gy_select_quest_id
 		_gy_select_quest_id = ""
@@ -887,6 +981,10 @@ func confirm_graveyard_selection(selected_ids: Array) -> void:
 
 
 func cancel_graveyard_selection() -> void:
+	_gy_select_cost_id = ""
+	_play_cost_gy_source = ""
+	_play_cost_gy_ids = []
+	_expose_picked = []
 	_gy_select_quest_id = ""
 	_gy_select_hero_id = ""
 	_gy_select_ally_id = ""
@@ -1072,9 +1170,16 @@ func start_targeting(source_id: String, action_type: String,
 	_targeting_source      = source_id
 	_targeting_action_type = action_type
 	_targeting_dmg_type    = dmg_type
-	# Lightning Storm's click list belongs to one cast — a fresh targeting flow
-	# always starts from zero points assigned.
-	_divided_picked        = []
+	# A fresh targeting flow always starts from zero points assigned — clear
+	# every pick-tracking var from any prior flow, not just Lightning Storm's,
+	# or a stale id (possibly for a card that has since left play) lingers and
+	# gets repainted SELECTED_TARGET_COLOR by get_selected_target_ids().
+	_targeting_first_target = ""
+	_mm_target              = ""
+	_cd_picks               = {"target_id": "", "target_id_2": ""}
+	_chain_lightning_picked = []
+	_divided_picked         = []
+	_expose_picked          = []
 	refresh_highlights()
 	targeting_started.emit(source_id, dmg_type, dmg_amount)
 
@@ -1250,6 +1355,14 @@ func cancel_targeting() -> void:
 		_targeting_action_type  = ""
 		_targeting_dmg_type     = ""
 		_targeting_first_target = ""
+		# Declining the mode means it contributes no target, so drop the pick
+		# here rather than leaving it for the next start_targeting to wipe. It
+		# is "" already for Totemic Call (the only shipped multi-modal, whose
+		# single targeted mode sets _mm_target only when a target IS clicked) —
+		# but leaving a pick alive on a mode that was just declined is what let
+		# a stale id survive into an unrelated flow and get repainted
+		# SELECTED_TARGET_COLOR by get_selected_target_ids().
+		_mm_target              = ""
 		targeting_cancelled.emit()
 		_advance_multi_modal()
 		return
@@ -1262,9 +1375,14 @@ func cancel_targeting() -> void:
 	_targeting_mode         = -1
 	_chain_lightning_picked = []
 	_divided_picked         = []
+	_expose_picked          = []
 	_cd_source = ""
 	_cd_phase  = -1
 	_cd_picks  = {"target_id": "", "target_id_2": ""}
+	# Eviscerate: the parked additional-cost picks die with the cast. Nothing was
+	# submitted, so the cards are still sitting in the graveyard.
+	_play_cost_gy_source = ""
+	_play_cost_gy_ids = []
 	refresh_highlights()
 	targeting_cancelled.emit()
 
@@ -1546,6 +1664,14 @@ func _handle_targeting_click(instance_id: String) -> void:
 		_cd_picks[cd_key] = instance_id
 		_advance_choose_destroy(0)
 		return
+	# Expose Armor: X armor clicks, X already fixed by the additional cost.
+	# Handled AHEAD of the match for the same reason as Crushing Blow above -
+	# it is a plain (sorcery-speed) Ability, so its clicks route to
+	# _handle_ability_targeting_click and a branch inside the INSTANT handler
+	# would simply never be reached.
+	if _is_expose_targets(_targeting_source):
+		_handle_expose_click(instance_id)
+		return
 	match _targeting_action_type:
 		"propose_combat":            _handle_combat_targeting_click(instance_id)
 		"activate_power":            _handle_power_targeting_click(instance_id)
@@ -1629,8 +1755,10 @@ func _handle_quest_ally_grant_targeting_click(instance_id: String) -> void:
 
 
 func _handle_quest_ready_targeting_click(instance_id: String) -> void:
-	# Dragonkin Menace reward pick. Mandatory, direct-call resolution (no chain).
-	if instance_id in StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player):
+	# Dragonkin Menace / A Refugee's Quandary reward pick. Mandatory, direct-call
+	# resolution (no chain). The pool depends on which reward opened the point,
+	# so ask the active-pool reader rather than naming a flavour here.
+	if instance_id in StackResolver.get_active_quest_ready_candidates(state, db):
 		var events := StackResolver.choose_quest_ready_target(state, instance_id, db)
 		cancel_targeting()
 		EventBus.emit_events(events)
@@ -1846,6 +1974,114 @@ func _submit_divided() -> void:
 	EventBus.emit_events(events)
 	_pass_own_proposal(action)
 	refresh_highlights()
+
+
+# -- Expose Armor (azeroth_98) - X armor clicks, X fixed by the cost already paid
+#
+# Rule 707.1d in the interface: with a variable number of targets "you must first
+# choose that number and then choose those targets". Here the number IS the
+# additional cost, so it is settled in the graveyard browser before board
+# targeting ever opens - which is the order Eviscerate's cost already used (there
+# so the cursor could show the real damage). By the time the player starts
+# clicking, X is fixed, and the flow is Lightning Storm's "click X times" with
+# two changes: repeats are refused (706.1 - a card may be chosen only once per
+# instance of the word "target"), and the count comes from `_play_cost_gy_ids`
+# rather than from an X dialog.
+#
+# Nothing is submitted until the last click, so Esc / clicking the spell cancels
+# the whole cast for free - the exile is paid at announcement, and there has been
+# no announcement yet. X = 0 never opens targeting at all; see
+# confirm_graveyard_selection, which submits it straight from the browser.
+func _is_expose_targets(card_id: String) -> bool:
+	if not db or card_id == "":
+		return false
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	return def != null and StackResolver.is_destroy_targets_per_cost_def(def)
+
+
+# [picked so far, total X] for the cast in progress, so the scene can render an
+# "N / X target" prompt. [0, 0] when none is in progress.
+func expose_progress() -> Array:
+	if _targeting_source == "" or not _is_expose_targets(_targeting_source):
+		return [0, 0]
+	return [_expose_picked.size(), _play_cost_gy_ids.size()]
+
+
+# Probe/submission params. `_expose_probe` relaxes ONLY the "exactly X picks"
+# rule in StackResolver._can_play_destroy_targets_per_cost, so a partial list can
+# be tested one click at a time; a real submission never carries it.
+func _expose_params(extra_target_id: String = "", probe := false) -> Dictionary:
+	var picks: Array[String] = _expose_picked.duplicate()
+	if extra_target_id != "":
+		picks.append(extra_target_id)
+	var params := {
+		"card_id":    _targeting_source,
+		"target_ids": picks,
+		"cost_ids":   _play_cost_gy_ids.duplicate(),
+	}
+	if probe:
+		params["_expose_probe"] = true
+	return params
+
+
+func _handle_expose_click(instance_id: String) -> void:
+	if instance_id == _targeting_source:
+		cancel_targeting()
+		return
+	var want := _play_cost_gy_ids.size()
+	if _expose_picked.size() >= want or instance_id in _expose_picked:
+		return
+	var probe := PendingAction.make(_action_type_for(_targeting_source), local_player,
+		_expose_params(instance_id, true))
+	if not StackResolver.can_submit(state, probe, db):
+		return
+	_expose_picked.append(instance_id)
+	if _expose_picked.size() >= want:
+		_submit_expose()
+		return
+	# Re-emit to refresh the "N / X target" prompt and drop the armor just picked
+	# out of the highlighted pool - unlike Lightning Storm, it can't be re-picked.
+	targeting_started.emit(_targeting_source, _targeting_dmg_type,
+		want - _expose_picked.size())
+	refresh_highlights()
+
+
+func _submit_expose() -> void:
+	var action := PendingAction.make(_action_type_for(_targeting_source), local_player,
+		_expose_params())
+	_targeting_source    = ""
+	_expose_picked       = []
+	_play_cost_gy_source = ""
+	_play_cost_gy_ids    = []
+	targeting_cancelled.emit()
+	var events := StackResolver.submit_action(state, action, db)
+	if events.is_empty():
+		return
+	EventBus.emit_events(events)
+	_pass_own_proposal(action)
+	refresh_highlights()
+
+
+# Remaining legal armor for the current Expose Armor click - the resolver's own
+# pool, filtered through can_submit like every other targeting mode, so an armor
+# already picked drops out by itself (the announce refuses a repeat).
+func _get_expose_targets(card_id: String) -> Array:
+	var result: Array = []
+	if not db:
+		return result
+	var card := state.get_card(card_id)
+	var def := db.get_def(card.card_def_id) as CardDef if card else null
+	if not def:
+		return result
+	var kind := StackResolver.destroy_targets_per_cost_kind(def)
+	var atype := _action_type_for(card_id)
+	for cid in StackResolver.get_destroy_kind_candidates(state, db, kind):
+		var probe := PendingAction.make(atype, local_player,
+			_expose_params(cid, true))
+		if StackResolver.can_submit(state, probe, db):
+			result.append(cid)
+	return result
 
 
 func _handle_instant_targeting_click(instance_id: String) -> void:
@@ -2285,7 +2521,7 @@ func get_playable_card_ids() -> Array:
 			"choose_quest_ally_grant":
 				return StackResolver.get_quest_ally_grant_targets(state, db)
 			"choose_quest_ready":
-				return StackResolver.get_quest_ready_candidates(state, state.pending_quest_ready_player)
+				return StackResolver.get_active_quest_ready_candidates(state, db)
 			"choose_weapon_ready":
 				return StackResolver.get_weapon_ready_candidates(
 					state, state.pending_weapon_ready_player, db)
@@ -2455,6 +2691,9 @@ func get_selected_target_ids() -> Array:
 	for id in _divided_picked:
 		if not out.has(id):
 			out.append(id)
+	for id in _expose_picked:
+		if not out.has(id):
+			out.append(id)
 	for key in ["target_id", "target_id_2"]:
 		var cd_id := String(_cd_picks.get(key, ""))
 		if cd_id != "" and not out.has(cd_id):
@@ -2539,6 +2778,31 @@ func _mute_condition_holds(token: String, card_id: String) -> bool:
 	match token:
 		"end_phase":
 			return state.phase == "end"
+		"no_armor_in_play":
+			# Expose Armor: X target armor, X being the additional cost paid - so
+			# with no armor anywhere on the board, 707.1d caps X at 0 and the card
+			# is legal (it announces no targets at all) but does literally
+			# nothing. Refusing the announcement would be an engine-only use
+			# restriction the card doesn't print, so it stays playable and merely
+			# stops holding priority windows open. Either party's armor counts:
+			# the printed text carries no "opposing" clause, so a human may break
+			# their own, and the card is not pointless while any armor exists.
+			for arm_id in StackResolver.get_destroy_kind_candidates(state, db, "armor"):
+				if StackResolver._is_legal_target(state, arm_id, db):
+					return false
+			return true
+		"no_rfg_cost_cards":
+			# The other half of the same question, from the graveyard end: a
+			# `play_cost_rfg_graveyard` card whose pool is empty can only pay zero,
+			# and for Expose Armor a zero cost buys zero targets. (Deliberately NOT
+			# put on Eviscerate, which still deals its flat 2 with an empty
+			# graveyard and is a perfectly good play there.)
+			var rc_card := state.get_card(card_id)
+			var rc_def := db.get_def(rc_card.card_def_id) as CardDef if (db and rc_card) else null
+			if not rc_def:
+				return false
+			return StackResolver.get_play_rfg_cost_candidates(
+					state, _mute_owner_of(card_id), rc_def, db).is_empty()
 		"opponent_turn_pre_end_unless_discard":
 			if state.turn_player == local_player:
 				return false          # our own turn — never muted
@@ -3274,6 +3538,9 @@ func _get_enter_play_targets(source_card_id: String) -> Array:
 
 
 func _get_ability_targets(card_id: String) -> Array:
+	# Expose Armor: the pool is armor, and the count is already fixed.
+	if _is_expose_targets(card_id):
+		return _get_expose_targets(card_id)
 	if _is_multi_target(card_id):
 		return _get_chain_lightning_targets(card_id)
 	# Lightning Storm: every legal ally stays offered for every one of the X
@@ -3354,6 +3621,9 @@ func _get_divided_targets(card_id: String) -> Array:
 
 
 func _get_instant_targets(card_id: String) -> Array:
+	# Expose Armor: the pool is armor, and the count is already fixed.
+	if _is_expose_targets(card_id):
+		return _get_expose_targets(card_id)
 	# Escape Artist's interrupt mode targets a LINK on the chain, not a hero or
 	# ally — the pool comes from the resolver, filtered through can_submit like
 	# every other targeting mode.
@@ -3471,6 +3741,12 @@ func _instant_params(card_id: String, target_id: String) -> Dictionary:
 	# both fills and submits `sacrifice_id`.
 	if _is_play_cost_sacrifice_pet(card_id):
 		params["sacrifice_id"] = target_id
+	# Eviscerate: the Combo cards exiled as an additional cost were picked in the
+	# browser before targeting began, so they ride every probe and the final
+	# submission from here. Keyed on the source card, so a different spell's
+	# targeting can never inherit them.
+	if card_id == _play_cost_gy_source and not _play_cost_gy_ids.is_empty():
+		params["cost_ids"] = _play_cost_gy_ids.duplicate()
 	if _targeting_mode >= 0:
 		params["mode"] = _targeting_mode
 	if _targeting_x_value > 0:
@@ -3804,7 +4080,7 @@ func _card_dmg_type(card_id: String) -> String:
 	for entry in def.effects.split("|"):
 		var key := entry.strip_edges().split(":")[0].strip_edges()
 		match key:
-			"destroy_target", "destroy_exhausted_ally": return "destroy"
+			"destroy_target", "destroy_exhausted_ally", "destroy_targets_per_cost_removed": return "destroy"
 			"deal_damage_to_target", "deal_damage_and_heal", "attach_deal_damage", 					"deal_damage_weapon_atk", "cleave_weapon_atk":
 				var parts := entry.strip_edges().split(":")
 				if parts.size() > 2: return parts[2].to_lower()
@@ -3860,7 +4136,14 @@ func _card_dmg_amount(card_id: String) -> int:
 		match parts[0].strip_edges():
 			"deal_damage_to_target", "attach_deal_damage", "deal_damage_and_heal":
 				if parts.size() > 1:
-					return _preview_dmg(int(parts[1]), _card_dmg_type(card_id), true)
+					# Eviscerate: "…X is 2 plus the number of Combo cards
+					# removed." The cost is picked before targeting opens, so by
+					# the time this cursor is drawn the count is known.
+					var extra := 0
+					if card_id == _play_cost_gy_source:
+						extra = StackResolver.damage_per_cost_removed(def) 								* _play_cost_gy_ids.size()
+					return _preview_dmg(int(parts[1]) + extra,
+							_card_dmg_type(card_id), true)
 			"deal_damage_weapon_atk":
 				# Mortal Strike: the amount is a live board read (flat part plus
 				# the best Melee weapon's ATK), so the cursor asks the resolver
@@ -3938,6 +4221,16 @@ func _action_type_for(instance_id: String) -> String:
 func _ability_needs_target(card_id: String) -> bool:
 	if _is_multi_target(card_id):
 		return true
+	# Expose Armor: the number of targets is the additional cost, so when that
+	# cost can't be paid at all (an empty graveyard, or no armor to break) the
+	# card announces NO target and plays straight out of the hand at X = 0.
+	# Only reachable when start_play_cost_graveyard_selection declined to open
+	# the browser, but asked honestly rather than assumed.
+	if _is_expose_targets(card_id):
+		var ex_card := state.get_card(card_id)
+		var ex_def := db.get_def(ex_card.card_def_id) as CardDef if ex_card else null
+		return ex_def != null and StackResolver.expose_max_targets(
+				state, local_player, ex_def, db) > 0
 	# Dark Pact: no separate target, but the sacrificed Pet still needs a
 	# pre-submission pick (see _is_play_cost_sacrifice_pet).
 	if _is_play_cost_sacrifice_pet(card_id):

@@ -705,9 +705,14 @@ func _play_color_flash(card_id: String, color: Color, duration: float) -> ColorR
 	cn.add_child(overlay)
 	var tw := create_tween()
 	tw.tween_property(overlay, "color:a", 0.0, duration)
+	# WeakRef, not the node itself: a lambda capturing a freed object warns
+	# ("Lambda capture ... was freed") before its body ever runs, and the card
+	# this overlay hangs off can be freed mid-flash (a token leaving play).
+	var overlay_ref: WeakRef = weakref(overlay)
 	tw.finished.connect(func() -> void:
-		if is_instance_valid(overlay):
-			overlay.queue_free())
+		var o := overlay_ref.get_ref() as ColorRect
+		if o:
+			o.queue_free())
 	return overlay
 
 
@@ -728,9 +733,14 @@ func _play_death_animation(card_id: String) -> void:
 	var tw := create_tween()
 	_death_tweens[card_id] = tw
 	tw.tween_property(overlay, "color:a", 0.0, GameTiming.death_animation())
+	# WeakRef, not the node itself: a lambda capturing a freed object warns
+	# ("Lambda capture ... was freed") before its body ever runs, and the card
+	# this overlay hangs off can be freed mid-flash (a token leaving play).
+	var overlay_ref: WeakRef = weakref(overlay)
 	tw.finished.connect(func() -> void:
-		if is_instance_valid(overlay):
-			overlay.queue_free())
+		var o := overlay_ref.get_ref() as ColorRect
+		if o:
+			o.queue_free())
 
 
 # Green flash — no sim pause of its own (the plain damage_pause() already covers
@@ -1913,10 +1923,15 @@ func _show_float_number(card_id: String, text: String, color: Color) -> void:
 
 	# Backstop: a tree timer outlives the node's own tween, so a killed or stalled
 	# tween can never leave the number stranded on the board.
+	# WeakRef, not the node itself: the tween above frees the label a full second
+	# before this timer fires, and a lambda capturing a freed object warns
+	# ("Lambda capture ... was freed") before its body ever runs.
+	var label_ref: WeakRef = weakref(label)
 	get_tree().create_timer(dur + 1.0).timeout.connect(
 			func() -> void:
-				if is_instance_valid(label):
-					label.queue_free())
+				var l := label_ref.get_ref() as Label
+				if l:
+					l.queue_free())
 
 
 func _sync_float_label_rotation() -> void:

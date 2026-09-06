@@ -330,6 +330,16 @@ static func deal_damage(state: GameState, source_id: String, target_id: String,
 		# after destruction, when the damaged ally is already in a graveyard and
 		# its zone can no longer say "ally".
 		"target_is_ally":    target_zone != null and target_zone.zone_type == "ally_row",
+		# 408.3b's combat-damage flag. The packet already carries it (the opt is
+		# set on both packets of _do_combat_conclusion, and Brother Rhone and
+		# Katsin already read it), and it already reaches the damage_dealt EVENT
+		# below — it simply was not logged. The Poison pair (Deadly / Crippling,
+		# "target ... that was dealt combat damage by your hero this turn") is
+		# the first turn-HISTORY condition that needs it: unlike Feral Rage,
+		# which asks at the combat conclusion and so can read the packet
+		# directly, an attach target is judged whenever the spell is played,
+		# arbitrarily later in the turn. See game_logic/turn_state_flags.md.
+		"is_combat":         bool(opts.get("combat", false)),
 	})
 
 	# Provenance for observers (StatTracker's hero combat / ability damage split).

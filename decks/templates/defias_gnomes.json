@@ -1,0 +1,67 @@
+{
+  "deck_id": "defias_gnomes",
+  "display_name": "Template — Defias Gnomes",
+  "hero_card_def_id": "",
+  "card_entries": [
+    {
+      "card_def_id": "dark_portal_292",
+      "count": 1,
+      "_card_name": "Operation Recombobulation"
+    },
+    {
+      "card_def_id": "azeroth_340",
+      "count": 4,
+      "_card_name": "The Defias Brotherhood"
+    },
+    {
+      "card_def_id": "azeroth_350",
+      "count": 4,
+      "_card_name": "Chasing A-Me 01"
+    },
+    {
+      "card_def_id": "azeroth_360",
+      "count": 4,
+      "_card_name": "Your Fortune Awaits You"
+    },
+    {
+      "card_def_id": "dark_portal_316",
+      "count": 2,
+      "_card_name": "Finkle Einhorn, At Your Service!"
+    },
+    {
+      "card_def_id": "azeroth_176",
+      "count": 4,
+      "_card_name": "Apprentice Teep"
+    },
+    {
+      "card_def_id": "dark_portal_153",
+      "count": 4,
+      "_card_name": "Apprentice Merry"
+    },
+    {
+      "card_def_id": "azeroth_212",
+      "count": 4,
+      "_card_name": "Parvink"
+    },
+    {
+      "card_def_id": "dark_portal_184",
+      "count": 2,
+      "_card_name": "Mya, Dragonling Wrangler"
+    },
+    {
+      "card_def_id": "azeroth_190",
+      "count": 2,
+      "_card_name": "Kena Shadowbrand"
+    },
+    {
+      "card_def_id": "dark_portal_129",
+      "count": 1,
+      "_card_name": "Escape Artist"
+    },
+    {
+      "card_def_id": "dark_portal_177",
+      "count": 1,
+      "_card_name": "\"Lowdown\" Luppo Shadefizzle"
+    }
+  ]
+}

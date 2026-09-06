@@ -34,11 +34,14 @@ func _ready() -> void:
 	_test_mute_when_column()
 	_test_gift_of_the_elven_magi_recipe()
 	_test_the_shatterer_recipe()
+	_test_flame_wrath_recipe()
 	_test_graccus_recipe()
 	_test_hammer_of_justice_recipe()
 	_test_holy_light_recipe()
 	_test_healing_wave_recipe()
 	_test_priest_heal_recipes()
+	_test_combo_recipes()
+	_test_stealth_recipe()
 	_test_clarity_of_thought_recipe()
 	_test_hide_of_the_wild_recipe()
 	_test_power_word_fortitude_recipe()
@@ -61,6 +64,10 @@ func _ready() -> void:
 	_test_deathdealer_breastplate_recipe()
 	_test_herods_shoulder_recipe()
 	_test_goldenmoon_recipe()
+	_test_refugees_quandary_recipe()
+	_test_waylay_recipe()
+	_test_poison_recipes()
+	_test_expose_armor_recipe()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -414,6 +421,148 @@ func _test_healing_wave_recipe() -> void:
 # TOP-LEVEL segment, the axis that separates it from Lady Courtney Noel's
 # activated power and Stylean Silversteel's enter-play trigger, which carry the
 # same word further along their own segment.
+# The Combo cycle — Sinister Strike (azeroth_102), Premeditation (azeroth_101)
+# and Eviscerate (azeroth_97), pinned against the REAL database.
+#
+# "Combo" is not a column of its own: it is a SUBSTRING of the type-line tags
+# ("Combat Combo", "Assassination Combo", "Feral Combo"), matched the way
+# `gy_tag` / `form_break` / `ability_cost_mod_by_tag` already match. That makes
+# every part of this silent when mistyped — a Combo card whose tags cell loses
+# the word simply stops being findable, and a Finishing Move that gained it
+# would start feeding its own cost — so the pool itself is asserted here rather
+# than only the two readers.
+#
+# The SPEED cells matter twice over. Sinister Strike and Eviscerate both print
+# "Instant Ability" and both had plain `Ability` in the CSV; quietly "fixing"
+# them back would cost Sinister Strike its combat trick and Eviscerate its
+# whole reason to be held.
+# Stealth (azeroth_103) — two of its three segments are PURE CSV reuse
+# (Shadowmeld's `hero_keyword` aura, Bear Form's `on_destroyed:pay_return_hand`),
+# so a typo in either is completely silent: the card would land in the hero row
+# and quietly grant nothing, or never come back. The break key is pinned for the
+# same reason — without it the stealth would simply never end, which is the whole
+# price of the card.
+func _test_stealth_recipe() -> void:
+	var db := _make_db()
+	var sn := db.get_def("azeroth_103") as CardDef
+	_check(sn != null, "azeroth_103 (Stealth) resolves in the database")
+	if sn == null:
+		return
+	_check(sn.card_type == "Ability" and not sn.is_instant,
+		"Stealth is a plain (sorcery-speed) Ability")
+	_check(sn.cost == 1, "...costs 1")
+	_check(StackResolver.is_ongoing_def(sn), "...ongoing — it stays in play")
+	_check(StackResolver._has_effect_flag_prefix(sn, "hero_keyword"),
+		"...grants the hero a keyword")
+	var granted := ""
+	for seg in sn.effects.split("|"):
+		var parts := seg.strip_edges().split(":")
+		if parts[0].strip_edges() == "hero_keyword" and parts.size() > 1:
+			granted = parts[1].strip_edges()
+	_check(granted == "stealth",
+		"...specifically STEALTH — the argument a typo would silently blank")
+	_check(StackResolver._has_effect_flag(sn, "destroy_self_on_hero_damage"),
+		"...and breaks when your hero deals damage")
+	var return_cost := -1
+	for seg2 in sn.effects.split("|"):
+		var p2 := seg2.strip_edges().split(":")
+		if p2.size() >= 3 and p2[0].strip_edges() == "on_destroyed" 				and p2[1].strip_edges() == "pay_return_hand":
+			return_cost = int(p2[2])
+	_check(return_cost == 2,
+		"...with Bear Form's pay-2-to-return-on-destroy clause")
+	# It occupies no 414.3b slot: unlike a Form the type line prints no "(N)",
+	# so any number of Stealths may be in play at once.
+	_check(StackResolver.slot_tag_spec(sn).is_empty(),
+		"...and carries NO slot tag, so it is not Form-limited")
+	_check(not sn.tags.ends_with(" Talent"),
+		"...tagged plain Subtlety, NOT a Talent — no 100.2c spec restriction")
+
+
+func _test_combo_recipes() -> void:
+	var db := _make_db()
+	var ss := db.get_def("azeroth_102") as CardDef
+	var pm := db.get_def("azeroth_101") as CardDef
+	var ev := db.get_def("azeroth_97")  as CardDef
+	_check(ss != null and pm != null and ev != null,
+		"azeroth_102 / 101 / 97 (Sinister Strike, Premeditation, Eviscerate) resolve")
+	if ss == null or pm == null or ev == null:
+		return
+
+	# Sinister Strike — Slam's recipe at instant speed, and a Combo card itself.
+	_check(ss.card_type == "Ability" and ss.is_instant,
+		"Sinister Strike is an INSTANT Ability")
+	_check(ss.cost == 2, "...costs 2")
+	_check("Combo" in ss.tags, "...and carries the Combo tag")
+	_check(StackResolver.weapon_atk_damage_amount(GameState.new(), ss, "p1", db) == 1,
+		"...1 plus the best Melee weapon's ATK (1 on an empty board)")
+
+	# Premeditation — a DECK search filtered by that tag.
+	_check(pm.card_type == "Ability" and not pm.is_instant,
+		"Premeditation is a plain (sorcery-speed) Ability")
+	var pm_req := StackResolver.get_graveyard_search_requirement(pm)
+	_check(String(pm_req.get("source", "")) == "deck", "...searches the DECK")
+	_check(int(pm_req.get("min_count", -1)) == 0
+			and int(pm_req.get("max_count", -1)) == 2,
+		"...up to two cards, and zero is legal (413.3)")
+	_check(String(pm_req.get("tag_filter", "")) == "Combo",
+		"...filtered on the Combo tag — silent if mistyped")
+	_check(pm.tags.ends_with(" Talent"),
+		"...Subtlety Talent, so 100.2c's spec restriction applies")
+
+	# Eviscerate — the additional cost, and the payoff riding on it.
+	_check(ev.card_type == "Ability" and ev.is_instant,
+		"Eviscerate is an INSTANT Ability")
+	var ev_spec := StackResolver.play_cost_rfg_graveyard_spec(ev)
+	_check(String(ev_spec.get("tag", "")) == "Combo",
+		"...its additional cost exiles Combo cards")
+	_check(int(ev_spec.get("max", 0)) == 5, "...up to five of them")
+	_check(StackResolver.damage_per_cost_removed(ev) == 1,
+		"...and X is 2 plus one per card removed")
+	_check(not ev.tags.ends_with(" Talent"),
+		"...a Finishing Move, not a Talent — no 100.2c spec restriction")
+	_check(not ("Combo" in ev.tags),
+		"...and a Finishing Move is NOT itself a Combo card")
+
+	# Backstab — Sinister Strike's weapon-derived damage narrowed on TWO axes,
+	# both by riders that would fail silently if mistyped: a wrong
+	# `weapon_subtype` would read the amount off a weapon pool nothing matches
+	# (leaving a flat 3), and a missing `target_must_be_exhausted` would turn a
+	# conditional finisher into an unconditional burn.
+	var bs := db.get_def("azeroth_91") as CardDef
+	_check(bs != null, "azeroth_91 (Backstab) resolves in the database")
+	if bs != null:
+		_check(bs.card_type == "Ability" and bs.is_instant,
+			"Backstab is an INSTANT Ability")
+		_check(bs.cost == 3, "...costs 3")
+		_check("Combo" in bs.tags, "...and is itself a Combo card")
+		_check(StackResolver.weapon_subtype_filter(bs) == "Dagger",
+			"...reads its ATK off DAGGERS, not any Melee weapon")
+		_check(StackResolver.target_must_be_exhausted(bs),
+			"...and only an EXHAUSTED hero or ally is a legal target")
+		# The subtype is matched against the equipment's printed `card_subtype`,
+		# so the pool has to actually exist under that spelling.
+		var daggers := 0
+		for w0 in db.get_all_defs():
+			var w := w0 as CardDef
+			if w and StackResolver.is_weapon_card_def(w) and w.card_subtype == "Dagger":
+				daggers += 1
+		_check(daggers >= 1,
+			"...and at least one implemented weapon is printed subtype Dagger")
+
+	# The pool both readers see. Every implemented card whose tags carry "Combo"
+	# is one, and nothing else is.
+	var combo_names: Array[String] = []
+	for d0 in db.get_all_defs():
+		var d := d0 as CardDef
+		if d and "Combo" in d.tags:
+			combo_names.append(d.card_name)
+	_check("Sinister Strike" in combo_names and "Gouge" in combo_names
+			and "Backstab" in combo_names,
+		"...the implemented Combo pool holds Sinister Strike, Gouge and Backstab")
+	_check(not ("Eviscerate" in combo_names),
+		"...and not Eviscerate")
+
+
 func _test_priest_heal_recipes() -> void:
 	var db := _make_db()
 	var fh := db.get_def("azeroth_78") as CardDef
@@ -585,6 +734,9 @@ func _test_mute_when_column() -> void:
 		"azeroth_344": "opponent_turn",                          # For the Horde!
 		"azeroth_45":  "opponent_turn",                          # Rayder
 		"azeroth_214": "opponent_turn",                          # Ryn Dreamstrider
+		# Expose Armor: X target armor, X being the additional cost paid. Either
+		# half missing caps X at 0, and the card is then legal but does nothing.
+		"azeroth_98":  "no_armor_in_play+no_rfg_cost_cards",
 	}
 	for id: String in EXPECTED:
 		var d := db.get_def(id) as CardDef
@@ -612,7 +764,8 @@ func _test_mute_when_column() -> void:
 	var KNOWN := ["end_phase", "own_turn", "opponent_turn",
 		"opponent_turn_pre_end_unless_discard", "empty_hand", "outside_combat",
 		"hero_not_defending", "no_combat_proposal",
-		"hero_not_defending_vs_ally"]
+		"hero_not_defending_vs_ally",
+		"no_armor_in_play", "no_rfg_cost_cards"]
 	# The regularized three: dropping require_turn_player is the whole point of
 	# the swap, so a re-added flag must fail here rather than silently restoring
 	# the deviation (the mute would still work, and nobody would notice).
@@ -839,6 +992,30 @@ func _test_the_shatterer_recipe() -> void:
 		"…and is NOT a power weapon — striking with it is how the trigger fires")
 	_check(not segs.has("two_handed"),
 		"…nor Two-Handed, so it costs one hand (406)")
+
+
+func _test_flame_wrath_recipe() -> void:
+	var db := _make_db()
+	var fw := db.get_def("azeroth_321") as CardDef
+	_check(fw != null, "azeroth_321 (Flame Wrath) resolves in the database")
+	if fw == null:
+		return
+	var segs := Array(fw.effects.split("|"))
+	_check(fw.card_type == "Equipment", "Flame Wrath is Equipment (304)")
+	_check(fw.cost == 4, "…costing 4")
+	_check(fw.printed_atk == 2, "…with 2 printed ATK")
+	_check(segs.has("strike_cost:3"), "…and a strike cost of 3, so it IS a weapon (303)")
+	_check(segs.has("two_handed"), "…Two-Handed, so it costs both hands (406/414.3c)")
+	# The burn is the whole card and is pure CSV — a typo in the key, the amount
+	# or the damage type is SILENT, leaving a vanilla 2 ATK polearm with nothing
+	# to fail on. The dmg_type in particular has to survive: it is what World in
+	# Flames' fire doubling keys on.
+	_check(segs.has("hero_combat_dmg_named_weapon_aoe_opposing:1:fire"),
+		"…carrying the opposing-board burn, 1 FIRE damage as printed")
+	# It names ITSELF ("with Flame Wrath"), so it must NOT be flagged
+	# power_weapon: striking with it is how the trigger fires.
+	_check(not segs.has("power_weapon"),
+		"…and is NOT a power weapon — striking with it is the point")
 
 
 func _test_graccus_recipe() -> void:
@@ -1451,3 +1628,154 @@ func _test_goldenmoon_recipe() -> void:
 		"…granting exactly ONE additional Pet while your Pets have different names")
 	# She is NOT a Pet herself — she would otherwise eat the slot she grants.
 	_check(gm.card_subtype != "Pet", "…and is not herself a Pet")
+
+
+func _test_refugees_quandary_recipe() -> void:
+	var db := _make_db()
+	var rq := db.get_def("dark_portal_295") as CardDef
+	_check(rq != null, "dark_portal_295 (A Refugee's Quandary) resolves in the database")
+	if rq == null:
+		return
+	_check(rq.cost == 3 and rq.card_type == "Quest",
+		"A Refugee's Quandary is a 3-cost Quest")
+	var segs := Array(rq.effects.split("|"))
+	# Pinned because EVERY segment here fails SILENTLY if mistyped: an unknown
+	# qmode key is skipped by _run_quest_mode_queue's match, leaving a reward
+	# mode that is offered and does nothing, with nothing to fail on.
+	_check("qmode:ready_equipment" in segs,
+		"A Refugee's Quandary carries the ready_equipment reward mode")
+	_check("qmode:draw:1" in segs, "…and the draw mode")
+	_check(StackResolver.is_choice_quest_def(rq),
+		"…so it opens the 'choose one' reward choice")
+	_check(StackResolver.quest_choice_both_race(rq) == "Gnome",
+		"…with a Gnome hero unlocking 'choose both'")
+	# "During your turn" is the 701.1 turn gate.
+	_check(StackResolver.requires_turn_player(rq),
+		"A Refugee's Quandary is restricted to its controller's turn")
+	# The ready reward is a CHOICE over the completer's own equipment, so it must
+	# not be either of the two character-readying rewards next to it.
+	_check(not ("ready_party_character" in segs)
+			and not ("ready_unattacked_allies" in segs),
+		"…and readies EQUIPMENT, not characters")
+	# Alliance card, so a Horde hero can never run it (rule 100.2).
+	_check(rq.alignment == "Alliance", "A Refugee's Quandary is Alliance")
+
+
+func _test_waylay_recipe() -> void:
+	var db := _make_db()
+	var wl := db.get_def("azeroth_105") as CardDef
+	_check(wl != null, "azeroth_105 (Waylay) resolves in the database")
+	if wl == null:
+		return
+	_check(wl.cost == 2, "Waylay is a 2-cost card")
+	# INSTANT speed is the card: aimed at a proposed attacker while its combat
+	# proposal is on the chain, the exhaust fizzles the proposal at the 601.3
+	# recheck. A plain Ability could never do that.
+	_check(wl.is_instant, "…an INSTANT Ability, so it can interrupt a proposal")
+	var segs := Array(wl.effects.split("|"))
+	# Both segments fail SILENTLY if mistyped: an unknown effects segment is
+	# simply skipped by the resolution dispatch, leaving either a 2-cost
+	# do-nothing or an Exhaustion that quietly never kills.
+	_check("exhaust_target:ally" in segs,
+		"Waylay exhausts target ALLY (never a hero — not hero_or_ally)")
+	_check("stealth_damage_target_health" in segs,
+		"…and carries the stealth-gated damage rider")
+	# It is a Combo card, which is what Premeditation searches for and what
+	# Eviscerate eats — matched as a SUBSTRING of the tags column.
+	_check("Combo" in wl.tags, "…and is a Combo card (Premeditation / Eviscerate)")
+	# The damage names no type (408.3a: a non-combat packet has the types its
+	# modifier specifies, and this one specifies none), so the rider must carry
+	# no type argument that a future reader could mistake for one.
+	_check(not ("stealth_damage_target_health:" in wl.effects),
+		"…with no damage type — 408.3a leaves the packet untyped")
+
+
+func _test_poison_recipes() -> void:
+	var db := _make_db()
+	var dp := db.get_def("azeroth_95") as CardDef
+	var cp := db.get_def("azeroth_94") as CardDef
+	_check(dp != null and cp != null,
+		"azeroth_95 / 94 (Deadly Poison, Crippling Poison) resolve in the database")
+	if dp == null or cp == null:
+		return
+
+	for pair in [[dp, "Deadly Poison"], [cp, "Crippling Poison"]]:
+		var d := pair[0] as CardDef
+		var n := String(pair[1])
+		var segs := Array(d.effects.split("|"))
+		_check(d.cost == 1, "%s costs 1" % n)
+		# INSTANT speed: both CSV cells said plain `Ability` and were corrected.
+		# It is the whole reason the attach condition is reachable at all — the
+		# hero's combat damage lands at the conclusion, so a sorcery-speed card
+		# could only ever be played a full phase later, and never inside the
+		# combat window it was set up by.
+		_check(d.is_instant, "...%s is an INSTANT Ability" % n)
+		_check(StackResolver.is_ongoing_def(d), "...%s is ongoing (an attachment)" % n)
+		_check("attach:hero_or_ally" in segs,
+			"...%s attaches to a hero OR ally" % n)
+		# The shared rider. Silent if mistyped: an unknown segment is skipped, and
+		# the card would attach to ANY character with no condition at all.
+		_check(StackResolver.attach_requires_combat_damaged_by_hero(d),
+			"...%s carries the combat-damaged-by-your-hero rider" % n)
+		# A Poison, not a Combo card — Premeditation and Eviscerate must not see it.
+		_check("Poison" in d.tags, "...%s carries the Poison tag" % n)
+		_check(not ("Combo" in d.tags), "...%s is NOT a Combo card" % n)
+
+	# Deadly Poison's ongoing half is Fireball/Rend's key verbatim.
+	_check("attached_damage_turn_start:2:nature" in Array(dp.effects.split("|")),
+		"Deadly Poison burns 2 NATURE at the start of your turn")
+	# Crippling Poison's is the new each-turn exhaust tax.
+	_check("attached_exhaust_each_turn_unless_pay:3" in Array(cp.effects.split("|")),
+		"Crippling Poison exhausts the host unless its controller pays 3")
+	# The two ongoing halves must not be confused for one another.
+	_check(not ("attached_damage_turn_start:2:nature" in Array(cp.effects.split("|"))),
+		"...and Crippling Poison deals no damage")
+
+
+# Expose Armor (azeroth_98) vs Eviscerate (azeroth_97). A matched pair sharing
+# one additional cost, and everything that separates them fails SILENTLY if
+# mistyped: a wrong effect key leaves a 2-cost do-nothing, a wrong cost tag makes
+# the card unpayable, and an "Instant Ability" typo would turn a main-phase
+# answer into a combat trick the card is not. So pin both against the REAL
+# database, side by side.
+func _test_expose_armor_recipe() -> void:
+	var db := _make_db()
+	var ea := db.get_def("azeroth_98") as CardDef
+	var ev := db.get_def("azeroth_97") as CardDef
+	_check(ea != null and ev != null,
+		"azeroth_98 / 97 (Expose Armor, Eviscerate) resolve in the database")
+	if ea == null or ev == null:
+		return
+
+	_check(ea.cost == 2, "Expose Armor costs 2")
+	# SORCERY speed, unlike its twin. Eviscerate is flashed into a combat window
+	# as a finisher; this is a main-phase answer to equipment, and "fixing" the
+	# type cell to Instant Ability would silently make it something else.
+	_check(not ea.is_instant, "...and is a plain Ability (NOT Instant)")
+	_check(ev.is_instant, "...where Eviscerate IS an Instant Ability")
+
+	# The payoff: the removed count buys TARGETS, not damage.
+	_check(StackResolver.destroy_targets_per_cost_kind(ea) == "armor",
+		"Expose Armor destroys X target ARMOR")
+	_check(StackResolver.damage_per_cost_removed(ea) == 0,
+		"...and carries no damage rider (that is Eviscerate's half)")
+	_check(StackResolver.damage_per_cost_removed(ev) == 1,
+		"...while Eviscerate still scales its damage")
+	_check(StackResolver.destroy_target_kind(ea) == "",
+		"...and it is NOT a single-target destroy_target card")
+
+	# The cost half is Eviscerate's verbatim - same tag, same ceiling.
+	var ea_spec := StackResolver.play_cost_rfg_graveyard_spec(ea)
+	var ev_spec := StackResolver.play_cost_rfg_graveyard_spec(ev)
+	_check(not ea_spec.is_empty(), "Expose Armor carries the graveyard cost")
+	_check(String(ea_spec.get("tag", "")) == "Combo", "...paid in Combo cards")
+	_check(int(ea_spec.get("max", 0)) == 5, "...up to five of them")
+	_check(ea_spec == ev_spec, "...the identical spec to Eviscerate's")
+
+	# A Finishing Move is NOT a Combo card, which is what stops either of the
+	# pair feeding itself out of the graveyard.
+	for pair in [[ea, "Expose Armor"], [ev, "Eviscerate"]]:
+		var d := pair[0] as CardDef
+		var n := String(pair[1])
+		_check("Finishing Move" in d.tags, "%s is a Finishing Move" % n)
+		_check(not ("Combo" in d.tags), "...%s is NOT itself a Combo card" % n)

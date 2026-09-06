@@ -34,14 +34,14 @@
       "_card_name": "Scarlet Kris"
     },
     {
-      "card_def_id": "azeroth_331",
+      "card_def_id": "azeroth_311",
       "count": 2,
-      "_card_name": "Krol Blade"
+      "_card_name": "Ancient Bone Bow"
     },
     {
-      "card_def_id": "azeroth_311",
+      "card_def_id": "azeroth_284",
       "count": 1,
-      "_card_name": "Ancient Bone Bow"
+      "_card_name": "Devilsaur Leggings"
     },
     {
       "card_def_id": "azeroth_35",
@@ -49,8 +49,13 @@
       "_card_name": "Bestial Wrath"
     },
     {
-      "card_def_id": "azeroth_40",
+      "card_def_id": "dark_portal_39",
       "count": 1,
+      "_card_name": "Spirit Bond"
+    },
+    {
+      "card_def_id": "azeroth_40",
+      "count": 2,
       "_card_name": "Master of the Hunt"
     },
     {
@@ -67,11 +72,6 @@
       "card_def_id": "azeroth_259",
       "count": 1,
       "_card_name": "Skorn, Mistress of Shadow"
-    },
-    {
-      "card_def_id": "dark_portal_127",
-      "count": 1,
-      "_card_name": "Dual Wield"
     },
     {
       "card_def_id": "azeroth_37",
@@ -94,11 +94,6 @@
       "_card_name": "Ka'tali Stonetusk"
     },
     {
-      "card_def_id": "dark_portal_39",
-      "count": 1,
-      "_card_name": "Spirit Bond"
-    },
-    {
       "card_def_id": "azeroth_153",
       "count": 2,
       "_card_name": "Into the Fray"
@@ -114,18 +109,13 @@
       "_card_name": "Ravenous Bite"
     },
     {
-      "card_def_id": "azeroth_274",
-      "count": 1,
-      "_card_name": "Zorm Stonefury"
-    },
-    {
       "card_def_id": "azeroth_232",
       "count": 3,
       "_card_name": "Confessor Mildred"
     },
     {
       "card_def_id": "azeroth_260",
-      "count": 2,
+      "count": 3,
       "_card_name": "Taz'dingo"
     },
     {

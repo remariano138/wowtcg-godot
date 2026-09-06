@@ -2345,6 +2345,24 @@ func _spawn_card_node(inst_id: String, spawn_pos: Vector2, color: Color) -> void
 	_renderer.place_card_in_zone(inst_id, card.zone_id)
 
 
+# A card put straight from the deck into a non-hand zone (Anger Management's
+# "put the top card of your deck into your resource row", and any future
+# effect with the same shape) has never had a CardNode of its own — the deck
+# only shows a back-sprite pile, never individual nodes. Spawn one at the
+# deck anchor and relayout the destination zone so it flies to its slot like
+# an ordinary card move, instead of simply appearing there with no motion.
+func _fly_card_from_deck(inst_id: String, deck_zone: String, to_zone: String) -> void:
+	var card := _state.get_card(inst_id)
+	if not card:
+		return
+	var deck_anchor := _renderer.zone_anchors.get(deck_zone) as Node2D
+	var spawn_pos := deck_anchor.global_position if deck_anchor else Vector2.ZERO
+	var is_p1 := card.owner == "p1"
+	var color := Color(0.25, 0.45, 0.75) if is_p1 else Color(0.5, 0.25, 0.25)
+	_spawn_card_node(inst_id, spawn_pos, color)
+	_renderer.relayout_zone(to_zone)
+
+
 # ── UI refresh ─────────────────────────────────────────────────────────────────
 
 func _refresh_ui() -> void:
@@ -3926,6 +3944,17 @@ func _on_game_event(event: GameEvent) -> void:
 				SoundManager.play_random("SFX_CardGrab")
 			elif from_zone.ends_with("_hand") and not to_zone.ends_with("_hand"):
 				SoundManager.play_random("SFX_CardMoveFast")
+			elif from_zone.ends_with("_deck") and not to_zone.ends_with("_hand"):
+				SoundManager.play_random("SFX_CardMoveFast")
+			# A card put straight from the deck into a non-hand zone (Anger
+			# Management's ramp, and any future "put the top card of your deck
+			# into X" effect) has never had a CardNode — spawn one at the deck
+			# anchor first, then sync the destination zone so the ordinary
+			# spread-zone relayout flies it to its slot like any other card
+			# move, instead of it simply appearing there.
+			if from_zone.ends_with("_deck") and not to_zone.ends_with("_hand") \
+					and not _renderer.has_card_node(moved_id):
+				_fly_card_from_deck(moved_id, from_zone, to_zone)
 			# A token is minted mid-game and has never been in a zone, so no node
 			# exists for it — spawn one as it enters the ally_row (same pattern as
 			# the drawn-card branch below).
@@ -5464,19 +5493,22 @@ func _handle_quest_ally_grant_target(payload: Dictionary) -> void:
 		_refresh_ui()
 
 
-# Dragonkin Menace: the completer readies a hero or ally in their own party.
-# Board-public (everything involved is in play), so the off-screen hotseat
-# player is prompted inline like every other public choice.
+# Dragonkin Menace ("a hero or ally in your party") and A Refugee's Quandary
+# ("one of your equipment"): the completer readies one of their own cards. One
+# choice point, two pools — the kind rides on the event, so only the prompt
+# wording differs here. Board-public (everything involved is in play), so the
+# off-screen hotseat player is prompted inline like every other public choice.
 func _handle_quest_ready_target(payload: Dictionary) -> void:
 	var player: String   = payload.get("player", "")
 	var quest_id: String = payload.get("quest_id", "")
+	var kind: String     = payload.get("kind", "character")
 	if _route_choice(player, "public") == "ai":
 		var ai_obj: Object = _p1_ai if player == "p1" else _p2_ai
 		var target_id := ""
 		if ai_obj is BaseAI:
 			target_id = (ai_obj as BaseAI).choose_quest_ready_target(_state, _db, player)
 		else:
-			var legal := StackResolver.get_quest_ready_candidates(_state, player)
+			var legal := StackResolver.get_active_quest_ready_candidates(_state, _db)
 			target_id = legal[0] if not legal.is_empty() else ""
 		var events := StackResolver.choose_quest_ready_target(_state, target_id, _db)
 		EventBus.emit_events(events)
@@ -5484,7 +5516,10 @@ func _handle_quest_ready_target(payload: Dictionary) -> void:
 		_schedule_next_turn()
 	else:
 		_router.start_quest_ready_targeting(quest_id)
-		_set_status("🐉 Select a hero or ally in your party to ready")
+		if kind == "equipment":
+			_set_status("🛡 Select one of your equipment to ready")
+		else:
+			_set_status("🐉 Select a hero or ally in your party to ready")
 		_refresh_ui()
 
 
@@ -5746,6 +5781,17 @@ func _on_targeting_started(source_id: String, dmg_type: String, _dmg_amount: int
 		_set_status("🔨 %s — select target weapon to destroy  [click the spell to cast now]%s"
 			% [name_str, cancel_hint])
 	else:
+		# Expose Armor: X armor clicks, X already fixed by the additional cost
+		# picked in the graveyard browser. Nothing else on screen says how many
+		# are still owed, and the cast only submits on the last one, so count
+		# them down here. Checked before Lightning Storm's counter because both
+		# land in this branch (its dmg_type is the shared "destroy").
+		var exp_p: Array = _router.expose_progress()
+		if int(exp_p[1]) > 0:
+			_set_status("🔨 %s — %d / %d target armor to destroy%s"
+				% [name_str, int(exp_p[0]) + 1, int(exp_p[1]), cancel_hint])
+			_refresh_ui()
+			return
 		# Lightning Storm: X clicks, one per point of damage — the prompt counts
 		# "N / X target" (the same ally may be clicked more than once).
 		var div: Array = _router.divided_progress()
@@ -6212,6 +6258,19 @@ func _on_graveyard_select_requested(quest_id: String, candidate_ids: Array,
 			{"label": "Your graveyard", "ids": mine},
 			{"label": "Opponent's graveyard", "ids": theirs},
 		]
+	# Eviscerate: the picks are an ADDITIONAL PLAY COST, not the spell's target,
+	# so the card carries no graveyard-search requirement and the generic wording
+	# above ("any number of cards from your graveyard") would both misstate the
+	# cap and hide what the choice is for. Say the cost out loud instead.
+	var pc_spec := StackResolver.play_cost_rfg_graveyard_spec(quest_def) if quest_def else {}
+	if not pc_spec.is_empty():
+		_gy_confirm_heal = 0
+		_gy_ask_confirm  = false
+		_open_gy_dialog(candidate_ids, false,
+				"%s — additional cost: remove up to %d %s card(s) from your graveyard"
+					% [quest_name, int(pc_spec.get("max", 0)), String(pc_spec.get("tag", ""))],
+				0, int(pc_spec.get("max", 0)), true)
+		return
 	# Cannibalize's "heals 2 damage for each card removed" rider drives the
 	# confirmation wording; 0 means the confirm just names the removal.
 	_gy_confirm_heal = StackResolver.rfg_heal_per_card(quest_def) if quest_def else 0
@@ -7656,22 +7715,39 @@ func _show_upkeep_inline(payload: Dictionary) -> void:
 	# same choice point, so only the wording differs. Paying a discard cost then
 	# opens the ordinary discard picker for which cards go.
 	var pay_in_cards: bool = String(payload.get("kind", "resources")) == "discard"
+	# Crippling Poison: the decline EXHAUSTS the attached character rather than
+	# destroying the source, and the player being asked is that character's
+	# controller — so the prompt has to name the character, not just the Poison.
+	var exhaust_host: bool = \
+			String(payload.get("consequence", "destroy_source")) == "exhaust_host"
+	var host_name := ""
+	if exhaust_host:
+		var host := _state.get_card(String(payload.get("target_id", "")))
+		var host_def := _db.get_def(host.card_def_id) as CardDef if host and _db else null
+		host_name = host_def.card_name if host_def else "attached character"
 	var header_text: String
 	var pay_label: String
-	if pay_in_cards:
+	var decline_label: String
+	if exhaust_host:
+		header_text = "%s%s — pay %d or %s is exhausted" % [prefix, card_name, cost, host_name]
+		pay_label = "Pay %d: keep %s ready" % [cost, host_name]
+		decline_label = "Exhaust %s" % host_name
+	elif pay_in_cards:
 		var noun := "card" if cost == 1 else "cards"
 		header_text = "%s%s — discard %d %s or destroy it" % [prefix, card_name, cost, noun]
 		pay_label = "Discard %d %s: keep %s" % [cost, noun, card_name]
+		decline_label = "Destroy %s" % card_name
 	else:
 		header_text = "%s%s — pay %d or destroy it" % [prefix, card_name, cost]
 		pay_label = "Pay %d: keep %s" % [cost, card_name]
+		decline_label = "Destroy %s" % card_name
 	var buttons: Array = [
 		{
 			"text": pay_label,
 			"callback": func() -> void: _resolve_upkeep(true),
 		},
 		{
-			"text": "Destroy %s" % card_name,
+			"text": decline_label,
 			"callback": func() -> void: _resolve_upkeep(false),
 		},
 	]
@@ -8111,7 +8187,7 @@ func _handle_game_over(payload: Dictionary) -> void:
 	# Headline = who won; the line under it is the win condition explanation
 	# (GameEvent.game_over_explanation — one place for every reason).
 	var headline: String = "☯  DRAW" if is_draw \
-			else "★  %s  wins!" % _log_player(winner)
+			else "★  %s %s  wins!" % [_log_player(winner), _play_order_marker(winner)]
 	var dialog := ConfirmationDialog.new()
 	dialog.title            = "Game Over"
 	# The dialog's own label is left empty: an AcceptDialog lays out only that
@@ -8137,7 +8213,8 @@ func _handle_game_over(payload: Dictionary) -> void:
 	head_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	body.add_child(head_lbl)
 	var why_lbl := Label.new()
-	why_lbl.text = GameEvent.game_over_explanation(payload, _player_names())
+	# The star headline above already names the winner — don't repeat it here.
+	why_lbl.text = GameEvent.game_over_explanation(payload, _player_names(), false)
 	why_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	why_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(why_lbl)

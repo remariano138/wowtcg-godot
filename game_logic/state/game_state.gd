@@ -75,6 +75,17 @@ var turn_events: Array = []
 # past it. Reset to 0 with turn_events at every turn start.
 var damage_watch_index: int = 0
 
+# The same cursor for "when YOUR HERO deals damage" watchers (Stealth,
+# azeroth_103 — "Destroy this card when your hero deals damage"). Its own index
+# rather than a share of Skorn's above: that sweep consumes the cursor as it
+# walks, and two readers of one entry type each keeping their own position is
+# already the shape Circle of Life and Recombobulation use on `ally_destroyed`.
+# Advanced past everything scanned even when no watcher is in play, which is
+# what makes the break FORWARD-LOOKING as printed: a Stealth played after your
+# hero already swung this turn finds the cursor past that entry and survives.
+# Reset to 0 with turn_events at every turn start.
+var hero_damage_watch_index: int = 0
+
 # The same cursor for "when an ally is destroyed" watchers read off cards in
 # play (Circle of Life). Separate from Recombobulation's per-player
 # `recomb_from_index` for the reason above: that is a this-turn grant owned by
@@ -281,6 +292,14 @@ var pending_upkeep_cost: int = 0
 # pending_upkeep_cost is a CARD count and paying opens the ordinary pending
 # discard. Same choice point either way — only the currency differs.
 var pending_upkeep_kind: String = "resources"
+# Crippling Poison: what happens when the payment is DECLINED. Every earlier
+# upkeep destroys its own source ("destroy_source"); this one exhausts the
+# attached character instead ("exhaust_host"), and pending_upkeep_target_id is
+# the card that consequence lands on — the HOST, not the source. The two are
+# separate because the prompt still names the SOURCE ("Crippling Poison"), which
+# is what the player recognises.
+var pending_upkeep_consequence: String = "destroy_source"
+var pending_upkeep_target_id: String = ""
 # Attack-exhaust point (Chops / Voss Treebender: "When [this] attacks, you may
 # exhaust target hero or ally."): non-empty while the attacker's controller may
 # pick a target to exhaust (or decline). Opened at combat-step start (602.1),
@@ -505,10 +524,16 @@ var quest_mode_queue: Array = []               # [{player, quest_id, mode}] — 
 var pending_quest_ally_grant_player: String = ""
 var pending_quest_ally_grant_source: String = ""  # quest instance id (buff source / UI)
 var pending_quest_ally_grant_kind: String = ""    # "ferocity" | "cannot_attack"
-# Dragonkin Menace "Reward: Ready a hero or ally in your party": the completer
-# CHOOSES one of their own characters (not a target — Untargetable is irrelevant).
+# Dragonkin Menace "Reward: Ready a hero or ally in your party" and A Refugee's
+# Quandary "Reward: … Ready one of your equipment": the completer CHOOSES one of
+# their own cards (not a target — nothing is announced, so 706 Untargetable is
+# irrelevant). ONE choice point serving two pools, which is what the kind is for
+# (the pending_quest_ally_grant_kind pattern) — the UI and the AI ask
+# get_active_quest_ready_candidates and need know nothing about which reward
+# opened the point.
 var pending_quest_ready_player: String = ""
 var pending_quest_ready_source: String = ""     # quest instance id (UI)
+var pending_quest_ready_kind: String = ""       # "character" | "equipment"
 # Galway Steamwhistle "[Activate] -> Ready your hero and one of your weapons":
 # the controller CHOOSES which of their own weapons readies (not a target —
 # nothing is announced, so 706 Untargetable is irrelevant). Opened from the
@@ -1782,6 +1807,7 @@ func to_dict() -> Dictionary:
 		"priority_player":   priority_player,
 		"turn_events":       turn_events.duplicate(true),
 		"damage_watch_index": damage_watch_index,
+		"hero_damage_watch_index": hero_damage_watch_index,
 		"ally_destroy_watch_index": ally_destroy_watch_index,
 		"destroy_discard_marks": destroy_discard_marks,
 		"draws_locked_this_turn": draws_locked_this_turn,
@@ -1804,6 +1830,7 @@ static func from_dict(d: Dictionary) -> GameState:
 	gs.priority_player    = d.get("priority_player", "")
 	gs.turn_events        = (d.get("turn_events", []) as Array).duplicate(true)
 	gs.damage_watch_index = d.get("damage_watch_index", 0)
+	gs.hero_damage_watch_index = d.get("hero_damage_watch_index", 0)
 	gs.ally_destroy_watch_index = d.get("ally_destroy_watch_index", 0)
 	for mark in d.get("destroy_discard_marks", []):
 		gs.destroy_discard_marks.append(str(mark))

@@ -104,6 +104,7 @@ static func _enter_ready(state: GameState, db) -> Array[GameEvent]:
 	state.turn_events.clear()
 	# The ally-damage watchers' cursor indexes into that log, so it resets with it.
 	state.damage_watch_index = 0
+	state.hero_damage_watch_index = 0
 	state.ally_destroy_watch_index = 0
 	state.destroy_discard_marks.clear()   # Shadow Bolt: "…destroyed THIS TURN"
 	# Brain Freeze's "players can't draw cards THIS TURN" likewise. Cleared
@@ -359,6 +360,11 @@ const EACH_TURN_TRIGGERS := [
 	"heal_party_each_turn",        # Healing Stream Totem
 	"heal_at_each_turn_start",     # plain self-heal, either turn
 	"ongoing_damage_each_turn",    # Searing Totem
+	# Crippling Poison — "at the start of EACH turn", so it must live here and
+	# not on YOUR_TURN_TRIGGERS: ticking on both players' turns is the card.
+	# The source is an ATTACHMENT, which cards_in_play already covers (filtered
+	# on the attachment's own controller), so it is collected once per turn.
+	"attached_exhaust_each_turn_unless_pay",
 ]
 # Effects segments that trigger "at the start of YOUR turn" — collected only
 # from the turn player's in-play cards.

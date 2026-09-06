@@ -35,7 +35,7 @@
     },
     {
       "card_def_id": "azeroth_316",
-      "count": 1,
+      "count": 2,
       "_card_name": "Brain Hacker"
     },
     {
@@ -54,11 +54,6 @@
       "_card_name": "Annihilator"
     },
     {
-      "card_def_id": "dark_portal_236",
-      "count": 1,
-      "_card_name": "Thysta Spiritlasher"
-    },
-    {
       "card_def_id": "azeroth_145",
       "count": 2,
       "_card_name": "Mortal Strike"
@@ -70,13 +65,8 @@
     },
     {
       "card_def_id": "azeroth_257",
-      "count": 1,
+      "count": 2,
       "_card_name": "Rak Skyfury"
-    },
-    {
-      "card_def_id": "azeroth_142",
-      "count": 1,
-      "_card_name": "Heroic Strike"
     },
     {
       "card_def_id": "dark_portal_243",
@@ -99,9 +89,9 @@
       "_card_name": "Scout Omerrta"
     },
     {
-      "card_def_id": "azeroth_146",
+      "card_def_id": "dark_portal_121",
       "count": 4,
-      "_card_name": "Rend"
+      "_card_name": "Intercept"
     },
     {
       "card_def_id": "azeroth_266",
@@ -114,14 +104,14 @@
       "_card_name": "Ghank"
     },
     {
-      "card_def_id": "azeroth_260",
-      "count": 2,
-      "_card_name": "Taz'dingo"
+      "card_def_id": "azeroth_232",
+      "count": 3,
+      "_card_name": "Confessor Mildred"
     },
     {
-      "card_def_id": "azeroth_144",
+      "card_def_id": "dark_portal_224",
       "count": 2,
-      "_card_name": "Mocking Blow"
+      "_card_name": "Morik"
     },
     {
       "card_def_id": "azeroth_226",

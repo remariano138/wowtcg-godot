@@ -3483,9 +3483,7 @@ func _try_pass(skip_confirm: bool = false) -> void:
 		_drain_passes()
 		var still_parked := _state.priority_player != _local_player
 		if still_parked and not _in_ambush_mode and not _handoff_pending:
-			_show_transient_notice(
-				"Waiting for %s — it is their window to act."
-					% _player_name(_state.priority_player),
+			_show_transient_notice("Wait - not your window to pass",
 				Color(1.0, 0.6, 0.0))
 		return
 	# Rule 600.2 (Lynda Steele / Mocking Blow): the engine refuses this pass while

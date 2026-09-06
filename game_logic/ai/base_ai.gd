@@ -79,6 +79,7 @@ const COMBAT_INSTANT_TAGS: Dictionary = {
 	"azeroth_68":  "combat_instant_exhaust",     # Hammer of Justice — Gouge's exhaust + ready-lock plus a cantrip (ready-lock not modeled for AI)
 	"azeroth_99":  "combat_instant_exhaust",     # Gouge — exhaust target hero or ally (+ can't-ready-next-step rider, not modeled for AI)
 	"dark_portal_199": "combat_instant_exhaust_on_enter", # Bhenn Checks-the-Sky — Instant Ally, on enter: you may exhaust target ally
+	"dark_portal_121": "combat_instant_exhaust",     # Intercept — exhaust target hero or ally + 1 melee dmg (ready-lock N/A; damage rider not modeled for AI)
 	"dark_portal_20": "combat_instant_dmg",      # Claw — 3 melee damage (+ cat form ongoing)
 	"azeroth_18":  "combat_instant_bear_form",   # Bear Form — hero gains protector (see bear_form_action)
 	"azeroth_25":  "combat_instant_bear_form",   # Maul — bear form + "your hero has +1 ATK this turn" (same hook; the pump rides along on the retaliation)

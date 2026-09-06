@@ -4817,6 +4817,25 @@ static func _resolve_play_instant(state: GameState,
 										"dmg_type": "",
 										"from_ability": true,
 									}]))
+						# Intercept: "...and your hero deals 1 melee damage to
+						# it." Unconditional (no "if" clause, unlike Waylay's
+						# stealth gate) - the exhaust and the damage both hang on
+						# the ONE announced target, so this lives in the same
+						# _exhaust_target_ok branch: a target that left play or
+						# became Untargetable takes the whole card down. Hero-
+						# sourced, so the packet is tagged from_ability
+						# (Chromatic Cloak's +1) and carries the printed dmg_type.
+						var ex_dmg := _exhaust_deal_damage_spec(def)
+						if ex_dmg.size() == 2:
+							var ex_ps := state.players.get(action.source_player) as PlayerState
+							var ex_hero: String = ex_ps.hero_instance_id if ex_ps else ""
+							if ex_hero != "":
+								events.append_array(defer_packets(state, db, [{
+									"source": ex_hero, "target": target_id,
+									"amount": int(ex_dmg[0]),
+									"dmg_type": String(ex_dmg[1]),
+									"from_ability": true,
+								}]))
 					"grant_keyword_target":
 						# "Target ally has <keyword> this turn." — Sneak
 						# (elusive, any ally) / Into the Fray (ferocity, your
@@ -6822,6 +6841,20 @@ static func _drain_heal_per_damage(def: CardDef) -> int:
 		if parts[0] == "drain_heal_per_damage":
 			return int(parts[1]) if parts.size() > 1 else 1
 	return 0
+
+
+# exhaust_deal_damage:AMOUNT:DMG_TYPE — paired with an exhaust_target segment
+# (Intercept `dark_portal_121`, 1, Instant Ability — Fury, Warrior: "Exhaust
+# target hero or ally, and your hero deals 1 melee damage to it"). A bare
+# rider on the exhaust, unconditional (no "if" gate — contrast Waylay's
+# stealth-only damage on the same segment). Returns [amount, dmg_type] or an
+# empty array when the def carries no such rider.
+static func _exhaust_deal_damage_spec(def: CardDef) -> Array:
+	for segment in def.effects.split("|"):
+		var parts := segment.strip_edges().split(":")
+		if parts[0] == "exhaust_deal_damage" and parts.size() > 2:
+			return [int(parts[1]), parts[2]]
+	return []
 
 
 # discard_per_damage:N — paired with a deal_damage_to_target segment (Mind Spike,

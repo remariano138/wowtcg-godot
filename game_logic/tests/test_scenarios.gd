@@ -589,6 +589,9 @@ func _ready() -> void:
 		_test_waylay,
 		_test_waylay_scope,
 		_test_ai_waylay,
+		_test_intercept,
+		_test_intercept_scope,
+		_test_ai_intercept,
 		_test_poison_attach_condition,
 		_test_deadly_poison,
 		_test_crippling_poison,
@@ -28230,6 +28233,139 @@ func _test_waylay_scope() -> void:
 	StackResolver.pass_priority(st4, db)
 	ok(not st4.combat_attack_window,
 		"wl-g2: the exhausted attacker fizzles the proposal (601.3)")
+
+
+# Intercept (dark_portal_121, 1, Instant Ability -- Fury, Warrior): "Exhaust
+# target hero or ally, and your hero deals 1 melee damage to it." Bash's
+# exhaust_target:hero_or_ally with an UNCONDITIONAL damage rider (contrast
+# Waylay's stealth-gated one on the same segment) -- exhaust_deal_damage.
+func _test_intercept() -> void:
+	_buf.append("\n-- Intercept: exhaust target hero or ally, hero deals 1 melee --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("intercept_def", 1, "exhaust_target:hero_or_ally|exhaust_deal_damage:1:melee")
+	db.ally("bear_def", 3, 4)
+
+	# (a) Ally target: exhausts and deals 1, unconditionally -- no stealth,
+	# no other setup needed.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 4)
+	var t := _add_ally(st, "theirs", "bear_def", "p2")
+	t.just_summoned = false
+	var w := _add_hand_card(st, "intercept1", "intercept_def", "p1")
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": w.instance_id, "target_id": "theirs"}), db)
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	ok(st.get_card("theirs").is_exhausted, "ic-a: the ally is exhausted")
+	eq(st.get_card("theirs").damage_taken, 1, "ic-a2: and took 1 melee damage")
+
+	# (b) Hero target: hero_or_ally admits the opposing hero too.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 4)
+	var w2 := _add_hand_card(st2, "intercept2", "intercept_def", "p1")
+	var hero_id := st2.get_hero("p2").instance_id
+	ok(StackResolver.can_submit(st2, PendingAction.make("play_instant", "p1",
+			{"card_id": w2.instance_id, "target_id": hero_id}), db),
+		"ic-b: an opposing HERO is a legal target")
+	StackResolver.submit_action(st2, PendingAction.make("play_instant", "p1",
+		{"card_id": w2.instance_id, "target_id": hero_id}), db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	eq(st2.get_hero("p2").damage_taken, 1, "ic-b2: the hero takes the 1 melee damage")
+
+
+func _test_intercept_scope() -> void:
+	_buf.append("\n-- Intercept: fizzle, response-only timing, interrupt --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("intercept_def", 1, "exhaust_target:hero_or_ally|exhaust_deal_damage:1:melee")
+	db.ally("bear_def", 3, 4)
+
+	# (a) Target gone in response: the whole card fizzles (706 / 4217), and
+	# the card is still spent.
+	var st := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st, "p1", 4)
+	var t := _add_ally(st, "theirs", "bear_def", "p2")
+	t.just_summoned = false
+	var w := _add_hand_card(st, "intercept1", "intercept_def", "p1")
+	StackResolver.submit_action(st, PendingAction.make("play_instant", "p1",
+		{"card_id": w.instance_id, "target_id": "theirs"}), db)
+	GameLogic.move_card(st, "theirs", "p2_graveyard")
+	StackResolver.pass_priority(st, db)
+	StackResolver.pass_priority(st, db)
+	eq(st.get_card("intercept1").zone_id, "p1_graveyard",
+		"ic-c: the target left play -- the card fizzles and is still spent")
+
+	# (b) Instant speed is an interrupt: aimed at a proposed attacker while
+	# its combat proposal is on the chain, the 601.3 recheck fizzles the
+	# proposal and the attacker never exhausts for the attack.
+	var st2 := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(st2, "p1", 4)
+	_add_resources(st2, "p2", 4)
+	var atk := _add_ally(st2, "attacker", "bear_def", "p2")
+	atk.just_summoned = false
+	var mine := _add_ally(st2, "mine", "bear_def", "p1")
+	mine.just_summoned = false
+	st2.turn_player = "p2"
+	st2.priority_player = "p2"
+	st2.phase = "action"
+	StackResolver.submit_action(st2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "attacker", "defender_id": "mine"}), db)
+	StackResolver.pass_priority(st2, db)          # p2 -> p1
+	var w2 := _add_hand_card(st2, "intercept2", "intercept_def", "p1")
+	var act := PendingAction.make("play_instant", "p1",
+		{"card_id": w2.instance_id, "target_id": "attacker"})
+	ok(StackResolver.can_submit(st2, act, db),
+		"ic-d: instant speed -- legal in response to the proposal")
+	StackResolver.submit_action(st2, act, db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	StackResolver.pass_priority(st2, db)
+	ok(not st2.combat_attack_window,
+		"ic-d2: the exhausted attacker fizzles the proposal (601.3)")
+	eq(st2.get_card("attacker").damage_taken, 1,
+		"ic-d3: it still ate the 1 melee damage")
+
+
+# AI: shares Exhaustion's combat_instant_exhaust tag and exhaust_attacker_action
+# heuristic in full (the extra damage rider is not separately modeled) -- the
+# AI answers an opposing ally's combat proposal by exhausting it, fizzling the
+# attack at the 601.3 recheck.
+func _test_ai_intercept() -> void:
+	_buf.append("\n-- AI Intercept: answers an opposing attack proposal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.instant("dark_portal_121", 1, "exhaust_target:hero_or_ally|exhaust_deal_damage:1:melee")
+	db.ally("big_def", 5, 5, [], 4)     # a real attacker, cost 4
+	var ai := BaseAI.new()
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	var atk := _add_ally(state, "big", "big_def", "p1")
+	atk.just_summoned = false
+	_add_card_to_hand(state, "ic", "dark_portal_121", "p2")
+	_add_resources(state, "p2", 4)
+	state.players["p1"].resource_placed_this_turn = true
+	state.players["p2"].resource_placed_this_turn = true
+
+	StackResolver.submit_action(state, PendingAction.make("propose_combat", "p1",
+		{"attacker_id": "big", "defender_id": state.get_hero("p2").instance_id}), db)
+	StackResolver.pass_priority(state, db)   # p1 -> p2, proposal on the chain
+
+	var act := ai.exhaust_attacker_action(state, db, "p2")
+	ok(act != null and act.params.get("card_id") == "ic"
+			and act.params.get("target_id") == "big",
+		"aiic-a: the AI answers with Intercept")
+	StackResolver.submit_action(state, act, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	ok(not state.combat_attack_window, "aiic-b: the proposal fizzled")
+	ok(state.get_card("big") != null and state.get_card("big").damage_taken == 1,
+		"aiic-c: and it took the 1 melee damage too")
 
 
 func _test_refugees_quandary() -> void:

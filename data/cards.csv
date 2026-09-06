@@ -480,7 +480,7 @@ dark_portal,117,Challenging Shout,,,,,,,,,,,,,,,,assets\cards\challenging_shout.
 dark_portal,118,Commanding Shout,,,,,,,,,,,,,,,,assets\cards\commanding_shout.png,
 dark_portal,119,Cruelty,,,,,,,,,,,,,,,,assets\cards\cruelty.png,
 dark_portal,120,Crushing Blow,4,Ability,,Warrior,,Fury,,,,Common,,"Choose one or both: Destroy target armor; or destroy target weapon.",verified,implemented,choose_destroy:armor:weapon,assets\cards\crushing_blow.png,
-dark_portal,121,Intercept,,,,,,,,,,,,,,,,assets\cards\intercept.png,
+dark_portal,121,Intercept,1,Instant Ability,,Warrior,Fury,,,,,Common,,"Exhaust target hero or ally, and your hero deals 1 melee damage to it.",verified,implemented,exhaust_target:hero_or_ally|exhaust_deal_damage:1:melee,assets\cards\intercept.png,
 dark_portal,122,Killing Spree,,,,,,,,,,,,,,,,assets\cards\killing_spree.png,
 dark_portal,123,Revenge,,,,,,,,,,,,,,,,assets\cards\revenge.png,
 dark_portal,124,Slam,3,Ability,,Warrior,,Fury,,,,,,"Your hero deals X melee damage to target hero or ally, where X is 1 plus the ATK of one of your Melee weapons.",verified,implemented,deal_damage_weapon_atk:1:melee,assets\cards\slam.png,

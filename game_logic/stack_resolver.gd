@@ -8028,11 +8028,14 @@ static func get_legal_attackers(state: GameState, player_id: String, db) -> Arra
 	return result
 
 
-# Returns instance_ids of all legal defenders the given attacker can target.
-static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Array[String]:
-	var attacker := state.get_card(attacker_id)
-	if not attacker:
-		return []
+# The opposing characters this attacker could be proposed against before the
+# 601.2c narrowing and before Winter's Grasp's affordability filter: the
+# non-elusive opposing hero and allies (601.2b), minus Wing Clip's per-defender
+# prohibition. Shared by get_legal_defenders (the announcement gate) and
+# _attacker_narrowed_away_from (the 601.3 re-check), so the two can't disagree
+# about what "such a proposal can't be made" means in 601.2c's fallback.
+static func _defender_candidates(state: GameState, attacker: CardInstance,
+		db) -> Array[String]:
 	var opp := _other_player(state, attacker.controller)
 	var result: Array[String] = []
 	for card in state.cards_in_zone(opp + "_ally_row"):
@@ -8044,15 +8047,22 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 		if hero and not _has_keyword(hero, "elusive", db, state):
 			result.append(hero.instance_id)
 	# Wing Clip: a PROHIBITION on one defender, subtracted first. Doing it before
-	# the 601.2c narrowing below is what makes "can't" beat "can only" — a
-	# narrowing onto a barred character then comes out empty, and 601.2c's own
-	# fallback hands back the rest of the list rather than forbidding combat.
-	if not result.is_empty():
-		var allowed: Array[String] = []
-		for id in result:
-			if not _attacker_barred_from(attacker, id):
-				allowed.append(id)
-		result = allowed
+	# the 601.2c narrowing is what makes "can't" beat "can only" — a narrowing
+	# onto a barred character then comes out empty, and 601.2c's own fallback
+	# hands back the rest of the list rather than forbidding combat.
+	var allowed: Array[String] = []
+	for id in result:
+		if not _attacker_barred_from(attacker, id):
+			allowed.append(id)
+	return allowed
+
+
+# Returns instance_ids of all legal defenders the given attacker can target.
+static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Array[String]:
+	var attacker := state.get_card(attacker_id)
+	if not attacker:
+		return []
+	var result := _defender_candidates(state, attacker, db)
 	# Rules 601.2c / 601.2d — "can attack only [character] if able". Two sources
 	# feed ONE specified-defender set (see the block comment above
 	# _can_attack_only_ids): the board-side `sarmoth_taunt` aura, and
@@ -8074,26 +8084,71 @@ static func get_legal_defenders(state: GameState, attacker_id: String, db) -> Ar
 			if attack_tax(state, attacker_id, id, db) <= tax_avail:
 				affordable.append(id)
 		result = affordable
+	return _narrow_to_specified_defenders(state, attacker, result, db)
+
+
+# Rules 601.2c / 601.2d applied to a candidate list: narrow it to the specified
+# defenders, or hand it back untouched when that narrowing would be empty.
+static func _narrow_to_specified_defenders(state: GameState, attacker: CardInstance,
+		candidates: Array[String], db) -> Array[String]:
 	var specified: Array[String] = _can_attack_only_ids(attacker)
 	if db:
-		for id in result:
+		for id in candidates:
 			var c := state.get_card(id)
-			if c and _has_effect_flag(state.effective_def(c.instance_id, db), "sarmoth_taunt") \
-					and id not in specified:
+			if c and _has_effect_flag(state.effective_def(c.instance_id, db), "sarmoth_taunt") 					and id not in specified:
 				specified.append(id)
-	if not specified.is_empty():
-		# Only the specified characters that are legal defenders anyway count.
-		var narrowed: Array[String] = []
-		for id in result:
-			if id in specified:
-				narrowed.append(id)
-		# 601.2c: "However, if such a proposal can't be made (because there are
-		# no such characters in play, or all such characters are Elusive, for
-		# example), any other legal defender can be proposed." So an empty
-		# narrowing falls back to the full list instead of forbidding combat.
-		if not narrowed.is_empty():
-			return narrowed
-	return result
+	if specified.is_empty():
+		return candidates
+	# Only the specified characters that are legal defenders anyway count.
+	var narrowed: Array[String] = []
+	for id in candidates:
+		if id in specified:
+			narrowed.append(id)
+	# 601.2c: "However, if such a proposal can't be made (because there are
+	# no such characters in play, or all such characters are Elusive, for
+	# example), any other legal defender can be proposed." So an empty
+	# narrowing falls back to the full list instead of forbidding combat.
+	if narrowed.is_empty():
+		return candidates
+	return narrowed
+
+
+# Rule 601.2c/d as a PROHIBITION question, for the 601.3 re-check: is this
+# attacker narrowed to a set the named defender is not in?
+#
+# This is what makes Mocking Blow (and a Sarmoth arriving mid-chain) an
+# INTERRUPT rather than a modifier that only bites on the NEXT proposal: 601.3
+# rechecks the whole legality of the proposed combat as the proposal resolves,
+# and 601.2a requires the attacker to "be able to attack the proposed defender".
+# Played in response to a proposal naming anything but a specified defender, the
+# proposal is interrupted (711) and the attacker never exhausts — Litori
+# Frostburn's timing, and the mirror of _attacker_barred_from's Wing Clip case.
+#
+# Deliberately builds its own candidate pool instead of calling
+# get_legal_defenders: that one also applies Winter's Grasp's affordability
+# filter, and by resolution the tax has been PAID and the resources are gone, so
+# re-asking it would fizzle a proposal that was legally announced (see the tax
+# comment in get_legal_defenders).
+static func _attacker_narrowed_away_from(state: GameState, attacker: CardInstance,
+		defender_id: String, db) -> bool:
+	if not attacker or defender_id == "":
+		return false
+	# Almost every board has neither, so the whole re-check short-circuits.
+	if _can_attack_only_ids(attacker).is_empty() and not _any_taunt_in_play(state, db):
+		return false
+	var candidates := _defender_candidates(state, attacker, db)
+	return defender_id not in _narrow_to_specified_defenders(
+			state, attacker, candidates, db)
+
+
+static func _any_taunt_in_play(state: GameState, db) -> bool:
+	if not db:
+		return false
+	for pid in state.players.keys():
+		for card in state.cards_in_play(pid):
+			if _has_effect_flag(state.effective_def(card.instance_id, db), "sarmoth_taunt"):
+				return true
+	return false
 
 
 # Returns instance_ids of all characters that can protect this combat (rule 602.2).
@@ -8868,6 +8923,7 @@ static func _resolve_propose_combat(state: GameState, action: PendingAction,
 			or _has_keyword(attacker, "cant_attack", db, state) \
 			or attacker.has_restriction("cannot_attack") \
 			or _attacker_barred_from(attacker, defender_id) \
+			or _attacker_narrowed_away_from(state, attacker, defender_id, db) \
 			or _has_keyword(defender, "elusive", db, state):
 		return [GameEvent.make("action_fizzled", {
 			"action_type": "propose_combat", "reason": "illegal_at_resolution",

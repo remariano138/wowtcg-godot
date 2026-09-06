@@ -621,6 +621,7 @@ func _ready() -> void:
 		_test_lynda_if_able_releases,
 		_test_mocking_blow_damage_and_redirect,
 		_test_mocking_blow_stacks_with_taunt,
+		_test_mocking_blow_interrupts_a_proposal,
 		_test_must_attack_binds_a_harmless_hero,
 		_test_ai_must_attack,
 		_test_galway_readies_hero_and_weapon,
@@ -33641,6 +33642,89 @@ func _test_mocking_blow_stacks_with_taunt() -> void:
 	ok("sarmoth" in defenders and "p1_hero" in defenders,
 		"mbt-b: 601.2d — both specified characters are legal defenders")
 	ok("spare" not in defenders, "mbt-c: and nothing else is")
+
+
+func _test_mocking_blow_interrupts_a_proposal() -> void:
+	_buf.append("
+-- Mocking Blow: interrupts a proposal aimed elsewhere (601.3) --")
+	var db := _lynda_db()
+	db.ally("ferocious_def", 3, 3, ["ferocity"], 3)
+
+	# (1) They play a Ferocity ally and swing at our ally; we answer with Mocking
+	# Blow. 601.3 rechecks the WHOLE legality of the proposed combat as it
+	# resolves, and 601.2a needs the attacker to "be able to attack the proposed
+	# defender" — 601.2c has just narrowed that to our hero, so the proposal is
+	# interrupted (711) and the attacker never exhausts.
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.turn_player = "p2"
+	s1.priority_player = "p2"
+	_add_resources(s1, "p1", 3)
+	var foe := _add_ally(s1, "foe", "ferocious_def", "p2")   # just_summoned, Ferocity
+	var bait := _add_ally(s1, "bait", "wall_def", "p1")
+	bait.just_summoned = false
+	_add_card_to_hand(s1, "mb", "mocking_blow_def", "p1")
+
+	StackResolver.submit_action(s1, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "foe", "defender_id": "bait"}), db)
+	StackResolver.pass_priority(s1, db)   # proposer passes -> we hold priority
+	StackResolver.submit_action(s1, PendingAction.make("play_instant", "p1",
+		{"card_id": "mb", "target_id": "foe"}), db)
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # Mocking Blow resolves
+	eq(s1.get_card("foe").damage_taken, 1, "mbi-a: the 1 melee damage landed")
+	eq(StackResolver.get_legal_defenders(s1, "foe", db), ["p1_hero"] as Array[String],
+		"mbi-b: it can attack only our hero now")
+	StackResolver.pass_priority(s1, db)
+	StackResolver.pass_priority(s1, db)   # the proposal resolves — or doesn't
+	eq(s1.combat_attacker, "", "mbi-c: 601.3 — combat never started")
+	ok(not s1.get_card("foe").is_exhausted,
+		"mbi-d: …and the attacker never exhausted (Litori Frostburn's timing)")
+	ok(s1.get_card("foe").has_restriction("must_attack"),
+		"mbi-e: it is still compelled to attack — at our hero, on a new proposal")
+
+	# (2) A proposal that ALREADY names our hero stays legal — the narrowing is
+	# satisfied, so nothing is interrupted.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.turn_player = "p2"
+	s2.priority_player = "p2"
+	_add_resources(s2, "p1", 3)
+	var f2 := _add_ally(s2, "f2", "ferocious_def", "p2")
+	f2.just_summoned = false
+	_add_card_to_hand(s2, "mb2", "mocking_blow_def", "p1")
+	StackResolver.submit_action(s2, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "f2", "defender_id": "p1_hero"}), db)
+	StackResolver.pass_priority(s2, db)
+	StackResolver.submit_action(s2, PendingAction.make("play_instant", "p1",
+		{"card_id": "mb2", "target_id": "f2"}), db)
+	for _i in range(4):
+		StackResolver.pass_priority(s2, db)
+	eq(s2.combat_attacker, "f2", "mbi-f: a proposal already on our hero goes through")
+
+	# (3) 601.2c's fallback survives the re-check: with our hero not a legal
+	# defender the narrowing is empty, so any defender is legal again and the
+	# proposal on our ally is NOT interrupted.
+	var s3 := _base_state(db, "p1_hero", "p2_hero")
+	s3.turn_player = "p2"
+	s3.priority_player = "p2"
+	_add_resources(s3, "p1", 3)
+	var f3 := _add_ally(s3, "f3", "ferocious_def", "p2")
+	f3.just_summoned = false
+	var bait3 := _add_ally(s3, "bait3", "wall_def", "p1")
+	bait3.just_summoned = false
+	_add_card_to_hand(s3, "mb3", "mocking_blow_def", "p1")
+	StackResolver.submit_action(s3, PendingAction.make("propose_combat", "p2",
+		{"attacker_id": "f3", "defender_id": "bait3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.submit_action(s3, PendingAction.make("play_instant", "p1",
+		{"card_id": "mb3", "target_id": "f3"}), db)
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)   # Mocking Blow resolves
+	s3.get_card("p1_hero").active_buffs.append(
+		Buff.make("el", "src", "grant_elusive", 1, "turns", 1))
+	StackResolver.pass_priority(s3, db)
+	StackResolver.pass_priority(s3, db)
+	eq(s3.combat_attacker, "f3",
+		"mbi-g: 601.2c fallback — an unsatisfiable narrowing forbids nothing")
 
 
 func _test_must_attack_binds_a_harmless_hero() -> void:

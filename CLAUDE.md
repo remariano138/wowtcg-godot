@@ -1253,7 +1253,7 @@ flag.** All four are read live and never cached.
 | | What it constrains | Enforced in | Cards |
 |---|---|---|---|
 | **"must attack if able"** (600.2) | The controller's **PASS**. Not what it attacks, not the order of their actions. | `must_attack_blocks_pass` → the gate in `_pass_priority` | Lynda Steele, Mocking Blow (clause 2 of 3) |
-| **"can attack only X if able"** (601.2c-d) | The legal **DEFENDERS** of one attacker. Doesn't force anything. | `get_legal_defenders` (specified-defender set) | Mocking Blow (clause 3), Sarmoth (`sarmoth_taunt`) |
+| **"can attack only X if able"** (601.2c-d) | The legal **DEFENDERS** of one attacker. Doesn't force anything. | `get_legal_defenders` (specified-defender set) **and** the 601.3 re-check (`_attacker_narrowed_away_from`) | Mocking Blow (clause 3), Sarmoth (`sarmoth_taunt`) |
 | **"can't attack" / "can't protect"** | Removes legality outright. | `get_legal_attackers` / `get_legal_protectors` | Litori, Frostbolt, Frost Shock, Jin'lak, Lady Jaina, Hannah |
 | **"can't attack [character]"** | Removes ONE character from an attacker's legal defenders. Neither forbids attacking nor forces it — it redirects by subtraction. | `_attacker_barred_from` → `get_legal_defenders` **and** the 601.3 re-check | Wing Clip |
 | **"can't attack unless its controller pays"** (600.3) | **PRICES** an attack. Neither forbids nor forces — it makes the proposal cost resources, paid at announcement (412.2) and refundable. | `attack_tax` -> `get_legal_defenders` affordability filter + the `propose_combat` arm of `submit_action` | Winter's Grasp |
@@ -1285,6 +1285,17 @@ Five consequences worth holding onto:
   makes Winter's Grasp a clean answer to Lynda Steele and Mocking Blow.
   `get_must_attack_ids` therefore counts an attacker as forced only while some
   legal defender can be attacked for FREE.
+- **It is an INTERRUPT, not just a gate on the next proposal.** 601.3 rechecks
+  the *whole* legality of a proposed combat as the proposal resolves, and 601.2a
+  requires the attacker to "be able to attack the proposed defender" — so
+  Mocking Blow played in response to a proposal aimed at anything but the
+  specified defender **fizzles that proposal, and the attacker never exhausts**
+  (Litori Frostburn's timing). `_attacker_narrowed_away_from` is the re-check;
+  it shares `_defender_candidates` and `_narrow_to_specified_defenders` with
+  `get_legal_defenders` so the two can't disagree, but deliberately skips
+  Winter's Grasp's affordability filter — by resolution the tax is paid.
+  601.2c's fallback still applies, so an unsatisfiable narrowing interrupts
+  nothing. Test: `_test_mocking_blow_interrupts_a_proposal`.
 - **The specified-defender set is a UNION, not a chain of filters.** Every
   `can_attack_only` source contributes to one set that `get_legal_defenders`
   intersects with the legal defenders once, then falls back to the full list if

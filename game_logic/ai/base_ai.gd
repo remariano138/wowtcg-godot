@@ -5288,9 +5288,21 @@ func _get_ally_power_actions(state: GameState, db, player_id: String) -> Array[P
 			for tid in candidates:
 				if tid not in ordered:
 					ordered.append(tid)
+			# Seva Shadowdancer's X is the price AND the heal, freely chosen —
+			# so heal exactly the damage on the target, capped by what we can
+			# pay. Deliberately no Boris-style "only for 3+" floor: his flip is
+			# once per GAME, hers is once per ready, so a cheap top-up is fine.
+			var ap_free_x: bool = StackResolver.power_x_is_free(ap)
+			var ap_avail := state.get_available_resources(player_id)
 			for target_id in ordered:
-				var act := PendingAction.make("use_ally_power", player_id,
-					{"card_id": card.instance_id, "target_id": target_id})
+				var ap_params := {"card_id": card.instance_id, "target_id": target_id}
+				if ap_free_x:
+					var seva_dmg := state.get_max_hp(target_id, db) 						- state.get_current_hp(target_id, db)
+					var seva_x: int = min(seva_dmg, ap_avail)
+					if seva_x < 1:
+						continue
+					ap_params["x_value"] = seva_x
+				var act := PendingAction.make("use_ally_power", player_id, ap_params)
 				if StackResolver.can_submit(state, act, db):
 					result.append(act)
 					break

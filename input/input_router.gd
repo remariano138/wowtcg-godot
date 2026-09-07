@@ -3269,6 +3269,17 @@ func handle_context_action(action: PendingAction) -> void:
 				var ally_card := state.get_card(cid) if state else null
 				var ally_def := db.get_def(ally_card.card_def_id) as CardDef if ally_card and db else null
 				var ally_ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
+				# Seva Shadowdancer: "(X), [Activate] -> heals X damage from target
+				# hero or ally." X is the price AND the payload and is freely
+				# chosen, so it is asked FIRST (Boris's dialog) and the targeting
+				# flow is re-entered from confirm_x_value with the amount known —
+				# unlike "Chipper" Ironbane / Staff of Dominance, whose X is
+				# derived from the click and needs no dialog at all.
+				if StackResolver.power_x_is_free(ally_ap):
+					_targeting_source = cid
+					x_select_requested.emit(cid,
+						state.get_available_resources(local_player))
+					return
 				var ap_dmg_type: String
 				# Two-pick sacrifice powers (Gertha, Besh'iah) open on phase 1, the
 				# ally to SACRIFICE — a different question from what the effect
@@ -4251,6 +4262,11 @@ func _ally_power_x_for(ally_id: String, target_id: String) -> int:
 	var ap := StackResolver._ally_activated_power(ally_def) if ally_def else {}
 	if not bool(ap.get("cost_x", false)):
 		return 0
+	# Seva Shadowdancer's X is the PLAYER's choice, not the target's cost, so it
+	# comes from the X dialog answered before targeting began (confirm_x_value
+	# parked it on _targeting_x_value) rather than from the clicked card.
+	if StackResolver.power_x_is_free(ap):
+		return max(_targeting_x_value, 1)
 	var t := state.get_card(target_id)
 	var t_def := db.get_def(t.card_def_id) as CardDef if t else null
 	return StackResolver.printed_cost(t_def) if t_def else 0
@@ -4502,6 +4518,17 @@ func confirm_x_value(x_value: int) -> void:
 		start_targeting(_targeting_source, _action_type_for(_targeting_source),
 			x_dmg_type, x_cursor)
 		return
+	# An IN-PLAY source with a freely chosen X is an ally/equipment power (Seva
+	# Shadowdancer), not a hero flip: re-enter the ordinary ally-power targeting
+	# flow, where _ally_power_x_for picks the answer back up.
+	var xc_def := db.get_def(src_card.card_def_id) as CardDef if src_card and db else null
+	var xc_ap := StackResolver._ally_activated_power(xc_def) if xc_def else {}
+	if StackResolver.power_x_is_free(xc_ap):
+		var xc_heal: bool = (xc_ap.get("effect", "") as String) == "heal_target"
+		var xc_type := "heal" if xc_heal else "melee"
+		start_targeting(_targeting_source, "use_ally_power", xc_type,
+			x_value if xc_heal else _preview_dmg(x_value, xc_type, false))
+		return
 	var dmg_type := "heal" if _is_heal_x_power(_targeting_source) else "shadow"
 	start_targeting(_targeting_source, "activate_power_x", dmg_type,
 		_preview_dmg(x_value, dmg_type, false))
@@ -4688,6 +4715,7 @@ func _handle_ally_power_targeting_click(instance_id: String) -> void:
 		{"card_id": _targeting_source, "target_id": instance_id,
 			"x_value": _ally_power_x_for(_targeting_source, instance_id)})
 	_targeting_source = ""
+	_targeting_x_value = 0
 	targeting_cancelled.emit()
 	var events := StackResolver.submit_action(state, action, db)
 	if events.is_empty():

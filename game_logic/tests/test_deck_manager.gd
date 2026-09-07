@@ -68,6 +68,7 @@ func _ready() -> void:
 	_test_waylay_recipe()
 	_test_poison_recipes()
 	_test_expose_armor_recipe()
+	_test_seva_and_heal_source_recipes()
 
 	print("\n=== %d passed, %d failed ===" % [_pass, _fail])
 	get_tree().quit(0 if _fail == 0 else 1)
@@ -1779,3 +1780,48 @@ func _test_expose_armor_recipe() -> void:
 		var n := String(pair[1])
 		_check("Finishing Move" in d.tags, "%s is a Finishing Move" % n)
 		_check(not ("Combo" in d.tags), "...%s is NOT itself a Combo card" % n)
+
+
+# Seva Shadowdancer (azeroth_216) plus the `heal_source:self` set. Pinned
+# against the REAL database because BOTH halves fail SILENTLY if mistyped: a
+# wrong AMOUNT token turns her free X into a flat 0 heal, and a missing or
+# misspelled `heal_source` rider silently hands the heal to the controller's
+# HERO instead of to the card — which is invisible until Hide of the Wild is in
+# play and adds a point of healing that should not be there.
+func _test_seva_and_heal_source_recipes() -> void:
+	var db := _make_db()
+	var seva := db.get_def("azeroth_216") as CardDef
+	_check(seva != null, "azeroth_216 (Seva Shadowdancer) resolves in the database")
+	if seva == null:
+		return
+	_check(seva.card_type == "Ally" and seva.cost == 3,
+		"Seva Shadowdancer is a 3-cost Ally")
+	_check(seva.printed_atk == 2 and seva.printed_health == 1, "...2 ATK / 1 health")
+	_check("elusive" in seva.keywords, "...Elusive")
+	var ap := StackResolver._ally_activated_power(seva)
+	_check(bool(ap.get("cost_x", false)), "...the power's COST is X")
+	_check(StackResolver.power_x_is_free(ap),
+		"...and X is FREELY chosen (AMOUNT is the literal X), not derived from the target")
+	_check(StackResolver.power_heal_amount(ap, 4) == 4,
+		"...so the heal amount IS the announced X")
+	_check(ap.get("effect", "") == "heal_target"
+			and ap.get("targets", "") == "hero_or_ally",
+		"...heal_target on the hero_or_ally pool")
+	_check(not StackResolver.power_has_extra_cost(ap.get("extra_cost", ""), "no_activate"),
+		"...keeps the [Activate] tap symbol — once per ready")
+
+	# SELF-sourced heals: the card's printed text names the CARD as the healer.
+	var state := GameState.new()
+	for id in ["azeroth_216", "azeroth_183", "azeroth_234", "azeroth_194",
+			"azeroth_218", "dark_portal_230"]:
+		var d := db.get_def(id) as CardDef
+		_check(d != null and StackResolver.heal_source_id(d, state, "src", "p1") == "src",
+			"%s heals as ITSELF (heal_source:self)" % id)
+	# HERO-sourced heals: "your hero heals ..." — the DEFAULT, so these must NOT
+	# carry the rider. (heal_source_id's hero lookup needs a real board, which a
+	# recipe test has no business building; the rider's absence is the fact.)
+	for id in ["azeroth_22", "azeroth_78", "azeroth_79", "azeroth_84",
+			"azeroth_112", "azeroth_323"]:
+		var d2 := db.get_def(id) as CardDef
+		_check(d2 != null and not ("heal_source:self" in d2.effects),
+			"%s heals as the controller's HERO (no rider — the default)" % id)

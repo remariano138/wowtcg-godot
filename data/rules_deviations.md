@@ -1556,3 +1556,39 @@ none: there is nothing to destroy, hence nothing worth paying for.
 DEFENDING hero retaliating with a struck Shatterer breaks a weapon exactly as an
 attacking one does. That is the printed text taken literally (contrast Thrash
 Blade, whose "on each of your turns" restricts it to the wielder's own turn).
+
+---
+
+## Seva Shadowdancer — X is floored at 1
+
+**Card:** `azeroth_216`, 3-cost 2/1 Alliance Night Elf Priest, Rare. "Elusive.
+**(X), [Activate] ➜ Seva Shadowdancer heals X damage from target hero or ally.**"
+
+**The rules position:** nothing on the card or in the CR forbids announcing
+**X = 0**. The announcement sequence (707.1) checks modes, X, targets and costs
+and never asks whether an effect will accomplish anything, so X = 0 is a legal
+announcement that pays nothing, heals nothing and simply resolves into a no-op —
+the same reading that keeps Point Blank and Expose Armor legal when they can do
+nothing (see the RESOLVED "For the Horde! / Rayder / Ryn Dreamstrider" entry for
+why an engine-only use restriction is the mistake to avoid here).
+
+**What the engine does instead:** `_can_use_ally_power` refuses `x_value < 1`
+for a **freely chosen** X (`StackResolver.power_x_is_free` — a power whose
+AMOUNT field is the literal `X`, i.e. X is the payload as well as the price).
+The no-target highlight probe correspondingly asks affordability at X = 1, the
+convention the X-cost hand cards already use.
+
+**Why:** the deviation costs the player nothing they could ever want. X = 0
+spends her `[Activate]` tap — her whole once-per-ready use — to heal zero, so it
+is not a play a person makes on purpose; it is a mis-click, and the engine
+refusing it is the same service as any other confirmation. It also keeps the
+dialog honest: the X prompt would otherwise have to offer a value that visibly
+does nothing. Contrast Expose Armor, where X = 0 IS left legal — there the cost
+is cards in a graveyard rather than a once-per-turn tap, and a player might
+genuinely announce it to trigger a "when you play an ability" payoff without
+spending the graveyard.
+
+**Note this floor applies ONLY to a free X.** "Chipper" Ironbane's and Staff of
+Dominance's X is derived from the announced target's PRINTED cost
+(`power_cost_matches_target`), so a legal 0-cost target must still be allowed to
+set X = 0 for them; the two cases are told apart by `power_x_is_free`.

@@ -2161,6 +2161,43 @@ static func _heal_target_amount(def: CardDef) -> int:
 	return 0
 
 
+# WHO IS HEALING — the ONE place a heal's source is decided.
+#
+# `heal_target` and `heal_party` are each reached from four different shapes (a
+# top-level hand segment, a modal mode, an `on_enter` trigger and an
+# `activated_power`), and the printed text does NOT agree across them about the
+# healer: Healing Touch and The Hammer of Grace say "YOUR HERO heals", while
+# Freya Lightsworn, Ra'chee and Seva Shadowdancer say the CARD ITSELF heals.
+# That distinction is not cosmetic — Hide of the Wild's `hero_heal_bonus` keys
+# on the hero being the healer, so getting it wrong silently adds or drops a
+# point of healing.
+#
+# So the source rides the recipe rather than being inferred from the shape:
+# the default is the controller's HERO, and a card whose text names itself
+# carries the bare `heal_source:self` rider segment. That default is the
+# INVERSE of `hero_deals_damage` (Ritual Sacrifice), where the card is the
+# default and the rider names the hero — deliberately, because the two idioms
+# run opposite ways: damage is usually dealt by the card, healing is usually
+# done by "your hero", and in each case the rider names the minority. A
+# top-level hand ability has no in-play card to be a source at all, which is
+# what settles it.
+#
+# CONTRACT: every heal whose card text names a healer must pass this function's
+# result to GameLogic.heal as `source_id`. A heal that names nobody (a combat
+# trigger cleaning its own card, an attachment) keeps its own key and its own
+# source, and never reaches here.
+static func heal_source_id(def: CardDef, state: GameState, card_id: String,
+		controller: String) -> String:
+	if def != null:
+		for entry in def.effects.split("|"):
+			var parts := entry.strip_edges().split(":")
+			if parts[0].strip_edges() == "heal_source" \
+					and parts.size() > 1 and parts[1].strip_edges() == "self":
+				return card_id
+	var hero := state.get_hero(controller)
+	return hero.instance_id if hero else card_id
+
+
 # Prayer of Healing (`heal_party:N`): the amount of a TOP-LEVEL party-heal
 # segment, 0 when the def has none. Deliberately matches only parts[0] — an
 # activated power (`activated_power:0:heal_party:1`, Lady Courtney Noel) and an
@@ -3891,11 +3928,12 @@ static func _bring_ally_into_play(state: GameState, card_id: String,
 						# targeted — the entering card is already in the ally_row,
 						# so it's included. Fires inline (no choice, no chain).
 						var heal_n := int(parts[2]) if parts.size() > 2 else 0
+						var heal_n_src := heal_source_id(def, state, card_id, card.controller)
 						for party_ally in state.cards_in_zone(card.controller + "_ally_row"):
-							events.append_array(GameLogic.heal(state, party_ally.instance_id, heal_n, db, card_id))
+							events.append_array(GameLogic.heal(state, party_ally.instance_id, heal_n, db, heal_n_src))
 						var party_hero2 := state.get_hero(card.controller)
 						if party_hero2:
-							events.append_array(GameLogic.heal(state, party_hero2.instance_id, heal_n, db, card_id))
+							events.append_array(GameLogic.heal(state, party_hero2.instance_id, heal_n, db, heal_n_src))
 					"deal_damage_to_target":
 						var amount := int(parts[2]) if parts.size() > 2 else 0
 						var dmg_type := parts[3].to_lower().strip_edges() if parts.size() > 3 else ""
@@ -4985,8 +5023,7 @@ static func _resolve_play_instant(state: GameState,
 						# heal's source — which is what Hide of the Wild's
 						# hero_heal_bonus keys on.
 						var heal_amount := int(parts[1]) if parts.size() > 1 else 0
-						var ht_hero := state.get_hero(card.controller)
-						var ht_src: String = ht_hero.instance_id if ht_hero else card_id
+						var ht_src := heal_source_id(def, state, card_id, card.controller)
 						if heal_amount > 0 and _is_legal_target(state, target_id, db):
 							events.append_array(GameLogic.heal(
 								state, target_id, heal_amount, db, ht_src))
@@ -5011,9 +5048,7 @@ static func _resolve_play_instant(state: GameState,
 						if party_n > 0:
 							var party_pid := card.controller
 							var ph_hero := state.get_hero(party_pid)
-							# "YOUR HERO heals N damage from each..." — the hero is
-							# the healer, so it is the source (hero_heal_bonus).
-							var ph_src: String = ph_hero.instance_id if ph_hero else card_id
+							var ph_src := heal_source_id(def, state, card_id, party_pid)
 							for ph_ally in state.cards_in_zone(party_pid + "_ally_row"):
 								events.append_array(GameLogic.heal(
 									state, ph_ally.instance_id, party_n, db, ph_src))
@@ -5892,6 +5927,34 @@ static func power_resource_cost(ap: Dictionary, x_value: int) -> int:
 	if bool(ap.get("cost_x", false)):
 		return max(x_value, 0)
 	return int(ap.get("resource_cost", 0))
+
+
+# TRUE when a power's X is the player's to choose freely (Seva Shadowdancer),
+# as opposed to derived from the announced target's printed cost ("Chipper"
+# Ironbane, Staff of Dominance — see power_cost_matches_target). The two are
+# told apart by the AMOUNT field: a free X is the power's PAYLOAD as well as
+# its price, so it is written there as the literal `X`.
+static func power_x_is_free(ap: Dictionary) -> bool:
+	return bool(ap.get("cost_x", false)) \
+		and str(ap.get("amount_raw", "")).strip_edges() == "X"
+
+
+# Seva Shadowdancer: "(X), [Activate] -> [she] heals X damage from target hero
+# or ally." The activated-power grammar is fixed-position, so the AMOUNT field
+# carries the literal token `X` (the `enters_with_counters:fury:X` convention)
+# and the real amount is the x_value announced with the action. `amount` stays
+# an int for every other power — int("X") is 0, which is also the correct
+# fallback — so this is the ONE place the two cases are reconciled, exactly as
+# power_resource_cost is for the price.
+#
+# Unlike "Chipper" Ironbane's and Staff of Dominance's X, Seva's is a FREE
+# choice bounded only by what her controller can pay, so power_cost_matches_
+# target deliberately never applies to her (it is gated on the `ally` and
+# `ability_or_equipment` target kinds; hers is `hero_or_ally`).
+static func power_heal_amount(ap: Dictionary, x_value: int) -> int:
+	if str(ap.get("amount_raw", "")).strip_edges() == "X":
+		return max(x_value, 0)
+	return int(ap.get("amount", 0))
 
 
 # "Chipper" Ironbane: "(X), Destroy [this] -> Destroy target ability or
@@ -6988,6 +7051,20 @@ static func _can_use_ally_power(state: GameState, action: PendingAction,
 		if card.is_exhausted:
 			return false
 	var ap_x := int(action.params.get("x_value", 0))
+	var skip_x: bool = action.params.get("_skip_target_check", false)
+	# Seva Shadowdancer's X is a FREE choice — the price AND the heal — unlike
+	# "Chipper" Ironbane's and Staff of Dominance's, which are derived from the
+	# target's printed cost. So it needs a floor of its own, and the floor is 1:
+	# X = 0 is a legal announcement by the printed card and simply heals nothing,
+	# but a power that costs and does nothing is never a play a person means to
+	# make. See data/rules_deviations.md "Seva Shadowdancer". The no-target
+	# highlight probe asks affordability at X = 1 (the hand X-cost convention),
+	# since it runs before any X has been chosen.
+	if power_x_is_free(ap):
+		if skip_x:
+			ap_x = max(ap_x, 1)
+		elif ap_x < 1:
+			return false
 	if state.get_available_resources(action.source_player) < power_resource_cost(ap, ap_x):
 		return false
 	# Extra, card-specific costs baked into the power (e.g. Mooncloth Robe also
@@ -7668,10 +7745,9 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			# source (Hide of the Wild's hero_heal_bonus keys on that). A power
 			# whose text says the SOURCE heals (Lady Courtney Noel, Ophelia
 			# Barrows) uses its own key and keeps the card as the source.
-			var amount: int = int(ap.get("amount", 0))
+			var amount := power_heal_amount(ap, int(action.params.get("x_value", 0)))
 			var target_id: String = action.params.get("target_id", "")
-			var hgt_hero := state.get_hero(card.controller)
-			var hgt_src: String = hgt_hero.instance_id if hgt_hero else card_id
+			var hgt_src := heal_source_id(def, state, card_id, card.controller)
 			if _is_legal_target(state, target_id, db):
 				events.append_array(GameLogic.heal(state, target_id, amount, db, hgt_src))
 		"cant_protect_target":
@@ -7782,13 +7858,14 @@ static func _resolve_use_ally_power(state: GameState, action: PendingAction,
 			# after the announce are healed, and the source heals itself too.
 			var party_amount: int = int(ap.get("amount", 0))
 			var party_pid := card.controller
+			var pp_src := heal_source_id(def, state, card_id, party_pid)
 			for party_ally in state.cards_in_zone(party_pid + "_ally_row"):
 				events.append_array(GameLogic.heal(
-					state, party_ally.instance_id, party_amount, db, card_id))
+					state, party_ally.instance_id, party_amount, db, pp_src))
 			var party_hero := state.get_hero(party_pid)
 			if party_hero:
 				events.append_array(GameLogic.heal(
-					state, party_hero.instance_id, party_amount, db, card_id))
+					state, party_hero.instance_id, party_amount, db, pp_src))
 		"ready_hero_and_weapon":
 			# Galway Steamwhistle: "[Activate] -> Ready your hero and one of your
 			# weapons." Both halves are CHOICES, not targets — nothing is
@@ -13556,7 +13633,8 @@ static func _resolve_activate_power(state: GameState, action: PendingAction,
 				# X resources are already paid at submission. Heal X from target.
 				var x_value: int = action.params.get("x_value", 0)
 				if x_value >= 1 and _is_legal_target(state, target_id, db):
-					events.append_array(GameLogic.heal(state, target_id, x_value, db, hero_id))
+					events.append_array(GameLogic.heal(state, target_id, x_value, db,
+						heal_source_id(def, state, hero_id, action.source_player)))
 			"graveyard_to_hand":
 				# Format: graveyard_to_hand:TYPE:MIN:MAX:OWNER[:MAX_COST] (hero-power use).
 				# Re-check the target is still in a graveyard at resolution.
@@ -13841,7 +13919,16 @@ static func _resolve_choose_enter_play_target_inner(state: GameState,
 					or not _is_hero_or_ally(state, target_id, db):
 				return events
 			var heal_amount := int(parts[1]) if parts.size() > 1 else 0
-			events.append_array(GameLogic.heal(state, target_id, heal_amount, db, source_id))
+			# WHO heals is read off the SOURCE card's own recipe, not assumed
+			# from the shape — Ra'chee says "HE heals" (heal_source:self) while a
+			# future "your hero heals" enter-play trigger would not. See
+			# heal_source_id.
+			var oe_card := state.get_card(source_id)
+			var oe_def := db.get_def(oe_card.card_def_id) as CardDef if oe_card and db else null
+			var oe_src := source_id
+			if oe_card:
+				oe_src = heal_source_id(oe_def, state, source_id, oe_card.controller)
+			events.append_array(GameLogic.heal(state, target_id, heal_amount, db, oe_src))
 		"destroy_exhausted_damaged_ally":
 			# Ghank — 706 re-check: fizzle unless the target is STILL an
 			# exhausted, damaged, targetable ally at resolution.

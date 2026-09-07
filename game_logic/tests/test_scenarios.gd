@@ -629,6 +629,9 @@ func _ready() -> void:
 		_test_ai_must_attack,
 		_test_galway_readies_hero_and_weapon,
 		_test_galway_pick_gates_and_ai,
+		_test_seva_heals_x,
+		_test_seva_scope_and_source,
+		_test_ai_seva,
 		_test_lady_courtney_heals_party,
 		_test_lady_courtney_gates_and_ai,
 		_test_marked_for_death_attach_and_aura,
@@ -42947,3 +42950,149 @@ func _test_expose_armor_ui_flow() -> void:
 		0, "ru-g3: with no targets")
 
 	router.queue_free()
+
+
+# ---------------------------------------------------------------------------
+# Seva Shadowdancer (azeroth_216) — "(X), [Activate] -> Seva Shadowdancer heals
+# X damage from target hero or ally." The engine's first FREELY chosen X on an
+# activated power (Chipper Ironbane's and Staff of Dominance's are derived from
+# the target's printed cost), and the card that made a heal's SOURCE a recipe
+# parameter (heal_source_id) instead of a per-shape assumption.
+# ---------------------------------------------------------------------------
+const SEVA_RECIPE := "activated_power:X:heal_target:X::hero_or_ally|heal_source:self"
+const HAMMER_HEAL_RECIPE := "activated_power:1:heal_target:2::hero_or_ally"
+
+
+func _test_seva_heals_x() -> void:
+	_buf.append("
+-- Seva Shadowdancer: X is the price and the heal --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("seva_def", 2, 1, ["elusive"], 3, SEVA_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 5)
+	var seva := _add_ally(state, "seva", "seva_def", "p1")
+	seva.just_summoned = false
+	var friend := _add_ally(state, "friend", "body_def", "p1")
+	friend.damage_taken = 3
+	state.get_card("p1_hero").damage_taken = 6
+
+	# X = 0 is refused (the floored-at-1 deviation), X >= 1 is legal.
+	var zero := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "seva", "target_id": "friend", "x_value": 0})
+	ok(not StackResolver.can_submit(state, zero, db),
+		"seva-a: X = 0 refused — floored at 1 (see rules_deviations)")
+	var too_big := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "seva", "target_id": "friend", "x_value": 6})
+	ok(not StackResolver.can_submit(state, too_big, db),
+		"seva-b: X above available resources is unaffordable")
+
+	var use := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "seva", "target_id": "friend", "x_value": 3})
+	ok(StackResolver.can_submit(state, use, db), "seva-c: X = 3 legal")
+	StackResolver.submit_action(state, use, db)
+	eq(state.get_available_resources("p1"), 2,
+		"seva-d: X resources paid at announcement")
+	ok(state.get_card("seva").is_exhausted,
+		"seva-e: exhausts at announcement ([Activate], 412.2)")
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("friend").damage_taken, 0, "seva-f: healed X = 3")
+
+	# Once per ready.
+	var again := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "seva", "target_id": "p1_hero", "x_value": 2})
+	ok(not StackResolver.can_submit(state, again, db),
+		"seva-g: exhausted — once per ready")
+
+
+func _test_seva_scope_and_source() -> void:
+	_buf.append("
+-- Seva Shadowdancer: pool, cap, and SHE is the healer --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("seva_def", 2, 1, ["elusive"], 3, SEVA_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+
+	var state := _base_state(db, "p1_hero", "p2_hero")
+	_add_resources(state, "p1", 8)
+	var seva := _add_ally(state, "seva", "seva_def", "p1")
+	seva.just_summoned = false
+	var enemy := _add_ally(state, "enemy", "body_def", "p2")
+	enemy.damage_taken = 2
+
+	# "target hero or ally" — no friendly clause, so EITHER party is legal.
+	var at_enemy := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "seva", "target_id": "enemy", "x_value": 2})
+	ok(StackResolver.can_submit(state, at_enemy, db),
+		"seva-h: an OPPOSING ally is a legal target (no friendly clause)")
+
+	# The heal is capped by damage actually present: X = 5 into 2 damage heals 2,
+	# and the other 3 resources are still spent (X is the announced price).
+	var over := PendingAction.make("use_ally_power", "p1",
+		{"card_id": "seva", "target_id": "enemy", "x_value": 5})
+	StackResolver.submit_action(state, over, db)
+	StackResolver.pass_priority(state, db)
+	StackResolver.pass_priority(state, db)
+	eq(state.get_card("enemy").damage_taken, 0, "seva-i: heal capped at damage present")
+	eq(state.get_available_resources("p1"), 3, "seva-j: the full X was still paid")
+
+	# heal_source:self — SHE is the healer, so Hide of the Wild's hero_heal_bonus
+	# (which keys on the HERO healing) must NOT apply to her.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	var s2_def := db.get_def("seva_def") as CardDef
+	eq(StackResolver.heal_source_id(s2_def, s2, "seva", "p1"), "seva",
+		"seva-k: heal_source:self -> the CARD is the healer")
+	var hammer := CardDef.new()
+	hammer.effects = HAMMER_HEAL_RECIPE
+	eq(StackResolver.heal_source_id(hammer, s2, "hammer", "p1"), "p1_hero",
+		"seva-l: no rider -> the controller's HERO is the healer (default)")
+
+
+func _test_ai_seva() -> void:
+	_buf.append("
+-- Seva Shadowdancer: AI buys exactly the X it needs --")
+	var db := MockDB.new()
+	db.hero("p1_hero", 30)
+	db.hero("p2_hero", 30)
+	db.ally("seva_def", 2, 1, ["elusive"], 3, SEVA_RECIPE)
+	db.ally("body_def", 2, 4, [], 2)
+
+	# Undamaged party: never taps her (the heal would do nothing).
+	var s1 := _base_state(db, "p1_hero", "p2_hero")
+	s1.phase = "action"
+	s1.turn_player = "p1"
+	_add_resources(s1, "p1", 5)
+	var seva1 := _add_ally(s1, "seva1", "seva_def", "p1")
+	seva1.just_summoned = false
+	var ai := BaseAI.new()
+	var found_idle := false
+	for a in ai.get_reasonable_actions(s1, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "seva1":
+			found_idle = true
+	ok(not found_idle, "seva-m: AI holds the power on an undamaged party")
+
+	# Damaged hero: heals it, X = min(damage, available), never the enemy.
+	var s2 := _base_state(db, "p1_hero", "p2_hero")
+	s2.phase = "action"
+	s2.turn_player = "p1"
+	_add_resources(s2, "p1", 3)
+	var seva2 := _add_ally(s2, "seva2", "seva_def", "p1")
+	seva2.just_summoned = false
+	s2.get_card("p1_hero").damage_taken = 7
+	var hurt_enemy := _add_ally(s2, "hurt_enemy", "body_def", "p2")
+	hurt_enemy.damage_taken = 3
+	var picked: PendingAction = null
+	for a in ai.get_reasonable_actions(s2, db, "p1"):
+		if a.action_type == "use_ally_power" and a.params.get("card_id", "") == "seva2":
+			picked = a
+	ok(picked != null, "seva-n: AI uses the power with a damaged friendly")
+	if picked:
+		eq(String(picked.params.get("target_id", "")), "p1_hero",
+			"seva-o: aimed at our own damaged hero, never the enemy")
+		eq(int(picked.params.get("x_value", 0)), 3,
+			"seva-p: X capped by available resources")

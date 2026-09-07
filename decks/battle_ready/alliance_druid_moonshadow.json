@@ -1,27 +1,12 @@
-﻿{
+{
   "deck_id": "alliance_druid_moonshadow",
   "display_name": "Alliance Druid Moonshadow",
   "hero_card_def_id": "azeroth_6",
   "card_entries": [
     {
-      "card_def_id": "azeroth_341",
-      "count": 1,
-      "_card_name": "Dragonkin Menace"
-    },
-    {
       "card_def_id": "azeroth_340",
-      "count": 2,
+      "count": 4,
       "_card_name": "The Defias Brotherhood"
-    },
-    {
-      "card_def_id": "azeroth_354",
-      "count": 3,
-      "_card_name": "It's a Secret to Everybody"
-    },
-    {
-      "card_def_id": "azeroth_349",
-      "count": 1,
-      "_card_name": "Blueleaf Tubers"
     },
     {
       "card_def_id": "dark_portal_289",
@@ -29,64 +14,19 @@
       "_card_name": "Crown of the Earth"
     },
     {
-      "card_def_id": "dark_portal_316",
-      "count": 2,
-      "_card_name": "Finkle Einhorn, At Your Service!"
-    },
-    {
       "card_def_id": "azeroth_350",
-      "count": 1,
+      "count": 4,
       "_card_name": "Chasing A-Me 01"
     },
     {
-      "card_def_id": "azeroth_352",
-      "count": 1,
-      "_card_name": "In Dreams"
-    },
-    {
-      "card_def_id": "azeroth_322",
-      "count": 1,
-      "_card_name": "Gift of the Elven Magi"
-    },
-    {
-      "card_def_id": "azeroth_189",
-      "count": 1,
-      "_card_name": "Kailis Truearc"
-    },
-    {
-      "card_def_id": "azeroth_28",
-      "count": 1,
-      "_card_name": "Nature's Swiftness"
-    },
-    {
-      "card_def_id": "azeroth_23",
+      "card_def_id": "azeroth_360",
       "count": 2,
-      "_card_name": "Innervate"
+      "_card_name": "Your Fortune Awaits You"
     },
     {
-      "card_def_id": "dark_portal_168",
+      "card_def_id": "azeroth_342",
       "count": 1,
-      "_card_name": "Ilandre Moonspear"
-    },
-    {
-      "card_def_id": "azeroth_19",
-      "count": 1,
-      "_card_name": "Circle of Life"
-    },
-    {
-      "card_def_id": "azeroth_30",
-      "count": 2,
-      "_card_name": "Primal Mending"
-    },
-    {
-      "card_def_id": "dark_portal_131",
-      "count": 1,
-      "_card_name": "Shadowmeld"
-    },
-    {
-      "card_def_id": "azeroth_173",
-      "count": 1,
-      "_card_name": "Acolyte Demia"
+      "_card_name": "The Missing Diplomat"
     },
     {
       "card_def_id": "azeroth_222",
@@ -99,44 +39,39 @@
       "_card_name": "Latro Abiectus"
     },
     {
-      "card_def_id": "azeroth_180",
+      "card_def_id": "azeroth_184",
       "count": 4,
-      "_card_name": "Crazy Igvand"
+      "_card_name": "Galahandra Keeper of the Silent Grove"
     },
     {
-      "card_def_id": "dark_portal_189",
+      "card_def_id": "azeroth_214",
       "count": 2,
-      "_card_name": "Scaramanga"
+      "_card_name": "Ryn Dreamstrider"
     },
     {
-      "card_def_id": "azeroth_24",
-      "count": 4,
-      "_card_name": "Mark of the Wild"
+      "card_def_id": "dark_portal_197",
+      "count": 1,
+      "_card_name": "Wisp"
     },
     {
-      "card_def_id": "dark_portal_146",
-      "count": 2,
-      "_card_name": "Lessons in Lurking"
+      "card_def_id": "azeroth_216",
+      "count": 1,
+      "_card_name": "Seva Shadowdancer"
     },
     {
-      "card_def_id": "azeroth_27",
-      "count": 4,
-      "_card_name": "Natural Selection"
+      "card_def_id": "dark_portal_131",
+      "count": 1,
+      "_card_name": "Shadowmeld"
     },
     {
-      "card_def_id": "dark_portal_194",
-      "count": 3,
-      "_card_name": "Vestia Abiectus"
+      "card_def_id": "dark_portal_168",
+      "count": 1,
+      "_card_name": "Ilandre Moonspear"
     },
     {
       "card_def_id": "azeroth_209",
-      "count": 2,
+      "count": 4,
       "_card_name": "Moira Darkheart"
-    },
-    {
-      "card_def_id": "azeroth_210",
-      "count": 2,
-      "_card_name": "Nerra Lifeboon"
     },
     {
       "card_def_id": "azeroth_196",
@@ -144,9 +79,54 @@
       "_card_name": "Lafiel"
     },
     {
-      "card_def_id": "dark_portal_154",
+      "card_def_id": "dark_portal_194",
+      "count": 3,
+      "_card_name": "Vestia Abiectus"
+    },
+    {
+      "card_def_id": "azeroth_24",
+      "count": 2,
+      "_card_name": "Mark of the Wild"
+    },
+    {
+      "card_def_id": "azeroth_28",
       "count": 1,
-      "_card_name": "Avanthera"
+      "_card_name": "Nature's Swiftness"
+    },
+    {
+      "card_def_id": "azeroth_322",
+      "count": 1,
+      "_card_name": "Gift of the Elven Magi"
+    },
+    {
+      "card_def_id": "azeroth_19",
+      "count": 1,
+      "_card_name": "Circle of Life"
+    },
+    {
+      "card_def_id": "azeroth_27",
+      "count": 4,
+      "_card_name": "Natural Selection"
+    },
+    {
+      "card_def_id": "azeroth_23",
+      "count": 1,
+      "_card_name": "Innervate"
+    },
+    {
+      "card_def_id": "azeroth_30",
+      "count": 2,
+      "_card_name": "Primal Mending"
+    },
+    {
+      "card_def_id": "dark_portal_195",
+      "count": 4,
+      "_card_name": "Vindicator Enkallus"
+    },
+    {
+      "card_def_id": "azeroth_210",
+      "count": 2,
+      "_card_name": "Nerra Lifeboon"
     }
   ],
   "recommended_ai_id": "ai_generic",
